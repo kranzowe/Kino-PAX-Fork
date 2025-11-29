@@ -5,6 +5,10 @@ clear all
 try
     % Define root directory
     rootDir = '/home/owkr8158/Kino-PAX-Fork';
+    
+    % Enable batch mode rendering
+    fprintf('Starting MATLAB script in batch mode...\n');
+    fprintf('Root directory: %s\n', rootDir);
 
     % Parameters
     numFiles = 1;
@@ -21,11 +25,14 @@ try
     model = 3;
 
     % Obstacle file path (relative to root)
-    obstacleFilePath = fullfile(rootDir, 'include/config/obstacles/quadTrees/obstacles.csv);
+    obstacleFilePath = fullfile(rootDir, 'include/config/obstacles/quadTrees/obstacles.csv');
+    fprintf('Reading obstacles from: %s\n', obstacleFilePath);
     obstacles = gpuArray(readmatrix(obstacleFilePath));
+    fprintf('Loaded %d obstacles\n', size(obstacles, 1));
 
     % Tree size path (relative to build/Data)
     treeSizePath = fullfile(rootDir, 'build/Data/TreeSize/TreeSize0/treeSize.csv');
+    fprintf('Reading tree sizes from: %s\n', treeSizePath);
     treeSizes = gpuArray(readmatrix(treeSizePath));
     treeSizes = [0; treeSizes];
 
@@ -36,17 +43,20 @@ try
                     0 .7 .7; % Turquoise
                     1 .5 0]); % Orange
 
-    fig = figure('Position', [100, 100, 1000, 1000]); 
+    % CRITICAL: Use 'Visible', 'off' for batch mode
+    fig = figure('Position', [100, 100, 1000, 1000], 'Visible', 'off'); 
     hold on;
     axis equal;
     title('Iteration 0');
 
     % Sample file path (relative to build/Data)
     sampleFilePath = fullfile(rootDir, 'build/Data/Samples/Samples0/samples1.csv');
+    fprintf('Reading samples from: %s\n', sampleFilePath);
     samples = gpuArray(readmatrix(sampleFilePath));
 
     % Control path (relative to build/Data)
     controlPath = fullfile(rootDir, 'build/Data/ControlPathToGoal/ControlPathToGoal0/controlPathToGoal.csv');
+    fprintf('Reading controls from: %s\n', controlPath);
     controls = gpuArray(flipud(readmatrix(controlPath)));
     controls = [samples(1,1), samples(1,2), samples(1,3), samples(1,4), samples(1,5), samples(1,6), 0, 0, 0, 0; controls];
 
@@ -92,10 +102,17 @@ try
     % Create figs directory if it doesn't exist
     figsDir = fullfile(rootDir, 'figs');
     if ~exist(figsDir, 'dir')
+        fprintf('Creating figs directory: %s\n', figsDir);
         mkdir(figsDir);
+    else
+        fprintf('Figs directory exists: %s\n', figsDir);
     end
 
+    fprintf('Processing %d files...\n', numFiles);
+    
     for i = 1:numFiles
+        fprintf('Processing file %d/%d...\n', i, numFiles);
+        
         % Sample and parent file paths (relative to build/Data)
         sampleFilePath = fullfile(rootDir, sprintf('build/Data/Samples/Samples0/samples%d.csv', i));
         parentFilePath = fullfile(rootDir, sprintf('build/Data/Parents/Parents0/parents%d.csv', i));
@@ -103,7 +120,8 @@ try
         samples = gpuArray(readmatrix(sampleFilePath));
         parentRelations = gpuArray(readmatrix(parentFilePath));
 
-        fig = figure('Position', [100, 100, 1000, 1000]); 
+        % CRITICAL: Use 'Visible', 'off' for batch mode
+        fig = figure('Position', [100, 100, 1000, 1000], 'Visible', 'off'); 
         hold on;
         axis equal;
         axis off;
@@ -183,6 +201,7 @@ try
         gifFilename = fullfile(figsDir, sprintf('KGMT_Iteration_%d.gif', i));
 
         if i == numFiles
+            fprintf('Plotting control path...\n');
             for j = 2:size(controls, 1)
                 x0 = controls(j-1, 1:stateSize);
                 sample = controls(j,:);
@@ -198,16 +217,21 @@ try
             end
         end
 
+        % View 3D
         view(3);
         drawnow;
-        saveas(gcf, fullfile(figsDir, sprintf('KGMT_Iteration_%d.jpg', i)));
-        print(fullfile(figsDir, sprintf('KGMT_Iteration_%d.jpg', i)), '-djpeg', '-r300');
+        filename1 = fullfile(figsDir, sprintf('KGMT_Iteration_%d.jpg', i));
+        fprintf('Saving: %s\n', filename1);
+        print(gcf, filename1, '-djpeg', '-r300');
 
+        % Top view
         view(2);
         drawnow;
-        saveas(gcf, fullfile(figsDir, sprintf('top_KGMT_Iteration_%d.jpg', i)));
-        print(fullfile(figsDir, sprintf('top_KGMT_Iteration_%d.jpg', i)), '-djpeg', '-r300');
+        filename2 = fullfile(figsDir, sprintf('top_KGMT_Iteration_%d.jpg', i));
+        fprintf('Saving: %s\n', filename2);
+        print(gcf, filename2, '-djpeg', '-r300');
 
+        % X-axis view
         midY = (min(gather(samples(:,2))) + max(gather(samples(:,2)))) / 2;
         midZ = (min(gather(samples(:,3))) + max(gather(samples(:,3)))) / 2;
         campos([0, midY, max(gather(samples(:,3))) + 1]);
@@ -215,9 +239,16 @@ try
         view([-.4, -.2, 0.5]);
         drawnow;
 
-        saveas(gcf, fullfile(figsDir, sprintf('xAxis_KGMT_Iteration_%d.jpg', i)));
-        print(fullfile(figsDir, sprintf('xAxis_KGMT_Iteration_%d.jpg', i)), '-djpeg', '-r300');
+        filename3 = fullfile(figsDir, sprintf('xAxis_KGMT_Iteration_%d.jpg', i));
+        fprintf('Saving: %s\n', filename3);
+        print(gcf, filename3, '-djpeg', '-r300');
+        
+        close(gcf);
+        fprintf('Completed file %d/%d\n', i, numFiles);
     end
+    
+    fprintf('Script completed successfully!\n');
+    fprintf('Check output files in: %s\n', figsDir);
 
     function [segmentX, segmentY, segmentZ] = propDoubleIntegrator(x0, sample, STEP_SIZE, stateSize, sampleSize)
         segmentX = gpuArray(x0(1));
@@ -396,8 +427,13 @@ try
     end
 
 catch ME
+    fprintf('ERROR OCCURRED!\n');
     fprintf('Error: %s\n', ME.message);
+    fprintf('Error identifier: %s\n', ME.identifier);
     fprintf('Stack trace:\n');
-    disp(ME.stack);
+    for k = 1:length(ME.stack)
+        fprintf('  File: %s\n', ME.stack(k).file);
+        fprintf('  Function: %s, Line: %d\n', ME.stack(k).name, ME.stack(k).line);
+    end
     exit(1);
 end
