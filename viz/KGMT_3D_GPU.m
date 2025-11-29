@@ -16,7 +16,7 @@ try
     N = 8;
     n = 4;
     sampleSize = 17;
-    stateSize = 6;
+    stateSize = 12;
     controlSize = 3;
 
     xGoal = [.80, .95, .90];
