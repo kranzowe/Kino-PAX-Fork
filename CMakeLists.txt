@@ -79,9 +79,10 @@ set_target_properties(executionTimeMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON
 
 
 set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -diag-suppress=20012,20013,20014,20015 --expt-relaxed-constexpr --ptxas-options=-v")
-set_property(TARGET main PROPERTY CUDA_ARCHITECTURES 86)
-set_property(TARGET benchMain PROPERTY CUDA_ARCHITECTURES 86)
-set_property(TARGET KPAX_lib PROPERTY CUDA_ARCHITECTURES 86)
+set_property(TARGET main PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET benchMain PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET executionTimeMain PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET KPAX_lib PROPERTY CUDA_ARCHITECTURES 61 86)
 add_definitions(-DEIGEN_NO_DEBUG)
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations -Wno-unused-function")
