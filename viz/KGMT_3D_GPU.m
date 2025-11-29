@@ -58,7 +58,7 @@ try
     controlPath = fullfile(rootDir, 'build/Data/ControlPathToGoal/ControlPathToGoal0/controlPathToGoal.csv');
     fprintf('Reading controls from: %s\n', controlPath);
     controls = gpuArray(flipud(readmatrix(controlPath)));
-    controls = [samples(1,1), samples(1,2), samples(1,3), samples(1,4), samples(1,5), samples(1,6), 0, 0, 0, 0; controls];
+    controls = [samples(1,:); controls];
 
     plot3(gather(samples(1,1)), gather(samples(1,2)), gather(samples(1,3)), 'ko', 'MarkerFaceColor', 'b', 'MarkerSize', 10);
 
