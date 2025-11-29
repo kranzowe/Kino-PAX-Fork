@@ -15,7 +15,7 @@ try
     radius = .05;
     N = 8;
     n = 4;
-    sampleSize = 10;
+    sampleSize = 17;
     stateSize = 6;
     controlSize = 3;
 
