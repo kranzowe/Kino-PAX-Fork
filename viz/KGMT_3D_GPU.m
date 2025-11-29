@@ -2,6 +2,9 @@ close all
 clc
 clear all
 
+% Define root directory
+rootDir = '/home/owkr8158/Kino-PAX-Fork';
+
 % Parameters
 numFiles = 1;
 radius = .05;
@@ -10,16 +13,18 @@ n = 4;
 sampleSize = 10;
 stateSize = 6;
 controlSize = 3;
+
 xGoal = [.80, .95, .90];
 alpha = .7;
 STEP_SIZE = .2;
 model = 3;
 
-% Obstacle file path
-obstacleFilePath = '/home/nicolas/dev/research/KPAX/include/config/obstacles/house/obstacles.csv';
+% Obstacle file path (relative to root)
+obstacleFilePath = fullfile(rootDir, 'include/config/obstacles/quadTrees/obstacles.csv);
 obstacles = gpuArray(readmatrix(obstacleFilePath));
 
-treeSizePath = "/home/nicolas/dev/research/KPAX/build/Data/TreeSize/TreeSize0/treeSize.csv";
+% Tree size path (relative to build/Data)
+treeSizePath = fullfile(rootDir, 'build/Data/TreeSize/TreeSize0/treeSize.csv');
 treeSizes = gpuArray(readmatrix(treeSizePath));
 treeSizes = [0; treeSizes];
 
@@ -35,10 +40,12 @@ hold on;
 axis equal;
 title('Iteration 0');
 
-sampleFilePath = "/home/nicolas/dev/research/KPAX/build/Data/Samples/Samples0/samples1.csv";
+% Sample file path (relative to build/Data)
+sampleFilePath = fullfile(rootDir, 'build/Data/Samples/Samples0/samples1.csv');
 samples = gpuArray(readmatrix(sampleFilePath));
 
-controlPath = '/home/nicolas/dev/research/KPAX/build/Data/ControlPathToGoal/ControlPathToGoal0/controlPathToGoal.csv';
+% Control path (relative to build/Data)
+controlPath = fullfile(rootDir, 'build/Data/ControlPathToGoal/ControlPathToGoal0/controlPathToGoal.csv');
 controls = gpuArray(flipud(readmatrix(controlPath)));
 controls = [samples(1,1), samples(1,2), samples(1,3), samples(1,4), samples(1,5), samples(1,6), 0, 0, 0, 0; controls];
 
@@ -78,31 +85,19 @@ camlight('headlight');
 camlight('right');
 lighting phong;
 
-% view(3);
-% drawnow;
-% saveas(gcf, 'figs/KGMT_Iteration_0.jpg');
-% print('figs/KGMT_Iteration_0.jpg', '-djpeg', '-r300');
-% 
-% view(2);
-% drawnow;
-% saveas(gcf, 'figs/top_KGMT_Iteration_0.jpg');
-% print('figs/top_KGMT_Iteration_0.jpg', '-djpeg', '-r300');
-% 
-% midY = 0.5 * xGoal(2); 
-% midZ = 0.5 * xGoal(3); 
-% campos([0, midY, xGoal(3) + 1]); 
-% camtarget([0, midY, midZ]); 
-% view([-.4, -.2, 0.5]);
-% drawnow;
-% saveas(gcf, 'figs/xAxis_KGMT_Iteration_0.jpg');
-% print('figs/xAxis_KGMT_Iteration_0.jpg', '-djpeg', '-r300'); 
-
 close(gcf);
 iteration = 1;
 
+% Create figs directory if it doesn't exist
+figsDir = fullfile(rootDir, 'figs');
+if ~exist(figsDir, 'dir')
+    mkdir(figsDir);
+end
+
 for i = 1:numFiles
-    sampleFilePath = "/home/nicolas/dev/research/KPAX/build/Data/Samples/Samples0/samples" + i + ".csv";
-    parentFilePath = "/home/nicolas/dev/research/KPAX/build/Data/Parents/Parents0/parents" + i + ".csv";
+    % Sample and parent file paths (relative to build/Data)
+    sampleFilePath = fullfile(rootDir, sprintf('build/Data/Samples/Samples0/samples%d.csv', i));
+    parentFilePath = fullfile(rootDir, sprintf('build/Data/Parents/Parents0/parents%d.csv', i));
 
     samples = gpuArray(readmatrix(sampleFilePath));
     parentRelations = gpuArray(readmatrix(parentFilePath));
@@ -111,7 +106,6 @@ for i = 1:numFiles
     hold on;
     axis equal;
     axis off;
-    % title(sprintf('Iteration %d', i));
 
     plot3(gather(samples(1,1)), gather(samples(1,2)), gather(samples(1,3)), 'ko', 'MarkerFaceColor', 'b', 'MarkerSize', 10);
     
@@ -183,32 +177,9 @@ for i = 1:numFiles
     lighting phong;
 
     colorIndex = 1;
-    % for j = 2:size(parentRelations, 1)
-    %     if j > treeSizes(iteration)
-    %         colorIndex = 3;
-    %     else
-    %         colorIndex = 1;
-    %     end
-    %     if parentRelations(j) == -1
-    %         iteration = iteration + 1;
-    %         break;
-    %     end
-    %     x0 = samples((parentRelations(j) + 1), 1:stateSize);
-    %     sample = samples(j, :);
-    %     if model == 1
-    %         [segmentX, segmentY, segmentZ] = propDoubleIntegrator(x0, sample, STEP_SIZE, stateSize, sampleSize);
-    %     elseif model == 2
-    %         [segmentX, segmentY, segmentZ] = propDubinsAirplane(x0, sample, STEP_SIZE, stateSize, sampleSize);
-    %     elseif model == 3
-    %         [segmentX, segmentY, segmentZ] = propQuad(x0, sample, STEP_SIZE, stateSize, sampleSize);
-    %     end
-    %     plot3(gather(segmentX), gather(segmentY), gather(segmentZ), '-.', 'Color', 'k', 'LineWidth', 0.01);
-    %     plot3(gather(samples(j, 1)), gather(samples(j, 2)), gather(samples(j, 3)), 'o', 'Color', gather(colors(colorIndex, :)), 'MarkerFaceColor', gather(colors(colorIndex, :)), 'MarkerSize', 2);
-    % end
 
     % Define the filename for the GIF
-    gifFilename = sprintf('figs/KGMT_Iteration_%d.gif', i);
-
+    gifFilename = fullfile(figsDir, sprintf('KGMT_Iteration_%d.gif', i));
 
     if i == numFiles
         for j = 2:size(controls, 1)
@@ -223,41 +194,18 @@ for i = 1:numFiles
             end
 
             plot3(gather(segmentX), gather(segmentY), gather(segmentZ), 'Color', 'g', 'LineWidth', 1);
-            % plot3(gather(controls(j, 1)), gather(controls(j, 2)), gather(controls(j, 3)), 'o', 'Color', gather(colors(colorIndex, :)), 'MarkerFaceColor', gather(colors(colorIndex, :)), 'MarkerSize', 2);
         end
     end
 
-    % Set up the initial view
-    % view(3);
-    % axis vis3d; % Maintain aspect ratio during rotation
-    
-    % Rotate and capture frames for 360-degree view
-    % for angle = 0:1:360  % Adjust step size for smoother or faster rotation
-    %     view(angle, 30);
-    %     % Capture the plot as a frame
-    %     frame = getframe(gcf);
-    %     im = frame2im(frame);
-    %     [imind, cm] = rgb2ind(im, 256);
-    % 
-    %     % Write to the GIF file
-    %     if angle == 0
-    %         % Create the GIF file on the first iteration
-    %         imwrite(imind, cm, gifFilename, 'gif', 'Loopcount', inf, 'DelayTime', 0.1);
-    %     else
-    %         % Append to the GIF file on subsequent iterations
-    %         imwrite(imind, cm, gifFilename, 'gif', 'WriteMode', 'append', 'DelayTime', 0.1);
-    %     end
-    % end
-
     view(3);
     drawnow;
-    saveas(gcf, sprintf('figs/KGMT_Iteration_%d.jpg', i));
-    print(sprintf('figs/KGMT_Iteration_%d.jpg', i), '-djpeg', '-r300');
+    saveas(gcf, fullfile(figsDir, sprintf('KGMT_Iteration_%d.jpg', i)));
+    print(fullfile(figsDir, sprintf('KGMT_Iteration_%d.jpg', i)), '-djpeg', '-r300');
 
     view(2);
     drawnow;
-    saveas(gcf, sprintf('figs/top_KGMT_Iteration_%d.jpg', i));
-    print(sprintf('figs/top_KGMT_Iteration_%d.jpg', i), '-djpeg', '-r300');
+    saveas(gcf, fullfile(figsDir, sprintf('top_KGMT_Iteration_%d.jpg', i)));
+    print(fullfile(figsDir, sprintf('top_KGMT_Iteration_%d.jpg', i)), '-djpeg', '-r300');
 
     midY = (min(gather(samples(:,2))) + max(gather(samples(:,2)))) / 2;
     midZ = (min(gather(samples(:,3))) + max(gather(samples(:,3)))) / 2;
@@ -266,10 +214,8 @@ for i = 1:numFiles
     view([-.4, -.2, 0.5]);
     drawnow;
 
-    saveas(gcf, sprintf('figs/xAxis_KGMT_Iteration_%d.jpg', i));
-    print(sprintf('figs/xAxis_KGMT_Iteration_%d.jpg', i), '-djpeg', '-r300');
-
-    % close(gcf);
+    saveas(gcf, fullfile(figsDir, sprintf('xAxis_KGMT_Iteration_%d.jpg', i)));
+    print(fullfile(figsDir, sprintf('xAxis_KGMT_Iteration_%d.jpg', i)), '-djpeg', '-r300');
 end
 
 function [segmentX, segmentY, segmentZ] = propDoubleIntegrator(x0, sample, STEP_SIZE, stateSize, sampleSize)

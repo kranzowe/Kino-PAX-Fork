@@ -23,61 +23,61 @@ alphaValue = 0.8;
 STEP_SIZE = .1;
 
 % Obstacle file path
-obstacleFilePath = '/home/nicolas/dev/research/KPAX/include/config/obstacles/pillars/obstacles.csv';
+obstacleFilePath = 'C:\Users\kranz\Documents\Software Development\2025\Kino-PAX\include\config\obstacles\pillars\obstacles.csv';
 obstacles = readmatrix(obstacleFilePath);
 
-controlPath = '/home/nicolas/dev/research/KPAX/build/Data/ControlPathToGoal/ControlPathToGoal0/controlPathToGoal.csv';
+controlPath = 'C:\Users\kranz\Documents\Temp\Data\ControlPathToGoal\ControlPathToGoal0\controlPathToGoal.csv';
 controls = readmatrix(controlPath);
 controls = flipud(controls);
 
-% Create and save iteration 0 figure
-% fig = figure('Position', [100, 100, 1000, 1000]); % Set figure size
-% hold on;
-% axis equal;
-% title('Iteration 0');
-% xlabel('X Position');
-% ylabel('Y Position');
-% zlabel('Z Position');
-% 
-% sampleFilePath = "/home/nicolas/dev/research/KPAX/build/Data/Samples/Samples0/samples1.csv";
-% samples = readmatrix(sampleFilePath);
-% 
-% 
-% % Plot start point
-% plot3(samples(1,1), samples(1,2), samples(1,3), 'ko', 'MarkerFaceColor', 'k');
-% 
-% % Plot goal region
-% [X, Y, Z] = sphere(20);
-% surf(radius * X + xGoal(1), radius * Y + xGoal(2), radius * Z + xGoal(3), ...
-%      'FaceColor', 'g', 'FaceAlpha', 0.5, 'EdgeColor', 'none');
-% 
-% % Plot obstacles
-% for j = 1:size(obstacles, 1)
-%     x_min = obstacles(j, 1);
-%     y_min = obstacles(j, 2);
-%     z_min = obstacles(j, 3);
-%     x_max = obstacles(j, 4);
-%     y_max = obstacles(j, 5);
-%     z_max = obstacles(j, 6);
-%     vertices = [
-%         x_min, y_min, z_min;
-%         x_max, y_min, z_min;
-%         x_max, y_max, z_min;
-%         x_min, y_max, z_min;
-%         x_min, y_min, z_max;
-%         x_max, y_min, z_max;
-%         x_max, y_max, z_max;
-%         x_min, y_max, z_max];
-%     faces = [
-%         1, 2, 6, 5;
-%         2, 3, 7, 6;
-%         3, 4, 8, 7;
-%         4, 1, 5, 8;
-%         1, 2, 3, 4;
-%         5, 6, 7, 8];
-%     patch('Vertices', vertices, 'Faces', faces, 'FaceColor', 'r', 'EdgeColor', 'k', 'FaceAlpha', 0.6);
-% end
-% 
+%Create and save iteration 0 figure
+fig = figure('Position', [100, 100, 1000, 1000]); % Set figure size
+hold on;
+axis equal;
+title('Iteration 0');
+xlabel('X Position');
+ylabel('Y Position');
+zlabel('Z Position');
+
+sampleFilePath = "C:\Users\kranz\Documents\Temp\Data\Samples\Samples0\samples1.csv";
+samples = readmatrix(sampleFilePath);
+
+
+% Plot start point
+plot3(samples(1,1), samples(1,2), samples(1,3), 'ko', 'MarkerFaceColor', 'k');
+
+% Plot goal region
+[X, Y, Z] = sphere(20);
+surf(radius * X + xGoal(1), radius * Y + xGoal(2), radius * Z + xGoal(3), ...
+     'FaceColor', 'g', 'FaceAlpha', 0.5, 'EdgeColor', 'none');
+
+% Plot obstacles
+for j = 1:size(obstacles, 1)
+    x_min = obstacles(j, 1);
+    y_min = obstacles(j, 2);
+    z_min = obstacles(j, 3);
+    x_max = obstacles(j, 4);
+    y_max = obstacles(j, 5);
+    z_max = obstacles(j, 6);
+    vertices = [
+        x_min, y_min, z_min;
+        x_max, y_min, z_min;
+        x_max, y_max, z_min;
+        x_min, y_max, z_min;
+        x_min, y_min, z_max;
+        x_max, y_min, z_max;
+        x_max, y_max, z_max;
+        x_min, y_max, z_max];
+    faces = [
+        1, 2, 6, 5;
+        2, 3, 7, 6;
+        3, 4, 8, 7;
+        4, 1, 5, 8;
+        1, 2, 3, 4;
+        5, 6, 7, 8];
+    patch('Vertices', vertices, 'Faces', faces, 'FaceColor', 'r', 'EdgeColor', 'k', 'FaceAlpha', 0.6);
+end
+
 % % Add light source
 % camlight('headlight'); 
 % lighting gouraud;
@@ -108,9 +108,9 @@ controls = flipud(controls);
 % close(gcf);
 
 for i = numFiles:numFiles
-
-    sampleFilePath = "/home/nicolas/dev/research/KPAX/build/Data/Samples/Samples0/samples" + i + ".csv";
-    parentFilePath = "/home/nicolas/dev/research/KPAX/build/Data/Parents/Parents0/parents" + i + ".csv";
+    i
+    sampleFilePath = "C:\Users\kranz\Documents\Temp\Data\Samples\Samples0\samples" + i + ".csv";
+    parentFilePath = "C:\Users\kranz\Documents\Temp\Data\Parents\Parents0\parents" + i + ".csv";
 
     samples = readmatrix(sampleFilePath);
     parentRelations = readmatrix(parentFilePath);
