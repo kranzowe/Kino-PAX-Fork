@@ -343,6 +343,7 @@ try
     
     % Plot solution path with full propagation
     fprintf('Plotting solution path with full propagation...\n');
+    fprintf('Controls is size: \n', size(controls, 1));
     for j = 2:size(controls, 1)
         x0 = controls(j-1, 1:stateSize);
         sample = controls(j,:);
