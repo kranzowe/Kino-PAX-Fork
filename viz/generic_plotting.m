@@ -144,7 +144,6 @@ try
     gifFilename = fullfile(figsDir, 'tree_expansion_complete.gif');
     fprintf('Creating complete tree expansion GIF: %s\n', gifFilename);
     frameCount = 0;
-    iteration = 1;
     
     % Capture initial frame (empty tree)
     drawnow;
@@ -218,18 +217,25 @@ try
         colorIndex = 1;
         nodesInThisFile = 0;
         
+        % Get the tree size for THIS iteration (file i)
+        if i <= length(treeSizes)
+            currentTreeSize = treeSizes(i);
+        else
+            currentTreeSize = Inf; % If we don't have tree size data, make all nodes blue
+        end
+        fprintf('Tree size for iteration %d: %d\n', i, gather(currentTreeSize));
+        
         % Plot tree edges with frontier visualization
         fprintf('Plotting tree edges for file %d...\n', i);
         for j = 2:size(parentRelations, 1)
-            % Check if this marks the end of a run
+            % Check if this marks the end of a run (skip -1 entries)
             if parentRelations(j) == -1
-                iteration = iteration + 1;
-                fprintf('End of run detected at j=%d, moving to iteration %d\n', j, iteration);
                 continue;  % Skip to next iteration, don't plot anything
             end
             
             % Determine color based on tree size (frontier vs established tree)
-            if j > treeSizes(iteration)
+            % j is the node index, compare to tree size for THIS file
+            if j > currentTreeSize
                 colorIndex = 3;  % Pink for frontier
             else
                 colorIndex = 1;  % Blue for established tree
