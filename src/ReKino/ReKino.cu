@@ -1,4 +1,4 @@
-#include "planners/ReKino.cuh"
+#include "ReKino/ReKino.cuh"
 #include "config/config.h"
 
 /*
