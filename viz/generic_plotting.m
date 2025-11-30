@@ -275,19 +275,18 @@ try
     fprintf('\n=== GIF COMPLETE ===\n');
     fprintf('Tree expansion GIF saved with %d total frames\n', frameCount);
     
-    %% ========== PART 2: CREATE STATIC JPG IMAGES FOR FINAL ITERATION ==========
+    %% ========== PART 2: CREATE STATIC JPG IMAGES FOR SOLUTION PATH ==========
     fprintf('\n========== CREATING STATIC JPG IMAGES ==========\n');
+    fprintf('Creating static images for solution path...\n');
     
-    % Only create static images for the final iteration
-    i = numFiles;
-    fprintf('Creating static images for final iteration (file %d)...\n', i);
+    % Read control path
+    controlPath = fullfile(rootDir, 'build/Data/ControlPathToGoal/ControlPathToGoal0/controlPathToGoal.csv');
+    controls = gpuArray(flipud(readmatrix(controlPath)));
     
-    % Read final iteration data
-    sampleFilePath = fullfile(rootDir, sprintf('build/Data/Samples/Samples0/samples%d.csv', i));
-    parentFilePath = fullfile(rootDir, sprintf('build/Data/Parents/Parents0/parents%d.csv', i));
-    
+    % Read initial sample to get starting point
+    sampleFilePath = fullfile(rootDir, 'build/Data/Samples/Samples0/samples1.csv');
     samples = gpuArray(readmatrix(sampleFilePath));
-    parentRelations = gpuArray(readmatrix(parentFilePath));
+    controls = [samples(1,:); controls];
     
     % Create figure for static images
     fig = figure('Position', [100, 100, 1000, 1000], 'Visible', 'off'); 
@@ -342,47 +341,8 @@ try
     camlight('right');
     lighting phong;
     
-    % Get tree size for final iteration
-    if i <= length(treeSizes)
-        currentTreeSize = treeSizes(i);
-    else
-        currentTreeSize = Inf;
-    end
-    
-    % Plot tree edges with full propagation for static images
-    fprintf('Plotting tree edges with full propagation...\n');
-    for j = 2:size(parentRelations, 1)
-        if parentRelations(j) == -1
-            continue;
-        end
-        
-        % Determine color
-        if j > currentTreeSize
-            colorIndex = 3;  % Pink for frontier
-        else
-            colorIndex = 1;  % Blue for established tree
-        end
-        
-        % Get parent and child states
-        x0 = samples((parentRelations(j) + 1), 1:stateSize);
-        sample = samples(j, :);
-        
-        % Propagate trajectory segment with full dynamics
-        if model == 1
-            [segmentX, segmentY, segmentZ] = propDoubleIntegrator(x0, sample, STEP_SIZE, stateSize, sampleSize);
-        elseif model == 2
-            [segmentX, segmentY, segmentZ] = propDubinsAirplane(x0, sample, STEP_SIZE, stateSize, sampleSize);
-        elseif model == 3
-            [segmentX, segmentY, segmentZ] = propQuad(x0, sample, STEP_SIZE, stateSize, sampleSize);
-        end
-        
-        plot3(gather(segmentX), gather(segmentY), gather(segmentZ), '-.', 'Color', 'k', 'LineWidth', 0.01);
-        plot3(gather(samples(j, 1)), gather(samples(j, 2)), gather(samples(j, 3)), 'o', ...
-            'Color', gather(colors(colorIndex, :)), 'MarkerFaceColor', gather(colors(colorIndex, :)), 'MarkerSize', 2);
-    end
-    
-    % Plot solution path
-    fprintf('Plotting solution path...\n');
+    % Plot solution path with full propagation
+    fprintf('Plotting solution path with full propagation...\n');
     for j = 2:size(controls, 1)
         x0 = controls(j-1, 1:stateSize);
         sample = controls(j,:);
@@ -399,14 +359,14 @@ try
     % Save static images - View 3D
     view(3);
     drawnow;
-    filename1 = fullfile(figsDir, sprintf('KGMT_Iteration_%d.jpg', i));
+    filename1 = fullfile(figsDir, 'KGMT_solution_path.jpg');
     fprintf('Saving: %s\n', filename1);
     print(gcf, filename1, '-djpeg', '-r300');
     
     % Top view
     view(2);
     drawnow;
-    filename2 = fullfile(figsDir, sprintf('top_KGMT_Iteration_%d.jpg', i));
+    filename2 = fullfile(figsDir, 'top_KGMT_solution_path.jpg');
     fprintf('Saving: %s\n', filename2);
     print(gcf, filename2, '-djpeg', '-r300');
     
@@ -418,7 +378,7 @@ try
     view([-.4, -.2, 0.5]);
     drawnow;
     
-    filename3 = fullfile(figsDir, sprintf('xAxis_KGMT_Iteration_%d.jpg', i));
+    filename3 = fullfile(figsDir, 'xAxis_KGMT_solution_path.jpg');
     fprintf('Saving: %s\n', filename3);
     print(gcf, filename3, '-djpeg', '-r300');
     
