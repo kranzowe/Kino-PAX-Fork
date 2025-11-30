@@ -79,7 +79,8 @@ try
         4, 8
     ];
 
-    fprintf('Processing %d files...\n', numFiles);
+    %% ========== PART 1: CREATE GIF WITH SPARSE PLOTTING ==========
+    fprintf('\n========== CREATING TREE EXPANSION GIF ==========\n');
     
     % Create a single figure for tree expansion GIF that persists across all files
     fprintf('Creating tree expansion animation figure...\n');
@@ -154,8 +155,11 @@ try
     frameCount = frameCount + 1;
     fprintf('Added initial frame to GIF\n');
     
+    % Maximum nodes to plot per file
+    MAX_NODES_PER_FILE = 5000;
+    
     for i = 1:numFiles
-        fprintf('\n=== Processing file %d/%d ===\n', i, numFiles);
+        fprintf('\n=== Processing file %d/%d for GIF ===\n', i, numFiles);
         
         % Sample and parent file paths (relative to build/Data)
         sampleFilePath = fullfile(rootDir, sprintf('build/Data/Samples/Samples0/samples%d.csv', i));
@@ -163,59 +167,6 @@ try
 
         samples = gpuArray(readmatrix(sampleFilePath));
         parentRelations = gpuArray(readmatrix(parentFilePath));
-
-        % CRITICAL: Use 'Visible', 'off' for batch mode
-        fig = figure('Position', [100, 100, 1000, 1000], 'Visible', 'off'); 
-        hold on;
-        axis equal;
-        axis off;
-
-        plot3(gather(samples(1,1)), gather(samples(1,2)), gather(samples(1,3)), 'ko', 'MarkerFaceColor', 'b', 'MarkerSize', 10);
-        
-        for k = 1:size(cubeEdges, 1)
-            plot3([cubeVertices(cubeEdges(k, 1), 1), cubeVertices(cubeEdges(k, 2), 1)], ...
-                [cubeVertices(cubeEdges(k, 1), 2), cubeVertices(cubeEdges(k, 2), 2)], ...
-                [cubeVertices(cubeEdges(k, 1), 3), cubeVertices(cubeEdges(k, 2), 3)], ...
-                'k-', 'LineWidth', .05);
-        end
-
-        % Add goal sphere to main figure
-        [Xsphere, Ysphere, Zsphere] = sphere(20);
-        surf(radius * Xsphere + xGoal(1), radius * Ysphere + xGoal(2), radius * Zsphere + xGoal(3), ...
-            'FaceColor', 'g', 'FaceAlpha', 0.5, 'EdgeColor', 'none');
-        
-        for j = 1:size(obstacles, 1)
-            x_min = obstacles(j, 1);
-            y_min = obstacles(j, 2);
-            z_min = obstacles(j, 3);
-            x_max = obstacles(j, 4);
-            y_max = obstacles(j, 5);
-            z_max = obstacles(j, 6);
-            vertices = gpuArray([
-                x_min, y_min, z_min;
-                x_max, y_min, z_min;
-                x_max, y_max, z_min;
-                x_min, y_max, z_min;
-                x_min, y_min, z_max;
-                x_max, y_min, z_max;
-                x_max, y_max, z_max;
-                x_min, y_max, z_max]);
-            faces = gpuArray([
-                1, 2, 6, 5;
-                2, 3, 7, 6;
-                3, 4, 8, 7;
-                4, 1, 5, 8;
-                1, 2, 3, 4;
-                5, 6, 7, 8]);
-            patch('Vertices', gather(vertices), 'Faces', gather(faces), 'FaceColor', 'r', 'EdgeColor', 'k', 'FaceAlpha', alpha);
-        end
-
-        camlight('headlight'); 
-        camlight('right');
-        lighting phong;
-
-        colorIndex = 1;
-        nodesInThisFile = 0;
         
         % Get the tree size for THIS iteration (file i)
         if i <= length(treeSizes)
@@ -225,142 +176,256 @@ try
         end
         fprintf('Tree size for iteration %d: %d\n', i, gather(currentTreeSize));
         
-        % Plot tree edges with frontier visualization
-        fprintf('Plotting tree edges for file %d...\n', i);
+        % Count valid nodes (non -1 entries)
+        validIndices = find(parentRelations ~= -1);
+        totalNodes = length(validIndices);
+        
+        % Determine sampling rate
+        if totalNodes > MAX_NODES_PER_FILE
+            % Sample to get approximately MAX_NODES_PER_FILE nodes
+            samplingRate = ceil(totalNodes / MAX_NODES_PER_FILE);
+            fprintf('Total nodes: %d, sampling every %d nodes to plot ~%d\n', totalNodes, samplingRate, MAX_NODES_PER_FILE);
+        else
+            samplingRate = 1;
+            fprintf('Total nodes: %d, plotting all\n', totalNodes);
+        end
+        
+        % Plot tree edges with sparse sampling and straight line segments
+        nodesPlotted = 0;
+        nodeCounter = 0;
+        
         for j = 2:size(parentRelations, 1)
             % Check if this marks the end of a run (skip -1 entries)
             if parentRelations(j) == -1
-                continue;  % Skip to next iteration, don't plot anything
+                continue;
+            end
+            
+            nodeCounter = nodeCounter + 1;
+            
+            % Skip nodes based on sampling rate
+            if mod(nodeCounter, samplingRate) ~= 0
+                continue;
             end
             
             % Determine color based on tree size (frontier vs established tree)
-            % j is the node index, compare to tree size for THIS file
             if j > currentTreeSize
                 colorIndex = 3;  % Pink for frontier
             else
                 colorIndex = 1;  % Blue for established tree
             end
             
-            % Get parent and child states
-            x0 = samples((parentRelations(j) + 1), 1:stateSize);
-            sample = samples(j, :);
+            % Get parent and child positions (just x,y,z - no propagation needed)
+            parentIdx = parentRelations(j) + 1;
+            parentPos = samples(parentIdx, 1:3);
+            childPos = samples(j, 1:3);
             
-            % Propagate trajectory segment
-            if model == 1
-                [segmentX, segmentY, segmentZ] = propDoubleIntegrator(x0, sample, STEP_SIZE, stateSize, sampleSize);
-            elseif model == 2
-                [segmentX, segmentY, segmentZ] = propDubinsAirplane(x0, sample, STEP_SIZE, stateSize, sampleSize);
-            elseif model == 3
-                [segmentX, segmentY, segmentZ] = propQuad(x0, sample, STEP_SIZE, stateSize, sampleSize);
-            end
+            % Plot straight line from parent to child
+            plot3([gather(parentPos(1)), gather(childPos(1))], ...
+                  [gather(parentPos(2)), gather(childPos(2))], ...
+                  [gather(parentPos(3)), gather(childPos(3))], ...
+                  'k-', 'LineWidth', 0.01);
             
-            % Plot edge on main figure
-            figure(fig);
-            plot3(gather(segmentX), gather(segmentY), gather(segmentZ), '-.', 'Color', 'k', 'LineWidth', 0.01);
-            plot3(gather(samples(j, 1)), gather(samples(j, 2)), gather(samples(j, 3)), 'o', ...
-                'Color', gather(colors(colorIndex, :)), 'MarkerFaceColor', gather(colors(colorIndex, :)), 'MarkerSize', 2);
+            % Plot child node
+            plot3(gather(childPos(1)), gather(childPos(2)), gather(childPos(3)), 'o', ...
+                'Color', gather(colors(colorIndex, :)), 'MarkerFaceColor', gather(colors(colorIndex, :)), 'MarkerSize', 1);
             
-            % Plot edge on expansion figure
-            figure(figExpansion);
-            plot3(gather(segmentX), gather(segmentY), gather(segmentZ), '-.', 'Color', 'k', 'LineWidth', 0.01);
-            plot3(gather(samples(j, 1)), gather(samples(j, 2)), gather(samples(j, 3)), 'o', ...
-                'Color', gather(colors(colorIndex, :)), 'MarkerFaceColor', gather(colors(colorIndex, :)), 'MarkerSize', 2);
-            
-            nodesInThisFile = nodesInThisFile + 1;
+            nodesPlotted = nodesPlotted + 1;
         end
         
         % Capture ONE frame per parent file after all nodes are plotted
-        figure(figExpansion);
         drawnow;
         frame = getframe(figExpansion);
         im = frame2im(frame);
         [imind, cm] = rgb2ind(im, 256);
         imwrite(imind, cm, gifFilename, 'gif', 'WriteMode', 'append', 'DelayTime', 0.5);
         frameCount = frameCount + 1;
-        fprintf('File %d: Added %d nodes, captured frame %d\n', i, nodesInThisFile, frameCount);
-
-        % Plot control path to goal on final iteration (on main figure only)
-        figure(fig);
-        if i == numFiles
-            fprintf('Plotting control path to goal...\n');
-            controlPath = fullfile(rootDir, 'build/Data/ControlPathToGoal/ControlPathToGoal0/controlPathToGoal.csv');
-            controls = gpuArray(flipud(readmatrix(controlPath)));
-            controls = [samples(1,:); controls];
-            
-            for j = 2:size(controls, 1)
-                x0 = controls(j-1, 1:stateSize);
-                sample = controls(j,:);
-                if model == 1
-                    [segmentX, segmentY, segmentZ] = propDoubleIntegrator(x0, sample, STEP_SIZE, stateSize, sampleSize);
-                elseif model == 2
-                    [segmentX, segmentY, segmentZ] = propDubinsAirplane(x0, sample, STEP_SIZE, stateSize, sampleSize);
-                elseif model == 3
-                    [segmentX, segmentY, segmentZ] = propQuad(x0, sample, STEP_SIZE, stateSize, sampleSize);
-                end
-
-                plot3(gather(segmentX), gather(segmentY), gather(segmentZ), 'Color', 'g', 'LineWidth', 1);
-            end
-            
-            % Also add final path to GIF
-            figure(figExpansion);
-            for j = 2:size(controls, 1)
-                x0 = controls(j-1, 1:stateSize);
-                sample = controls(j,:);
-                if model == 1
-                    [segmentX, segmentY, segmentZ] = propDoubleIntegrator(x0, sample, STEP_SIZE, stateSize, sampleSize);
-                elseif model == 2
-                    [segmentX, segmentY, segmentZ] = propDubinsAirplane(x0, sample, STEP_SIZE, stateSize, sampleSize);
-                elseif model == 3
-                    [segmentX, segmentY, segmentZ] = propQuad(x0, sample, STEP_SIZE, stateSize, sampleSize);
-                end
-
-                plot3(gather(segmentX), gather(segmentY), gather(segmentZ), 'Color', 'g', 'LineWidth', 1.5);
-            end
-            drawnow;
-            frame = getframe(figExpansion);
-            im = frame2im(frame);
-            [imind, cm] = rgb2ind(im, 256);
-            imwrite(imind, cm, gifFilename, 'gif', 'WriteMode', 'append', 'DelayTime', 1.0);
-            frameCount = frameCount + 1;
-            fprintf('Added final path to GIF\n');
-        end
-
-        % Save static images - View 3D
-        figure(fig);
-        view(3);
-        drawnow;
-        filename1 = fullfile(figsDir, sprintf('KGMT_Iteration_%d.jpg', i));
-        fprintf('Saving: %s\n', filename1);
-        print(gcf, filename1, '-djpeg', '-r300');
-
-        % Top view
-        view(2);
-        drawnow;
-        filename2 = fullfile(figsDir, sprintf('top_KGMT_Iteration_%d.jpg', i));
-        fprintf('Saving: %s\n', filename2);
-        print(gcf, filename2, '-djpeg', '-r300');
-
-        % X-axis view
-        midY = (min(gather(samples(:,2))) + max(gather(samples(:,2)))) / 2;
-        midZ = (min(gather(samples(:,3))) + max(gather(samples(:,3)))) / 2;
-        campos([0, midY, max(gather(samples(:,3))) + 1]);
-        camtarget([0, midY, midZ]);
-        view([-.4, -.2, 0.5]);
-        drawnow;
-
-        filename3 = fullfile(figsDir, sprintf('xAxis_KGMT_Iteration_%d.jpg', i));
-        fprintf('Saving: %s\n', filename3);
-        print(gcf, filename3, '-djpeg', '-r300');
-        
-        close(gcf);
-        fprintf('Completed file %d/%d\n', i, numFiles);
+        fprintf('File %d: Plotted %d/%d nodes, captured frame %d\n', i, nodesPlotted, totalNodes, frameCount);
     end
     
-    % Close the expansion figure after all files are processed
+    % Add final solution path to GIF
+    fprintf('\n=== Adding solution path to GIF ===\n');
+    controlPath = fullfile(rootDir, 'build/Data/ControlPathToGoal/ControlPathToGoal0/controlPathToGoal.csv');
+    controls = gpuArray(flipud(readmatrix(controlPath)));
+    sampleFilePath = fullfile(rootDir, 'build/Data/Samples/Samples0/samples1.csv');
+    samples = gpuArray(readmatrix(sampleFilePath));
+    controls = [samples(1,:); controls];
+    
+    for j = 2:size(controls, 1)
+        x0 = controls(j-1, 1:stateSize);
+        sample = controls(j,:);
+        if model == 1
+            [segmentX, segmentY, segmentZ] = propDoubleIntegrator(x0, sample, STEP_SIZE, stateSize, sampleSize);
+        elseif model == 2
+            [segmentX, segmentY, segmentZ] = propDubinsAirplane(x0, sample, STEP_SIZE, stateSize, sampleSize);
+        elseif model == 3
+            [segmentX, segmentY, segmentZ] = propQuad(x0, sample, STEP_SIZE, stateSize, sampleSize);
+        end
+        plot3(gather(segmentX), gather(segmentY), gather(segmentZ), 'Color', 'g', 'LineWidth', 2);
+    end
+    drawnow;
+    frame = getframe(figExpansion);
+    im = frame2im(frame);
+    [imind, cm] = rgb2ind(im, 256);
+    imwrite(imind, cm, gifFilename, 'gif', 'WriteMode', 'append', 'DelayTime', 1.0);
+    frameCount = frameCount + 1;
+    fprintf('Added final path to GIF\n');
+    
+    % Close the expansion figure
     close(figExpansion);
-    fprintf('\n=== SUMMARY ===\n');
+    fprintf('\n=== GIF COMPLETE ===\n');
     fprintf('Tree expansion GIF saved with %d total frames\n', frameCount);
-    fprintf('Script completed successfully!\n');
+    
+    %% ========== PART 2: CREATE STATIC JPG IMAGES FOR FINAL ITERATION ==========
+    fprintf('\n========== CREATING STATIC JPG IMAGES ==========\n');
+    
+    % Only create static images for the final iteration
+    i = numFiles;
+    fprintf('Creating static images for final iteration (file %d)...\n', i);
+    
+    % Read final iteration data
+    sampleFilePath = fullfile(rootDir, sprintf('build/Data/Samples/Samples0/samples%d.csv', i));
+    parentFilePath = fullfile(rootDir, sprintf('build/Data/Parents/Parents0/parents%d.csv', i));
+    
+    samples = gpuArray(readmatrix(sampleFilePath));
+    parentRelations = gpuArray(readmatrix(parentFilePath));
+    
+    % Create figure for static images
+    fig = figure('Position', [100, 100, 1000, 1000], 'Visible', 'off'); 
+    hold on;
+    axis equal;
+    axis off;
+    
+    % Plot starting point
+    plot3(gather(samples(1,1)), gather(samples(1,2)), gather(samples(1,3)), 'ko', 'MarkerFaceColor', 'b', 'MarkerSize', 10);
+    
+    % Add boundary cube
+    for k = 1:size(cubeEdges, 1)
+        plot3([cubeVertices(cubeEdges(k, 1), 1), cubeVertices(cubeEdges(k, 2), 1)], ...
+            [cubeVertices(cubeEdges(k, 1), 2), cubeVertices(cubeEdges(k, 2), 2)], ...
+            [cubeVertices(cubeEdges(k, 1), 3), cubeVertices(cubeEdges(k, 2), 3)], ...
+            'k-', 'LineWidth', .05);
+    end
+    
+    % Add goal sphere
+    [Xsphere, Ysphere, Zsphere] = sphere(20);
+    surf(radius * Xsphere + xGoal(1), radius * Ysphere + xGoal(2), radius * Zsphere + xGoal(3), ...
+        'FaceColor', 'g', 'FaceAlpha', 0.5, 'EdgeColor', 'none');
+    
+    % Add obstacles
+    for j = 1:size(obstacles, 1)
+        x_min = obstacles(j, 1);
+        y_min = obstacles(j, 2);
+        z_min = obstacles(j, 3);
+        x_max = obstacles(j, 4);
+        y_max = obstacles(j, 5);
+        z_max = obstacles(j, 6);
+        vertices = gpuArray([
+            x_min, y_min, z_min;
+            x_max, y_min, z_min;
+            x_max, y_max, z_min;
+            x_min, y_max, z_min;
+            x_min, y_min, z_max;
+            x_max, y_min, z_max;
+            x_max, y_max, z_max;
+            x_min, y_max, z_max]);
+        faces = gpuArray([
+            1, 2, 6, 5;
+            2, 3, 7, 6;
+            3, 4, 8, 7;
+            4, 1, 5, 8;
+            1, 2, 3, 4;
+            5, 6, 7, 8]);
+        patch('Vertices', gather(vertices), 'Faces', gather(faces), 'FaceColor', 'r', 'EdgeColor', 'k', 'FaceAlpha', alpha);
+    end
+    
+    camlight('headlight'); 
+    camlight('right');
+    lighting phong;
+    
+    % Get tree size for final iteration
+    if i <= length(treeSizes)
+        currentTreeSize = treeSizes(i);
+    else
+        currentTreeSize = Inf;
+    end
+    
+    % Plot tree edges with full propagation for static images
+    fprintf('Plotting tree edges with full propagation...\n');
+    for j = 2:size(parentRelations, 1)
+        if parentRelations(j) == -1
+            continue;
+        end
+        
+        % Determine color
+        if j > currentTreeSize
+            colorIndex = 3;  % Pink for frontier
+        else
+            colorIndex = 1;  % Blue for established tree
+        end
+        
+        % Get parent and child states
+        x0 = samples((parentRelations(j) + 1), 1:stateSize);
+        sample = samples(j, :);
+        
+        % Propagate trajectory segment with full dynamics
+        if model == 1
+            [segmentX, segmentY, segmentZ] = propDoubleIntegrator(x0, sample, STEP_SIZE, stateSize, sampleSize);
+        elseif model == 2
+            [segmentX, segmentY, segmentZ] = propDubinsAirplane(x0, sample, STEP_SIZE, stateSize, sampleSize);
+        elseif model == 3
+            [segmentX, segmentY, segmentZ] = propQuad(x0, sample, STEP_SIZE, stateSize, sampleSize);
+        end
+        
+        plot3(gather(segmentX), gather(segmentY), gather(segmentZ), '-.', 'Color', 'k', 'LineWidth', 0.01);
+        plot3(gather(samples(j, 1)), gather(samples(j, 2)), gather(samples(j, 3)), 'o', ...
+            'Color', gather(colors(colorIndex, :)), 'MarkerFaceColor', gather(colors(colorIndex, :)), 'MarkerSize', 2);
+    end
+    
+    % Plot solution path
+    fprintf('Plotting solution path...\n');
+    for j = 2:size(controls, 1)
+        x0 = controls(j-1, 1:stateSize);
+        sample = controls(j,:);
+        if model == 1
+            [segmentX, segmentY, segmentZ] = propDoubleIntegrator(x0, sample, STEP_SIZE, stateSize, sampleSize);
+        elseif model == 2
+            [segmentX, segmentY, segmentZ] = propDubinsAirplane(x0, sample, STEP_SIZE, stateSize, sampleSize);
+        elseif model == 3
+            [segmentX, segmentY, segmentZ] = propQuad(x0, sample, STEP_SIZE, stateSize, sampleSize);
+        end
+        plot3(gather(segmentX), gather(segmentY), gather(segmentZ), 'Color', 'g', 'LineWidth', 1);
+    end
+    
+    % Save static images - View 3D
+    view(3);
+    drawnow;
+    filename1 = fullfile(figsDir, sprintf('KGMT_Iteration_%d.jpg', i));
+    fprintf('Saving: %s\n', filename1);
+    print(gcf, filename1, '-djpeg', '-r300');
+    
+    % Top view
+    view(2);
+    drawnow;
+    filename2 = fullfile(figsDir, sprintf('top_KGMT_Iteration_%d.jpg', i));
+    fprintf('Saving: %s\n', filename2);
+    print(gcf, filename2, '-djpeg', '-r300');
+    
+    % X-axis view
+    midY = (min(gather(samples(:,2))) + max(gather(samples(:,2)))) / 2;
+    midZ = (min(gather(samples(:,3))) + max(gather(samples(:,3)))) / 2;
+    campos([0, midY, max(gather(samples(:,3))) + 1]);
+    camtarget([0, midY, midZ]);
+    view([-.4, -.2, 0.5]);
+    drawnow;
+    
+    filename3 = fullfile(figsDir, sprintf('xAxis_KGMT_Iteration_%d.jpg', i));
+    fprintf('Saving: %s\n', filename3);
+    print(gcf, filename3, '-djpeg', '-r300');
+    
+    close(gcf);
+    fprintf('Static images complete!\n');
+    
+    fprintf('\n=== SCRIPT COMPLETE ===\n');
     fprintf('Check output files in: %s\n', figsDir);
 
 
