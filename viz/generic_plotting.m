@@ -110,6 +110,97 @@ try
 
     fprintf('Processing %d files...\n', numFiles);
     
+    % Create a single figure for tree expansion GIF that persists across all files
+    fprintf('Creating tree expansion animation figure...\n');
+    figExpansion = figure('Position', [100, 100, 1000, 1000], 'Visible', 'off');
+    hold on;
+    axis equal;
+    axis off;
+    
+    % Define cube vertices once
+    cubeVertices = [
+        0, 0, 0;
+        1, 0, 0;
+        1, 1, 0;
+        0, 1, 0;
+        0, 0, 1;
+        1, 0, 1;
+        1, 1, 1;
+        0, 1, 1
+    ];
+    
+    cubeEdges = [
+        1, 2;
+        2, 3;
+        3, 4;
+        4, 1;
+        5, 6;
+        6, 7;
+        7, 8;
+        8, 5;
+        1, 5;
+        2, 6;
+        3, 7;
+        4, 8
+    ];
+    
+    % Set up the expansion figure with scene elements (only once)
+    % Read first sample file to get starting point
+    sampleFilePath = fullfile(rootDir, 'build/Data/Samples/Samples0/samples1.csv');
+    samples = gpuArray(readmatrix(sampleFilePath));
+    
+    plot3(gather(samples(1,1)), gather(samples(1,2)), gather(samples(1,3)), 'ko', 'MarkerFaceColor', 'b', 'MarkerSize', 10);
+    
+    % Add boundary cube
+    for k = 1:size(cubeEdges, 1)
+        plot3([cubeVertices(cubeEdges(k, 1), 1), cubeVertices(cubeEdges(k, 2), 1)], ...
+            [cubeVertices(cubeEdges(k, 1), 2), cubeVertices(cubeEdges(k, 2), 2)], ...
+            [cubeVertices(cubeEdges(k, 1), 3), cubeVertices(cubeEdges(k, 2), 3)], ...
+            'k-', 'LineWidth', .05);
+    end
+    
+    % Add goal sphere
+    [Xsphere, Ysphere, Zsphere] = sphere(20);
+    surf(radius * Xsphere + xGoal(1), radius * Ysphere + xGoal(2), radius * Zsphere + xGoal(3), ...
+        'FaceColor', 'g', 'FaceAlpha', 0.5, 'EdgeColor', 'none');
+    
+    % Add obstacles
+    for j = 1:size(obstacles, 1)
+        x_min = obstacles(j, 1);
+        y_min = obstacles(j, 2);
+        z_min = obstacles(j, 3);
+        x_max = obstacles(j, 4);
+        y_max = obstacles(j, 5);
+        z_max = obstacles(j, 6);
+        vertices = gpuArray([
+            x_min, y_min, z_min;
+            x_max, y_min, z_min;
+            x_max, y_max, z_min;
+            x_min, y_max, z_min;
+            x_min, y_min, z_max;
+            x_max, y_min, z_max;
+            x_max, y_max, z_max;
+            x_min, y_max, z_max]);
+        faces = gpuArray([
+            1, 2, 6, 5;
+            2, 3, 7, 6;
+            3, 4, 8, 7;
+            4, 1, 5, 8;
+            1, 2, 3, 4;
+            5, 6, 7, 8]);
+        patch('Vertices', gather(vertices), 'Faces', gather(faces), 'FaceColor', 'r', 'EdgeColor', 'k', 'FaceAlpha', alpha);
+    end
+    
+    camlight('headlight'); 
+    camlight('right');
+    lighting phong;
+    view(3);
+    
+    % GIF filename for tree expansion (single GIF for all iterations)
+    gifFilename = fullfile(figsDir, 'tree_expansion_complete.gif');
+    fprintf('Creating complete tree expansion GIF: %s\n', gifFilename);
+    frameCount = 0;
+    
     for i = 1:numFiles
         fprintf('Processing file %d/%d...\n', i, numFiles);
         
@@ -128,32 +219,6 @@ try
 
         plot3(gather(samples(1,1)), gather(samples(1,2)), gather(samples(1,3)), 'ko', 'MarkerFaceColor', 'b', 'MarkerSize', 10);
         
-        cubeVertices = [
-            0, 0, 0;
-            1, 0, 0;
-            1, 1, 0;
-            0, 1, 0;
-            0, 0, 1;
-            1, 0, 1;
-            1, 1, 1;
-            0, 1, 1
-        ];
-        
-        cubeEdges = [
-            1, 2;
-            2, 3;
-            3, 4;
-            4, 1;
-            5, 6;
-            6, 7;
-            7, 8;
-            8, 5;
-            1, 5;
-            2, 6;
-            3, 7;
-            4, 8
-        ];
-        
         for k = 1:size(cubeEdges, 1)
             plot3([cubeVertices(cubeEdges(k, 1), 1), cubeVertices(cubeEdges(k, 2), 1)], ...
                 [cubeVertices(cubeEdges(k, 1), 2), cubeVertices(cubeEdges(k, 2), 2)], ...
@@ -161,8 +226,9 @@ try
                 'k-', 'LineWidth', .05);
         end
 
-        [X, Y, Z] = sphere(20);
-        surf(radius * gather(X) + xGoal(1), radius * gather(Y) + xGoal(2), radius * gather(Z) + xGoal(3), ...
+        % Add goal sphere to main figure
+        [Xsphere, Ysphere, Zsphere] = sphere(20);
+        surf(radius * Xsphere + xGoal(1), radius * Ysphere + xGoal(2), radius * Zsphere + xGoal(3), ...
             'FaceColor', 'g', 'FaceAlpha', 0.5, 'EdgeColor', 'none');
         
         for j = 1:size(obstacles, 1)
@@ -197,67 +263,8 @@ try
 
         colorIndex = 1;
         
-        % Create a separate figure for tree expansion GIF
-        fprintf('Creating tree expansion animation...\n');
-        figExpansion = figure('Position', [100, 100, 1000, 1000], 'Visible', 'off');
-        hold on;
-        axis equal;
-        axis off;
-        
-        % Set up the expansion figure with same scene
-        plot3(gather(samples(1,1)), gather(samples(1,2)), gather(samples(1,3)), 'ko', 'MarkerFaceColor', 'b', 'MarkerSize', 10);
-        
-        % Add boundary cube
-        for k = 1:size(cubeEdges, 1)
-            plot3([cubeVertices(cubeEdges(k, 1), 1), cubeVertices(cubeEdges(k, 2), 1)], ...
-                [cubeVertices(cubeEdges(k, 1), 2), cubeVertices(cubeEdges(k, 2), 2)], ...
-                [cubeVertices(cubeEdges(k, 1), 3), cubeVertices(cubeEdges(k, 2), 3)], ...
-                'k-', 'LineWidth', .05);
-        end
-        
-        % Add goal
-        surf(radius * gather(X) + xGoal(1), radius * gather(Y) + xGoal(2), radius * gather(Z) + xGoal(3), ...
-            'FaceColor', 'g', 'FaceAlpha', 0.5, 'EdgeColor', 'none');
-        
-        % Add obstacles
-        for j = 1:size(obstacles, 1)
-            x_min = obstacles(j, 1);
-            y_min = obstacles(j, 2);
-            z_min = obstacles(j, 3);
-            x_max = obstacles(j, 4);
-            y_max = obstacles(j, 5);
-            z_max = obstacles(j, 6);
-            vertices = gpuArray([
-                x_min, y_min, z_min;
-                x_max, y_min, z_min;
-                x_max, y_max, z_min;
-                x_min, y_max, z_min;
-                x_min, y_min, z_max;
-                x_max, y_min, z_max;
-                x_max, y_max, z_max;
-                x_min, y_max, z_max]);
-            faces = gpuArray([
-                1, 2, 6, 5;
-                2, 3, 7, 6;
-                3, 4, 8, 7;
-                4, 1, 5, 8;
-                1, 2, 3, 4;
-                5, 6, 7, 8]);
-            patch('Vertices', gather(vertices), 'Faces', gather(faces), 'FaceColor', 'r', 'EdgeColor', 'k', 'FaceAlpha', alpha);
-        end
-        
-        camlight('headlight'); 
-        camlight('right');
-        lighting phong;
-        view(3);
-        
-        % GIF filename for tree expansion
-        gifFilename = fullfile(figsDir, sprintf('tree_expansion_%d.gif', i));
-        fprintf('Creating tree expansion GIF: %s\n', gifFilename);
-        
         % Plot tree edges with frontier visualization - FIXED TO AVOID CONNECTING DIFFERENT RUNS
-        fprintf('Plotting tree edges...\n');
-        frameCount = 0;
+        fprintf('Plotting tree edges for file %d...\n', i);
         for j = 2:size(parentRelations, 1)
             % Check if this marks the end of a run
             if parentRelations(j) == -1
@@ -296,28 +303,25 @@ try
             plot3(gather(segmentX), gather(segmentY), gather(segmentZ), '-.', 'Color', 'k', 'LineWidth', 0.01);
             plot3(gather(samples(j, 1)), gather(samples(j, 2)), gather(samples(j, 3)), 'o', ...
                 'Color', gather(colors(colorIndex, :)), 'MarkerFaceColor', gather(colors(colorIndex, :)), 'MarkerSize', 2);
-            
-            % Capture frame for GIF every few nodes to keep file size reasonable
-            if mod(j, 5) == 0 || j == size(parentRelations, 1)
-                drawnow;
-                frame = getframe(figExpansion);
-                im = frame2im(frame);
-                [imind, cm] = rgb2ind(im, 256);
-                
-                if frameCount == 0
-                    imwrite(imind, cm, gifFilename, 'gif', 'Loopcount', inf, 'DelayTime', 0.1);
-                else
-                    imwrite(imind, cm, gifFilename, 'gif', 'WriteMode', 'append', 'DelayTime', 0.1);
-                end
-                frameCount = frameCount + 1;
-            end
         end
         
-        % Close the expansion figure
-        close(figExpansion);
-        fprintf('Tree expansion GIF saved with %d frames\n', frameCount);
+        % Capture frame after each complete file (each iteration of the tree)
+        figure(figExpansion);
+        drawnow;
+        frame = getframe(figExpansion);
+        im = frame2im(frame);
+        [imind, cm] = rgb2ind(im, 256);
+        
+        if frameCount == 0
+            imwrite(imind, cm, gifFilename, 'gif', 'Loopcount', inf, 'DelayTime', 0.5);
+        else
+            imwrite(imind, cm, gifFilename, 'gif', 'WriteMode', 'append', 'DelayTime', 0.5);
+        end
+        frameCount = frameCount + 1;
+        fprintf('Added frame %d to GIF\n', frameCount);
 
-        % Plot control path to goal on final iteration
+        % Plot control path to goal on final iteration (on main figure only)
+        figure(fig);
         if i == numFiles
             fprintf('Plotting control path...\n');
             for j = 2:size(controls, 1)
@@ -364,6 +368,10 @@ try
         close(gcf);
         fprintf('Completed file %d/%d\n', i, numFiles);
     end
+    
+    % Close the expansion figure after all files are processed
+    close(figExpansion);
+    fprintf('Tree expansion GIF saved with %d frames total\n', frameCount);
     
     fprintf('Script completed successfully!\n');
     fprintf('Check output files in: %s\n', figsDir);
