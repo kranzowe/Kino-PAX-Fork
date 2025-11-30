@@ -12,14 +12,14 @@ try
 
     % Parameters
     numFiles = 1;
-    radius = .05;
+    radius = 5;
     N = 8;
     n = 4;
     sampleSize = 17;
     stateSize = 12;
     controlSize = 3;
 
-    xGoal = [.80, .95, .90];
+    xGoal = [80, 95, 90];
     alpha = .7;
     STEP_SIZE = .2;
     model = 3;
