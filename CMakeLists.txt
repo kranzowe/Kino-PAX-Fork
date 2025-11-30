@@ -25,6 +25,7 @@ include_directories(
 set(SOURCE_FILES
     src/planners/KPAX.cu
     src/planners/Planner.cu
+    src.ReKino/ReKino.cu
     src/collisionCheck/collisionCheck.cu
     src/graphs/Graph.cu
     src/helper/helper.cu
@@ -72,10 +73,22 @@ target_link_libraries(executionTimeMain
     Python3::NumPy
 )
 
+add_executable(ReKinoMain examples/gpu/rekino_main.cu)
+target_link_libraries(ReKinoMain
+    PUBLIC KPAX_lib
+    ${CUDA_LIBRARIES}
+    ${Boost_LIBRARIES}
+    ${EIGEN3_LIBRARIES}
+    yaml-cpp
+    Python3::Python
+    Python3::NumPy
+)
+
 set_target_properties(KPAX_lib PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(main PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(benchMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(executionTimeMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(ReKinoMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
 
 set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -diag-suppress=20012,20013,20014,20015 --expt-relaxed-constexpr --ptxas-options=-v")
@@ -83,6 +96,7 @@ set_property(TARGET main PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET benchMain PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET executionTimeMain PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET KPAX_lib PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET ReKinoMain PROPERTY CUDA_ARCHITECTURES 61 86)
 add_definitions(-DEIGEN_NO_DEBUG)
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations -Wno-unused-function")
