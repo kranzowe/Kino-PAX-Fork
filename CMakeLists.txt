@@ -25,7 +25,7 @@ include_directories(
 set(SOURCE_FILES
     src/planners/KPAX.cu
     src/planners/Planner.cu
-    src.ReKino/ReKino.cu
+    src/ReKino/ReKino.cu
     src/collisionCheck/collisionCheck.cu
     src/graphs/Graph.cu
     src/helper/helper.cu
