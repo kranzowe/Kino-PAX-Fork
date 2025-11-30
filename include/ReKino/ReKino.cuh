@@ -174,4 +174,3 @@ __device__ void save_solution_path(
     float* global_controls
 );
 
-#endif // REKINO_CUH
