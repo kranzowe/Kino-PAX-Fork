@@ -26,7 +26,7 @@ int main(void)
     cudaMemcpy(d_obstacles, obstacles.data(), numObstacles * 2 * W_DIM * sizeof(float), cudaMemcpyHostToDevice);
 
     // --- Execute planner ---
-    planner.planBench(h_initial, h_goal, d_obstacles, numObstacles, 0);
+    planner.plan(h_initial, h_goal, d_obstacles, numObstacles);
 
     // --- Free memory ---
     cudaFree(d_obstacles);
