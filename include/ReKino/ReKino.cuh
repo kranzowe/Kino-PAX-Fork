@@ -1,5 +1,6 @@
 #pragma once
 #include "planners/Planner.cuh"
+#include "graphs/Graph.cuh"
 
 /*
  * ReKino: Recursive Kinodynamic Planner

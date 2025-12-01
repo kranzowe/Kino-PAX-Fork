@@ -1,35 +1,24 @@
 #include "ReKino/ReKino.cuh"
 #include "config/config.h"
 
-/*
- * ReKino Constructor
- * 
- * Allocates GPU memory for:
- * - Explored regions tracking (simple boolean array)
- * - Per-thread branch storage
- * - Global coordination (goal found flag, solution storage)
- */
+
 ReKino::ReKino()
 {
-    // Calculate number of threads to launch
-    // Use all available SMs × reasonable threads per SM
-    h_numThreads_ = 64 * 256;  // 64 SMs × 256 threads = 16,384 parallel branches
+    // compute the number of threads to launch. 
+    // we have 64 SMs and will use 256 per sm. though i think they have more. 
+    // this gives 16k parallel branches.
+    h_numThreads_ = 64 * 256;
     
-    // Maximum branch depth (tunable - affects memory usage)
-    h_maxBranchLength_ = 500;  // Each thread can explore up to 500 nodes deep
-    
-    // ========================================================================
-    // ALLOCATE: Explored regions tracking
-    // ========================================================================
-    // Simple boolean array: explored_regions[region_idx] = true/false
-    // This replaces KPAX's complex scoring system with a lightweight tracker
+    // how many nodes any one branch can have. 
+    h_maxBranchLength_ = 500;
+
+    // To track explored regions, we dont use a graph. is just a coarse grid
+    // explored_regions[region_idx] = true if explored / false else
+    // its a very lightweight tracker. Hopefully its enough
     d_exploredRegions_ = thrust::device_vector<bool>(NUM_R1_REGIONS);
     d_exploredRegions_ptr_ = thrust::raw_pointer_cast(d_exploredRegions_.data());
     
-    // ========================================================================
-    // ALLOCATE: Per-thread branch storage
-    // ========================================================================
-    // Each thread maintains its own branch (linear path through tree)
+    // each thread needs a way to track nodes! No need for parents since each branch is linear
     // Layout: [thread_0_branch][thread_1_branch]...[thread_N_branch]
     // where each branch is: [node_0][node_1]...[node_depth]
     d_allBranches_ = thrust::device_vector<float>(h_numThreads_ * h_maxBranchLength_ * SAMPLE_DIM);
@@ -40,16 +29,15 @@ ReKino::ReKino()
     d_allControls_ptr_ = thrust::raw_pointer_cast(d_allControls_.data());
     d_branchDepths_ptr_ = thrust::raw_pointer_cast(d_branchDepths_.data());
     
-    // ========================================================================
-    // ALLOCATE: Global coordination
-    // ========================================================================
+    // need a way for threads to chit chat. This is for seeing goal have been found
+    // and tracking which branch found it
     d_goalFound_ = thrust::device_vector<int>(1);
     d_solutionThreadId_ = thrust::device_vector<int>(1);
     
     d_goalFound_ptr_ = thrust::raw_pointer_cast(d_goalFound_.data());
     d_solutionThreadId_ptr_ = thrust::raw_pointer_cast(d_solutionThreadId_.data());
     
-    // Goal state storage
+    // goal state storage for all to check
     d_goalSample_ = thrust::device_vector<float>(SAMPLE_DIM);
     d_goalSample_ptr_ = thrust::raw_pointer_cast(d_goalSample_.data());
     
