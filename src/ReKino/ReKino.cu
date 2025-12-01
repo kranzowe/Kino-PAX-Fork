@@ -152,6 +152,7 @@ void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint 
     
     // Launch the persistent kernel (runs until goal found or max iterations)
     rekino_persistent_kernel<<<blocks, threads_per_block>>>(
+        &d_allBranches_ptr_[0],          // Initial state (root) at start of branches array
         d_goalSample_ptr_,               // Goal state
         d_obstacles_ptr,                 // Obstacles for collision checking
         h_obstaclesCount,                // Number of obstacles
@@ -164,12 +165,11 @@ void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint 
         d_randomSeeds_ptr_,              // Random number generators
         MAX_ITER,                        // Max iterations before giving up
         h_maxBranchLength_,              // Max branch depth
-        d_propagation_count,             // DEBUG: Propagation counter
-        d_collision_count,               // DEBUG: Collision counter
-        d_backtrack_count,               // DEBUG: Backtrack counter
-        d_restart_count                  // DEBUG: Restart counter
+        d_propagation_count,             // DEBUG: Propagation counter  <-- MISSING!
+        d_collision_count,               // DEBUG: Collision counter    <-- MISSING!
+        d_backtrack_count,               // DEBUG: Backtrack counter    <-- MISSING!
+        d_restart_count                  // DEBUG: Restart counter      <-- MISSING!
     );
-    
     // ========================================================================
     // MONITOR FOR COMPLETION
     // ========================================================================
@@ -197,7 +197,33 @@ void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint 
     // Wait for kernel to fully complete
     cudaDeviceSynchronize();
     printf("Kernel synchronized\n");
-    
+
+    if(VERBOSE && d_propagation_count)
+    {
+        unsigned long long h_propagations = 0, h_collisions = 0, h_backtracks = 0, h_restarts = 0;
+        
+        cudaMemcpy(&h_propagations, d_propagation_count, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&h_collisions, d_collision_count, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&h_backtracks, d_backtrack_count, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&h_restarts, d_restart_count, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
+        
+        printf("\n=== PROFILING STATS ===\n");
+        printf("Total propagations: %llu\n", h_propagations);
+        printf("Total collisions: %llu\n", h_collisions);
+        printf("Total backtracks: %llu\n", h_backtracks);
+        printf("Total restarts: %llu\n", h_restarts);
+        printf("Avg propagations per thread: %.1f\n", (double)h_propagations / h_numThreads_);
+        printf("Collision rate: %.1f%%\n", 100.0 * h_collisions / h_propagations);
+        printf("Avg backtracks per collision: %.1f\n", (double)h_backtracks / h_collisions);
+        printf("=======================\n\n");
+        
+        // Cleanup
+        cudaFree(d_propagation_count);
+        cudaFree(d_collision_count);
+        cudaFree(d_backtrack_count);
+        cudaFree(d_restart_count);
+    }
+        
     // ========================================================================
     // EXTRACT SOLUTION
     // ========================================================================
@@ -283,6 +309,7 @@ void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint 
  *       - Backtrack and retry from ancestor
  */
 __global__ void rekino_persistent_kernel(
+    float* initial_state,
     float* goal_state,
     float* obstacles,
     int obstaclesCount,
@@ -295,6 +322,7 @@ __global__ void rekino_persistent_kernel(
     curandState* randomSeeds,
     int maxIterations,
     int maxBranchLength,
+    // DEBUG: Add counters for profiling
     unsigned long long* propagation_count,
     unsigned long long* collision_count,
     unsigned long long* backtrack_count,
