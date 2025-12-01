@@ -330,4 +330,8 @@ function x0dot = ode(x0, Zc, Lc, Mc, Nc)
     x0dot(10) = (IY - IZ) / IX * q * r + (1 / IX) * L + (1 / IX) * Lc;
 
     M   = LMN * q;
-    x0dot(11) = (IZ - IX) / IY * p * r + (1 / IY) * M + (1 / IY)
+    x0dot(11) = (IZ - IX) / IY * p * r + (1 / IY) * M + (1 / IY) * Mc;
+
+    N   = LMN * r;
+    x0dot(12) = (IX - IY) / IZ * p * q + (1 / IZ) * N + (1 / IZ) * Nc;
+end
