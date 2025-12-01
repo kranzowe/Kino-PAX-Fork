@@ -1,5 +1,7 @@
 #include "ReKino/ReKino.cuh"
 #include "config/config.h"
+#include <thread>
+#include <chrono>
 
 
 ReKino::ReKino()
@@ -66,20 +68,19 @@ ReKino::ReKino()
  */
 void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
 {
-    // ========================================================================
-    // TIMING SETUP
-    // ========================================================================
+    // for benchmarking
     cudaEvent_t start, stop;
     float milliseconds = 0;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord(start);
-    
-    // ========================================================================
-    // INITIALIZATION
-    // ========================================================================
+
     
     // Clear all tracking arrays
+    // set the explored region vector to false, 
+    // the depth of each branch to 0
+    // whether the goal has been found to 0
+    // solution thread id to -1
     thrust::fill(d_exploredRegions_.begin(), d_exploredRegions_.end(), false);
     thrust::fill(d_branchDepths_.begin(), d_branchDepths_.end(), 0);
     thrust::fill(d_goalFound_.begin(), d_goalFound_.end(), 0);
