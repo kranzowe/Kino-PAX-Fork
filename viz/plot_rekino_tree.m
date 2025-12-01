@@ -12,9 +12,13 @@ try
     % Parameters
     radius = .05;
     alpha = .7;
-    SAMPLE_DIM = 17;  % Each state is 17 elements
+    SAMPLE_DIM = 17;  % Each state is 17 elements (12 state + 4 control + 1 duration)
+    STATE_DIM = 12;   % First 12 elements are state
+    CONTROL_DIM = 4;  % Next 4 elements are control
     MAX_BRANCH_LENGTH = 500;  % As defined in ReKino constructor
     NUM_BRANCHES_TO_PLOT = 50;  % Plot first 50 thread branches
+    STEP_SIZE = .2;   % Step size for propagation
+    model = 3;        % Quadrotor model
 
     xGoal = [.80, .95, .90];
 
@@ -120,7 +124,7 @@ try
         % Get depth for this branch
         depth = branchDepths(branchIdx);
 
-        % if we didnt set it correctly
+        % If depth is 0 or invalid, compute it from the data
         if depth == 0 || isnan(depth)
             % Find the last non-zero node
             depth = 0;
@@ -139,9 +143,13 @@ try
             end
             fprintf('Branch %d: Computed depth = %d\n', branchIdx, depth);
         end
+        
+        % Skip branches with depth <= 1 (nothing to plot)
+        if depth <= 1
+            continue;
+        end
 
-        % Extract nodes from the branch (each node is SAMPLE_DIM elements)
-        % Branch layout: [node_0][node_1]...[node_depth]
+        % Plot propagated edges between nodes
         for nodeIdx = 1:(depth-1)
             % Current node position in the row
             startIdx = (nodeIdx - 1) * SAMPLE_DIM + 1;
@@ -151,27 +159,30 @@ try
             nextStartIdx = nodeIdx * SAMPLE_DIM + 1;
             nextEndIdx = nextStartIdx + SAMPLE_DIM - 1;
             
-            % Extract x, y, z for current and next node (first 3 elements of each state)
+            % Extract current and next node
             currentNode = branchRow(startIdx:endIdx);
             nextNode = branchRow(nextStartIdx:nextEndIdx);
             
-            x1 = currentNode(1);
-            y1 = currentNode(2);
-            z1 = currentNode(3);
+            % Extract state (first 12 elements)
+            x0 = currentNode(1:STATE_DIM);
             
-            x2 = nextNode(1);
-            y2 = nextNode(2);
-            z2 = nextNode(3);
+            % The sample includes the next state, control, and duration
+            sample = nextNode;  % Full SAMPLE_DIM vector
             
-            % Plot edge between nodes
-            plot3([x1, x2], [y1, y2], [z1, z2], ...
-                  'Color', colors(branchIdx, :), 'LineWidth', 1);
-            
-            % Plot node point
-            plot3(x1, y1, z1, 'o', ...
-                  'Color', colors(branchIdx, :), ...
-                  'MarkerFaceColor', colors(branchIdx, :), ...
-                  'MarkerSize', 2);
+            % Propagate using the quadrotor model
+            if model == 3
+                [segmentX, segmentY, segmentZ] = propQuad(x0, sample, STEP_SIZE, STATE_DIM, SAMPLE_DIM);
+                
+                % Plot the propagated path
+                plot3(segmentX, segmentY, segmentZ, ...
+                      'Color', colors(branchIdx, :), 'LineWidth', 1);
+                
+                % Plot node points
+                plot3(x0(1), x0(2), x0(3), 'o', ...
+                      'Color', colors(branchIdx, :), ...
+                      'MarkerFaceColor', colors(branchIdx, :), ...
+                      'MarkerSize', 2);
+            end
         end
         
         % Plot final node in branch
@@ -228,3 +239,95 @@ catch ME
     end
     exit(1);
 end
+
+% Propagation function for quadrotor
+function [segmentX, segmentY, segmentZ] = propQuad(x0, sample, STEP_SIZE, stateSize, sampleSize)
+    segmentX = x0(1);
+    segmentY = x0(2);
+    segmentZ = x0(3);
+    u = sample(stateSize+1:sampleSize-1);  % Extract control
+    duration = sample(sampleSize);          % Extract duration
+    numDisc = duration / STEP_SIZE;
+    Zc = u(1);
+    Lc = u(2);
+    Mc = u(3);
+    Nc = u(4);
+    h0 = x0(1:12);
+    x = x0(1);
+    y = x0(2);
+    z = x0(3);
+
+    for k = 1:numDisc
+        h1 = ode(h0, Zc, Lc, Mc, Nc);
+        h2 = ode(h0 + 0.5 * STEP_SIZE * h1, Zc, Lc, Mc, Nc);
+        h3 = ode(h0 + 0.5 * STEP_SIZE * h2, Zc, Lc, Mc, Nc);
+        h4 = ode(h0 + STEP_SIZE * h3, Zc, Lc, Mc, Nc);
+        
+        h0 = h0 + (STEP_SIZE / 6) * (h1 + 2 * h2 + 2 * h3 + h4);
+        
+        x = h0(1);
+        y = h0(2);
+        z = h0(3);
+        
+        segmentX = [segmentX, x];
+        segmentY = [segmentY, y];
+        segmentZ = [segmentZ, z];
+    end
+    
+    segmentX = [segmentX, sample(1)];
+    segmentY = [segmentY, sample(2)];
+    segmentZ = [segmentZ, sample(3)];
+end
+
+function x0dot = ode(x0, Zc, Lc, Mc, Nc)
+    NU = 10e-3;
+    MU = 2e-6;
+    IX = 1.0;
+    IY = 1.0;
+    IZ = 2.0;
+    GRAVITY = -9.81;
+    MASS = 1.0;
+    MASS_INV = 1.0 / MASS;
+
+    phi   = x0(4);
+    theta = x0(5);
+    psi   = x0(6);
+    u     = x0(7);
+    v     = x0(8);
+    w     = x0(9);
+    p     = x0(10);
+    q     = x0(11);
+    r     = x0(12);
+
+    x0dot = zeros(1, 12);
+
+    x0dot(1) = cos(theta) * cos(psi) * u + (sin(phi) * sin(theta) * cos(psi) - cos(phi) * sin(psi)) * v + ...
+            (cos(phi) * sin(theta) * cos(psi) + sin(phi) * sin(psi)) * w;
+
+    x0dot(2) = cos(theta) * sin(psi) * u + (sin(phi) * sin(theta) * sin(psi) + cos(phi) * cos(psi)) * v + ...
+            (cos(phi) * sin(theta) * sin(psi) - sin(phi) * cos(psi)) * w;
+
+    x0dot(3) = -sin(theta) * u + sin(phi) * cos(theta) * v + cos(phi) * cos(theta) * w;
+
+    x0dot(4) = p + (q * sin(phi) + r * cos(phi)) * tan(theta);
+
+    x0dot(5) = q * cos(phi) - r * sin(phi);
+
+    x0dot(6) = (q * sin(phi) + r * cos(phi)) / cos(theta);
+
+    XYZ = -NU * sqrt(u^2 + v^2 + w^2);
+    X   = XYZ * u;
+    x0dot(7)  = (r * v - q * w) - GRAVITY * sin(theta) + MASS_INV * X;
+
+    Y  = XYZ * v;
+    x0dot(8) = (p * w - r * u) + GRAVITY * cos(theta) * sin(phi) + MASS_INV * Y;
+
+    Z  = XYZ * w;
+    x0dot(9) = (q * u - p * v) + GRAVITY * cos(theta) * cos(phi) + MASS_INV * Z + MASS_INV * Zc;
+
+    LMN = -MU * sqrt(p^2 + q^2 + r^2);
+    L   = LMN * p;
+    x0dot(10) = (IY - IZ) / IX * q * r + (1 / IX) * L + (1 / IX) * Lc;
+
+    M   = LMN * q;
+    x0dot(11) = (IZ - IX) / IY * p * r + (1 / IY) * M + (1 / IY)
