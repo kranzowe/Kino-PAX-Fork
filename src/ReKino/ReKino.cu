@@ -270,7 +270,12 @@ __global__ void rekino_persistent_kernel(
     int* solutionThreadId,
     curandState* randomSeeds,
     int maxIterations,
-    int maxBranchLength
+    int maxBranchLength,
+    // DEBUG: Add counters for profiling
+    unsigned long long* propagation_count,
+    unsigned long long* collision_count,
+    unsigned long long* backtrack_count,
+    unsigned long long* restart_count
 )
 {
     // ========================================================================
@@ -279,26 +284,43 @@ __global__ void rekino_persistent_kernel(
     
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     
+    // DEBUG: Track timing for first thread
+    clock_t start_time = 0;
+    if(tid == 0) {
+        start_time = clock64();
+        printf("[Thread 0] Kernel started\n");
+    }
+    
     // Each thread gets its own slice of the branches array
-    // Layout: [my_branch][my_controls] where each has maxBranchLength entries
     float* my_branch = &allBranches[tid * maxBranchLength * SAMPLE_DIM];
     float* my_controls = &allControls[tid * maxBranchLength * CONTROL_DIM];
-    int current_depth = 0;  // Start at root (index 0)
+    int current_depth = 0;
     
     // Initialize random state for this thread
     curandState local_rand_state = randomSeeds[tid];
     
+    // DEBUG: Local counters
+    int local_propagations = 0;
+    int local_collisions = 0;
+    int local_backtracks = 0;
+    int local_restarts = 0;
+    
     // ========================================================================
-    // LOAD GOAL STATE INTO SHARED MEMORY (optimization)
+    // LOAD GOAL STATE INTO SHARED MEMORY
     // ========================================================================
     
-    // All threads in block share the same goal, so load once to fast memory
     __shared__ float s_goal[SAMPLE_DIM];
     if(threadIdx.x < SAMPLE_DIM)
     {
         s_goal[threadIdx.x] = goal_state[threadIdx.x];
     }
-    __syncthreads();  // Wait for goal to be loaded
+    __syncthreads();
+    
+    // DEBUG: Check sync timing
+    if(tid == 0) {
+        clock_t after_sync = clock64();
+        printf("[Thread 0] After first sync: %llu cycles\n", after_sync - start_time);
+    }
     
     // ========================================================================
     // MAIN PROPAGATION LOOP
@@ -306,8 +328,15 @@ __global__ void rekino_persistent_kernel(
     
     for(int iter = 0; iter < maxIterations && *goalFound == 0; iter++)
     {
+        // DEBUG: Periodic progress reports from thread 0
+        if(tid == 0 && iter % 100 == 0) {
+            clock_t now = clock64();
+            printf("[Thread 0] Iter %d: %d propagations, %d collisions, depth=%d, time=%llu cycles\n",
+                   iter, local_propagations, local_collisions, current_depth, now - start_time);
+        }
+        
         // ====================================================================
-        // STEP 1: Get current node to propagate from
+        // STEP 1: Get current node
         // ====================================================================
         
         float* current_node = &my_branch[current_depth * SAMPLE_DIM];
@@ -316,103 +345,97 @@ __global__ void rekino_persistent_kernel(
         // STEP 2: Sample control and propagate
         // ====================================================================
         
-        // Allocate space for new state
         float new_state[SAMPLE_DIM];
         float control[CONTROL_DIM];
         
-        // Propagate using existing propagateAndCheck function (from KPAX)
-        // This samples a random control and simulates the dynamics
+        clock_t prop_start = 0;
+        if(tid == 0 && iter < 5) prop_start = clock64();
+        
         bool is_valid = propagateAndCheck(
-            current_node,     // Starting state
-            new_state,        // Output: new state after propagation
-            &local_rand_state, // Random number generator
-            obstacles,         // For collision checking
+            current_node,
+            new_state,
+            &local_rand_state,
+            obstacles,
             obstaclesCount
         );
         
+        if(tid == 0 && iter < 5) {
+            clock_t prop_end = clock64();
+            printf("[Thread 0] Propagation %d took %llu cycles\n", iter, prop_end - prop_start);
+        }
+        
+        local_propagations++;
+        
         // ====================================================================
-        // STEP 3a: VALID SAMPLE - Extend branch
+        // STEP 3a: VALID SAMPLE
         // ====================================================================
         
         if(is_valid)
         {
-            // Extend branch (move one level deeper)
             current_depth++;
             
-            // Check if branch is getting too deep
             if(current_depth >= maxBranchLength)
             {
-                // Branch full - reset to root and start over
-                // This prevents memory overflow
+                if(tid == 0) {
+                    printf("[Thread 0] Branch overflow at iter %d, resetting\n", iter);
+                }
                 current_depth = 0;
+                local_restarts++;
                 continue;
             }
             
-            // Store the new node in our branch
             float* new_node_slot = &my_branch[current_depth * SAMPLE_DIM];
             for(int d = 0; d < SAMPLE_DIM; d++)
             {
                 new_node_slot[d] = new_state[d];
             }
             
-            // TODO: Store control as well (currently controls aren't extracted in propagateAndCheck)
-            // Would need to modify propagateAndCheck to return the control used
-            
             // ================================================================
             // STEP 3b: Mark region as explored
             // ================================================================
             
-            // Figure out which region this new state is in
             int region = getRegion(new_state);
-            
-            // Mark as explored (no atomic needed - all threads just write 1)
-            // Writing 1 multiple times is harmless and faster than atomics
             exploredRegions[region] = true;
             
             // ================================================================
-            // STEP 3c: Check if we reached the goal
+            // STEP 3c: Check goal
             // ================================================================
             
             float dist_to_goal = distance(new_state, s_goal);
             
             if(dist_to_goal < GOAL_THRESH)
             {
-                // WE FOUND THE GOAL! 🎉
-                
-                // Use atomic compare-and-swap to ensure only ONE thread claims victory
-                // This prevents race condition where multiple threads reach goal simultaneously
                 int already_found = atomicCAS(goalFound, 0, 1);
                 
                 if(already_found == 0)
                 {
-                    // We're the first! Save our thread ID so CPU can extract our path
+                    printf("[Thread %d] GOAL FOUND at iter %d, depth %d!\n", tid, iter, current_depth);
                     *solutionThreadId = tid;
                     branchDepths[tid] = current_depth;
-                    
-                    // Exit immediately - we're done!
                     return;
                 }
                 else
                 {
-                    // Another thread beat us to it, just exit
                     return;
                 }
             }
-            
-            // Continue to next iteration (propagate from this new node)
         }
         
         // ====================================================================
-        // STEP 4: COLLISION - Adaptive backtracking
+        // STEP 4: COLLISION - Backtracking
         // ====================================================================
         
         else
         {
-            // We hit an obstacle. Time to backtrack.
-            // Question: How far should we backtrack?
-            // Answer: Depends on how explored the current region is.
-            //         Highly explored → backtrack far (try elsewhere)
-            //         Barely explored → backtrack a little (keep trying here)
+            local_collisions++;
+            
+            clock_t backtrack_start = 0;
+            if(tid == 0 && local_collisions < 5) {
+                backtrack_start = clock64();
+                printf("[Thread 0] Starting backtrack from depth %d\n", current_depth);
+            }
+            
+            int original_depth = current_depth;
             
             // ================================================================
             // STEP 4a: Backtrack loop
@@ -420,60 +443,67 @@ __global__ void rekino_persistent_kernel(
             
             while(current_depth > 0)
             {
-                // Get ancestor node at current depth
+                local_backtracks++;
+                
                 float* ancestor = &my_branch[current_depth * SAMPLE_DIM];
                 int region = getRegion(ancestor);
                 
-                // Calculate how explored this region's neighborhood is
+                // DEBUG: Check if this function is the bottleneck
+                clock_t neigh_start = 0;
+                if(tid == 0 && local_backtracks < 10) neigh_start = clock64();
+                
                 float exploration_density = get_neighborhood_exploration(
                     region,
                     exploredRegions
                 );
                 
-                // ============================================================
-                // STEP 4b: Probabilistically decide to stay or go back further
-                // ============================================================
+                if(tid == 0 && local_backtracks < 10) {
+                    clock_t neigh_end = clock64();
+                    printf("[Thread 0] get_neighborhood_exploration took %llu cycles\n", 
+                           neigh_end - neigh_start);
+                }
                 
-                // Adaptive probability formula:
-                // High exploration → low probability of staying (backtrack more)
-                // Low exploration → high probability of staying (stay nearby)
-                
-                // Exponential formula for stronger bias:
-                // prob_stay = exp(-alpha * exploration_density) + epsilon
-                float alpha = 3.0f;  // Tuning parameter (higher = more aggressive backtracking)
-                float epsilon = 0.05f;  // Minimum probability (always some chance)
-                
+                float alpha = 3.0f;
+                float epsilon = 0.05f;
                 float prob_stay = expf(-alpha * exploration_density) + epsilon;
                 
-                // Roll the dice
                 if(curand_uniform(&local_rand_state) < prob_stay)
                 {
-                    // Accept this depth - will propagate from here next iteration
                     break;
                 }
                 
-                // Reject - go back one more level
                 current_depth--;
             }
             
-            // If we backtracked all the way to root (current_depth == 0), that's okay
-            // We'll try propagating from root again in the next iteration
+            if(tid == 0 && local_collisions < 5) {
+                clock_t backtrack_end = clock64();
+                printf("[Thread 0] Backtrack complete: %d -> %d (took %llu cycles)\n",
+                       original_depth, current_depth, backtrack_end - backtrack_start);
+            }
             
-            // Add occasional random restarts for diversity
-            // This prevents all threads from getting stuck in the same region
-            if(curand_uniform(&local_rand_state) < 0.01f)  // 1% chance
+            // Random restart
+            if(curand_uniform(&local_rand_state) < 0.01f)
             {
-                current_depth = 0;  // Jump back to root
+                current_depth = 0;
+                local_restarts++;
             }
         }
         
-        // Save updated random state back to global memory
-        // (needed because random state is stateful)
         randomSeeds[tid] = local_rand_state;
     }
     
-    // If we get here, we hit max iterations without finding goal
-    // Just exit - goalFound will still be 0
+    // DEBUG: Final report
+    if(tid == 0) {
+        clock_t end_time = clock64();
+        printf("[Thread 0] Kernel complete: %d iters, %d propagations, %d collisions, %llu total cycles\n",
+               maxIterations, local_propagations, local_collisions, end_time - start_time);
+    }
+    
+    // Store stats (if pointers provided)
+    if(propagation_count) atomicAdd(propagation_count, (unsigned long long)local_propagations);
+    if(collision_count) atomicAdd(collision_count, (unsigned long long)local_collisions);
+    if(backtrack_count) atomicAdd(backtrack_count, (unsigned long long)local_backtracks);
+    if(restart_count) atomicAdd(restart_count, (unsigned long long)local_restarts);
 }
 
 // ============================================================================
