@@ -101,7 +101,11 @@ __global__ void rekino_persistent_kernel(
     int* solutionThreadId,
     curandState* randomSeeds,
     int maxIterations,
-    int maxBranchLength
+    int maxBranchLength,
+    unsigned long long* propagation_count,
+    unsigned long long* collision_count,
+    unsigned long long* backtrack_count,
+    unsigned long long* restart_count
 );
 
 /***************************/
