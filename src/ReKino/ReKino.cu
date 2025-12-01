@@ -163,7 +163,7 @@ void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint 
         d_goalFound_ptr_,                // Global flag: goal found?
         d_solutionThreadId_ptr_,         // Which thread found it?
         d_randomSeeds_ptr_,              // Random number generators
-        MAX_ITER,                        // Max iterations before giving up
+        MAX_ITER_REKINO,                        // Max iterations before giving up
         h_maxBranchLength_,              // Max branch depth
         d_propagation_count,             // DEBUG: Propagation counter  <-- MISSING!
         d_collision_count,               // DEBUG: Collision counter    <-- MISSING!
