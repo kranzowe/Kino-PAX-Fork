@@ -113,6 +113,28 @@ void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint 
     ));
     
     // ========================================================================
+    // DEBUG: Allocate profiling counters (optional)
+    // ========================================================================
+    
+    unsigned long long *d_propagation_count = nullptr;
+    unsigned long long *d_collision_count = nullptr;
+    unsigned long long *d_backtrack_count = nullptr;
+    unsigned long long *d_restart_count = nullptr;
+    
+    if(VERBOSE)
+    {
+        cudaMalloc(&d_propagation_count, sizeof(unsigned long long));
+        cudaMalloc(&d_collision_count, sizeof(unsigned long long));
+        cudaMalloc(&d_backtrack_count, sizeof(unsigned long long));
+        cudaMalloc(&d_restart_count, sizeof(unsigned long long));
+        
+        cudaMemset(d_propagation_count, 0, sizeof(unsigned long long));
+        cudaMemset(d_collision_count, 0, sizeof(unsigned long long));
+        cudaMemset(d_backtrack_count, 0, sizeof(unsigned long long));
+        cudaMemset(d_restart_count, 0, sizeof(unsigned long long));
+    }
+    
+    // ========================================================================
     // LAUNCH PERSISTENT KERNEL
     // ========================================================================
     
@@ -142,7 +164,11 @@ void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint 
         d_solutionThreadId_ptr_,         // Which thread found it?
         d_randomSeeds_ptr_,              // Random number generators
         MAX_ITER,                        // Max iterations before giving up
-        h_maxBranchLength_               // Max branch depth
+        h_maxBranchLength_,              // Max branch depth
+        d_propagation_count,             // DEBUG: Propagation counter
+        d_collision_count,               // DEBUG: Collision counter
+        d_backtrack_count,               // DEBUG: Backtrack counter
+        d_restart_count                  // DEBUG: Restart counter
     );
     
     // ========================================================================
