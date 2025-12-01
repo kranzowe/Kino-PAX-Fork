@@ -152,7 +152,6 @@ void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint 
     
     // Launch the persistent kernel (runs until goal found or max iterations)
     rekino_persistent_kernel<<<blocks, threads_per_block>>>(
-        &d_allBranches_ptr_[0],          // Initial state (root) at start of branches array
         d_goalSample_ptr_,               // Goal state
         d_obstacles_ptr,                 // Obstacles for collision checking
         h_obstaclesCount,                // Number of obstacles
@@ -284,7 +283,6 @@ void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint 
  *       - Backtrack and retry from ancestor
  */
 __global__ void rekino_persistent_kernel(
-    float* initial_state,
     float* goal_state,
     float* obstacles,
     int obstaclesCount,
@@ -297,7 +295,6 @@ __global__ void rekino_persistent_kernel(
     curandState* randomSeeds,
     int maxIterations,
     int maxBranchLength,
-    // DEBUG: Add counters for profiling
     unsigned long long* propagation_count,
     unsigned long long* collision_count,
     unsigned long long* backtrack_count,
