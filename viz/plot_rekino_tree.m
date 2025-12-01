@@ -119,7 +119,27 @@ try
         
         % Get depth for this branch
         depth = branchDepths(branchIdx);
-        
+
+        % if we didnt set it correctly
+        if depth == 0 || isnan(depth)
+            % Find the last non-zero node
+            depth = 0;
+            for nodeIdx = 1:MAX_BRANCH_LENGTH
+                startIdx = (nodeIdx - 1) * SAMPLE_DIM + 1;
+                endIdx = startIdx + SAMPLE_DIM - 1;
+                
+                % Check if this node has any non-zero values
+                nodeData = branchRow(startIdx:endIdx);
+                if any(nodeData ~= 0)
+                    depth = nodeIdx;
+                else
+                    % Once we hit all zeros, stop
+                    break;
+                end
+            end
+            fprintf('Branch %d: Computed depth = %d\n', branchIdx, depth);
+        end
+
         % Extract nodes from the branch (each node is SAMPLE_DIM elements)
         % Branch layout: [node_0][node_1]...[node_depth]
         for nodeIdx = 1:(depth-1)
