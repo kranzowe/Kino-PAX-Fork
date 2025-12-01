@@ -171,7 +171,7 @@ void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint 
     
     // Wait for kernel to fully complete
     cudaDeviceSynchronize();
-    printf("Kernel synchronized\n"
+    printf("Kernel synchronized\n");
     
     // ========================================================================
     // EXTRACT SOLUTION
