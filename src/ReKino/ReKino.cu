@@ -59,7 +59,7 @@ ReKino::ReKino()
 /*
  * ReKino::plan
  * 
- * Main planning function. Launches persistent kernel and monitors for goal.
+ * launches a persistent kernel and monitors for goal.
  * 
  * Key differences from KPAX:
  * - Single kernel launch (no iteration loop with multiple kernel calls)
@@ -171,6 +171,7 @@ void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint 
     
     // Wait for kernel to fully complete
     cudaDeviceSynchronize();
+    printf("Kernel synchronized\n"
     
     // ========================================================================
     // EXTRACT SOLUTION
@@ -221,6 +222,7 @@ void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint 
     cudaEventElapsedTime(&milliseconds, start, stop);
     
     writeExecutionTimeToCSV(milliseconds / 1000.0);
+    writeTreeToCSV(0);
     
     std::cout << "ReKino execution time: " << milliseconds / 1000.0 
               << " seconds. Path length: " << h_pathToGoal_ << std::endl;
@@ -666,4 +668,45 @@ void ReKino::writeExecutionTimeToCSV(double time)
         file << time << "\n";
         file.close();
     }
+}
+
+void ReKino::writeTreeToCSV(int solution_thread_id)
+{
+    std::ostringstream filename;
+    std::filesystem::create_directories("Data");
+    std::filesystem::create_directories("Data/ReKinoTree");
+    filename.str("");
+    filename << "Data/ReKinoTree/rekino_tree.csv";
+    
+    // Write all branches (one row per thread's branch)
+    // Each row contains: [node_0][node_1]...[node_depth] for that thread
+    copyAndWriteVectorToCSV(
+        d_allBranches_, 
+        filename.str(), 
+        h_numThreads_,           // Number of rows (one per thread)
+        h_maxBranchLength_ * SAMPLE_DIM,  // Columns per row (max branch length × state dimension)
+        false                    // Don't append, overwrite
+    );
+    
+    // // Optionally, also write the controls
+    // filename.str("");
+    // filename << "Data/ReKinoTree/rekino_controls.csv";
+    // copyAndWriteVectorToCSV(
+    //     d_allControls_, 
+    //     filename.str(), 
+    //     h_numThreads_,           // Number of rows
+    //     h_maxBranchLength_ * CONTROL_DIM,  // Columns per row
+    //     false
+    // );
+    
+    // Write the branch depths (how deep each thread's branch is)
+    filename.str("");
+    filename << "Data/ReKinoTree/rekino_depths.csv";
+    copyAndWriteVectorToCSV(
+        d_branchDepths_, 
+        filename.str(), 
+        h_numThreads_,    // Number of rows
+        1,                // One value per row
+        false
+    );
 }

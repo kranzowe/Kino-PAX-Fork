@@ -25,6 +25,7 @@ public:
     /****************************    METHODS    ****************************/
     void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount) override;
     void writeExecutionTimeToCSV(double time);
+    void writeExecutionTimeToCSV(int solution_thread_id);
 
     /****************************    FIELDS    ****************************/
     
