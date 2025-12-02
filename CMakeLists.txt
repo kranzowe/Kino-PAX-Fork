@@ -88,6 +88,7 @@ target_link_libraries(ReKinoMain
 add_executable(profilePropagation
     tools/profilePropagation.cu
     src/statePropagator/statePropagatorProfiled.cu
+    src/statePropagator/statePropagator.cu
     src/collisionCheck/collisionCheck.cu
 )
 target_link_libraries(profilePropagation
