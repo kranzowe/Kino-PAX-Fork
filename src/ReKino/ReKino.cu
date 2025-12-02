@@ -369,11 +369,11 @@ __global__ void rekino_persistent_kernel(
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     
     // DEBUG: Track timing for first thread
-    clock_t start_time = 0;
-    if(tid == 0) {
-        start_time = clock64();
-        printf("[Thread 0] Kernel started\n");
-    }
+    // clock_t start_time = 0;
+    // if(tid == 0) {
+    //     start_time = clock64();
+    //     printf("[Thread 0] Kernel started\n");
+    // }
     
     // Each thread gets its own slice of the branches array
     float* my_branch = &allBranches[tid * maxBranchLength * SAMPLE_DIM];
@@ -401,10 +401,10 @@ __global__ void rekino_persistent_kernel(
     __syncthreads();
     
     // DEBUG: Check sync timing
-    if(tid == 0) {
-        clock_t after_sync = clock64();
-        printf("[Thread 0] After first sync: %llu cycles\n", after_sync - start_time);
-    }
+    // if(tid == 0) {
+    //     clock_t after_sync = clock64();
+    //     printf("[Thread 0] After first sync: %llu cycles\n", after_sync - start_time);
+    // }
     
     // ========================================================================
     // MAIN PROPAGATION LOOP
@@ -413,11 +413,11 @@ __global__ void rekino_persistent_kernel(
     for(int iter = 0; iter < maxIterations && *goalFound == 0; iter++)
     {
         // DEBUG: Periodic progress reports from thread 0
-        if(tid == 0 && iter % 100 == 0) {
-            clock_t now = clock64();
-            printf("[Thread 0] Iter %d: %d propagations, %d collisions, depth=%d, time=%llu cycles\n",
-                   iter, local_propagations, local_collisions, current_depth, now - start_time);
-        }
+        // if(tid == 0 && iter % 100 == 0) {
+        //     clock_t now = clock64();
+        //     printf("[Thread 0] Iter %d: %d propagations, %d collisions, depth=%d, time=%llu cycles\n",
+        //            iter, local_propagations, local_collisions, current_depth, now - start_time);
+        // }
         
         // ====================================================================
         // STEP 1: Get current node
@@ -443,10 +443,11 @@ __global__ void rekino_persistent_kernel(
             obstaclesCount
         );
         
-        if(tid == 0 && iter < 5) {
-            clock_t prop_end = clock64();
-            printf("[Thread 0] Propagation %d took %llu cycles\n", iter, prop_end - prop_start);
-        }
+        // DEBUG
+        // if(tid == 0 && iter < 5) {
+        //     clock_t prop_end = clock64();
+        //     printf("[Thread 0] Propagation %d took %llu cycles\n", iter, prop_end - prop_start);
+        // }
         
         local_propagations++;
         
@@ -460,9 +461,9 @@ __global__ void rekino_persistent_kernel(
             
             if(current_depth >= maxBranchLength)
             {
-                if(tid == 0) {
-                    printf("[Thread 0] Branch overflow at iter %d, resetting\n", iter);
-                }
+                // if(tid == 0) {
+                //     printf("[Thread 0] Branch overflow at iter %d, resetting\n", iter);
+                // }
                 current_depth = 0;
                 local_restarts++;
                 continue;
@@ -514,10 +515,10 @@ __global__ void rekino_persistent_kernel(
             local_collisions++;
             
             clock_t backtrack_start = 0;
-            if(tid == 0 && local_collisions < 5) {
-                backtrack_start = clock64();
-                printf("[Thread 0] Starting backtrack from depth %d\n", current_depth);
-            }
+            // if(tid == 0 && local_collisions < 5) {
+            //     backtrack_start = clock64();
+            //     printf("[Thread 0] Starting backtrack from depth %d\n", current_depth);
+            // }
             
             int original_depth = current_depth;
             
@@ -541,11 +542,11 @@ __global__ void rekino_persistent_kernel(
                     exploredRegions
                 );
                 
-                if(tid == 0 && local_backtracks < 10) {
-                    clock_t neigh_end = clock64();
-                    printf("[Thread 0] get_neighborhood_exploration took %llu cycles\n", 
-                           neigh_end - neigh_start);
-                }
+                // if(tid == 0 && local_backtracks < 10) {
+                //     clock_t neigh_end = clock64();
+                //     printf("[Thread 0] get_neighborhood_exploration took %llu cycles\n", 
+                //            neigh_end - neigh_start);
+                // }
                 
                 float alpha = 3.0f;
                 float epsilon = 0.05f;
@@ -559,11 +560,11 @@ __global__ void rekino_persistent_kernel(
                 current_depth--;
             }
             
-            if(tid == 0 && local_collisions < 5) {
-                clock_t backtrack_end = clock64();
-                printf("[Thread 0] Backtrack complete: %d -> %d (took %llu cycles)\n",
-                       original_depth, current_depth, backtrack_end - backtrack_start);
-            }
+            // if(tid == 0 && local_collisions < 5) {
+            //     clock_t backtrack_end = clock64();
+            //     printf("[Thread 0] Backtrack complete: %d -> %d (took %llu cycles)\n",
+            //            original_depth, current_depth, backtrack_end - backtrack_start);
+            // }
             
             // Random restart
             if(curand_uniform(&local_rand_state) < 0.01f)
@@ -577,11 +578,11 @@ __global__ void rekino_persistent_kernel(
     }
     
     // DEBUG: Final report
-    if(tid == 0) {
-        clock_t end_time = clock64();
-        printf("[Thread 0] Kernel complete: %d iters, %d propagations, %d collisions, %llu total cycles\n",
-               maxIterations, local_propagations, local_collisions, end_time - start_time);
-    }
+    // if(tid == 0) {
+    //     clock_t end_time = clock64();
+    //     printf("[Thread 0] Kernel complete: %d iters, %d propagations, %d collisions, %llu total cycles\n",
+    //            maxIterations, local_propagations, local_collisions, end_time - start_time);
+    // }
     
     // Store stats (if pointers provided)
     if(propagation_count) atomicAdd(propagation_count, (unsigned long long)local_propagations);
@@ -674,7 +675,7 @@ __device__ void get_neighbor_indices(
                 int ny = coords[1] + dy;
                 
                 // Check bounds (assuming NUM_R1_REGIONS_PER_DIM divisions per dimension)
-                int divisions_per_dim = (int)powf((float)NUM_R1_REGIONS, 1.0f / W_DIM);
+                int divisions_per_dim = 26; //(int)powf((float)NUM_R1_REGIONS, 1.0f / W_DIM);
                 
                 if(nx >= 0 && nx < divisions_per_dim &&
                    ny >= 0 && ny < divisions_per_dim)
