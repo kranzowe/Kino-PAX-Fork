@@ -111,11 +111,14 @@ void ReKinoLite::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, u
 
 void ReKinoLite::writeExecutionTimeToCSV(double time)
 {
-    std::ofstream file;
-    file.open("../data/execution_time.csv", std::ios::app);
-    file << "ReKinoLite," << time << "\n";
-    file.close();
+    std::ostringstream filename;
+    std::filesystem::create_directories("Data");
+    std::filesystem::create_directories("Data/ExecutionTime");
+    filename.str("");
+    filename << "Data/ExecutionTime/executionTime.csv";
+    writeValueToCSV(time, filename.str());
 }
+
 
 /***************************/
 /* REKINO LITE WARP KERNEL */
