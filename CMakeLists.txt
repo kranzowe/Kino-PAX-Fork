@@ -26,6 +26,7 @@ set(SOURCE_FILES
     src/planners/KPAX.cu
     src/planners/Planner.cu
     src/ReKino/ReKino.cu
+    src/ReKino/ReKinoLite.cu
     src/collisionCheck/collisionCheck.cu
     src/collisionCheck/spatialHash.cu
     src/graphs/Graph.cu
@@ -86,6 +87,17 @@ target_link_libraries(ReKinoMain
     Python3::NumPy
 )
 
+add_executable(ReKinoLiteMain examples/gpu/rekino_lite_main.cu)
+target_link_libraries(ReKinoLiteMain
+    PUBLIC KPAX_lib
+    ${CUDA_LIBRARIES}
+    ${Boost_LIBRARIES}
+    ${EIGEN3_LIBRARIES}
+    yaml-cpp
+    Python3::Python
+    Python3::NumPy
+)
+
 # -- PROFILER EXECUTABLE --
 add_executable(profilePropagation
     tools/profilePropagation.cu
@@ -114,6 +126,7 @@ set_target_properties(main PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(benchMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(executionTimeMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(ReKinoMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(ReKinoLiteMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(profilePropagation PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(profilePropagationSpatialHash PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
@@ -124,6 +137,7 @@ set_property(TARGET benchMain PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET executionTimeMain PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET KPAX_lib PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET ReKinoMain PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET ReKinoLiteMain PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET profilePropagation PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET profilePropagationSpatialHash PROPERTY CUDA_ARCHITECTURES 61 86)
 add_definitions(-DEIGEN_NO_DEBUG)
