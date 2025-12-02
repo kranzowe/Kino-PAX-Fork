@@ -150,6 +150,10 @@ void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint 
                blocks, threads_per_block, h_numThreads_);
     }
     
+    // Create event to detect kernel completion
+    cudaEvent_t kernel_done;
+    cudaEventCreate(&kernel_done);
+    
     // Launch the persistent kernel (runs until goal found or max iterations)
     rekino_persistent_kernel<<<blocks, threads_per_block>>>(
         &d_allBranches_ptr_[0],          // Initial state (root) at start of branches array
@@ -163,28 +167,50 @@ void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint 
         d_goalFound_ptr_,                // Global flag: goal found?
         d_solutionThreadId_ptr_,         // Which thread found it?
         d_randomSeeds_ptr_,              // Random number generators
-        MAX_ITER_REKINO,                        // Max iterations before giving up
+        MAX_ITER_REKINO,                 // Max iterations before giving up
         h_maxBranchLength_,              // Max branch depth
-        d_propagation_count,             // DEBUG: Propagation counter  <-- MISSING!
-        d_collision_count,               // DEBUG: Collision counter    <-- MISSING!
-        d_backtrack_count,               // DEBUG: Backtrack counter    <-- MISSING!
-        d_restart_count                  // DEBUG: Restart counter      <-- MISSING!
+        d_propagation_count,             // DEBUG: Propagation counter
+        d_collision_count,               // DEBUG: Collision counter
+        d_backtrack_count,               // DEBUG: Backtrack counter
+        d_restart_count                  // DEBUG: Restart counter
     );
+    
+    // Record event right after kernel launch
+    cudaEventRecord(kernel_done);
+    
     // ========================================================================
     // MONITOR FOR COMPLETION
     // ========================================================================
     
-    // CPU polls the goal_found flag while GPU kernel runs
-    // This is more efficient than synchronizing repeatedly
+    // Poll for kernel completion (non-blocking check)
     int h_goalFound = 0;
     int poll_count = 0;
+    const int max_polls = 60000;  // 60 seconds max timeout
     
-    while(h_goalFound == 0 && poll_count < 10000)  // Timeout after ~10 seconds
+    while(poll_count < max_polls)
     {
-        // Check goal flag every 1ms (balance between responsiveness and CPU usage)
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        // Check if kernel has finished (non-blocking)
+        cudaError_t status = cudaEventQuery(kernel_done);
         
-        cudaMemcpy(&h_goalFound, d_goalFound_ptr_, sizeof(int), cudaMemcpyDeviceToHost);
+        if(status == cudaSuccess)
+        {
+            // Kernel finished! Check if goal was found
+            cudaMemcpy(&h_goalFound, d_goalFound_ptr_, sizeof(int), cudaMemcpyDeviceToHost);
+            if(VERBOSE)
+            {
+                printf("Kernel completed after %.2f seconds\n", poll_count / 1000.0f);
+            }
+            break;
+        }
+        else if(status != cudaErrorNotReady)
+        {
+            // Some other error occurred
+            printf("CUDA error during kernel execution: %s\n", cudaGetErrorString(status));
+            break;
+        }
+        
+        // Kernel still running, sleep and check again
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
         poll_count++;
         
         // Optional: print progress every second
@@ -194,9 +220,16 @@ void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint 
         }
     }
     
-    // Wait for kernel to fully complete
+    // Ensure kernel is fully complete
     cudaDeviceSynchronize();
-    printf("Kernel synchronized\n");
+    
+    if(poll_count >= max_polls)
+    {
+        printf("WARNING: Kernel timeout after %d seconds\n", max_polls / 1000);
+    }
+    
+    // Clean up event
+    cudaEventDestroy(kernel_done);
 
     if(VERBOSE && d_propagation_count)
     {
