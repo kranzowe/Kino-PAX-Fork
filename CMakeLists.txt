@@ -27,9 +27,11 @@ set(SOURCE_FILES
     src/planners/Planner.cu
     src/ReKino/ReKino.cu
     src/collisionCheck/collisionCheck.cu
+    src/collisionCheck/spatialHash.cu
     src/graphs/Graph.cu
     src/helper/helper.cu
     src/statePropagator/statePropagator.cu
+    src/statePropagator/statePropagatorSpatialHash.cu
 )
 add_library(KPAX_lib ${SOURCE_FILES})
 

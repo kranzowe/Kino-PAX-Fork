@@ -1,12 +1,14 @@
 #pragma once
 #include "planners/Planner.cuh"
 #include "graphs/Graph.cuh"
+#include "collisionCheck/spatialHash.cuh"
 
 class KPAX : public Planner
 {
 public:
     /**************************** CONSTRUCTORS ****************************/
     KPAX();
+    ~KPAX();
 
     /****************************    METHODS    ****************************/
     void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount) override;
@@ -34,6 +36,10 @@ public:
     uint *d_activeFrontierIdxs_ptr_, *d_frontierScanIdx_ptr_, *d_activeFrontierRepeatCount_ptr_, *d_frontierRepeatScanIdx_ptr_,
       *d_activeFrontierRepeatIdxs_ptr_;
     int* d_unexploredSamplesParentIdxs_ptr_;
+
+    // --- Spatial hash grid for collision detection ---
+    SpatialHashGrid* d_spatialHashGrid_;
+    SpatialHashGrid h_spatialHashGrid_;  // Host copy for passing to kernels
 };
 
 /**************************** DEVICE FUNCTIONS ****************************/
@@ -46,12 +52,12 @@ public:
 __global__ void propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples,
                                           uint frontierSize, curandState* randomSeeds, int* unexploredSamplesParentIdxs, float* obstacles,
                                           int obstaclesCount, int* activeSubVertices, float* vertexScores, bool* frontierNext,
-                                          int* vertexCounter, int* validVertexCounter, float* minValueInRegion);
+                                          int* vertexCounter, int* validVertexCounter, float* minValueInRegion, SpatialHashGrid spatialHashGrid);
 
 __global__ void propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples,
                                           uint frontierSize, curandState* randomSeeds, int* unexploredSamplesParentIdxs, float* obstacles,
                                           int obstaclesCount, int* activeSubVertices, float* vertexScores, bool* frontierNext,
-                                          int* vertexCounter, int* validVertexCounter, int iterations, float* minValueInRegion);
+                                          int* vertexCounter, int* validVertexCounter, int iterations, float* minValueInRegion, SpatialHashGrid spatialHashGrid);
 
 __global__ void
 updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs, uint frontierNextSize, float* xGoal, int treeSize,
