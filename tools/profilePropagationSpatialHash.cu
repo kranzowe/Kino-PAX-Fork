@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "statePropagator/statePropagator.cuh"  // For ode() function
 #include "statePropagator/statePropagatorSpatialHash.cuh"
 #include "collisionCheck/collisionCheck.cuh"
 #include "collisionCheck/spatialHash.cuh"

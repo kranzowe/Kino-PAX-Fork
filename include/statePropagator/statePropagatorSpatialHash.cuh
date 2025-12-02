@@ -4,6 +4,7 @@
 #include "config/config.h"
 #include "collisionCheck/collisionCheck.cuh"
 #include "collisionCheck/spatialHash.cuh"
+#include "statePropagator/statePropagator.cuh"  // For ode() function
 
 /**
  * Spatial-hash-enabled propagation functions
