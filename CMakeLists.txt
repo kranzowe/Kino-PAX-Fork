@@ -84,11 +84,22 @@ target_link_libraries(ReKinoMain
     Python3::NumPy
 )
 
+# -- PROFILER EXECUTABLE --
+add_executable(profilePropagation
+    tools/profilePropagation.cu
+    src/statePropagator/statePropagatorProfiled.cu
+    src/collisionCheck/collisionCheck.cu
+)
+target_link_libraries(profilePropagation
+    ${CUDA_LIBRARIES}
+)
+
 set_target_properties(KPAX_lib PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(main PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(benchMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(executionTimeMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(ReKinoMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(profilePropagation PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
 
 set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -diag-suppress=20012,20013,20014,20015 --expt-relaxed-constexpr --ptxas-options=-v")
@@ -97,6 +108,7 @@ set_property(TARGET benchMain PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET executionTimeMain PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET KPAX_lib PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET ReKinoMain PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET profilePropagation PROPERTY CUDA_ARCHITECTURES 61 86)
 add_definitions(-DEIGEN_NO_DEBUG)
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations -Wno-unused-function")
