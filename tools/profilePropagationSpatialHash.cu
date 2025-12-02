@@ -228,9 +228,22 @@ int main(int argc, char** argv)
 
     // Create and build spatial hash grid
     printf("Building spatial hash grid...\n");
+    cudaEvent_t gridStart, gridStop;
+    cudaEventCreate(&gridStart);
+    cudaEventCreate(&gridStop);
+
+    cudaEventRecord(gridStart);
     SpatialHashGrid* d_grid = createSpatialHashGrid();
     updateSpatialHashGrid(d_grid, d_obstacles, numObstacles);
-    printf("Spatial hash grid built!\n\n");
+    cudaEventRecord(gridStop);
+    cudaEventSynchronize(gridStop);
+
+    float gridBuildTime = 0;
+    cudaEventElapsedTime(&gridBuildTime, gridStart, gridStop);
+    printf("Spatial hash grid built in %.3f ms!\n\n", gridBuildTime);
+
+    cudaEventDestroy(gridStart);
+    cudaEventDestroy(gridStop);
 
     // Reset profiling data
     resetProfilingData<<<1, 1>>>();
