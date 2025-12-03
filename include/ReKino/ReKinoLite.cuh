@@ -33,7 +33,9 @@ public:
     /****************************    FIELDS    ****************************/
 
     // --- Host fields ---
-    uint h_numWarps_;  // Number of parallel warps searching
+    uint h_numWarps_;           // Number of parallel warps searching
+    uint h_samplesPerThread_;   // How many controls each thread samples (default: 1)
+    float h_epsilonGreedy_;     // Probability of random selection vs greedy (0.0 = pure greedy, 1.0 = pure random)
 
     // --- Device fields ---
 
@@ -81,5 +83,7 @@ __global__ void rekino_lite_warp_kernel(
     int* pathLengths,        // [num_warps]
     int* goalFound,          // Global flag
     curandState* randomSeeds,
-    int maxIterations
+    int maxIterations,
+    int samplesPerThread,    // How many controls each thread samples
+    float epsilonGreedy      // Epsilon-greedy exploration parameter
 );

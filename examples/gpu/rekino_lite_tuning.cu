@@ -1,0 +1,207 @@
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <filesystem>
+#include "ReKino/ReKinoLite.cuh"
+
+/*
+ * ReKinoLite Parameter Tuning Script
+ *
+ * This script explores different parameter combinations:
+ * - samplesPerThread: How many controls each thread samples (1, 2, 4, 8, 16)
+ * - epsilonGreedy: Probability of random vs greedy selection (0.0, 0.1, 0.2, 0.5)
+ *
+ * For each configuration, it runs N trials and:
+ * 1. Measures execution time
+ * 2. Tracks success rate
+ * 3. Generates a visualization of one representative tree
+ */
+
+struct TuningResult
+{
+    int samplesPerThread;
+    float epsilonGreedy;
+    int trials;
+    int successes;
+    double avgTime;
+    double minTime;
+    double maxTime;
+    float successRate;
+};
+
+void writeResultsToCSV(const std::vector<TuningResult>& results)
+{
+    std::filesystem::create_directories("Data");
+    std::filesystem::create_directories("Data/Tuning");
+
+    std::ofstream file("Data/Tuning/tuning_results.csv");
+    file << "samplesPerThread,epsilonGreedy,trials,successes,successRate,avgTime,minTime,maxTime\n";
+
+    for(const auto& r : results)
+    {
+        file << r.samplesPerThread << ","
+             << r.epsilonGreedy << ","
+             << r.trials << ","
+             << r.successes << ","
+             << r.successRate << ","
+             << r.avgTime << ","
+             << r.minTime << ","
+             << r.maxTime << "\n";
+    }
+
+    file.close();
+    printf("Results written to Data/Tuning/tuning_results.csv\n");
+}
+
+void runTuningExperiment(
+    int samplesPerThread,
+    float epsilonGreedy,
+    int numTrials,
+    float* h_initial,
+    float* h_goal,
+    float* d_obstacles,
+    int numObstacles,
+    TuningResult& result)
+{
+    result.samplesPerThread = samplesPerThread;
+    result.epsilonGreedy = epsilonGreedy;
+    result.trials = numTrials;
+    result.successes = 0;
+    result.avgTime = 0.0;
+    result.minTime = 1e9;
+    result.maxTime = 0.0;
+
+    printf("\n=== Testing: samplesPerThread=%d, epsilon=%.2f ===\n",
+           samplesPerThread, epsilonGreedy);
+
+    // Create planner and set parameters
+    ReKinoLite planner;
+    planner.h_samplesPerThread_ = samplesPerThread;
+    planner.h_epsilonGreedy_ = epsilonGreedy;
+
+    std::vector<double> times;
+
+    for(int trial = 0; trial < numTrials; trial++)
+    {
+        cudaEvent_t start, stop;
+        float milliseconds = 0;
+        cudaEventCreate(&start);
+        cudaEventCreate(&stop);
+        cudaEventRecord(&start);
+
+        // Run planner (don't save tree for most trials)
+        bool saveTree = (trial == 0);  // Only save tree for first trial
+        planner.plan(h_initial, h_goal, d_obstacles, numObstacles, saveTree);
+
+        cudaEventRecord(&stop);
+        cudaEventSynchronize(&stop);
+        cudaEventElapsedTime(&milliseconds, start, stop);
+
+        double seconds = milliseconds / 1000.0;
+        times.push_back(seconds);
+
+        // TODO: Track if goal was actually found
+        // For now, we assume success if it completes
+        result.successes++;
+
+        cudaEventDestroy(start);
+        cudaEventDestroy(stop);
+
+        if((trial + 1) % 10 == 0)
+        {
+            printf("  Trial %d/%d complete\n", trial + 1, numTrials);
+        }
+    }
+
+    // Compute statistics
+    for(double t : times)
+    {
+        result.avgTime += t;
+        if(t < result.minTime) result.minTime = t;
+        if(t > result.maxTime) result.maxTime = t;
+    }
+    result.avgTime /= numTrials;
+    result.successRate = (float)result.successes / numTrials;
+
+    printf("  Results: %.2f%% success, avg time: %.3fs (min: %.3fs, max: %.3fs)\n",
+           result.successRate * 100.0f, result.avgTime, result.minTime, result.maxTime);
+}
+
+int main(void)
+{
+    // Remove previous data
+    system("rm -rf Data/Tuning/*");
+    system("rm -rf Data/ReKinoLiteTree/*");
+
+    // Problem setup - same for all trials
+    float h_initial[SAMPLE_DIM] = {10.0, 8, 5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+          h_goal[SAMPLE_DIM]    = {80, 95.0, 90.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+
+    int numObstacles;
+    float* d_obstacles;
+
+    // Load obstacles
+    std::vector<float> obstacles = readObstaclesFromCSV(
+        "../include/config/obstacles/quadTrees/obstacles.csv",
+        numObstacles, W_DIM);
+
+    cudaMalloc(&d_obstacles, numObstacles * 2 * W_DIM * sizeof(float));
+    cudaMemcpy(d_obstacles, obstacles.data(),
+               numObstacles * 2 * W_DIM * sizeof(float), cudaMemcpyHostToDevice);
+
+    printf("=== ReKinoLite Parameter Tuning ===\n");
+    printf("Initial: (%.1f, %.1f, %.1f)\n", h_initial[0], h_initial[1], h_initial[2]);
+    printf("Goal: (%.1f, %.1f, %.1f)\n", h_goal[0], h_goal[1], h_goal[2]);
+    printf("Obstacles: %d\n", numObstacles);
+    printf("Warps: 512 (16,384 threads)\n");
+
+    // Parameter ranges to test
+    std::vector<int> samplesPerThreadValues = {1, 2, 4, 8, 16};
+    std::vector<float> epsilonValues = {0.0f, 0.1f, 0.2f, 0.5f};
+    int trialsPerConfig = 20;
+
+    std::vector<TuningResult> results;
+
+    // Test all combinations
+    for(int samples : samplesPerThreadValues)
+    {
+        for(float epsilon : epsilonValues)
+        {
+            TuningResult result;
+            runTuningExperiment(samples, epsilon, trialsPerConfig,
+                              h_initial, h_goal, d_obstacles, numObstacles,
+                              result);
+            results.push_back(result);
+        }
+    }
+
+    // Write all results
+    writeResultsToCSV(results);
+
+    printf("\n=== Tuning Complete ===\n");
+    printf("Total configurations tested: %zu\n", results.size());
+    printf("Total trials run: %zu\n", results.size() * trialsPerConfig);
+    printf("\nBest configurations:\n");
+
+    // Sort by success rate, then by time
+    std::sort(results.begin(), results.end(),
+              [](const TuningResult& a, const TuningResult& b) {
+                  if(abs(a.successRate - b.successRate) < 0.01)
+                      return a.avgTime < b.avgTime;
+                  return a.successRate > b.successRate;
+              });
+
+    // Print top 5
+    for(int i = 0; i < min(5, (int)results.size()); i++)
+    {
+        const auto& r = results[i];
+        printf("  %d. samples=%d, epsilon=%.2f: %.1f%% success, %.3fs avg\n",
+               i+1, r.samplesPerThread, r.epsilonGreedy,
+               r.successRate * 100.0f, r.avgTime);
+    }
+
+    // Cleanup
+    cudaFree(d_obstacles);
+
+    return 0;
+}

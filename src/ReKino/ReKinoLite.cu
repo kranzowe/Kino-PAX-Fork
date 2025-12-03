@@ -8,6 +8,8 @@ namespace cg = cooperative_groups;
 ReKinoLite::ReKinoLite()
 {
     h_numWarps_ = 512;  // 512 warps = 16,384 threads
+    h_samplesPerThread_ = 1;  // Default: 1 sample per thread (32 total per warp)
+    h_epsilonGreedy_ = 0.0f;  // Default: pure greedy (no random exploration)
 
     d_warpPaths_       = thrust::device_vector<float>(h_numWarps_ * MAX_PATH_LENGTH * SAMPLE_DIM);
     d_pathLengths_     = thrust::device_vector<int>(h_numWarps_);
@@ -27,6 +29,8 @@ ReKinoLite::ReKinoLite()
         printf("/* Number of Warps: %d */\n", h_numWarps_);
         printf("/* Total Threads: %d */\n", h_numWarps_ * WARP_SIZE);
         printf("/* Max Path Length: %d */\n", MAX_PATH_LENGTH);
+        printf("/* Samples Per Thread: %d */\n", h_samplesPerThread_);
+        printf("/* Epsilon Greedy: %.2f */\n", h_epsilonGreedy_);
         printf("/***************************/\n");
     }
 }
@@ -67,9 +71,18 @@ void ReKinoLite::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, u
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count()));
 
+    // Calculate shared memory size
+    const int maxTotalSamples = 512;
+    int totalSamples = min(WARP_SIZE * h_samplesPerThread_, maxTotalSamples);
+    size_t sharedMemSize = totalSamples * SAMPLE_DIM * sizeof(float)  // s_candidateStates
+                         + totalSamples * sizeof(float)               // s_distances
+                         + totalSamples * sizeof(bool)                // s_valid
+                         + sizeof(int)                                // s_bestIdx
+                         + sizeof(int);                               // s_currentDepth
+
     // Launch kernel: each block = 1 warp
     int maxIterations = MAX_ITER_REKINO;
-    rekino_lite_warp_kernel<<<h_numWarps_, WARP_SIZE>>>(
+    rekino_lite_warp_kernel<<<h_numWarps_, WARP_SIZE, sharedMemSize>>>(
         h_initial,
         d_goalSample_ptr_,
         d_obstacles_ptr,
@@ -79,7 +92,9 @@ void ReKinoLite::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, u
         d_pathLengths_ptr_,
         d_goalFound_ptr_,
         d_randomSeeds_ptr_,
-        maxIterations
+        maxIterations,
+        h_samplesPerThread_,
+        h_epsilonGreedy_
     );
 
     cudaDeviceSynchronize();
@@ -173,7 +188,9 @@ __global__ void rekino_lite_warp_kernel(
     int* pathLengths,
     int* goalFound,
     curandState* randomSeeds,
-    int maxIterations
+    int maxIterations,
+    int samplesPerThread,
+    float epsilonGreedy
 )
 {
     // Warp-level organization
@@ -189,18 +206,23 @@ __global__ void rekino_lite_warp_kernel(
     // Each thread gets its own random seed
     curandState localSeed = randomSeeds[blockIdx.x * blockDim.x + threadIdx.x];
 
-    // Shared memory for warp collaboration
-    __shared__ float s_candidateStates[WARP_SIZE * SAMPLE_DIM];  // 32 candidate propagations
-    __shared__ float s_distances[WARP_SIZE];                     // Distance to goal for each
-    __shared__ bool s_valid[WARP_SIZE];                          // Is collision-free?
-    __shared__ int s_bestIdx;                                    // Index of best candidate
-    __shared__ int s_currentDepth;                               // Current path length
+    // Determine total number of samples (threads * samples per thread)
+    const int maxTotalSamples = 512;  // Maximum shared memory for samples
+    int totalSamples = min(WARP_SIZE * samplesPerThread, maxTotalSamples);
+
+    // Shared memory for warp collaboration (dynamically sized based on samplesPerThread)
+    extern __shared__ char shared_mem[];
+    float* s_candidateStates = (float*)shared_mem;  // [totalSamples * SAMPLE_DIM]
+    float* s_distances = (float*)&s_candidateStates[totalSamples * SAMPLE_DIM];  // [totalSamples]
+    bool* s_valid = (bool*)&s_distances[totalSamples];  // [totalSamples]
+    int* s_bestIdx = (int*)&s_valid[totalSamples];  // [1]
+    int* s_currentDepth = (int*)&s_bestIdx[1];  // [1]
 
     // Initialize
     if(lane_id == 0)
     {
-        s_currentDepth = 0;
-        s_bestIdx = -1;
+        *s_currentDepth = 0;
+        *s_bestIdx = -1;
     }
     warp.sync();
 
@@ -214,37 +236,44 @@ __global__ void rekino_lite_warp_kernel(
         float currentNode[SAMPLE_DIM];
         for(int d = 0; d < SAMPLE_DIM; d++)
         {
-            currentNode[d] = myPath[s_currentDepth * SAMPLE_DIM + d];
+            currentNode[d] = myPath[*s_currentDepth * SAMPLE_DIM + d];
         }
 
-        // STEP 1: Each thread propagates a random control
-        float* myCandidate = &s_candidateStates[lane_id * SAMPLE_DIM];
-        bool valid = propagateAndCheckSpatialHash(currentNode, myCandidate, &localSeed, spatialHashGrid, obstacles, obstaclesCount);
-
-        // STEP 2: Compute distance to goal for valid propagations
-        float distToGoal = INFINITY;
-        if(valid)
+        // STEP 1: Each thread propagates multiple random controls
+        for(int sample = 0; sample < samplesPerThread; sample++)
         {
-            distToGoal = 0.0f;
-            for(int d = 0; d < W_DIM; d++)
-            {
-                float diff = myCandidate[d] - goal_state[d];
-                distToGoal += diff * diff;
-            }
-            distToGoal = sqrtf(distToGoal);
-        }
+            int sampleIdx = lane_id * samplesPerThread + sample;
+            if(sampleIdx >= totalSamples) break;
 
-        s_distances[lane_id] = distToGoal;
-        s_valid[lane_id] = valid;
+            float* myCandidate = &s_candidateStates[sampleIdx * SAMPLE_DIM];
+            bool valid = propagateAndCheckSpatialHash(currentNode, myCandidate, &localSeed, spatialHashGrid, obstacles, obstaclesCount);
+
+            // STEP 2: Compute distance to goal for valid propagations
+            float distToGoal = INFINITY;
+            if(valid)
+            {
+                distToGoal = 0.0f;
+                for(int d = 0; d < W_DIM; d++)
+                {
+                    float diff = myCandidate[d] - goal_state[d];
+                    distToGoal += diff * diff;
+                }
+                distToGoal = sqrtf(distToGoal);
+            }
+
+            s_distances[sampleIdx] = distToGoal;
+            s_valid[sampleIdx] = valid;
+        }
         warp.sync();
 
-        // STEP 3: Warp leader finds best valid candidate
+        // STEP 3: Warp leader selects candidate (greedy or epsilon-greedy)
         if(lane_id == 0)
         {
             float bestDist = INFINITY;
             int bestIdx = -1;
 
-            for(int i = 0; i < WARP_SIZE; i++)
+            // Find best valid candidate (greedy choice)
+            for(int i = 0; i < totalSamples; i++)
             {
                 if(s_valid[i] && s_distances[i] < bestDist)
                 {
@@ -253,7 +282,38 @@ __global__ void rekino_lite_warp_kernel(
                 }
             }
 
-            s_bestIdx = bestIdx;
+            // Epsilon-greedy: with probability epsilon, choose random valid sample instead of best
+            if(epsilonGreedy > 0.0f && curand_uniform(&localSeed) < epsilonGreedy)
+            {
+                // Count valid samples
+                int validCount = 0;
+                for(int i = 0; i < totalSamples; i++)
+                {
+                    if(s_valid[i]) validCount++;
+                }
+
+                if(validCount > 0)
+                {
+                    // Pick a random valid sample
+                    int randomChoice = (int)(curand_uniform(&localSeed) * validCount);
+                    int currentCount = 0;
+                    for(int i = 0; i < totalSamples; i++)
+                    {
+                        if(s_valid[i])
+                        {
+                            if(currentCount == randomChoice)
+                            {
+                                bestIdx = i;
+                                bestDist = s_distances[i];
+                                break;
+                            }
+                            currentCount++;
+                        }
+                    }
+                }
+            }
+
+            *s_bestIdx = bestIdx;
 
             // Check if we reached goal
             if(bestIdx >= 0 && bestDist < GOAL_THRESH)
@@ -265,38 +325,38 @@ __global__ void rekino_lite_warp_kernel(
         warp.sync();
 
         // STEP 4: Handle result
-        if(s_bestIdx >= 0)
+        if(*s_bestIdx >= 0)
         {
             // Success! Extend path with best candidate
             if(lane_id == 0)
             {
-                s_currentDepth++;
-                if(s_currentDepth >= MAX_PATH_LENGTH)
+                (*s_currentDepth)++;
+                if(*s_currentDepth >= MAX_PATH_LENGTH)
                 {
                     // Path too long, restart from beginning
-                    s_currentDepth = 0;
+                    *s_currentDepth = 0;
                 }
             }
             warp.sync();
 
             // Copy best candidate to path
-            float* bestCandidate = &s_candidateStates[s_bestIdx * SAMPLE_DIM];
+            float* bestCandidate = &s_candidateStates[*s_bestIdx * SAMPLE_DIM];
             if(lane_id < SAMPLE_DIM)
             {
-                myPath[s_currentDepth * SAMPLE_DIM + lane_id] = bestCandidate[lane_id];
+                myPath[*s_currentDepth * SAMPLE_DIM + lane_id] = bestCandidate[lane_id];
             }
             warp.sync();
         }
         else
         {
-            // All 32 propagations collided! Backtrack randomly
+            // All propagations collided! Backtrack randomly
             if(lane_id == 0)
             {
-                if(s_currentDepth > 0)
+                if(*s_currentDepth > 0)
                 {
                     // Random backtrack 1-5 nodes
                     int backtrackAmount = 1 + (int)(curand_uniform(&localSeed) * 5);
-                    s_currentDepth = max(0, s_currentDepth - backtrackAmount);
+                    *s_currentDepth = max(0, *s_currentDepth - backtrackAmount);
                 }
                 // If already at root, stay there and try again
             }
@@ -306,7 +366,7 @@ __global__ void rekino_lite_warp_kernel(
         // Update path length
         if(lane_id == 0)
         {
-            *myPathLength = s_currentDepth;
+            *myPathLength = *s_currentDepth;
         }
     }
 
