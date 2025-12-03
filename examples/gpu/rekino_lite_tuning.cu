@@ -87,14 +87,14 @@ void runTuningExperiment(
         float milliseconds = 0;
         cudaEventCreate(&start);
         cudaEventCreate(&stop);
-        cudaEventRecord(&start);
+        cudaEventRecord(start);
 
         // Run planner (don't save tree for most trials)
         bool saveTree = (trial == 0);  // Only save tree for first trial
         planner.plan(h_initial, h_goal, d_obstacles, numObstacles, saveTree);
 
-        cudaEventRecord(&stop);
-        cudaEventSynchronize(&stop);
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
         cudaEventElapsedTime(&milliseconds, start, stop);
 
         double seconds = milliseconds / 1000.0;
