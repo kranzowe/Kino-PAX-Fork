@@ -15,9 +15,9 @@ try
     SAMPLE_DIM = 17;  % Each state is 17 elements (12 state + 4 control + 1 duration)
     STATE_DIM = 12;   % First 12 elements are state
     CONTROL_DIM = 4;  % Next 4 elements are control
-    MAX_BRANCH_LENGTH = 500;  % As defined in ReKino constructor
+    MAX_BRANCH_LENGTH = 1000;  % As defined in ReKinoLite (MAX_PATH_LENGTH)
     NUM_BRANCHES_TO_PLOT = 50;  % Plot first 50 thread branches
-    STEP_SIZE = .2;   % Step size for propagation
+    STEP_SIZE = .1;   % Step size for propagation (matches STEP_SIZE in config.h)
     model = 3;        % Quadrotor model
 
     xGoal = [.80, .95, .90];
