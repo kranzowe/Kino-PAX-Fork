@@ -42,14 +42,14 @@ This guide explains how to tune ReKinoLite's exploration parameters to optimize 
 ```bash
 # 1. Build the tuning script
 cd build
-cmake .. && make rekino_lite_tuning
+cmake .. && make ReKinoLiteTuning
 
 # 2. Run tuning (tests multiple parameter combinations)
-./rekino_lite_tuning
+./ReKinoLiteTuning
 
-# 3. Analyze results
+# 3. Analyze results (generates plots)
 cd ../viz
-python analyze_tuning.py
+matlab -nodisplay -r "analyze_tuning; exit"
 ```
 
 ## What Gets Generated
@@ -59,11 +59,11 @@ python analyze_tuning.py
 - `Data/ReKinoLiteTree/rekino_lite_tree.csv` - Tree from first trial of each config
 
 ### After Analysis:
-- `figs/tuning/success_rate_heatmap.png` - Success rate by parameters
-- `figs/tuning/avg_time_heatmap.png` - Execution time by parameters
-- `figs/tuning/samples_effect.png` - How samples per thread affects performance
-- `figs/tuning/epsilon_effect.png` - How epsilon affects performance
-- `figs/tuning/pareto_front.png` - Success vs time tradeoff
+- `viz/figs/tuning/success_rate_heatmap.jpg` - Success rate by parameters
+- `viz/figs/tuning/avg_time_heatmap.jpg` - Execution time by parameters
+- `viz/figs/tuning/samples_effect.jpg` - How samples per thread affects performance
+- `viz/figs/tuning/epsilon_effect.jpg` - How epsilon affects performance
+- `viz/figs/tuning/pareto_front.jpg` - Success vs time tradeoff
 
 ## Setting Custom Parameters
 
