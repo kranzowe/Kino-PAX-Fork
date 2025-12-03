@@ -7,7 +7,15 @@ namespace cg = cooperative_groups;
 
 ReKinoLite::ReKinoLite()
 {
-    h_numWarps_ = 512;  // 512 warps = 16,384 threads
+    // Query GPU properties to set optimal number of warps
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, 0);
+
+    // Use 2x the max concurrent blocks for good occupancy
+    // This ensures the GPU stays saturated as blocks complete
+    int maxConcurrentBlocks = prop.maxBlocksPerMultiProcessor * prop.multiProcessorCount;
+    h_numWarps_ = min(512, maxConcurrentBlocks * 2);
+
     h_samplesPerThread_ = 1;  // Default: 1 sample per thread (32 total per warp)
     h_epsilonGreedy_ = 0.0f;  // Default: pure greedy (no random exploration)
 
@@ -25,7 +33,15 @@ ReKinoLite::ReKinoLite()
 
     if(VERBOSE)
     {
+        cudaDeviceProp prop;
+        cudaGetDeviceProperties(&prop, 0);
+
+        printf("/***************************/\n");
         printf("/* Planner Type: ReKinoLite (Warp-Based) */\n");
+        printf("/* GPU: %s */\n", prop.name);
+        printf("/* Max blocks per SM: %d */\n", prop.maxBlocksPerMultiProcessor);
+        printf("/* Number of SMs: %d */\n", prop.multiProcessorCount);
+        printf("/* Max concurrent blocks: ~%d */\n", prop.maxBlocksPerMultiProcessor * prop.multiProcessorCount);
         printf("/* Number of Warps: %d */\n", h_numWarps_);
         printf("/* Total Threads: %d */\n", h_numWarps_ * WARP_SIZE);
         printf("/* Max Path Length: %d */\n", MAX_PATH_LENGTH);
@@ -80,6 +96,30 @@ void ReKinoLite::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, u
                          + sizeof(int)                                // s_bestIdx
                          + sizeof(int);                               // s_currentDepth
 
+    if(VERBOSE)
+    {
+        printf("/* Shared memory per block: %zu bytes */\n", sharedMemSize);
+        printf("/* Total samples per warp: %d */\n", totalSamples);
+    }
+
+    // Check shared memory limits
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, 0);
+    if(sharedMemSize > prop.sharedMemPerBlock)
+    {
+        printf("WARNING: Requested shared memory (%zu bytes) exceeds limit (%zu bytes)!\n",
+               sharedMemSize, prop.sharedMemPerBlock);
+        printf("Reducing samples to fit within limit...\n");
+        // Reduce totalSamples to fit
+        size_t maxSamples = (prop.sharedMemPerBlock - 16) / (SAMPLE_DIM * sizeof(float) + sizeof(float) + sizeof(bool));
+        totalSamples = min((int)maxSamples, totalSamples);
+        sharedMemSize = totalSamples * SAMPLE_DIM * sizeof(float)
+                      + totalSamples * sizeof(float)
+                      + totalSamples * sizeof(bool)
+                      + sizeof(int) * 2;
+        printf("Adjusted to %d samples, %zu bytes\n", totalSamples, sharedMemSize);
+    }
+
     // Launch kernel: each block = 1 warp
     int maxIterations = MAX_ITER_REKINO;
     rekino_lite_warp_kernel<<<h_numWarps_, WARP_SIZE, sharedMemSize>>>(
@@ -97,7 +137,19 @@ void ReKinoLite::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, u
         h_epsilonGreedy_
     );
 
+    cudaError_t launchError = cudaGetLastError();
+    if(launchError != cudaSuccess)
+    {
+        printf("CUDA kernel launch error: %s\n", cudaGetErrorString(launchError));
+    }
+
     cudaDeviceSynchronize();
+
+    cudaError_t syncError = cudaGetLastError();
+    if(syncError != cudaSuccess)
+    {
+        printf("CUDA kernel execution error: %s\n", cudaGetErrorString(syncError));
+    }
 
     // Check if goal was found
     int goalFound;
