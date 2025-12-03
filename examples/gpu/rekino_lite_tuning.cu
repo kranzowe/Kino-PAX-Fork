@@ -1,6 +1,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <iomanip>
 #include <filesystem>
 #include "ReKino/ReKinoLite.cuh"
 
@@ -79,7 +80,13 @@ void runTuningExperiment(
     planner.h_samplesPerThread_ = samplesPerThread;
     planner.h_epsilonGreedy_ = epsilonGreedy;
 
+    // Set unique output filename for tree
+    std::ostringstream prefix;
+    prefix << "s" << samplesPerThread << "_e" << std::fixed << std::setprecision(2) << epsilonGreedy;
+    planner.setTreeOutputPrefix(prefix.str());
+
     std::vector<double> times;
+    const double MAX_TIME_SECONDS = 10.0;  // 10 second timeout per trial
 
     for(int trial = 0; trial < numTrials; trial++)
     {
@@ -89,8 +96,8 @@ void runTuningExperiment(
         cudaEventCreate(&stop);
         cudaEventRecord(start);
 
-        // Run planner (don't save tree for most trials)
-        bool saveTree = (trial == 0);  // Only save tree for first trial
+        // Run planner - only save tree for first trial with unique filename
+        bool saveTree = (trial == 0);
         planner.plan(h_initial, h_goal, d_obstacles, numObstacles, saveTree);
 
         cudaEventRecord(stop);
@@ -98,10 +105,16 @@ void runTuningExperiment(
         cudaEventElapsedTime(&milliseconds, start, stop);
 
         double seconds = milliseconds / 1000.0;
-        times.push_back(seconds);
 
-        // TODO: Track if goal was actually found
-        // For now, we assume success if it completes
+        // Check for timeout
+        if(seconds > MAX_TIME_SECONDS)
+        {
+            printf("  Trial %d TIMEOUT (%.1fs > %.1fs) - skipping remaining trials\n",
+                   trial + 1, seconds, MAX_TIME_SECONDS);
+            break;
+        }
+
+        times.push_back(seconds);
         result.successes++;
 
         cudaEventDestroy(start);
@@ -109,7 +122,7 @@ void runTuningExperiment(
 
         if((trial + 1) % 10 == 0)
         {
-            printf("  Trial %d/%d complete\n", trial + 1, numTrials);
+            printf("  Trial %d/%d complete (%.3fs)\n", trial + 1, numTrials, seconds);
         }
     }
 
@@ -156,7 +169,7 @@ int main(void)
     printf("Warps: 512 (16,384 threads)\n");
 
     // Parameter ranges to test
-    std::vector<int> samplesPerThreadValues = {1, 2, 4, 8, 16};
+    std::vector<int> samplesPerThreadValues = {1, 2, 4};  // Reduced from {1, 2, 4, 8, 16}
     std::vector<float> epsilonValues = {0.0f, 0.1f, 0.2f, 0.5f};
     int trialsPerConfig = 20;
 

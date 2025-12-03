@@ -29,6 +29,7 @@ public:
     void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, bool saveTree = false) override;
     void writeExecutionTimeToCSV(double time);
     void writeTreeToCSV(int winning_warp_id);
+    void setTreeOutputPrefix(const std::string& prefix) { treeOutputPrefix_ = prefix; }
 
     /****************************    FIELDS    ****************************/
 
@@ -36,6 +37,7 @@ public:
     uint h_numWarps_;           // Number of parallel warps searching
     uint h_samplesPerThread_;   // How many controls each thread samples (default: 1)
     float h_epsilonGreedy_;     // Probability of random selection vs greedy (0.0 = pure greedy, 1.0 = pure random)
+    std::string treeOutputPrefix_;  // Prefix for tree output files (default: empty)
 
     // --- Device fields ---
 

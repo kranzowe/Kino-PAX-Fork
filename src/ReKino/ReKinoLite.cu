@@ -146,7 +146,16 @@ void ReKinoLite::writeTreeToCSV(int winning_warp_id)
     std::filesystem::create_directories("Data");
     std::filesystem::create_directories("Data/ReKinoLiteTree");
     filename.str("");
-    filename << "Data/ReKinoLiteTree/rekino_lite_tree.csv";
+
+    // Use custom prefix if provided, otherwise use default
+    if(treeOutputPrefix_.empty())
+    {
+        filename << "Data/ReKinoLiteTree/rekino_lite_tree.csv";
+    }
+    else
+    {
+        filename << "Data/ReKinoLiteTree/tree_" << treeOutputPrefix_ << ".csv";
+    }
 
     // Write all warp paths (one row per warp's path)
     // Each row contains: [node_0][node_1]...[node_MAX_PATH_LENGTH] for that warp
@@ -160,7 +169,14 @@ void ReKinoLite::writeTreeToCSV(int winning_warp_id)
 
     // Write the path lengths (how deep each warp's path is)
     filename.str("");
-    filename << "Data/ReKinoLiteTree/rekino_lite_depths.csv";
+    if(treeOutputPrefix_.empty())
+    {
+        filename << "Data/ReKinoLiteTree/rekino_lite_depths.csv";
+    }
+    else
+    {
+        filename << "Data/ReKinoLiteTree/depths_" << treeOutputPrefix_ << ".csv";
+    }
     copyAndWriteVectorToCSV(
         d_pathLengths_,
         filename.str(),
