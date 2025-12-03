@@ -47,7 +47,7 @@ int main()
     printf("Warps: 512 (16,384 threads)\n\n");
 
     ReKinoLite planner;
-    planner.plan(h_initial, h_goal, d_obstacles, numObstacles);
+    planner.plan(h_initial, h_goal, d_obstacles, numObstacles, true);  // true = save tree to CSV
 
     // Cleanup
     delete[] h_obstacles;

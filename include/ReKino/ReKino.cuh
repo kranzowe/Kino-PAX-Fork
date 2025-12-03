@@ -23,7 +23,7 @@ public:
     ReKino();
 
     /****************************    METHODS    ****************************/
-    void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount) override;
+    void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, bool saveTree = false) override;
     void writeExecutionTimeToCSV(double time);
     void writeTreeToCSV(int solution_thread_id);
 

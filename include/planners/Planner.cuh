@@ -23,7 +23,7 @@ public:
     Planner();
 
     /****************************    METHODS    ****************************/
-    virtual void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount) = 0;
+    virtual void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, bool saveTree = false) = 0;
     void initializeRandomSeeds(int seed);
 
     /****************************    FIELDS    ****************************/

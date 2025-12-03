@@ -39,7 +39,7 @@ int main(void)
         printf("Iteration %d/%d...\n", i + 1, N);
 
         // --- Execute planner ---
-        rekinolite.plan(h_initial, h_goal, d_obstacles, numObstacles);
+        rekinolite.plan(h_initial, h_goal, d_obstacles, numObstacles, false);  // false = don't save tree (benchmark mode)
 
         // Note: Success tracking would require modifying plan() to return success status
         // For now, we just track execution times

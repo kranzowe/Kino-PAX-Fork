@@ -48,7 +48,7 @@ KPAX::~KPAX()
     destroySpatialHashGrid(d_spatialHashGrid_);
 }
 
-void KPAX::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
+void KPAX::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, bool saveTree)
 {
     cudaEvent_t start, stop;
     float milliseconds = 0;

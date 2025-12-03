@@ -66,7 +66,7 @@ ReKino::ReKino()
  * - CPU monitors goal_found flag and times out if needed
  * - No explicit synchronization during search (kernel runs continuously)
  */
-void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
+void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, bool saveTree)
 {
     // for benchmarking
     cudaEvent_t start, stop;
@@ -304,11 +304,14 @@ void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&milliseconds, start, stop);
-    
+
     writeExecutionTimeToCSV(milliseconds / 1000.0);
-    writeTreeToCSV(0);
-    
-    std::cout << "ReKino execution time: " << milliseconds / 1000.0 
+    if(saveTree)
+    {
+        writeTreeToCSV(0);
+    }
+
+    std::cout << "ReKino execution time: " << milliseconds / 1000.0
               << " seconds. Path length: " << h_pathToGoal_ << std::endl;
     
     cudaEventDestroy(start);

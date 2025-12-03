@@ -36,7 +36,7 @@ ReKinoLite::~ReKinoLite()
     destroySpatialHashGrid(d_spatialHashGrid_);
 }
 
-void ReKinoLite::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
+void ReKinoLite::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, bool saveTree)
 {
     cudaEvent_t start, stop;
     float milliseconds = 0;
@@ -102,6 +102,12 @@ void ReKinoLite::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, u
         int pathLength;
         cudaMemcpy(&pathLength, d_pathLengths_ptr_ + winning_warp, sizeof(int), cudaMemcpyDeviceToHost);
         printf("Path length: %d nodes\n", pathLength);
+
+        // Write tree to CSV if requested
+        if(saveTree)
+        {
+            writeTreeToCSV(winning_warp);
+        }
     }
     else
     {
@@ -117,6 +123,40 @@ void ReKinoLite::writeExecutionTimeToCSV(double time)
     filename.str("");
     filename << "Data/ExecutionTime/executionTime.csv";
     writeValueToCSV(time, filename.str());
+}
+
+void ReKinoLite::writeTreeToCSV(int winning_warp_id)
+{
+    std::ostringstream filename;
+    std::filesystem::create_directories("Data");
+    std::filesystem::create_directories("Data/ReKinoLiteTree");
+    filename.str("");
+    filename << "Data/ReKinoLiteTree/rekino_lite_tree.csv";
+
+    // Write all warp paths (one row per warp's path)
+    // Each row contains: [node_0][node_1]...[node_MAX_PATH_LENGTH] for that warp
+    copyAndWriteVectorToCSV(
+        d_warpPaths_,
+        filename.str(),
+        h_numWarps_,                    // Number of rows (one per warp)
+        MAX_PATH_LENGTH * SAMPLE_DIM,   // Columns per row (max path length × state dimension)
+        false                           // Don't append, overwrite
+    );
+
+    // Write the path lengths (how deep each warp's path is)
+    filename.str("");
+    filename << "Data/ReKinoLiteTree/rekino_lite_depths.csv";
+    copyAndWriteVectorToCSV(
+        d_pathLengths_,
+        filename.str(),
+        h_numWarps_,  // Number of rows
+        1,            // One depth value per warp
+        false
+    );
+
+    printf("Tree written to Data/ReKinoLiteTree/rekino_lite_tree.csv\n");
+    printf("Path lengths written to Data/ReKinoLiteTree/rekino_lite_depths.csv\n");
+    printf("Winning warp: %d\n", winning_warp_id);
 }
 
 
