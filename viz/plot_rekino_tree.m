@@ -23,13 +23,13 @@ try
     xGoal = [.80, .95, .90];
 
     % Read the ReKino tree data
-    treePath = fullfile(rootDir, 'build/Data/ReKinoTree/rekino_tree.csv');
+    treePath = fullfile(rootDir, 'build/Data/ReKinoLiteTree/rekino_lite_tree.csv');
     fprintf('Reading tree from: %s\n', treePath);
     treeData = readmatrix(treePath);
     fprintf('Loaded tree with %d branches (rows)\n', size(treeData, 1));
 
     % Read branch depths to know how many nodes each branch has
-    depthsPath = fullfile(rootDir, 'build/Data/ReKinoTree/rekino_depths.csv');
+    depthsPath = fullfile(rootDir, 'build/Data/ReKinoLiteTree/rekino_lite_depths.csv');
     fprintf('Reading branch depths from: %s\n', depthsPath);
     branchDepths = readmatrix(depthsPath);
 
