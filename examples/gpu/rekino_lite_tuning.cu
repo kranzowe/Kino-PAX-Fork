@@ -38,7 +38,7 @@ void writeResultsToCSV(const std::vector<TuningResult>& results)
     std::filesystem::create_directories("Data");
     std::filesystem::create_directories("Data/Tuning");
 
-    std::ofstream file("Data/Tuning/tuning_results.csv");
+    std::ofstream file("Data/Tuning/tuning_results_narrow.csv");
 
     // Write header: parameters + run_1, run_2, ..., run_50
     file << "samplesPerThread,epsilonGreedy";
@@ -68,7 +68,7 @@ void writeResultsToCSV(const std::vector<TuningResult>& results)
     }
 
     file.close();
-    printf("Results written to Data/Tuning/tuning_results.csv\n");
+    printf("Results written to Data/Tuning/tuning_results_narrow.csv\n");
 }
 
 void runTuningExperiment(
@@ -181,7 +181,7 @@ int main(void)
 
     // Load obstacles
     std::vector<float> obstacles = readObstaclesFromCSV(
-        "../include/config/obstacles/quadTrees/obstacles.csv",
+        "../include/config/obstacles/quadNarrowPassage/obstacles.csv",
         numObstacles, W_DIM);
 
     cudaMalloc(&d_obstacles, numObstacles * 2 * W_DIM * sizeof(float));
