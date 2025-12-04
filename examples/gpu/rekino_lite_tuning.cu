@@ -121,12 +121,12 @@ void runTuningExperiment(
 
         double seconds = milliseconds / 1000.0;
 
-        // Check for timeout
+        // Check for timeout - cap at MAX_TIME_SECONDS but continue
         if(seconds > MAX_TIME_SECONDS)
         {
-            printf("  Trial %d TIMEOUT (%.1fs > %.1fs) - skipping remaining trials\n",
-                   trial + 1, seconds, MAX_TIME_SECONDS);
-            break;
+            printf("  Trial %d TIMEOUT (%.1fs > %.1fs) - recording as %.1fs and continuing\n",
+                   trial + 1, seconds, MAX_TIME_SECONDS, MAX_TIME_SECONDS);
+            seconds = MAX_TIME_SECONDS;  // Cap at max time
         }
 
         times.push_back(seconds);
@@ -134,6 +134,12 @@ void runTuningExperiment(
 
         cudaEventDestroy(start);
         cudaEventDestroy(stop);
+
+        // Add delay between runs to prevent GPU thermal throttling
+        if(trial < numTrials - 1)  // Don't sleep after last trial
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));  // 500ms cooldown
+        }
 
         if((trial + 1) % 10 == 0)
         {
