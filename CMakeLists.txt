@@ -120,6 +120,18 @@ target_link_libraries(ReKinoLiteTuning
     Python3::NumPy
 )
 
+add_executable(comprehensive_benchmark examples/gpu/comprehensive_benchmark.cu)
+target_link_libraries(comprehensive_benchmark
+    PUBLIC KPAX_lib
+    ${CUDA_LIBRARIES}
+    ${Boost_LIBRARIES}
+    ${EIGEN3_LIBRARIES}
+    yaml-cpp
+    Python3::Python
+    Python3::NumPy
+)
+
+
 # -- PROFILER EXECUTABLE --
 add_executable(profilePropagation
     tools/profilePropagation.cu
@@ -153,6 +165,7 @@ set_target_properties(ReKinoLiteTuning PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(rekinoLiteExecutionTimeMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(profilePropagation PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(profilePropagationSpatialHash PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(comprehensive_benchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
 
 set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -diag-suppress=20012,20013,20014,20015 --expt-relaxed-constexpr --ptxas-options=-v")
@@ -166,6 +179,8 @@ set_property(TARGET ReKinoLiteTuning PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET rekinoLiteExecutionTimeMain PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET profilePropagation PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET profilePropagationSpatialHash PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET comprehensive_benchmark PROPERTY CUDA_ARCHITECTURES 61 86)
+
 add_definitions(-DEIGEN_NO_DEBUG)
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations -Wno-unused-function")

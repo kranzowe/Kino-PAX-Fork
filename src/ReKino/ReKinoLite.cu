@@ -7,15 +7,10 @@ namespace cg = cooperative_groups;
 
 ReKinoLite::ReKinoLite()
 {
-    // Query GPU properties to set optimal number of blocks (paths)
-    cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, 0);
+    // Use 512 warps for stable performance
+    h_numWarps_ = 512;
 
-    // Use exactly maxConcurrentBlocks for perfect GPU utilization
-    int maxConcurrentBlocks = prop.maxBlocksPerMultiProcessor * prop.multiProcessorCount;
-    h_numWarps_ = maxConcurrentBlocks;  // Now "number of paths" (blocks), not warps!
-
-    h_samplesPerThread_ = 4;  // Default: 4 samples per thread
+    h_samplesPerThread_ = 1;  // Default: 1 sample per thread
     h_epsilonGreedy_ = 0.0f;  // Default: pure greedy (no random exploration)
 
     d_warpPaths_       = thrust::device_vector<float>(h_numWarps_ * MAX_PATH_LENGTH * SAMPLE_DIM);
@@ -36,16 +31,13 @@ ReKinoLite::ReKinoLite()
         cudaGetDeviceProperties(&prop, 0);
 
         printf("/***************************/\n");
-        printf("/* Planner Type: ReKinoLite (Block-Based) */\n");
+        printf("/* Planner Type: ReKinoLite (Warp-Based) */\n");
         printf("/* GPU: %s */\n", prop.name);
-        printf("/* Max blocks per SM: %d */\n", prop.maxBlocksPerMultiProcessor);
-        printf("/* Number of SMs: %d */\n", prop.multiProcessorCount);
-        printf("/* Max concurrent blocks: ~%d */\n", prop.maxBlocksPerMultiProcessor * prop.multiProcessorCount);
-        printf("/* Number of Blocks (Paths): %d */\n", h_numWarps_);
-        printf("/* Threads per Block: 256 (8 warps) */\n");
-        printf("/* Total Threads: %d */\n", h_numWarps_ * 256);
+        printf("/* Number of Warps (Paths): %d */\n", h_numWarps_);
+        printf("/* Threads per Warp: 32 */\n");
+        printf("/* Total Threads: %d */\n", h_numWarps_ * 32);
         printf("/* Samples per Thread: %d */\n", h_samplesPerThread_);
-        printf("/* Total Samples per Block: up to %d */\n", min(256 * h_samplesPerThread_, 2048));
+        printf("/* Total Samples per Warp: %d */\n", 32 * h_samplesPerThread_);
         printf("/* Max Path Length: %d */\n", MAX_PATH_LENGTH);
         printf("/* Epsilon Greedy: %.2f */\n", h_epsilonGreedy_);
         printf("/***************************/\n");
@@ -89,9 +81,8 @@ void ReKinoLite::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, u
             std::chrono::system_clock::now().time_since_epoch()).count()));
 
     // Calculate shared memory size
-    const int maxTotalSamples = 2048;  // 256 threads * up to 8 samples = 2048
-    int threadsPerBlock = 256;
-    int totalSamples = min(threadsPerBlock * h_samplesPerThread_, maxTotalSamples);
+    const int maxTotalSamples = 512;
+    int totalSamples = min(WARP_SIZE * h_samplesPerThread_, maxTotalSamples);
     size_t sharedMemSize = totalSamples * SAMPLE_DIM * sizeof(float)  // s_candidateStates
                          + totalSamples * sizeof(float)               // s_distances
                          + totalSamples * sizeof(bool)                // s_valid
@@ -122,7 +113,8 @@ void ReKinoLite::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, u
         printf("Adjusted to %d samples, %zu bytes\n", totalSamples, sharedMemSize);
     }
 
-    // Launch kernel: each block = 256 threads (8 warps) exploring one path cooperatively
+    // Launch kernel: each block = 1 warp (32 threads) exploring one path cooperatively
+    int threadsPerBlock = WARP_SIZE;  // 32 threads
     int maxIterations = MAX_ITER_REKINO;
 
     // Calculate max clock cycles for 6-second timeout
@@ -272,20 +264,21 @@ __global__ void rekino_lite_warp_kernel(
     unsigned long long maxClockCycles  // 6-second timeout in clock cycles
 )
 {
-    // Block-level organization: 256 threads per block exploring one path
-    int block_id = blockIdx.x;    // Which path (0 to numBlocks-1)
-    int thread_id = threadIdx.x;  // Thread within block (0-255)
+    // Warp-level organization: 32 threads per warp exploring one path
+    int warp_id = blockIdx.x;     // Which path (0 to numWarps-1)
+    int lane_id = threadIdx.x;    // Thread within warp (0-31)
+    cg::thread_block_tile<32> warp = cg::tiled_partition<32>(cg::this_thread_block());
 
-    // Get pointer to THIS block's path (all threads work on same path)
-    float* myPath = &warpPaths[block_id * MAX_PATH_LENGTH * SAMPLE_DIM];
-    int* myPathLength = &pathLengths[block_id];
+    // Get pointer to THIS warp's path (all threads work on same path)
+    float* myPath = &warpPaths[warp_id * MAX_PATH_LENGTH * SAMPLE_DIM];
+    int* myPathLength = &pathLengths[warp_id];
 
     // Each thread gets its own random seed
     curandState localSeed = randomSeeds[blockIdx.x * blockDim.x + threadIdx.x];
 
-    // Determine total number of samples (256 threads * samplesPerThread)
-    const int maxTotalSamples = 2048;  // Maximum samples (256 * 8 = 2048)
-    int totalSamples = min(blockDim.x * samplesPerThread, maxTotalSamples);
+    // Determine total number of samples (32 threads * samplesPerThread)
+    const int maxTotalSamples = 512;
+    int totalSamples = min(WARP_SIZE * samplesPerThread, maxTotalSamples);
 
     // Shared memory for warp collaboration (dynamically sized based on samplesPerThread)
     extern __shared__ char shared_mem[];
@@ -295,13 +288,13 @@ __global__ void rekino_lite_warp_kernel(
     int* s_bestIdx = (int*)&s_valid[totalSamples];  // [1]
     int* s_currentDepth = (int*)&s_bestIdx[1];  // [1]
 
-    // Initialize (only thread 0 does this)
-    if(thread_id == 0)
+    // Initialize
+    if(lane_id == 0)
     {
         *s_currentDepth = 0;
         *s_bestIdx = -1;
     }
-    __syncthreads();
+    warp.sync();
 
     // Start timer for timeout
     unsigned long long startClock = clock64();
@@ -310,7 +303,7 @@ __global__ void rekino_lite_warp_kernel(
     for(int iter = 0; iter < maxIterations; iter++)
     {
         // Check timeout every 100 iterations (not every iteration for performance)
-        if(iter % 100 == 0 && thread_id == 0)
+        if(iter % 100 == 0 && lane_id == 0)
         {
             unsigned long long elapsed = clock64() - startClock;
             if(elapsed > maxClockCycles)
@@ -318,7 +311,7 @@ __global__ void rekino_lite_warp_kernel(
                 return;  // Timeout - exit immediately
             }
         }
-        __syncthreads();
+        warp.sync();
 
         // Check if any warp found goal
         if(*goalFound > 0) return;
@@ -333,7 +326,7 @@ __global__ void rekino_lite_warp_kernel(
         // STEP 1: Each thread propagates multiple random controls
         for(int sample = 0; sample < samplesPerThread; sample++)
         {
-            int sampleIdx = thread_id * samplesPerThread + sample;
+            int sampleIdx = lane_id * samplesPerThread + sample;
             if(sampleIdx >= totalSamples) break;
 
             float* myCandidate = &s_candidateStates[sampleIdx * SAMPLE_DIM];
@@ -355,10 +348,10 @@ __global__ void rekino_lite_warp_kernel(
             s_distances[sampleIdx] = distToGoal;
             s_valid[sampleIdx] = valid;
         }
-        __syncthreads();
+        warp.sync();
 
-        // STEP 3: Block leader (thread 0) selects candidate (greedy or epsilon-greedy)
-        if(thread_id == 0)
+        // STEP 3: Warp leader selects candidate (greedy or epsilon-greedy)
+        if(lane_id == 0)
         {
             float bestDist = INFINITY;
             int bestIdx = -1;
@@ -410,16 +403,16 @@ __global__ void rekino_lite_warp_kernel(
             if(bestIdx >= 0 && bestDist < GOAL_THRESH)
             {
                 // Goal found!
-                atomicCAS(goalFound, 0, block_id + 1);  // Mark this block as winner
+                atomicCAS(goalFound, 0, warp_id + 1);  // Mark this warp as winner
             }
         }
-        __syncthreads();
+        warp.sync();
 
         // STEP 4: Handle result
         if(*s_bestIdx >= 0)
         {
             // Success! Extend path with best candidate
-            if(thread_id == 0)
+            if(lane_id == 0)
             {
                 (*s_currentDepth)++;
                 if(*s_currentDepth >= MAX_PATH_LENGTH)
@@ -428,20 +421,20 @@ __global__ void rekino_lite_warp_kernel(
                     *s_currentDepth = 0;
                 }
             }
-            __syncthreads();
+            warp.sync();
 
-            // Copy best candidate to path (parallel copy with 256 threads)
+            // Copy best candidate to path
             float* bestCandidate = &s_candidateStates[*s_bestIdx * SAMPLE_DIM];
-            if(thread_id < SAMPLE_DIM)
+            if(lane_id < SAMPLE_DIM)
             {
-                myPath[*s_currentDepth * SAMPLE_DIM + thread_id] = bestCandidate[thread_id];
+                myPath[*s_currentDepth * SAMPLE_DIM + lane_id] = bestCandidate[lane_id];
             }
-            __syncthreads();
+            warp.sync();
         }
         else
         {
             // All propagations collided! Backtrack randomly
-            if(thread_id == 0)
+            if(lane_id == 0)
             {
                 if(*s_currentDepth > 0)
                 {
@@ -451,11 +444,11 @@ __global__ void rekino_lite_warp_kernel(
                 }
                 // If already at root, stay there and try again
             }
-            __syncthreads();
+            warp.sync();
         }
 
         // Update path length
-        if(thread_id == 0)
+        if(lane_id == 0)
         {
             *myPathLength = *s_currentDepth;
         }
