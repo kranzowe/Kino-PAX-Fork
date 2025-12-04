@@ -14,7 +14,7 @@ ReKinoLite::ReKinoLite()
     // Use 3x the max concurrent blocks for good occupancy
     // This ensures the GPU stays saturated as blocks complete
     int maxConcurrentBlocks = prop.maxBlocksPerMultiProcessor * prop.multiProcessorCount;
-    h_numWarps_ = maxConcurrentBlocks * 3;  // Remove 512 cap, use full GPU capacity!
+    h_numWarps_ = maxConcurrentBlocks * 3;
 
     h_samplesPerThread_ = 1;  // Default: 1 sample per thread (32 total per warp)
     h_epsilonGreedy_ = 0.0f;  // Default: pure greedy (no random exploration)

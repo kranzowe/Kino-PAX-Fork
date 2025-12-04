@@ -3,6 +3,8 @@
 #include <sstream>
 #include <iomanip>
 #include <filesystem>
+#include <thread>
+#include <chrono>
 #include "ReKino/ReKinoLite.cuh"
 
 /*
