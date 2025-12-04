@@ -11,10 +11,10 @@ ReKinoLite::ReKinoLite()
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, 0);
 
-    // Use 2x the max concurrent blocks for good occupancy
+    // Use 3x the max concurrent blocks for good occupancy
     // This ensures the GPU stays saturated as blocks complete
     int maxConcurrentBlocks = prop.maxBlocksPerMultiProcessor * prop.multiProcessorCount;
-    h_numWarps_ = min(512, maxConcurrentBlocks * 2);
+    h_numWarps_ = maxConcurrentBlocks * 3;  // Remove 512 cap, use full GPU capacity!
 
     h_samplesPerThread_ = 1;  // Default: 1 sample per thread (32 total per warp)
     h_epsilonGreedy_ = 0.0f;  // Default: pure greedy (no random exploration)

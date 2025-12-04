@@ -28,6 +28,7 @@ struct TuningResult
     double minTime;
     double maxTime;
     float successRate;
+    std::vector<double> allTimes;  // Store all individual runtimes
 };
 
 void writeResultsToCSV(const std::vector<TuningResult>& results)
@@ -36,18 +37,32 @@ void writeResultsToCSV(const std::vector<TuningResult>& results)
     std::filesystem::create_directories("Data/Tuning");
 
     std::ofstream file("Data/Tuning/tuning_results.csv");
-    file << "samplesPerThread,epsilonGreedy,trials,successes,successRate,avgTime,minTime,maxTime\n";
 
+    // Write header: parameters + run_1, run_2, ..., run_50
+    file << "samplesPerThread,epsilonGreedy";
+    for(int i = 1; i <= 50; i++)
+    {
+        file << ",run_" << i;
+    }
+    file << "\n";
+
+    // Write each configuration's data
     for(const auto& r : results)
     {
-        file << r.samplesPerThread << ","
-             << r.epsilonGreedy << ","
-             << r.trials << ","
-             << r.successes << ","
-             << r.successRate << ","
-             << r.avgTime << ","
-             << r.minTime << ","
-             << r.maxTime << "\n";
+        // Write parameters
+        file << r.samplesPerThread << "," << r.epsilonGreedy;
+
+        // Write all runtimes (or empty if trial timed out/wasn't run)
+        for(size_t i = 0; i < 50; i++)
+        {
+            file << ",";
+            if(i < r.allTimes.size())
+            {
+                file << r.allTimes[i];
+            }
+            // Empty cell if this trial wasn't completed
+        }
+        file << "\n";
     }
 
     file.close();
@@ -86,7 +101,7 @@ void runTuningExperiment(
     planner.setTreeOutputPrefix(prefix.str());
 
     std::vector<double> times;
-    const double MAX_TIME_SECONDS = 10.0;  // 10 second timeout per trial
+    const double MAX_TIME_SECONDS = 6.0;  // 6 second timeout per trial
 
     for(int trial = 0; trial < numTrials; trial++)
     {
@@ -125,6 +140,9 @@ void runTuningExperiment(
             printf("  Trial %d/%d complete (%.3fs)\n", trial + 1, numTrials, seconds);
         }
     }
+
+    // Store all times
+    result.allTimes = times;
 
     // Compute statistics
     for(double t : times)
@@ -171,7 +189,7 @@ int main(void)
     // Parameter ranges to test
     std::vector<int> samplesPerThreadValues = {1, 2, 4};  // Reduced from {1, 2, 4, 8, 16}
     std::vector<float> epsilonValues = {0.0f, 0.1f, 0.2f, 0.5f};
-    int trialsPerConfig = 20;
+    int trialsPerConfig = 50;
 
     std::vector<TuningResult> results;
 
