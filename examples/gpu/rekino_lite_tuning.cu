@@ -196,8 +196,8 @@ int main(void)
 
     // Parameter ranges to test
     std::vector<int> samplesPerThreadValues = {1, 2, 4};  // Reduced from {1, 2, 4, 8, 16}
-    std::vector<float> epsilonValues = {0.0f, 0.1f, 0.2f, 0.5f};
-    int trialsPerConfig = 50;
+    std::vector<float> epsilonValues = {0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f};
+    int trialsPerConfig = 40;
 
     std::vector<TuningResult> results;
 
