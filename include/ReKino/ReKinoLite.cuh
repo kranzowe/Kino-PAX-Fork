@@ -16,7 +16,7 @@
  */
 
 #define WARP_SIZE 32
-#define MAX_PATH_LENGTH 100  // Maximum nodes in a path per warp
+#define MAX_PATH_LENGTH 200  // Maximum nodes in a path per warp
 
 class ReKinoLite : public Planner
 {
