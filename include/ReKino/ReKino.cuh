@@ -41,10 +41,8 @@ public:
     
     // Per-thread branch storage (each thread maintains its own linear branch)
     thrust::device_vector<float> d_allBranches_;        // [num_threads][max_branch_length][SAMPLE_DIM]
-    thrust::device_vector<float> d_allControls_;        // [num_threads][max_branch_length][CONTROL_DIM]
     thrust::device_vector<int> d_branchDepths_;         // Current depth for each thread
     float* d_allBranches_ptr_;
-    float* d_allControls_ptr_;
     int* d_branchDepths_ptr_;
     
     // Global coordination
@@ -80,7 +78,6 @@ public:
  *   obstaclesCount: Number of obstacles
  *   exploredRegions: Boolean array marking which regions have been visited
  *   allBranches: Per-thread branch storage [thread_id][depth][dim]
- *   allControls: Per-thread control storage [thread_id][depth][control_dim]
  *   branchDepths: Current depth for each thread
  *   goalFound: Global flag (0 = searching, 1 = found)
  *   solutionThreadId: ID of thread that found goal
@@ -95,7 +92,6 @@ __global__ void rekino_persistent_kernel(
     int obstaclesCount,
     bool* exploredRegions,
     float* allBranches,
-    float* allControls,
     int* branchDepths,
     int* goalFound,
     int* solutionThreadId,

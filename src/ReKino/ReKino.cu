@@ -11,8 +11,8 @@ ReKino::ReKino()
     // this gives 16k parallel branches.
     h_numThreads_ = 64 * 256;
     
-    // how many nodes any one branch can have. 
-    h_maxBranchLength_ = 500;
+    // how many nodes any one branch can have.
+    h_maxBranchLength_ = 200;
 
     // To track explored regions, we dont use a graph. is just a coarse grid
     // explored_regions[region_idx] = true if explored / false else
@@ -24,11 +24,9 @@ ReKino::ReKino()
     // Layout: [thread_0_branch][thread_1_branch]...[thread_N_branch]
     // where each branch is: [node_0][node_1]...[node_depth]
     d_allBranches_ = thrust::device_vector<float>(h_numThreads_ * h_maxBranchLength_ * SAMPLE_DIM);
-    d_allControls_ = thrust::device_vector<float>(h_numThreads_ * h_maxBranchLength_ * CONTROL_DIM);
     d_branchDepths_ = thrust::device_vector<int>(h_numThreads_);
-    
+
     d_allBranches_ptr_ = thrust::raw_pointer_cast(d_allBranches_.data());
-    d_allControls_ptr_ = thrust::raw_pointer_cast(d_allControls_.data());
     d_branchDepths_ptr_ = thrust::raw_pointer_cast(d_branchDepths_.data());
     
     // need a way for threads to chit chat. This is for seeing goal have been found
@@ -50,8 +48,10 @@ ReKino::ReKino()
         printf("/* Number of parallel threads: %d */\n", h_numThreads_);
         printf("/* Max branch length per thread: %d */\n", h_maxBranchLength_);
         printf("/* Number of regions: %d */\n", NUM_R1_REGIONS);
-        printf("/* Total branch storage: %.2f MB */\n", 
+        printf("/* Total branch storage: %.2f MB */\n",
                (h_numThreads_ * h_maxBranchLength_ * SAMPLE_DIM * sizeof(float)) / (1024.0f * 1024.0f));
+        printf("/* Memory saved by removing controls: %.2f MB */\n",
+               (h_numThreads_ * h_maxBranchLength_ * CONTROL_DIM * sizeof(float)) / (1024.0f * 1024.0f));
         printf("/***************************/\n");
     }
 }
@@ -162,7 +162,6 @@ void ReKino::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint 
         h_obstaclesCount,                // Number of obstacles
         d_exploredRegions_ptr_,          // Shared exploration tracker
         d_allBranches_ptr_,              // All thread branches
-        d_allControls_ptr_,              // All thread controls
         d_branchDepths_ptr_,             // Current depth per thread
         d_goalFound_ptr_,                // Global flag: goal found?
         d_solutionThreadId_ptr_,         // Which thread found it?
@@ -351,7 +350,6 @@ __global__ void rekino_persistent_kernel(
     int obstaclesCount,
     bool* exploredRegions,
     float* allBranches,
-    float* allControls,
     int* branchDepths,
     int* goalFound,
     int* solutionThreadId,
@@ -380,7 +378,6 @@ __global__ void rekino_persistent_kernel(
     
     // Each thread gets its own slice of the branches array
     float* my_branch = &allBranches[tid * maxBranchLength * SAMPLE_DIM];
-    float* my_controls = &allControls[tid * maxBranchLength * CONTROL_DIM];
     int current_depth = 0;
     
     // Initialize random state for this thread
