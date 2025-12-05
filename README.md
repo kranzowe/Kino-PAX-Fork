@@ -1,3 +1,24 @@
+# Specific commands to run on Zephyr
+1. Login to Zephyr.
+TO BUILD
+cd ~/Kino-PAX-Fork/build
+rm -rf *
+
+export CC=/usr/bin/gcc-12
+export CXX=/usr/bin/g++-12
+export CUDAHOSTCXX=/usr/bin/g++-12
+
+cmake -DCMAKE_C_COMPILER=/usr/bin/gcc-12 \
+      -DCMAKE_CXX_COMPILER=/usr/bin/g++-12 \
+      -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-12 \
+      ..
+
+make -j$(nproc)
+
+
+# to run
+srun -n 1 --mem=8G --gres=gpu:1 ./comprehensive_...
+
 
 # Kino-PAX  
 Kinodynamic Parallel Accelerated eXpansion
