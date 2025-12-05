@@ -102,7 +102,7 @@ target_link_libraries(ReKinoLiteTuning
 )
 
 add_executable(prune_kpaxTuning examples/gpu/prune_kpax_tuning.cu)
-target_link_libraries(ReKinoLiteTuning
+target_link_libraries(prune_kpaxTuning
     PUBLIC KPAX_lib
     ${CUDA_LIBRARIES}
     ${Boost_LIBRARIES}
