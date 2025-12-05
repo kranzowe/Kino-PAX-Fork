@@ -24,32 +24,59 @@ colors = [
 %% Create figure with multiple subplots
 figure('Position', [100, 100, 1400, 900]);
 
-%% 1. Box plots for each environment
+%% 1. Violin-style distribution plots for each environment
 for env_idx = 1:num_envs
     subplot(2, 3, env_idx);
+    hold on;
 
     % Filter data for this environment
     env_data = data(strcmp(data.environment, environments{env_idx}), :);
 
-    % Prepare data for boxplot
-    plot_data = [];
-    group_labels = {};
-
+    % Plot distributions for each planner
+    x_positions = 1:num_planners;
     for p_idx = 1:num_planners
         planner_data = env_data(strcmp(env_data.planner, planners{p_idx}), :);
         times = planner_data.execution_time;
-        plot_data = [plot_data; times];
-        group_labels = [group_labels; repmat(planners(p_idx), length(times), 1)];
+
+        % Calculate statistics
+        q1 = prctile(times, 25);
+        q3 = prctile(times, 75);
+        med = median(times);
+        iqr = q3 - q1;
+        lower_whisker = max(min(times), q1 - 1.5*iqr);
+        upper_whisker = min(max(times), q3 + 1.5*iqr);
+
+        x = x_positions(p_idx);
+
+        % Draw box
+        rectangle('Position', [x-0.2, q1, 0.4, q3-q1], ...
+                 'FaceColor', [colors(p_idx,:), 0.3], ...
+                 'EdgeColor', colors(p_idx,:), 'LineWidth', 1.5);
+
+        % Draw median line
+        plot([x-0.2, x+0.2], [med, med], 'Color', colors(p_idx,:), 'LineWidth', 2);
+
+        % Draw whiskers
+        plot([x, x], [q1, lower_whisker], 'Color', colors(p_idx,:), 'LineWidth', 1);
+        plot([x, x], [q3, upper_whisker], 'Color', colors(p_idx,:), 'LineWidth', 1);
+        plot([x-0.1, x+0.1], [lower_whisker, lower_whisker], 'Color', colors(p_idx,:), 'LineWidth', 1);
+        plot([x-0.1, x+0.1], [upper_whisker, upper_whisker], 'Color', colors(p_idx,:), 'LineWidth', 1);
+
+        % Plot outliers
+        outliers = times(times < lower_whisker | times > upper_whisker);
+        if ~isempty(outliers)
+            scatter(repmat(x, length(outliers), 1), outliers, 20, colors(p_idx,:), 'filled', 'MarkerFaceAlpha', 0.5);
+        end
     end
 
-    % Create boxplot
-    boxplot(plot_data, group_labels, 'Colors', colors);
-
+    set(gca, 'XTick', x_positions, 'XTickLabel', planners);
     title(sprintf('%s Environment', environments{env_idx}), 'FontSize', 12, 'FontWeight', 'bold');
     ylabel('Execution Time (s)', 'FontSize', 10);
     xlabel('Planner', 'FontSize', 10);
     grid on;
     set(gca, 'XTickLabelRotation', 15);
+    xlim([0.5, num_planners + 0.5]);
+    hold off;
 end
 
 %% 2. Success rate comparison
