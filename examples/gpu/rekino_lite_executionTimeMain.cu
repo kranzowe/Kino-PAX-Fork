@@ -3,10 +3,8 @@
 
 int main(void)
 {
-    // --- Remove Previous Bench Data ---
     system("rm -rf Data/*");
 
-    // --- For 12D Nonlinear Quadrotor System ---
     float h_initial[SAMPLE_DIM] = {10.0, 8, 5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
           h_goal[SAMPLE_DIM]    = {80, 95.0, 90.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
 
@@ -15,10 +13,8 @@ int main(void)
     int numObstacles;
     float* d_obstacles;
 
-    // --- Load Workspace Obstacles ---
     std::vector<float> obstacles = readObstaclesFromCSV("../include/config/obstacles/quadTrees/obstacles.csv", numObstacles, W_DIM);
 
-    // --- Transfer Obstacles to device ---
     cudaMalloc(&d_obstacles, numObstacles * 2 * W_DIM * sizeof(float));
     cudaMemcpy(d_obstacles, obstacles.data(), numObstacles * 2 * W_DIM * sizeof(float), cudaMemcpyHostToDevice);
 
@@ -29,7 +25,6 @@ int main(void)
     printf("Obstacles: %d\n", numObstacles);
     printf("Warps: 512 (16,384 threads)\n\n");
 
-    // --- Execute planner N times ---
     int N = 50;
     int successCount = 0;
     double totalTime = 0.0;
@@ -38,11 +33,8 @@ int main(void)
     {
         printf("Iteration %d/%d...\n", i + 1, N);
 
-        // --- Execute planner ---
         rekinolite.plan(h_initial, h_goal, d_obstacles, numObstacles, false);  // false = don't save tree (benchmark mode)
 
-        // Note: Success tracking would require modifying plan() to return success status
-        // For now, we just track execution times
     }
 
     printf("\n=== Benchmark Complete ===\n");

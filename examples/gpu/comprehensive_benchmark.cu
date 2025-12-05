@@ -10,16 +10,6 @@
 #include "planners/KPAX.cuh"
 #include "ReKino/ReKinoLite.cuh"
 
-/*
- * Comprehensive Benchmark Script
- *
- * Tests multiple planners across multiple environments:
- * - Environments: House, Narrow Passage, Trees (quadTrees)
- * - Planners: KPAX, KPAX with Spatial Hashing, ReKinoLite
- * - 50 runs per configuration
- *
- * Output: Single CSV file with all results for box plot analysis
- */
 
 struct BenchmarkResult
 {
@@ -37,10 +27,9 @@ void writeResultsToCSV(const std::vector<BenchmarkResult>& results)
 
     std::ofstream file("Data/Benchmarks/comprehensive_benchmark.csv");
 
-    // Header
     file << "environment,planner,run_number,execution_time,success\n";
 
-    // Data
+    // data writing
     for(const auto& r : results)
     {
         file << r.environment << ","
@@ -51,7 +40,7 @@ void writeResultsToCSV(const std::vector<BenchmarkResult>& results)
     }
 
     file.close();
-    printf("\n=== Results written to Data/Benchmarks/comprehensive_benchmark.csv ===\n");
+    printf("\ndata written to Data/Benchmarks/comprehensive_benchmark.csv\n");
 }
 
 void runBenchmark(
