@@ -31,7 +31,7 @@ int main(void)
     for(int i = 0; i < N; i++)
         {
             // --- Execute planner ---
-            kpax.plan(h_initial, h_goal, d_obstacles, numObstacles);
+            kpax.planDebug(h_initial, h_goal, d_obstacles, numObstacles);
         }
 
     // --- Free memory ---

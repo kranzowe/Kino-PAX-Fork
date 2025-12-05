@@ -1,17 +1,15 @@
 #pragma once
-#include "planners/Planner.cuh"
+#include "planners/originalPlanner.cuh"
 #include "graphs/Graph.cuh"
-#include "collisionCheck/spatialHash.cuh"
 
-class KPAX : public Planner
+class OriginalKPAX : public OriginalPlanner
 {
 public:
     /**************************** CONSTRUCTORS ****************************/
-    KPAX();
-    ~KPAX();
+    OriginalKPAX();
 
     /****************************    METHODS    ****************************/
-    void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, bool saveTree = false) override;
+    void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount) override;
     void planDebug(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount);
     void planBench(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, int benchItr);
     void propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount);
@@ -36,10 +34,6 @@ public:
     uint *d_activeFrontierIdxs_ptr_, *d_frontierScanIdx_ptr_, *d_activeFrontierRepeatCount_ptr_, *d_frontierRepeatScanIdx_ptr_,
       *d_activeFrontierRepeatIdxs_ptr_;
     int* d_unexploredSamplesParentIdxs_ptr_;
-
-    // --- Spatial hash grid for collision detection ---
-    SpatialHashGrid* d_spatialHashGrid_;
-    SpatialHashGrid h_spatialHashGrid_;  // Host copy for passing to kernels
 };
 
 /**************************** DEVICE FUNCTIONS ****************************/
@@ -49,17 +43,18 @@ public:
 /***************************/
 // --- Propagates current frontier. Builds new frontier. ---
 // --- One Block Per Frontier Sample ---
-__global__ void propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples,
+__global__ void original_propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples,
                                           uint frontierSize, curandState* randomSeeds, int* unexploredSamplesParentIdxs, float* obstacles,
                                           int obstaclesCount, int* activeSubVertices, float* vertexScores, bool* frontierNext,
-                                          int* vertexCounter, int* validVertexCounter, float* minValueInRegion, SpatialHashGrid spatialHashGrid);
+                                          int* vertexCounter, int* validVertexCounter, float* minValueInRegion);
 
-__global__ void propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples,
+__global__ void original_propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples,
                                           uint frontierSize, curandState* randomSeeds, int* unexploredSamplesParentIdxs, float* obstacles,
                                           int obstaclesCount, int* activeSubVertices, float* vertexScores, bool* frontierNext,
-                                          int* vertexCounter, int* validVertexCounter, int iterations, float* minValueInRegion, SpatialHashGrid spatialHashGrid);
+                                          int* vertexCounter, int* validVertexCounter, int iterations, float* minValueInRegion);
 
-__global__ void updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs, uint frontierNextSize, float* xGoal, int treeSize,
+__global__ void
+original_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs, uint frontierNextSize, float* xGoal, int treeSize,
                       float* unexploredSamples, float* treeSamples, int* unexploredSamplesParentIdxs, int* treeSamplesParentIdxs,
                       float* treeSampleCosts, int* pathToGoal, uint* activeFrontierRepeatCount, int* validVertexCounter,
                       curandState* randomSeeds, float* vertexScores, float* controlPathToGoal, float fAccept);

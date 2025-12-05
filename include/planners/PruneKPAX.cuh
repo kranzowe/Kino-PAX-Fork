@@ -3,12 +3,12 @@
 #include "graphs/Graph.cuh"
 #include "collisionCheck/spatialHash.cuh"
 
-class KPAX : public Planner
+class PruneKPAX : public Planner
 {
 public:
     /**************************** CONSTRUCTORS ****************************/
-    KPAX();
-    ~KPAX();
+    PruneKPAX();
+    ~PruneKPAX();
 
     /****************************    METHODS    ****************************/
     void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, bool saveTree = false) override;
@@ -24,6 +24,11 @@ public:
     Graph graph_;
     uint h_frontierSize_, h_frontierNextSize_, h_activeBlockSize_, h_frontierRepeatSize_, h_propIterations_;
     float h_fAccept_;
+
+    // --- Tunable pruning parameters ---
+    float h_progressScale_;      // Maximum allowed regression in distance to goal
+    float h_explorationBias_;    // Base exploration probability
+    float h_goalBias_;           // Goal-directed bias multiplier
 
     // --- device fields ---
     thrust::device_vector<bool> d_frontier_, d_frontierNext_;
@@ -49,17 +54,19 @@ public:
 /***************************/
 // --- Propagates current frontier. Builds new frontier. ---
 // --- One Block Per Frontier Sample ---
-__global__ void propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples,
+__global__ void prune_propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples,
                                           uint frontierSize, curandState* randomSeeds, int* unexploredSamplesParentIdxs, float* obstacles,
                                           int obstaclesCount, int* activeSubVertices, float* vertexScores, bool* frontierNext,
                                           int* vertexCounter, int* validVertexCounter, float* minValueInRegion, SpatialHashGrid spatialHashGrid);
 
-__global__ void propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples,
+__global__ void prune_propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples,
                                           uint frontierSize, curandState* randomSeeds, int* unexploredSamplesParentIdxs, float* obstacles,
                                           int obstaclesCount, int* activeSubVertices, float* vertexScores, bool* frontierNext,
                                           int* vertexCounter, int* validVertexCounter, int iterations, float* minValueInRegion, SpatialHashGrid spatialHashGrid);
 
-__global__ void updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs, uint frontierNextSize, float* xGoal, int treeSize,
+__global__ void
+prune_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs, uint frontierNextSize, float* xGoal, int treeSize,
                       float* unexploredSamples, float* treeSamples, int* unexploredSamplesParentIdxs, int* treeSamplesParentIdxs,
                       float* treeSampleCosts, int* pathToGoal, uint* activeFrontierRepeatCount, int* validVertexCounter,
-                      curandState* randomSeeds, float* vertexScores, float* controlPathToGoal, float fAccept);
+                      curandState* randomSeeds, float* vertexScores, float* controlPathToGoal, float fAccept,
+                      float goalBias, float explorationBias, float progressScale);

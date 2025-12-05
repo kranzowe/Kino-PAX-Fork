@@ -25,10 +25,16 @@ include_directories(
 set(SOURCE_FILES
     src/planners/KPAX.cu
     src/planners/Planner.cu
+    src/planners/originalKPAX.cu
+    src/planners/originalPlanner.cu
+    src/planners/PruneKPAX.cu
+    src/ReKino/ReKinoLite.cu
     src/collisionCheck/collisionCheck.cu
+    src/collisionCheck/spatialHash.cu
     src/graphs/Graph.cu
     src/helper/helper.cu
     src/statePropagator/statePropagator.cu
+    src/statePropagator/statePropagatorSpatialHash.cu
 )
 add_library(KPAX_lib ${SOURCE_FILES})
 
@@ -72,16 +78,99 @@ target_link_libraries(executionTimeMain
     Python3::NumPy
 )
 
+add_executable(rekinoLiteExecutionTimeMain examples/gpu/rekino_lite_executionTimeMain.cu)
+target_link_libraries(rekinoLiteExecutionTimeMain
+    PUBLIC KPAX_lib
+    ${CUDA_LIBRARIES}
+    ${Boost_LIBRARIES}
+    ${EIGEN3_LIBRARIES}
+    yaml-cpp
+    Python3::Python
+    Python3::NumPy
+)
+
+
+add_executable(ReKinoLiteTuning examples/gpu/rekino_lite_tuning.cu)
+target_link_libraries(ReKinoLiteTuning
+    PUBLIC KPAX_lib
+    ${CUDA_LIBRARIES}
+    ${Boost_LIBRARIES}
+    ${EIGEN3_LIBRARIES}
+    yaml-cpp
+    Python3::Python
+    Python3::NumPy
+)
+
+add_executable(prune_kpaxTuning examples/gpu/prune_kpax_tuning.cu)
+target_link_libraries(prune_kpaxTuning
+    PUBLIC KPAX_lib
+    ${CUDA_LIBRARIES}
+    ${Boost_LIBRARIES}
+    ${EIGEN3_LIBRARIES}
+    yaml-cpp
+    Python3::Python
+    Python3::NumPy
+)
+
+add_executable(comprehensive_benchmark examples/gpu/comprehensive_benchmark.cu)
+target_link_libraries(comprehensive_benchmark
+    PUBLIC KPAX_lib
+    ${CUDA_LIBRARIES}
+    ${Boost_LIBRARIES}
+    ${EIGEN3_LIBRARIES}
+    yaml-cpp
+    Python3::Python
+    Python3::NumPy
+)
+
+
+# -- PROFILER EXECUTABLE --
+add_executable(profilePropagation
+    tools/profilePropagation.cu
+    src/statePropagator/statePropagatorProfiled.cu
+    src/statePropagator/statePropagator.cu
+    src/collisionCheck/collisionCheck.cu
+)
+target_link_libraries(profilePropagation
+    ${CUDA_LIBRARIES}
+)
+
+# -- PROFILER WITH SPATIAL HASH --
+add_executable(profilePropagationSpatialHash
+    tools/profilePropagationSpatialHash.cu
+    src/statePropagator/statePropagatorSpatialHash.cu
+    src/statePropagator/statePropagator.cu
+    src/collisionCheck/collisionCheck.cu
+    src/collisionCheck/spatialHash.cu
+)
+target_link_libraries(profilePropagationSpatialHash
+    ${CUDA_LIBRARIES}
+)
+
 set_target_properties(KPAX_lib PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(main PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(benchMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(executionTimeMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(ReKinoLiteTuning PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(prune_kpaxTuning PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(rekinoLiteExecutionTimeMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(profilePropagation PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(profilePropagationSpatialHash PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(comprehensive_benchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
 
 set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -diag-suppress=20012,20013,20014,20015 --expt-relaxed-constexpr --ptxas-options=-v")
-set_property(TARGET main PROPERTY CUDA_ARCHITECTURES 86)
-set_property(TARGET benchMain PROPERTY CUDA_ARCHITECTURES 86)
-set_property(TARGET KPAX_lib PROPERTY CUDA_ARCHITECTURES 86)
+set_property(TARGET main PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET benchMain PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET executionTimeMain PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET KPAX_lib PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET ReKinoLiteTuning PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET prune_kpaxTuning PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET rekinoLiteExecutionTimeMain PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET profilePropagation PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET profilePropagationSpatialHash PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET comprehensive_benchmark PROPERTY CUDA_ARCHITECTURES 61 86)
+
 add_definitions(-DEIGEN_NO_DEBUG)
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations -Wno-unused-function")

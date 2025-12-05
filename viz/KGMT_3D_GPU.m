@@ -2,156 +2,70 @@ close all
 clc
 clear all
 
-% Parameters
-numFiles = 1;
-radius = .05;
-N = 8;
-n = 4;
-sampleSize = 10;
-stateSize = 6;
-controlSize = 3;
-xGoal = [.80, .95, .90];
-alpha = .7;
-STEP_SIZE = .2;
-model = 3;
+try
+    % Define root directory
+    rootDir = '/home/owkr8158/Kino-PAX-Fork';
+    
+    % Enable batch mode rendering
+    fprintf('Starting MATLAB script in batch mode...\n');
+    fprintf('Root directory: %s\n', rootDir);
 
-% Obstacle file path
-obstacleFilePath = '/home/nicolas/dev/research/KPAX/include/config/obstacles/house/obstacles.csv';
-obstacles = gpuArray(readmatrix(obstacleFilePath));
+    % Parameters
+    numFiles = 1;
+    radius = .05;
+    N = 8;
+    n = 4;
+    sampleSize = 17;
+    stateSize = 12;
+    controlSize = 3;
 
-treeSizePath = "/home/nicolas/dev/research/KPAX/build/Data/TreeSize/TreeSize0/treeSize.csv";
-treeSizes = gpuArray(readmatrix(treeSizePath));
-treeSizes = [0; treeSizes];
+    xGoal = [.80, .95, .90];
+    alpha = .7;
+    STEP_SIZE = .2;
+    model = 3;
 
-colors = gpuArray([0 0 1;  % Blue
-                   0 .9 .2;  % Green
-                   1 0 1;  % Pink
-                   .7 .7 0;  % Yellow
-                   0 .7 .7; % Turquoise
-                   1 .5 0]); % Orange
+    % Obstacle file path (relative to root)
+    obstacleFilePath = fullfile(rootDir, 'include/config/obstacles/quadTrees/obstacles.csv');
+    fprintf('Reading obstacles from: %s\n', obstacleFilePath);
+    obstacles = gpuArray(readmatrix(obstacleFilePath));
+    fprintf('Loaded %d obstacles\n', size(obstacles, 1));
 
-fig = figure('Position', [100, 100, 1000, 1000]); 
-hold on;
-axis equal;
-title('Iteration 0');
+    % Tree size path (relative to build/Data)
+    treeSizePath = fullfile(rootDir, 'build/Data/TreeSize/TreeSize0/treeSize.csv');
+    fprintf('Reading tree sizes from: %s\n', treeSizePath);
+    treeSizes = gpuArray(readmatrix(treeSizePath));
+    treeSizes = [0; treeSizes];
 
-sampleFilePath = "/home/nicolas/dev/research/KPAX/build/Data/Samples/Samples0/samples1.csv";
-samples = gpuArray(readmatrix(sampleFilePath));
+    colors = gpuArray([0 0 1;  % Blue
+                    0 .9 .2;  % Green
+                    1 0 1;  % Pink
+                    .7 .7 0;  % Yellow
+                    0 .7 .7; % Turquoise
+                    1 .5 0]); % Orange
 
-controlPath = '/home/nicolas/dev/research/KPAX/build/Data/ControlPathToGoal/ControlPathToGoal0/controlPathToGoal.csv';
-controls = gpuArray(flipud(readmatrix(controlPath)));
-controls = [samples(1,1), samples(1,2), samples(1,3), samples(1,4), samples(1,5), samples(1,6), 0, 0, 0, 0; controls];
-
-plot3(gather(samples(1,1)), gather(samples(1,2)), gather(samples(1,3)), 'ko', 'MarkerFaceColor', 'b', 'MarkerSize', 10);
-
-[X, Y, Z] = sphere(20);
-surf(radius * gather(X) + xGoal(1), radius * gather(Y) + xGoal(2), radius * gather(Z) + xGoal(3), ...
-     'FaceColor', 'g', 'FaceAlpha', 0.5, 'EdgeColor', 'none');
-
-for j = 1:size(obstacles, 1)
-    x_min = obstacles(j, 1);
-    y_min = obstacles(j, 2);
-    z_min = obstacles(j, 3);
-    x_max = obstacles(j, 4);
-    y_max = obstacles(j, 5);
-    z_max = obstacles(j, 6);
-    vertices = gpuArray([
-        x_min, y_min, z_min;
-        x_max, y_min, z_min;
-        x_max, y_max, z_min;
-        x_min, y_max, z_min;
-        x_min, y_min, z_max;
-        x_max, y_min, z_max;
-        x_max, y_max, z_max;
-        x_min, y_max, z_max]);
-    faces = gpuArray([
-        1, 2, 6, 5;
-        2, 3, 7, 6;
-        3, 4, 8, 7;
-        4, 1, 5, 8;
-        1, 2, 3, 4;
-        5, 6, 7, 8]);
-    patch('Vertices', gather(vertices), 'Faces', gather(faces), 'FaceColor', 'r', 'EdgeColor', 'k', 'FaceAlpha', alpha);
-end
-
-camlight('headlight'); 
-camlight('right');
-lighting phong;
-
-% view(3);
-% drawnow;
-% saveas(gcf, 'figs/KGMT_Iteration_0.jpg');
-% print('figs/KGMT_Iteration_0.jpg', '-djpeg', '-r300');
-% 
-% view(2);
-% drawnow;
-% saveas(gcf, 'figs/top_KGMT_Iteration_0.jpg');
-% print('figs/top_KGMT_Iteration_0.jpg', '-djpeg', '-r300');
-% 
-% midY = 0.5 * xGoal(2); 
-% midZ = 0.5 * xGoal(3); 
-% campos([0, midY, xGoal(3) + 1]); 
-% camtarget([0, midY, midZ]); 
-% view([-.4, -.2, 0.5]);
-% drawnow;
-% saveas(gcf, 'figs/xAxis_KGMT_Iteration_0.jpg');
-% print('figs/xAxis_KGMT_Iteration_0.jpg', '-djpeg', '-r300'); 
-
-close(gcf);
-iteration = 1;
-
-for i = 1:numFiles
-    sampleFilePath = "/home/nicolas/dev/research/KPAX/build/Data/Samples/Samples0/samples" + i + ".csv";
-    parentFilePath = "/home/nicolas/dev/research/KPAX/build/Data/Parents/Parents0/parents" + i + ".csv";
-
-    samples = gpuArray(readmatrix(sampleFilePath));
-    parentRelations = gpuArray(readmatrix(parentFilePath));
-
-    fig = figure('Position', [100, 100, 1000, 1000]); 
+    % CRITICAL: Use 'Visible', 'off' for batch mode
+    fig = figure('Position', [100, 100, 1000, 1000], 'Visible', 'off'); 
     hold on;
     axis equal;
-    axis off;
-    % title(sprintf('Iteration %d', i));
+    title('Iteration 0');
+
+    % Sample file path (relative to build/Data)
+    sampleFilePath = fullfile(rootDir, 'build/Data/Samples/Samples0/samples1.csv');
+    fprintf('Reading samples from: %s\n', sampleFilePath);
+    samples = gpuArray(readmatrix(sampleFilePath));
+
+    % Control path (relative to build/Data)
+    controlPath = fullfile(rootDir, 'build/Data/ControlPathToGoal/ControlPathToGoal0/controlPathToGoal.csv');
+    fprintf('Reading controls from: %s\n', controlPath);
+    controls = gpuArray(flipud(readmatrix(controlPath)));
+    controls = [samples(1,:); controls];
 
     plot3(gather(samples(1,1)), gather(samples(1,2)), gather(samples(1,3)), 'ko', 'MarkerFaceColor', 'b', 'MarkerSize', 10);
-    
-    cubeVertices = [
-        0, 0, 0;
-        1, 0, 0;
-        1, 1, 0;
-        0, 1, 0;
-        0, 0, 1;
-        1, 0, 1;
-        1, 1, 1;
-        0, 1, 1
-    ];
-    
-    cubeEdges = [
-        1, 2;
-        2, 3;
-        3, 4;
-        4, 1;
-        5, 6;
-        6, 7;
-        7, 8;
-        8, 5;
-        1, 5;
-        2, 6;
-        3, 7;
-        4, 8
-    ];
-    
-    for k = 1:size(cubeEdges, 1)
-        plot3([cubeVertices(cubeEdges(k, 1), 1), cubeVertices(cubeEdges(k, 2), 1)], ...
-              [cubeVertices(cubeEdges(k, 1), 2), cubeVertices(cubeEdges(k, 2), 2)], ...
-              [cubeVertices(cubeEdges(k, 1), 3), cubeVertices(cubeEdges(k, 2), 3)], ...
-              'k-', 'LineWidth', .05);
-    end
 
     [X, Y, Z] = sphere(20);
     surf(radius * gather(X) + xGoal(1), radius * gather(Y) + xGoal(2), radius * gather(Z) + xGoal(3), ...
-         'FaceColor', 'g', 'FaceAlpha', 0.5, 'EdgeColor', 'none');
-    
+        'FaceColor', 'g', 'FaceAlpha', 0.5, 'EdgeColor', 'none');
+
     for j = 1:size(obstacles, 1)
         x_min = obstacles(j, 1);
         y_min = obstacles(j, 2);
@@ -182,94 +96,171 @@ for i = 1:numFiles
     camlight('right');
     lighting phong;
 
-    colorIndex = 1;
-    % for j = 2:size(parentRelations, 1)
-    %     if j > treeSizes(iteration)
-    %         colorIndex = 3;
-    %     else
-    %         colorIndex = 1;
-    %     end
-    %     if parentRelations(j) == -1
-    %         iteration = iteration + 1;
-    %         break;
-    %     end
-    %     x0 = samples((parentRelations(j) + 1), 1:stateSize);
-    %     sample = samples(j, :);
-    %     if model == 1
-    %         [segmentX, segmentY, segmentZ] = propDoubleIntegrator(x0, sample, STEP_SIZE, stateSize, sampleSize);
-    %     elseif model == 2
-    %         [segmentX, segmentY, segmentZ] = propDubinsAirplane(x0, sample, STEP_SIZE, stateSize, sampleSize);
-    %     elseif model == 3
-    %         [segmentX, segmentY, segmentZ] = propQuad(x0, sample, STEP_SIZE, stateSize, sampleSize);
-    %     end
-    %     plot3(gather(segmentX), gather(segmentY), gather(segmentZ), '-.', 'Color', 'k', 'LineWidth', 0.01);
-    %     plot3(gather(samples(j, 1)), gather(samples(j, 2)), gather(samples(j, 3)), 'o', 'Color', gather(colors(colorIndex, :)), 'MarkerFaceColor', gather(colors(colorIndex, :)), 'MarkerSize', 2);
-    % end
+    close(gcf);
+    iteration = 1;
 
-    % Define the filename for the GIF
-    gifFilename = sprintf('figs/KGMT_Iteration_%d.gif', i);
-
-
-    if i == numFiles
-        for j = 2:size(controls, 1)
-            x0 = controls(j-1, 1:stateSize);
-            sample = controls(j,:);
-            if model == 1
-                [segmentX, segmentY, segmentZ] = propDoubleIntegrator(x0, sample, STEP_SIZE, stateSize, sampleSize);
-            elseif model == 2
-                [segmentX, segmentY, segmentZ] = propDubinsAirplane(x0, sample, STEP_SIZE, stateSize, sampleSize);
-            elseif model == 3
-                [segmentX, segmentY, segmentZ] = propQuad(x0, sample, STEP_SIZE, stateSize, sampleSize);
-            end
-
-            plot3(gather(segmentX), gather(segmentY), gather(segmentZ), 'Color', 'g', 'LineWidth', 1);
-            % plot3(gather(controls(j, 1)), gather(controls(j, 2)), gather(controls(j, 3)), 'o', 'Color', gather(colors(colorIndex, :)), 'MarkerFaceColor', gather(colors(colorIndex, :)), 'MarkerSize', 2);
-        end
+    % Create figs directory if it doesn't exist
+    figsDir = fullfile(rootDir, 'figs');
+    if ~exist(figsDir, 'dir')
+        fprintf('Creating figs directory: %s\n', figsDir);
+        mkdir(figsDir);
+    else
+        fprintf('Figs directory exists: %s\n', figsDir);
     end
 
-    % Set up the initial view
-    % view(3);
-    % axis vis3d; % Maintain aspect ratio during rotation
+    fprintf('Processing %d files...\n', numFiles);
     
-    % Rotate and capture frames for 360-degree view
-    % for angle = 0:1:360  % Adjust step size for smoother or faster rotation
-    %     view(angle, 30);
-    %     % Capture the plot as a frame
-    %     frame = getframe(gcf);
-    %     im = frame2im(frame);
-    %     [imind, cm] = rgb2ind(im, 256);
-    % 
-    %     % Write to the GIF file
-    %     if angle == 0
-    %         % Create the GIF file on the first iteration
-    %         imwrite(imind, cm, gifFilename, 'gif', 'Loopcount', inf, 'DelayTime', 0.1);
-    %     else
-    %         % Append to the GIF file on subsequent iterations
-    %         imwrite(imind, cm, gifFilename, 'gif', 'WriteMode', 'append', 'DelayTime', 0.1);
-    %     end
-    % end
+    for i = 1:numFiles
+        fprintf('Processing file %d/%d...\n', i, numFiles);
+        
+        % Sample and parent file paths (relative to build/Data)
+        sampleFilePath = fullfile(rootDir, sprintf('build/Data/Samples/Samples0/samples%d.csv', i));
+        parentFilePath = fullfile(rootDir, sprintf('build/Data/Parents/Parents0/parents%d.csv', i));
 
-    view(3);
-    drawnow;
-    saveas(gcf, sprintf('figs/KGMT_Iteration_%d.jpg', i));
-    print(sprintf('figs/KGMT_Iteration_%d.jpg', i), '-djpeg', '-r300');
+        samples = gpuArray(readmatrix(sampleFilePath));
+        parentRelations = gpuArray(readmatrix(parentFilePath));
 
-    view(2);
-    drawnow;
-    saveas(gcf, sprintf('figs/top_KGMT_Iteration_%d.jpg', i));
-    print(sprintf('figs/top_KGMT_Iteration_%d.jpg', i), '-djpeg', '-r300');
+        % CRITICAL: Use 'Visible', 'off' for batch mode
+        fig = figure('Position', [100, 100, 1000, 1000], 'Visible', 'off'); 
+        hold on;
+        axis equal;
+        axis off;
 
-    midY = (min(gather(samples(:,2))) + max(gather(samples(:,2)))) / 2;
-    midZ = (min(gather(samples(:,3))) + max(gather(samples(:,3)))) / 2;
-    campos([0, midY, max(gather(samples(:,3))) + 1]);
-    camtarget([0, midY, midZ]);
-    view([-.4, -.2, 0.5]);
-    drawnow;
+        plot3(gather(samples(1,1)), gather(samples(1,2)), gather(samples(1,3)), 'ko', 'MarkerFaceColor', 'b', 'MarkerSize', 10);
+        
+        cubeVertices = [
+            0, 0, 0;
+            1, 0, 0;
+            1, 1, 0;
+            0, 1, 0;
+            0, 0, 1;
+            1, 0, 1;
+            1, 1, 1;
+            0, 1, 1
+        ];
+        
+        cubeEdges = [
+            1, 2;
+            2, 3;
+            3, 4;
+            4, 1;
+            5, 6;
+            6, 7;
+            7, 8;
+            8, 5;
+            1, 5;
+            2, 6;
+            3, 7;
+            4, 8
+        ];
+        
+        for k = 1:size(cubeEdges, 1)
+            plot3([cubeVertices(cubeEdges(k, 1), 1), cubeVertices(cubeEdges(k, 2), 1)], ...
+                [cubeVertices(cubeEdges(k, 1), 2), cubeVertices(cubeEdges(k, 2), 2)], ...
+                [cubeVertices(cubeEdges(k, 1), 3), cubeVertices(cubeEdges(k, 2), 3)], ...
+                'k-', 'LineWidth', .05);
+        end
 
-    saveas(gcf, sprintf('figs/xAxis_KGMT_Iteration_%d.jpg', i));
-    print(sprintf('figs/xAxis_KGMT_Iteration_%d.jpg', i), '-djpeg', '-r300');
+        [X, Y, Z] = sphere(20);
+        surf(radius * gather(X) + xGoal(1), radius * gather(Y) + xGoal(2), radius * gather(Z) + xGoal(3), ...
+            'FaceColor', 'g', 'FaceAlpha', 0.5, 'EdgeColor', 'none');
+        
+        for j = 1:size(obstacles, 1)
+            x_min = obstacles(j, 1);
+            y_min = obstacles(j, 2);
+            z_min = obstacles(j, 3);
+            x_max = obstacles(j, 4);
+            y_max = obstacles(j, 5);
+            z_max = obstacles(j, 6);
+            vertices = gpuArray([
+                x_min, y_min, z_min;
+                x_max, y_min, z_min;
+                x_max, y_max, z_min;
+                x_min, y_max, z_min;
+                x_min, y_min, z_max;
+                x_max, y_min, z_max;
+                x_max, y_max, z_max;
+                x_min, y_max, z_max]);
+            faces = gpuArray([
+                1, 2, 6, 5;
+                2, 3, 7, 6;
+                3, 4, 8, 7;
+                4, 1, 5, 8;
+                1, 2, 3, 4;
+                5, 6, 7, 8]);
+            patch('Vertices', gather(vertices), 'Faces', gather(faces), 'FaceColor', 'r', 'EdgeColor', 'k', 'FaceAlpha', alpha);
+        end
 
-    % close(gcf);
+        camlight('headlight'); 
+        camlight('right');
+        lighting phong;
+
+        colorIndex = 1;
+
+        % Define the filename for the GIF
+        gifFilename = fullfile(figsDir, sprintf('KGMT_Iteration_%d.gif', i));
+
+        if i == numFiles
+            fprintf('Plotting control path...\n');
+            for j = 2:size(controls, 1)
+                x0 = controls(j-1, 1:stateSize);
+                sample = controls(j,:);
+                if model == 1
+                    [segmentX, segmentY, segmentZ] = propDoubleIntegrator(x0, sample, STEP_SIZE, stateSize, sampleSize);
+                elseif model == 2
+                    [segmentX, segmentY, segmentZ] = propDubinsAirplane(x0, sample, STEP_SIZE, stateSize, sampleSize);
+                elseif model == 3
+                    [segmentX, segmentY, segmentZ] = propQuad(x0, sample, STEP_SIZE, stateSize, sampleSize);
+                end
+
+                plot3(gather(segmentX), gather(segmentY), gather(segmentZ), 'Color', 'g', 'LineWidth', 1);
+            end
+        end
+
+        % View 3D
+        view(3);
+        drawnow;
+        filename1 = fullfile(figsDir, sprintf('KGMT_Iteration_%d.jpg', i));
+        fprintf('Saving: %s\n', filename1);
+        print(gcf, filename1, '-djpeg', '-r300');
+
+        % Top view
+        view(2);
+        drawnow;
+        filename2 = fullfile(figsDir, sprintf('top_KGMT_Iteration_%d.jpg', i));
+        fprintf('Saving: %s\n', filename2);
+        print(gcf, filename2, '-djpeg', '-r300');
+
+        % X-axis view
+        midY = (min(gather(samples(:,2))) + max(gather(samples(:,2)))) / 2;
+        midZ = (min(gather(samples(:,3))) + max(gather(samples(:,3)))) / 2;
+        campos([0, midY, max(gather(samples(:,3))) + 1]);
+        camtarget([0, midY, midZ]);
+        view([-.4, -.2, 0.5]);
+        drawnow;
+
+        filename3 = fullfile(figsDir, sprintf('xAxis_KGMT_Iteration_%d.jpg', i));
+        fprintf('Saving: %s\n', filename3);
+        print(gcf, filename3, '-djpeg', '-r300');
+        
+        close(gcf);
+        fprintf('Completed file %d/%d\n', i, numFiles);
+    end
+    
+    fprintf('Script completed successfully!\n');
+    fprintf('Check output files in: %s\n', figsDir);
+
+
+catch ME
+    fprintf('ERROR OCCURRED!\n');
+    fprintf('Error: %s\n', ME.message);
+    fprintf('Error identifier: %s\n', ME.identifier);
+    fprintf('Stack trace:\n');
+    for k = 1:length(ME.stack)
+        fprintf('  File: %s\n', ME.stack(k).file);
+        fprintf('  Function: %s, Line: %d\n', ME.stack(k).name, ME.stack(k).line);
+    end
+    exit(1);
 end
 
 function [segmentX, segmentY, segmentZ] = propDoubleIntegrator(x0, sample, STEP_SIZE, stateSize, sampleSize)
@@ -323,21 +314,21 @@ function [segmentX, segmentY, segmentZ] = propDubinsAirplane(x0, sample, STEP_SI
     for k = 1:numDisc
         x = x + (STEP_SIZE / 6.0) * ...
             (v * cos(pitch) * cos(yaw) + ...
-             2.0 * ((v + 0.5 * STEP_SIZE * a) * cos(pitch + 0.5 * STEP_SIZE * pitchRate) * cos(yaw + 0.5 * STEP_SIZE * yawRate) + ...
+            2.0 * ((v + 0.5 * STEP_SIZE * a) * cos(pitch + 0.5 * STEP_SIZE * pitchRate) * cos(yaw + 0.5 * STEP_SIZE * yawRate) + ...
                     (v + 0.5 * STEP_SIZE * a) * cos(pitch + 0.5 * STEP_SIZE * pitchRate) * cos(yaw + 0.5 * STEP_SIZE * yawRate)) + ...
-             (v + STEP_SIZE * a) * cos(pitch + STEP_SIZE * pitchRate) * cos(yaw + STEP_SIZE * yawRate));
+            (v + STEP_SIZE * a) * cos(pitch + STEP_SIZE * pitchRate) * cos(yaw + STEP_SIZE * yawRate));
         
         y = y + (STEP_SIZE / 6.0) * ...
             (v * cos(pitch) * sin(yaw) + ...
-             2.0 * ((v + 0.5 * STEP_SIZE * a) * cos(pitch + 0.5 * STEP_SIZE * pitchRate) * sin(yaw + 0.5 * STEP_SIZE * yawRate) + ...
+            2.0 * ((v + 0.5 * STEP_SIZE * a) * cos(pitch + 0.5 * STEP_SIZE * pitchRate) * sin(yaw + 0.5 * STEP_SIZE * yawRate) + ...
                     (v + 0.5 * STEP_SIZE * a) * cos(pitch + 0.5 * STEP_SIZE * pitchRate) * sin(yaw + 0.5 * STEP_SIZE * yawRate)) + ...
-             (v + STEP_SIZE * a) * cos(pitch + STEP_SIZE * pitchRate) * sin(yaw + STEP_SIZE * yawRate));
+            (v + STEP_SIZE * a) * cos(pitch + STEP_SIZE * pitchRate) * sin(yaw + STEP_SIZE * yawRate));
         
         z = z + (STEP_SIZE / 6.0) * ...
             (v * sin(pitch) + ...
-             2.0 * ((v + 0.5 * STEP_SIZE * a) * sin(pitch + 0.5 * STEP_SIZE * pitchRate) + ...
+            2.0 * ((v + 0.5 * STEP_SIZE * a) * sin(pitch + 0.5 * STEP_SIZE * pitchRate) + ...
                     (v + 0.5 * STEP_SIZE * a) * sin(pitch + 0.5 * STEP_SIZE * pitchRate)) + ...
-             (v + STEP_SIZE * a) * sin(pitch + STEP_SIZE * pitchRate));
+            (v + STEP_SIZE * a) * sin(pitch + STEP_SIZE * pitchRate));
         
         yaw = yaw + STEP_SIZE * yawRate;
         pitch = pitch + STEP_SIZE * pitchRate;
@@ -414,10 +405,10 @@ function x0dot = ode(x0, Zc, Lc, Mc, Nc)
     x0dot = zeros(1, 12);
 
     x0dot(1) = cos(theta) * cos(psi) * u + (sin(phi) * sin(theta) * cos(psi) - cos(phi) * sin(psi)) * v + ...
-               (cos(phi) * sin(theta) * cos(psi) + sin(phi) * sin(psi)) * w;
+            (cos(phi) * sin(theta) * cos(psi) + sin(phi) * sin(psi)) * w;
 
     x0dot(2) = cos(theta) * sin(psi) * u + (sin(phi) * sin(theta) * sin(psi) + cos(phi) * cos(psi)) * v + ...
-               (cos(phi) * sin(theta) * sin(psi) - sin(phi) * cos(psi)) * w;
+            (cos(phi) * sin(theta) * sin(psi) - sin(phi) * cos(psi)) * w;
 
     x0dot(3) = -sin(theta) * u + sin(phi) * cos(theta) * v + cos(phi) * cos(theta) * w;
 
