@@ -27,6 +27,7 @@ set(SOURCE_FILES
     src/planners/Planner.cu
     src/planners/originalKPAX.cu
     src/planners/originalPlanner.cu
+    src/planners/PruneKPAX.cu
     src/ReKino/ReKinoLite.cu
     src/collisionCheck/collisionCheck.cu
     src/collisionCheck/spatialHash.cu
@@ -100,6 +101,17 @@ target_link_libraries(ReKinoLiteTuning
     Python3::NumPy
 )
 
+add_executable(prune_kpaxTuning examples/gpu/prune_kpax_tuning.cu)
+target_link_libraries(ReKinoLiteTuning
+    PUBLIC KPAX_lib
+    ${CUDA_LIBRARIES}
+    ${Boost_LIBRARIES}
+    ${EIGEN3_LIBRARIES}
+    yaml-cpp
+    Python3::Python
+    Python3::NumPy
+)
+
 add_executable(comprehensive_benchmark examples/gpu/comprehensive_benchmark.cu)
 target_link_libraries(comprehensive_benchmark
     PUBLIC KPAX_lib
@@ -140,6 +152,7 @@ set_target_properties(main PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(benchMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(executionTimeMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(ReKinoLiteTuning PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(prune_kpaxTuning PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(rekinoLiteExecutionTimeMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(profilePropagation PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(profilePropagationSpatialHash PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
@@ -152,6 +165,7 @@ set_property(TARGET benchMain PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET executionTimeMain PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET KPAX_lib PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET ReKinoLiteTuning PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET prune_kpaxTuning PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET rekinoLiteExecutionTimeMain PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET profilePropagation PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET profilePropagationSpatialHash PROPERTY CUDA_ARCHITECTURES 61 86)
