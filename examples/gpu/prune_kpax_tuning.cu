@@ -44,7 +44,7 @@ void writeResultsToCSV(const std::vector<TuningResult>& results)
 
     // Write header: parameters + run_1, run_2, ..., run_50
     file << "progressScale,explorationBias,goalBias";
-    for(int i = 1; i <= 50; i++)
+    for(int i = 1; i <= 40; i++)
     {
         file << ",run_" << i;
     }
@@ -57,7 +57,7 @@ void writeResultsToCSV(const std::vector<TuningResult>& results)
         file << r.progressScale << "," << r.explorationBias << "," << r.goalBias;
 
         // Write all runtimes
-        for(size_t i = 0; i < 50; i++)
+        for(size_t i = 0; i < 40; i++)
         {
             file << ",";
             if(i < r.allTimes.size())
@@ -95,7 +95,7 @@ void runTuningExperiment(
     printf("\n=== Testing: maxReg=%.1f, explBias=%.2f, goalBias=%.2f ===\n",
            progressScale, explorationBias, goalBias);
 
-    // Create planner and set parameters
+    // def planner and set the tunable vals
     PruneKPAX planner;
     planner.h_progressScale_ = progressScale;
     planner.h_explorationBias_ = explorationBias;
@@ -119,10 +119,10 @@ void runTuningExperiment(
 
         double seconds = milliseconds / 1000.0;
 
-        // Check if execution exceeded timeout
+        // Cchecking timeout
         if(seconds > MAX_TIME_SECONDS)
         {
-            seconds = MAX_TIME_SECONDS;  // Cap at max time
+            seconds = MAX_TIME_SECONDS;  // saves 6s for timeout runs
             printf("  Trial %d/%d TIMEOUT (%.3fs > %.1fs) - recording as %.1fs and continuing\n",
                    trial + 1, numTrials, milliseconds / 1000.0, MAX_TIME_SECONDS, MAX_TIME_SECONDS);
         }
@@ -142,7 +142,7 @@ void runTuningExperiment(
         // Add delay between trials to prevent GPU thermal throttling
         if(trial < numTrials - 1)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
         }
 
         // Progress update every 10 trials
@@ -208,7 +208,7 @@ int main(void)
                 TuningResult result;
                 runTuningExperiment(
                     maxReg, explBias, goalBias,
-                    50,  // numTrials
+                    40,
                     h_initial, h_goal,
                     d_obstacles, numObstacles,
                     result
