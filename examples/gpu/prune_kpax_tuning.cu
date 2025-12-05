@@ -44,7 +44,7 @@ void writeResultsToCSV(const std::vector<TuningResult>& results)
 
     // Write header: parameters + run_1, run_2, ..., run_50
     file << "progressScale,explorationBias,goalBias";
-    for(int i = 1; i <= 40; i++)
+    for(int i = 1; i <= 10; i++)
     {
         file << ",run_" << i;
     }
@@ -57,7 +57,7 @@ void writeResultsToCSV(const std::vector<TuningResult>& results)
         file << r.progressScale << "," << r.explorationBias << "," << r.goalBias;
 
         // Write all runtimes
-        for(size_t i = 0; i < 40; i++)
+        for(size_t i = 0; i < 10; i++)
         {
             file << ",";
             if(i < r.allTimes.size())
@@ -92,7 +92,7 @@ void runTuningExperiment(
     result.minTime = 1e9;
     result.maxTime = 0.0;
 
-    printf("\n=== Testing: maxReg=%.1f, explBias=%.2f, goalBias=%.2f ===\n",
+    printf("\n=== Testing: progScale=%.1f, explBias=%.2f, goalBias=%.2f ===\n",
            progressScale, explorationBias, goalBias);
 
     // def planner and set the tunable vals
@@ -196,7 +196,7 @@ int main(void)
     int currentConfig = 0;
 
     // Test all combinations
-    for(float maxReg : progressScaleValues)
+    for(float progScale : progressScaleValues)
     {
         for(float explBias : explorationBiasValues)
         {
@@ -207,8 +207,8 @@ int main(void)
 
                 TuningResult result;
                 runTuningExperiment(
-                    maxReg, explBias, goalBias,
-                    40,
+                    progScale, explBias, goalBias,
+                    10,
                     h_initial, h_goal,
                     d_obstacles, numObstacles,
                     result
