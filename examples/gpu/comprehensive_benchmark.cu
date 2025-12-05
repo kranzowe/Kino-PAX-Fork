@@ -9,7 +9,7 @@
 #include <chrono>
 #include "planners/originalKPAX.cuh"
 #include "planners/KPAX.cuh"
-#include "ReKino/ReKinoLite.cuh"
+#include "planners/PruneKPAX.cuh"
 
 
 struct BenchmarkResult
@@ -174,13 +174,14 @@ void runBenchmark(
     }
 
     // ========================================================================
-    // PLANNER 3: ReKinoLite (samplesPerThread=1, epsilon=0.2)
+    // PLANNER 3: PruneKPAX (with spatial hashing and pruning)
     // ========================================================================
-    printf("\n--- Testing ReKinoLite (samples=1, epsilon=0.2) ---\n");
+    printf("\n--- Testing PruneKPAX (explorationBias=0.1, goalBias=0.3, progressScale=20) ---\n");
     {
-        ReKinoLite planner;
-        planner.h_samplesPerThread_ = 1;
-        planner.h_epsilonGreedy_ = 0.6f;
+        PruneKPAX planner;
+        planner.h_explorationBias_ = 0.1f;
+        planner.h_goalBias_ = 0.3f;
+        planner.h_progressScale_ = 20.0f;
 
         for(int run = 0; run < NUM_RUNS; run++)
         {
@@ -211,7 +212,7 @@ void runBenchmark(
 
             BenchmarkResult result;
             result.environment = environment_name;
-            result.planner = "ReKinoLite_s1_e0.2";
+            result.planner = "PruneKPAX_eb0.1_gb0.3_ps20";
             result.run_number = run + 1;
             result.execution_time = seconds;
             result.success = success;
@@ -241,7 +242,7 @@ int main(void)
     printf("    COMPREHENSIVE PLANNER BENCHMARK\n");
     printf("=======================================================\n");
     printf("Environments: House, Narrow Passage, Trees (quadTrees)\n");
-    printf("Planners: OriginalKPAX, KPAX+SpatialHash, ReKinoLite\n");
+    printf("Planners: OriginalKPAX, KPAX+SpatialHash, PruneKPAX\n");
     printf("Runs per configuration: 50\n");
     printf("Timeout: 6 seconds\n");
     printf("=======================================================\n");
