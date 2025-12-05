@@ -62,4 +62,4 @@ __global__ void propagateFrontier_kernel2(bool* frontier, uint* activeFrontierId
 __global__ void updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs, uint frontierNextSize, float* xGoal, int treeSize,
                       float* unexploredSamples, float* treeSamples, int* unexploredSamplesParentIdxs, int* treeSamplesParentIdxs,
                       float* treeSampleCosts, int* pathToGoal, uint* activeFrontierRepeatCount, int* validVertexCounter,
-                      curandState* randomSeeds, float* vertexScores, float* controlPathToGoal, float fAccept)
+                      curandState* randomSeeds, float* vertexScores, float* controlPathToGoal, float fAccept);
