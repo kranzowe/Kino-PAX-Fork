@@ -1,8 +1,7 @@
-#include "planners/KPAX.cuh"
+#include "planners/originalKPAX.cuh"
 #include "config/config.h"
-#include "statePropagator/statePropagatorSpatialHash.cuh"
 
-KPAX::KPAX()
+OriginalKPAX::OriginalKPAX()
 {
     graph_ = Graph(W_SIZE);
 
@@ -30,25 +29,16 @@ KPAX::KPAX()
 
     h_activeBlockSize_ = 32;
 
-    // Create spatial hash grid for fast collision detection
-    d_spatialHashGrid_ = createSpatialHashGrid();
-
     if(VERBOSE)
         {
             printf("/* Planner Type: KPAX */\n");
             printf("/* Number of R1 Vertices: %d */\n", NUM_R1_REGIONS);
             printf("/* Number of R2 Vertices: %d */\n", NUM_R2_REGIONS);
-            printf("/* Spatial Hash Grid: %dx%dx%d cells */\n", GRID_DIM_X, GRID_DIM_Y, GRID_DIM_Z);
             printf("/***************************/\n");
         }
 }
 
-KPAX::~KPAX()
-{
-    destroySpatialHashGrid(d_spatialHashGrid_);
-}
-
-void KPAX::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, bool saveTree)
+void OriginalKPAX::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
 {
     cudaEvent_t start, stop;
     float milliseconds = 0;
@@ -114,7 +104,7 @@ void KPAX::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_
     cudaEventDestroy(stop);
 }
 
-void KPAX::planDebug(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
+void OriginalKPAX::planDebug(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
 {
     cudaEvent_t start, stop;
     float milliseconds = 0;
@@ -240,7 +230,7 @@ void KPAX::planDebug(float* h_initial, float* h_goal, float* d_obstacles_ptr, ui
     cudaEventDestroy(stop);
 }
 
-void KPAX::planBench(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, int benchItr)
+void OriginalKPAX::planBench(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, int benchItr)
 {
     double t_kgmtStart = std::clock();
 
@@ -300,22 +290,18 @@ void KPAX::planBench(float* h_initial, float* h_goal, float* d_obstacles_ptr, ui
               << std::endl;
 }
 
-void KPAX::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount)
+void OriginalKPAX::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount)
 {
-    // --- Build spatial hash grid for fast collision detection ---
-    updateSpatialHashGrid(d_spatialHashGrid_, d_obstacles_ptr, h_obstaclesCount);
-    cudaMemcpy(&h_spatialHashGrid_, d_spatialHashGrid_, sizeof(SpatialHashGrid), cudaMemcpyDeviceToHost);
-
     // --- Find indices and size of frontier. ---
     thrust::exclusive_scan(d_frontier_.begin(), d_frontier_.end(), d_frontierScanIdx_.begin(), 0, thrust::plus<uint>());
     h_frontierSize_ = d_frontierScanIdx_[MAX_TREE_SIZE - 1];
     (d_frontier_[MAX_TREE_SIZE - 1]) ? ++h_frontierSize_ : 0;
-    findInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_frontier_ptr_, d_frontierScanIdx_ptr_, d_activeFrontierIdxs_ptr_);
+    original_findInd_bool<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_frontier_ptr_, d_frontierScanIdx_ptr_, d_activeFrontierIdxs_ptr_);
 
     // --- Build frontier repeat vector. ---
     thrust::exclusive_scan(d_activeFrontierRepeatCount_.begin(), d_activeFrontierRepeatCount_.end(), d_frontierRepeatScanIdx_.begin(), 0,
                            thrust::plus<uint>());
-    repeatInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_activeFrontierIdxs_ptr_, d_activeFrontierRepeatCount_ptr_,
+    original_repeatInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_activeFrontierIdxs_ptr_, d_activeFrontierRepeatCount_ptr_,
                                              d_frontierRepeatScanIdx_ptr_, d_activeFrontierRepeatIdxs_ptr_);
     h_frontierRepeatSize_ = d_frontierRepeatScanIdx_[MAX_TREE_SIZE - 1];
     (d_activeFrontierRepeatCount_[MAX_TREE_SIZE - 1]) ? h_frontierRepeatSize_ += d_activeFrontierRepeatCount_[MAX_TREE_SIZE - 1] : 0;
@@ -333,20 +319,20 @@ void KPAX::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount)
                 }
 
             // --- Propagate Frontier. iterations new samples per frontier sample---
-            propagateFrontier_kernel2<<<iDivUp(h_propIterations_ * h_frontierRepeatSize_, h_activeBlockSize_), h_activeBlockSize_>>>(
+            original_propagateFrontier_kernel2<<<iDivUp(h_propIterations_ * h_frontierRepeatSize_, h_activeBlockSize_), h_activeBlockSize_>>>(
               d_frontier_ptr_, d_activeFrontierRepeatIdxs_ptr_, d_treeSamples_ptr_, d_unexploredSamples_ptr_, h_frontierRepeatSize_,
               d_randomSeeds_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_obstacles_ptr, h_obstaclesCount, graph_.d_activeSubVertices_ptr_,
               graph_.d_vertexScoreArray_ptr_, d_frontierNext_ptr_, graph_.d_counterArray_ptr_, graph_.d_validCounterArray_ptr_,
-              h_propIterations_, graph_.d_minValueInRegion_ptr_, h_spatialHashGrid_);
+              h_propIterations_, graph_.d_minValueInRegion_ptr_);
         }
     else
         {
             // --- Propagate Frontier. Block Size new samples per frontier sample. ---
-            propagateFrontier_kernel1<<<iDivUp(h_frontierRepeatSize_ * h_activeBlockSize_, h_activeBlockSize_), h_activeBlockSize_>>>(
+            original_propagateFrontier_kernel1<<<iDivUp(h_frontierRepeatSize_ * h_activeBlockSize_, h_activeBlockSize_), h_activeBlockSize_>>>(
               d_frontier_ptr_, d_activeFrontierRepeatIdxs_ptr_, d_treeSamples_ptr_, d_unexploredSamples_ptr_, h_frontierRepeatSize_,
               d_randomSeeds_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_obstacles_ptr, h_obstaclesCount, graph_.d_activeSubVertices_ptr_,
               graph_.d_vertexScoreArray_ptr_, d_frontierNext_ptr_, graph_.d_counterArray_ptr_, graph_.d_validCounterArray_ptr_,
-              graph_.d_minValueInRegion_ptr_, h_spatialHashGrid_);
+              graph_.d_minValueInRegion_ptr_);
         }
 }
 
@@ -355,10 +341,10 @@ void KPAX::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount)
 /***************************/
 // --- Propagates current frontier. Builds new frontier. ---
 // --- One Block Per Frontier Sample ---
-__global__ void propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples,
+__global__ void original_propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples,
                                           uint frontierSize, curandState* randomSeeds, int* unexploredSamplesParentIdxs, float* obstacles,
                                           int obstaclesCount, int* activeSubVertices, float* vertexScores, bool* frontierNext,
-                                          int* vertexCounter, int* validVertexCounter, float* minValueInRegion, SpatialHashGrid spatialHashGrid)
+                                          int* vertexCounter, int* validVertexCounter, float* minValueInRegion)
 {
     if(blockIdx.x >= frontierSize) return;
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -382,7 +368,7 @@ __global__ void propagateFrontier_kernel1(bool* frontier, uint* activeFrontierId
     float* x1                        = &unexploredSamples[tid * SAMPLE_DIM];
     unexploredSamplesParentIdxs[tid] = s_x0Idx;
     curandState randSeed             = randomSeeds[tid];
-    bool valid                       = propagateAndCheckSpatialHash(s_x0, x1, &randSeed, spatialHashGrid, obstacles, obstaclesCount);
+    bool valid                       = propagateAndCheck(s_x0, x1, &randSeed, obstacles, obstaclesCount);
     int x1Vertex                     = getRegion(x1);
     int x1SubVertex                  = getSubRegion(x1, x1Vertex, minValueInRegion);
 
@@ -402,10 +388,10 @@ __global__ void propagateFrontier_kernel1(bool* frontier, uint* activeFrontierId
 /* FRONTIER PROPAGATION KERNEL 2 */
 /***************************/
 // --- Iterations new samples per frontier sample---
-__global__ void propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples,
+__global__ void original_propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples,
                                           uint frontierSize, curandState* randomSeeds, int* unexploredSamplesParentIdxs, float* obstacles,
                                           int obstaclesCount, int* activeSubVertices, float* vertexScores, bool* frontierNext,
-                                          int* vertexCounter, int* validVertexCounter, int iterations, float* minValueInRegion, SpatialHashGrid spatialHashGrid)
+                                          int* vertexCounter, int* validVertexCounter, int iterations, float* minValueInRegion)
 {
     int tid       = blockIdx.x * blockDim.x + threadIdx.x;
     frontier[tid] = false;
@@ -422,7 +408,7 @@ __global__ void propagateFrontier_kernel2(bool* frontier, uint* activeFrontierId
     float* x1                        = &unexploredSamples[tid * SAMPLE_DIM];
     unexploredSamplesParentIdxs[tid] = x0Idx;
     curandState randSeed             = randomSeeds[tid];
-    bool valid                       = propagateAndCheckSpatialHash(x0, x1, &randSeed, spatialHashGrid, obstacles, obstaclesCount);
+    bool valid                       = propagateAndCheck(x0, x1, &randSeed, obstacles, obstaclesCount);
     int x1Vertex                     = getRegion(x1);
     int x1SubVertex                  = getSubRegion(x1, x1Vertex, minValueInRegion);
 
@@ -443,7 +429,7 @@ __global__ void propagateFrontier_kernel2(bool* frontier, uint* activeFrontierId
 /***************************/
 // --- Adds previous frontier to the tree and builds new frontier. ---
 __global__ void
-updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs, uint frontierNextSize, float* xGoal, int treeSize,
+original_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs, uint frontierNextSize, float* xGoal, int treeSize,
                       float* unexploredSamples, float* treeSamples, int* unexploredSamplesParentIdxs, int* treeSamplesParentIdxs,
                       float* treeSampleCosts, int* pathToGoal, uint* activeFrontierRepeatCount, int* validVertexCounter,
                       curandState* randomSeeds, float* vertexScores, float* controlPathToGoal, float fAccept)
@@ -517,19 +503,19 @@ updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNe
         }
 }
 
-void KPAX::updateFrontier()
+void OriginalKPAX::updateFrontier()
 {
     // --- Find indices and size of the next frontier ---
     thrust::exclusive_scan(d_frontierNext_.begin(), d_frontierNext_.end(), d_frontierScanIdx_.begin(), 0, thrust::plus<uint>());
     h_frontierNextSize_ = d_frontierScanIdx_[MAX_TREE_SIZE - 1];
-    findInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_frontierNext_ptr_, d_frontierScanIdx_ptr_, d_activeFrontierIdxs_ptr_);
+    original_findInd_bool<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_frontierNext_ptr_, d_frontierScanIdx_ptr_, d_activeFrontierIdxs_ptr_);
 
     float treeAddSize = 1 - (float(h_treeSize_ + h_frontierNextSize_) / (MAX_TREE_SIZE));
     h_fAccept_        = (h_itr_ * EPSILON) * pow(treeAddSize, 5);
 
     // --- Update Frontier ---
     thrust::fill(d_activeFrontierRepeatCount_.begin(), d_activeFrontierRepeatCount_.end(), 0);
-    updateFrontier_kernel<<<iDivUp(h_frontierNextSize_ + h_treeSize_, h_blockSize_), h_blockSize_>>>(
+    original_updateFrontier_kernel<<<iDivUp(h_frontierNextSize_ + h_treeSize_, h_blockSize_), h_blockSize_>>>(
       d_frontier_ptr_, d_frontierNext_ptr_, d_activeFrontierIdxs_ptr_, h_frontierNextSize_, d_goalSample_ptr_, h_treeSize_,
       d_unexploredSamples_ptr_, d_treeSamples_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_treeSamplesParentIdxs_ptr_,
       d_treeSampleCosts_ptr_, d_pathToGoal_ptr_, d_activeFrontierRepeatCount_ptr_, graph_.d_validCounterArray_ptr_, d_randomSeeds_ptr_,
@@ -542,7 +528,7 @@ void KPAX::updateFrontier()
     h_treeSize_ += h_frontierNextSize_;
 }
 
-void KPAX::writeDeviceVectorsToCSV(int itr)
+void OriginalKPAX::writeDeviceVectorsToCSV(int itr)
 {
     std::ostringstream filename;
     bool append = h_itr_ != 0;
@@ -627,7 +613,7 @@ void KPAX::writeDeviceVectorsToCSV(int itr)
         }
 }
 
-void KPAX::writeExecutionTimeToCSV(double time)
+void OriginalKPAX::writeExecutionTimeToCSV(double time)
 {
     std::ostringstream filename;
     std::filesystem::create_directories("Data");

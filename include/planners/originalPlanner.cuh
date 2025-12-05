@@ -16,14 +16,14 @@
 #include <tuple>
 #include <math.h>
 
-class Planner
+class OriginalPlanner
 {
 public:
     /**************************** CONSTRUCTORS ****************************/
-    Planner();
+    OriginalPlanner();
 
     /****************************    METHODS    ****************************/
-    virtual void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, bool saveTree = false) = 0;
+    virtual void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount) = 0;
     void initializeRandomSeeds(int seed);
 
     /****************************    FIELDS    ****************************/
@@ -49,21 +49,21 @@ public:
 /* INIT RANDOM SEEDS KERNEL */
 /***************************/
 // --- used to generate random values when propagating frontier on GPU. ---
-__global__ void initializeRandomSeeds_kernel(curandState* randomSeeds, int numSeeds, int seed);
+__global__ void original_initializeRandomSeeds_kernel(curandState* randomSeeds, int numSeeds, int seed);
 
 /***************************/
 /* FIND INDICES BOOL KERNEL */
 /***************************/
 // --- Finds active indices in a boolean array. ---
-__global__ void findInd(uint numSamples, bool* S, uint* scanIdx, uint* activeS);
+__global__ void original_findInd_bool(uint numSamples, bool* S, uint* scanIdx, uint* activeS);
 
 /***************************/
 /* FIND INDICES INT KERNEL */
 /***************************/
 // --- Finds active indices in an integer array. ---
-__global__ void findInd(uint numSamples, uint* S, uint* scanIdx, uint* activeS);
+__global__ void original_findInd_uint(uint numSamples, uint* S, uint* scanIdx, uint* activeS);
 
 /***************************/
 /* REPEAT INDICES KERNEL */
 /***************************/
-__global__ void repeatInd(uint numSamples, uint* activeS, uint* C, uint* prefixSum, uint* repeatedInd);
+__global__ void original_repeatInd(uint numSamples, uint* activeS, uint* C, uint* prefixSum, uint* repeatedInd);
