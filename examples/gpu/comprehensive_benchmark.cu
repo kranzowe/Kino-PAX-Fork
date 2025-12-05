@@ -179,7 +179,7 @@ void runBenchmark(
     {
         ReKinoLite planner;
         planner.h_samplesPerThread_ = 1;
-        planner.h_epsilonGreedy_ = 0.2f;
+        planner.h_epsilonGreedy_ = 0.6f;
 
         for(int run = 0; run < NUM_RUNS; run++)
         {
