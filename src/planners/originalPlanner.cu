@@ -1,7 +1,7 @@
-#include "planners/Planner.cuh"
+#include "planners/originalPlanner.cuh"
 #include "config/config.h"
 
-Planner::Planner()
+OriginalPlanner::OriginalPlanner()
 {
     d_treeSamples_           = thrust::device_vector<float>(MAX_TREE_SIZE * SAMPLE_DIM);
     d_treeSamplesParentIdxs_ = thrust::device_vector<int>(MAX_TREE_SIZE);
@@ -43,7 +43,7 @@ __global__ void initializeRandomSeeds_kernel(curandState* randomSeeds, int numSe
         }
 }
 
-void Planner::initializeRandomSeeds(int seed)
+void OriginalPlanner::initializeRandomSeeds(int seed)
 {
     int blockSize = 32;
     initializeRandomSeeds_kernel<<<iDivUp(MAX_TREE_SIZE, blockSize), blockSize>>>(d_randomSeeds_ptr_, MAX_TREE_SIZE, seed);

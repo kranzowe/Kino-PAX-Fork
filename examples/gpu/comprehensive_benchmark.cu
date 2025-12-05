@@ -7,6 +7,7 @@
 #include <string>
 #include <thread>
 #include <chrono>
+#include "planners/originalKPAX.cuh"
 #include "planners/KPAX.cuh"
 #include "ReKino/ReKinoLite.cuh"
 
@@ -67,11 +68,11 @@ void runBenchmark(
     const double MAX_TIME_SECONDS = 6.0;  // 6 second timeout per run
 
     // ========================================================================
-    // PLANNER 1: KPAX (without spatial hashing)
+    // PLANNER 1: Original KPAX (without spatial hashing)
     // ========================================================================
-    printf("\n--- Testing KPAX (No Spatial Hash) ---\n");
+    printf("\n--- Testing Original KPAX (No Spatial Hash) ---\n");
     {
-        KPAX planner;
+        OriginalKPAX planner;
 
         for(int run = 0; run < NUM_RUNS; run++)
         {
@@ -81,7 +82,7 @@ void runBenchmark(
             cudaEventCreate(&stop);
             cudaEventRecord(start);
 
-            planner.plan(h_initial, h_goal, d_obstacles, numObstacles, false);
+            planner.plan(h_initial, h_goal, d_obstacles, numObstacles);
 
             cudaEventRecord(stop);
             cudaEventSynchronize(stop);
@@ -102,7 +103,7 @@ void runBenchmark(
 
             BenchmarkResult result;
             result.environment = environment_name;
-            result.planner = "KPAX";
+            result.planner = "OriginalKPAX";
             result.run_number = run + 1;
             result.execution_time = seconds;
             result.success = success;
@@ -240,7 +241,7 @@ int main(void)
     printf("    COMPREHENSIVE PLANNER BENCHMARK\n");
     printf("=======================================================\n");
     printf("Environments: House, Narrow Passage, Trees (quadTrees)\n");
-    printf("Planners: KPAX, KPAX+SpatialHash, ReKinoLite\n");
+    printf("Planners: OriginalKPAX, KPAX+SpatialHash, ReKinoLite\n");
     printf("Runs per configuration: 50\n");
     printf("Timeout: 6 seconds\n");
     printf("=======================================================\n");

@@ -1,7 +1,7 @@
-#include "planners/KPAX.cuh"
+#include "planners/originalKPAX.cuh"
 #include "config/config.h"
 
-KPAX::KPAX()
+OriginalKPAX::OriginalKPAX()
 {
     graph_ = Graph(W_SIZE);
 
@@ -38,7 +38,7 @@ KPAX::KPAX()
         }
 }
 
-void KPAX::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
+void OriginalKPAX::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
 {
     cudaEvent_t start, stop;
     float milliseconds = 0;
@@ -104,7 +104,7 @@ void KPAX::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_
     cudaEventDestroy(stop);
 }
 
-void KPAX::planDebug(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
+void OriginalKPAX::planDebug(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
 {
     cudaEvent_t start, stop;
     float milliseconds = 0;
@@ -230,7 +230,7 @@ void KPAX::planDebug(float* h_initial, float* h_goal, float* d_obstacles_ptr, ui
     cudaEventDestroy(stop);
 }
 
-void KPAX::planBench(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, int benchItr)
+void OriginalKPAX::planBench(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, int benchItr)
 {
     double t_kgmtStart = std::clock();
 
@@ -290,7 +290,7 @@ void KPAX::planBench(float* h_initial, float* h_goal, float* d_obstacles_ptr, ui
               << std::endl;
 }
 
-void KPAX::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount)
+void OriginalKPAX::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount)
 {
     // --- Find indices and size of frontier. ---
     thrust::exclusive_scan(d_frontier_.begin(), d_frontier_.end(), d_frontierScanIdx_.begin(), 0, thrust::plus<uint>());
@@ -503,7 +503,7 @@ updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNe
         }
 }
 
-void KPAX::updateFrontier()
+void OriginalKPAX::updateFrontier()
 {
     // --- Find indices and size of the next frontier ---
     thrust::exclusive_scan(d_frontierNext_.begin(), d_frontierNext_.end(), d_frontierScanIdx_.begin(), 0, thrust::plus<uint>());
@@ -528,7 +528,7 @@ void KPAX::updateFrontier()
     h_treeSize_ += h_frontierNextSize_;
 }
 
-void KPAX::writeDeviceVectorsToCSV(int itr)
+void OriginalKPAX::writeDeviceVectorsToCSV(int itr)
 {
     std::ostringstream filename;
     bool append = h_itr_ != 0;
@@ -613,7 +613,7 @@ void KPAX::writeDeviceVectorsToCSV(int itr)
         }
 }
 
-void KPAX::writeExecutionTimeToCSV(double time)
+void OriginalKPAX::writeExecutionTimeToCSV(double time)
 {
     std::ostringstream filename;
     std::filesystem::create_directories("Data");

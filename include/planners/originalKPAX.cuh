@@ -1,12 +1,12 @@
 #pragma once
-#include "planners/Planner.cuh"
+#include "planners/originalPlanner.cuh"
 #include "graphs/Graph.cuh"
 
-class KPAX : public Planner
+class OriginalKPAX : public OriginalPlanner
 {
 public:
     /**************************** CONSTRUCTORS ****************************/
-    KPAX();
+    OriginalKPAX();
 
     /****************************    METHODS    ****************************/
     void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount) override;

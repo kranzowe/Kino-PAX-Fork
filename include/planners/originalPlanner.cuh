@@ -16,11 +16,11 @@
 #include <tuple>
 #include <math.h>
 
-class Planner
+class OriginalPlanner
 {
 public:
     /**************************** CONSTRUCTORS ****************************/
-    Planner();
+    OriginalPlanner();
 
     /****************************    METHODS    ****************************/
     virtual void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount) = 0;
