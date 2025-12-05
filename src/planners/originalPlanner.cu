@@ -34,7 +34,7 @@ OriginalPlanner::OriginalPlanner()
         }
 }
 
-__global__ void initializeRandomSeeds_kernel(curandState* randomSeeds, int numSeeds, int seed)
+__global__ void original_initializeRandomSeeds_kernel(curandState* randomSeeds, int numSeeds, int seed)
 {
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
     if(tid < numSeeds)
@@ -46,10 +46,10 @@ __global__ void initializeRandomSeeds_kernel(curandState* randomSeeds, int numSe
 void OriginalPlanner::initializeRandomSeeds(int seed)
 {
     int blockSize = 32;
-    initializeRandomSeeds_kernel<<<iDivUp(MAX_TREE_SIZE, blockSize), blockSize>>>(d_randomSeeds_ptr_, MAX_TREE_SIZE, seed);
+    original_initializeRandomSeeds_kernel<<<iDivUp(MAX_TREE_SIZE, blockSize), blockSize>>>(d_randomSeeds_ptr_, MAX_TREE_SIZE, seed);
 }
 
-__global__ void findInd(uint numSamples, bool* S, uint* scanIdx, uint* activeS)
+__global__ void original_findInd_bool(uint numSamples, bool* S, uint* scanIdx, uint* activeS)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if(tid >= numSamples) return;
@@ -57,7 +57,7 @@ __global__ void findInd(uint numSamples, bool* S, uint* scanIdx, uint* activeS)
     activeS[scanIdx[tid]] = tid;
 }
 
-__global__ void findInd(uint numSamples, uint* S, uint* scanIdx, uint* activeS)
+__global__ void original_findInd_uint(uint numSamples, uint* S, uint* scanIdx, uint* activeS)
 {
     int node = blockIdx.x * blockDim.x + threadIdx.x;
     if(node >= numSamples) return;
@@ -65,7 +65,7 @@ __global__ void findInd(uint numSamples, uint* S, uint* scanIdx, uint* activeS)
     activeS[scanIdx[node]] = node;
 }
 
-__global__ void repeatInd(uint numSamples, uint* activeS, uint* C, uint* prefixSum, uint* repeatedInd)
+__global__ void original_repeatInd(uint numSamples, uint* activeS, uint* C, uint* prefixSum, uint* repeatedInd)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if(tid >= numSamples) return;
