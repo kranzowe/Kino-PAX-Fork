@@ -178,7 +178,7 @@ int main(void)
 
     // Load obstacles
     int numObstacles;
-    std::vector<float> obstacles = readObstaclesFromCSV("../include/config/obstacles/narrowPassage/obstacles.csv", numObstacles, W_DIM);
+    std::vector<float> obstacles = readObstaclesFromCSV("../include/config/obstacles/quadTrees/obstacles.csv", numObstacles, W_DIM);
     float* d_obstacles;
     cudaMalloc(&d_obstacles, numObstacles * 2 * W_DIM * sizeof(float));
     cudaMemcpy(d_obstacles, obstacles.data(), numObstacles * 2 * W_DIM * sizeof(float), cudaMemcpyHostToDevice);
