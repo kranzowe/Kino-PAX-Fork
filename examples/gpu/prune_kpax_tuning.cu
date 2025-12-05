@@ -11,7 +11,7 @@
  * PruneKPAX Parameter Tuning Script
  *
  * This script explores different parameter combinations for goal-biased pruning:
- * - maxRegression: Maximum allowed regression in distance to goal (5.0, 10.0, 20.0, 50.0)
+ * - progressScale: Maximum allowed regression in distance to goal (5.0, 10.0, 20.0, 50.0)
  * - explorationBias: Base exploration probability (0.1, 0.3, 0.5, 0.7)
  * - goalBias: Goal-directed bias multiplier (0.3, 0.5, 0.7, 0.9)
  *
@@ -23,7 +23,7 @@
 
 struct TuningResult
 {
-    float maxRegression;
+    float progressScale;
     float explorationBias;
     float goalBias;
     int trials;
@@ -43,7 +43,7 @@ void writeResultsToCSV(const std::vector<TuningResult>& results)
     std::ofstream file("Data/Tuning/prune_kpax_tuning_results.csv");
 
     // Write header: parameters + run_1, run_2, ..., run_50
-    file << "maxRegression,explorationBias,goalBias";
+    file << "progressScale,explorationBias,goalBias";
     for(int i = 1; i <= 50; i++)
     {
         file << ",run_" << i;
@@ -54,7 +54,7 @@ void writeResultsToCSV(const std::vector<TuningResult>& results)
     for(const auto& r : results)
     {
         // Write parameters
-        file << r.maxRegression << "," << r.explorationBias << "," << r.goalBias;
+        file << r.progressScale << "," << r.explorationBias << "," << r.goalBias;
 
         // Write all runtimes
         for(size_t i = 0; i < 50; i++)
@@ -73,7 +73,7 @@ void writeResultsToCSV(const std::vector<TuningResult>& results)
 }
 
 void runTuningExperiment(
-    float maxRegression,
+    float progressScale,
     float explorationBias,
     float goalBias,
     int numTrials,
@@ -83,7 +83,7 @@ void runTuningExperiment(
     int numObstacles,
     TuningResult& result)
 {
-    result.maxRegression = maxRegression;
+    result.progressScale = progressScale;
     result.explorationBias = explorationBias;
     result.goalBias = goalBias;
     result.trials = numTrials;
@@ -93,11 +93,11 @@ void runTuningExperiment(
     result.maxTime = 0.0;
 
     printf("\n=== Testing: maxReg=%.1f, explBias=%.2f, goalBias=%.2f ===\n",
-           maxRegression, explorationBias, goalBias);
+           progressScale, explorationBias, goalBias);
 
     // Create planner and set parameters
     PruneKPAX planner;
-    planner.h_maxRegression_ = maxRegression;
+    planner.h_progressScale_ = progressScale;
     planner.h_explorationBias_ = explorationBias;
     planner.h_goalBias_ = goalBias;
 
@@ -186,17 +186,17 @@ int main(void)
     printf("Loaded %d obstacles\n", numObstacles);
 
     // Parameter ranges to test
-    std::vector<float> maxRegressionValues = {5.0f, 10.0f, 20.0f, 50.0f};
-    std::vector<float> explorationBiasValues = {0.1f, 0.3f, 0.5f, 0.7f};
-    std::vector<float> goalBiasValues = {0.3f, 0.5f, 0.7f, 0.9f};
+    std::vector<float> progressScaleValues = {1.0f, 5.0f, 10.0f, 20.0f, 50.0f};
+    std::vector<float> explorationBiasValues = {0.01f, 0.05f, 0.1f, 0.3f, 0.4f};
+    std::vector<float> goalBiasValues = {0.01f, 0.05f, 0.1f, 0.2f, 0.3f, 0.4f};
 
     std::vector<TuningResult> results;
 
-    int totalConfigs = maxRegressionValues.size() * explorationBiasValues.size() * goalBiasValues.size();
+    int totalConfigs = progressScaleValues.size() * explorationBiasValues.size() * goalBiasValues.size();
     int currentConfig = 0;
 
     // Test all combinations
-    for(float maxReg : maxRegressionValues)
+    for(float maxReg : progressScaleValues)
     {
         for(float explBias : explorationBiasValues)
         {

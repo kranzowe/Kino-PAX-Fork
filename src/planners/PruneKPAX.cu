@@ -31,7 +31,7 @@ PruneKPAX::PruneKPAX()
     h_activeBlockSize_ = 32;
 
     // Initialize tunable pruning parameters with default values
-    h_maxRegression_ = 10.0f;       // Default: allow 10 units of regression
+    h_progressScale_ = 10.0f;       // Default: allow 10 units of regression
     h_explorationBias_ = 0.3f;      // Default: 30% base exploration probability
     h_goalBias_ = 0.7f;             // Default: 70% goal-directed bias multiplier
 
@@ -452,7 +452,7 @@ prune_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFron
                       float* unexploredSamples, float* treeSamples, int* unexploredSamplesParentIdxs, int* treeSamplesParentIdxs,
                       float* treeSampleCosts, int* pathToGoal, uint* activeFrontierRepeatCount, int* validVertexCounter,
                       curandState* randomSeeds, float* vertexScores, float* controlPathToGoal, float fAccept,
-                      float goalBias, float explorationBias, float maxRegression)
+                      float goalBias, float explorationBias, float progressScale)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -477,12 +477,11 @@ prune_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFron
             // --- Goal-biased acceptance probability ---
             // If we made progress toward goal, higher acceptance probability
             // If we moved away from goal, lower acceptance probability
-    
-            float normalizedProgress = (progressToGoal + maxRegression) / (2.0f * maxRegression);  // Maps to [0, 1]
-            normalizedProgress = fminf(fmaxf(normalizedProgress, 0.0f), 1.0f);  // Clamp to [0, 1]
+            float normalizedProgress = fminf(fmaxf(progressToGoal / progressScale + 0.5f, 0.0f), 1.0f); // normalize by progress scale and clamp to [0,1]
+            normalizedProgress = fminf(fmaxf(normalizedProgress, 0.0f), 1.0f);  // clamp to [0, 1]
 
             float acceptanceProbability = explorationBias + goalBias * normalizedProgress;
-            acceptanceProbability = fminf(acceptanceProbability, 1.0f);  // Cap at 1.0
+            acceptanceProbability = fminf(fmaxf(acceptanceProbability, EPSILON), 1.0f);  // clamp to [epsilon, 1] which is think is 0.01 right now
             
             // --- Probabilistic pruning ---
             curandState seed = randomSeeds[x1TreeIdx];
@@ -562,7 +561,7 @@ void PruneKPAX::updateFrontier()
       d_unexploredSamples_ptr_, d_treeSamples_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_treeSamplesParentIdxs_ptr_,
       d_treeSampleCosts_ptr_, d_pathToGoal_ptr_, d_activeFrontierRepeatCount_ptr_, graph_.d_validCounterArray_ptr_, d_randomSeeds_ptr_,
       graph_.d_vertexScoreArray_ptr_, d_controlPathToGoal_ptr_, h_fAccept_,
-      h_goalBias_, h_explorationBias_, h_maxRegression_); 
+      h_goalBias_, h_explorationBias_, h_progressScale_); 
 
     // --- Check for goal criteria ---
     cudaMemcpy(&h_pathToGoal_, d_pathToGoal_ptr_, sizeof(int), cudaMemcpyDeviceToHost);

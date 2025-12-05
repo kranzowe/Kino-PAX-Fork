@@ -26,7 +26,7 @@ public:
     float h_fAccept_;
 
     // --- Tunable pruning parameters ---
-    float h_maxRegression_;      // Maximum allowed regression in distance to goal
+    float h_progressScale_;      // Maximum allowed regression in distance to goal
     float h_explorationBias_;    // Base exploration probability
     float h_goalBias_;           // Goal-directed bias multiplier
 
@@ -69,4 +69,4 @@ prune_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFron
                       float* unexploredSamples, float* treeSamples, int* unexploredSamplesParentIdxs, int* treeSamplesParentIdxs,
                       float* treeSampleCosts, int* pathToGoal, uint* activeFrontierRepeatCount, int* validVertexCounter,
                       curandState* randomSeeds, float* vertexScores, float* controlPathToGoal, float fAccept,
-                      float goalBias, float explorationBias, float maxRegression);
+                      float goalBias, float explorationBias, float progressScale);
