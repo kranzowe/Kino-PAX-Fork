@@ -261,6 +261,7 @@
 #define NUM_PARTIAL_SUMS 1024
 
 #define EPSILON 1e-2f
+#define MAX_FLOAT 1e38f
 #define VERBOSE 1
 
 // --- UNICYCLE MODEL: MODEL 0 ---
