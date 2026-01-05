@@ -25,12 +25,3 @@ private:
     /**************************** METHODS ****************************/
     void initializeRegions();
 };
-
-/**************************** DEVICE FUNCTIONS ****************************/
-__host__ __device__ int OKPAX_getRegion(float* coord);
-
-/***************************/
-/* INITIALIZE REGIONS KERNEL */
-/***************************/
-// --- Initializes min costs for R1 regions ---
-__global__ void OKPAXRegions_initializeRegions_kernel(float* minCostsR1);
