@@ -9,6 +9,7 @@
 #include <chrono>
 #include "planners/originalKPAX.cuh"
 #include "planners/KPAX.cuh"
+#include "planners/OKPAX.cuh"
 #include "ReKino/ReKinoLite.cuh"
 
 
@@ -174,7 +175,60 @@ void runBenchmark(
     }
 
     // ========================================================================
-    // PLANNER 3: ReKinoLite (samplesPerThread=1, epsilon=0.2)
+    // PLANNER 3: OKPAX (Optimized KPAX with Pruning)
+    // ========================================================================
+    printf("\n--- Testing OKPAX (Optimized with Pruning) ---\n");
+    {
+        OKPAX planner;
+
+        for(int run = 0; run < NUM_RUNS; run++)
+        {
+            cudaEvent_t start, stop;
+            float milliseconds = 0;
+            cudaEventCreate(&start);
+            cudaEventCreate(&stop);
+            cudaEventRecord(start);
+
+            planner.plan(h_initial, h_goal, d_obstacles, numObstacles);
+
+            cudaEventRecord(stop);
+            cudaEventSynchronize(stop);
+            cudaEventElapsedTime(&milliseconds, start, stop);
+
+            double seconds = milliseconds / 1000.0;
+            bool success = (seconds <= MAX_TIME_SECONDS);
+
+            if(seconds > MAX_TIME_SECONDS)
+            {
+                seconds = MAX_TIME_SECONDS;
+                printf("  Run %d/%d: TIMEOUT (%.3fs)\n", run + 1, NUM_RUNS, seconds);
+            }
+            else
+            {
+                printf("  Run %d/%d: %.3fs\n", run + 1, NUM_RUNS, seconds);
+            }
+
+            BenchmarkResult result;
+            result.environment = environment_name;
+            result.planner = "OKPAX";
+            result.run_number = run + 1;
+            result.execution_time = seconds;
+            result.success = success;
+            results.push_back(result);
+
+            cudaEventDestroy(start);
+            cudaEventDestroy(stop);
+
+            // Add delay between runs to prevent GPU thermal throttling
+            if(run < NUM_RUNS - 1)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
+        }
+    }
+
+    // ========================================================================
+    // PLANNER 4: ReKinoLite (samplesPerThread=1, epsilon=0.2)
     // ========================================================================
     printf("\n--- Testing ReKinoLite (samples=1, epsilon=0.2) ---\n");
     {
@@ -241,7 +295,7 @@ int main(void)
     printf("    COMPREHENSIVE PLANNER BENCHMARK\n");
     printf("=======================================================\n");
     printf("Environments: House, Narrow Passage, Trees (quadTrees)\n");
-    printf("Planners: OriginalKPAX, KPAX+SpatialHash, ReKinoLite\n");
+    printf("Planners: OriginalKPAX, KPAX+SpatialHash, OKPAX, ReKinoLite\n");
     printf("Runs per configuration: 50\n");
     printf("Timeout: 6 seconds\n");
     printf("=======================================================\n");
