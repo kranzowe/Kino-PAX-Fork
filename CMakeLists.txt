@@ -36,6 +36,7 @@ set(SOURCE_FILES
     src/graphs/OKPAXRegions.cu
     src/helper/helper.cu
     src/statePropagator/statePropagator.cu
+    src/statePropagator/statePropagatorSpatialHash.cu
 )
 add_library(KPAX_lib ${SOURCE_FILES})
 
