@@ -49,7 +49,12 @@ ReKinoLite::~ReKinoLite()
     destroySpatialHashGrid(d_spatialHashGrid_);
 }
 
-void ReKinoLite::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, bool saveTree)
+void ReKinoLite::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
+{
+    planWithSave(h_initial, h_goal, d_obstacles_ptr, h_obstaclesCount, false);
+}
+
+void ReKinoLite::planWithSave(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, bool saveTree)
 {
     cudaEvent_t start, stop;
     float milliseconds = 0;

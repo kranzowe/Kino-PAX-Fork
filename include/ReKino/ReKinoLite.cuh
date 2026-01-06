@@ -26,7 +26,8 @@ public:
     ~ReKinoLite();
 
     /****************************    METHODS    ****************************/
-    void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, bool saveTree = false) override;
+    void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount) override;
+    void planWithSave(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, bool saveTree = false);
     void writeExecutionTimeToCSV(double time);
     void writeTreeToCSV(int winning_warp_id);
     void setTreeOutputPrefix(const std::string& prefix) { treeOutputPrefix_ = prefix; }

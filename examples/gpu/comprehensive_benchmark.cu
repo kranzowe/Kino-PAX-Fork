@@ -136,7 +136,7 @@ void runBenchmark(
             cudaEventCreate(&stop);
             cudaEventRecord(start);
 
-            planner.plan(h_initial, h_goal, d_obstacles, numObstacles, false);
+            planner.plan(h_initial, h_goal, d_obstacles, numObstacles);
 
             cudaEventRecord(stop);
             cudaEventSynchronize(stop);
@@ -244,7 +244,7 @@ void runBenchmark(
             cudaEventCreate(&stop);
             cudaEventRecord(start);
 
-            planner.plan(h_initial, h_goal, d_obstacles, numObstacles, false);
+            planner.plan(h_initial, h_goal, d_obstacles, numObstacles);
 
             cudaEventRecord(stop);
             cudaEventSynchronize(stop);
