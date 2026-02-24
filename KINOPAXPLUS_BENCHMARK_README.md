@@ -1,10 +1,10 @@
-# OKPAX Comprehensive Benchmark
+# KinoPaxPlus Comprehensive Benchmark
 
-A comprehensive benchmark suite for evaluating OKPAX performance with detailed iteration tracking and cost convergence analysis.
+A comprehensive benchmark suite for evaluating KinoPaxPlus performance with detailed iteration tracking and cost convergence analysis.
 
 ## Overview
 
-This benchmark runs the OKPAX planner for **300 iterations** across **10 runs** in **3 different environments**, tracking:
+This benchmark runs the KinoPaxPlus planner for **300 iterations** across **10 runs** in **3 different environments**, tracking:
 - Minimum cost at each iteration
 - Tree size growth
 - Goal set size
@@ -26,7 +26,7 @@ The benchmark executable is automatically built with the project:
 ```bash
 cd build
 cmake ..
-make OKPAXComprehensiveBenchmark
+make KinoPaxPlusComprehensiveBenchmark
 ```
 
 ## Running the Benchmark
@@ -35,23 +35,23 @@ make OKPAXComprehensiveBenchmark
 
 ```bash
 cd build
-./OKPAXComprehensiveBenchmark
+./KinoPaxPlusComprehensiveBenchmark
 ```
 
 **Expected runtime**: 20-40 minutes depending on hardware
 
 ### Output Files
 
-Results are saved to `Data/Benchmarks/OKPAX/`:
+Results are saved to `Data/Benchmarks/KinoPaxPlus/`:
 
-- `okpax_benchmark_{timestamp}_summary.csv` - Summary of all runs
-- `okpax_benchmark_{timestamp}_{environment}_{planner}_run{N}.csv` - Detailed iteration data for each run
+- `kinopaxplus_benchmark_{timestamp}_summary.csv` - Summary of all runs
+- `kinopaxplus_benchmark_{timestamp}_{environment}_{planner}_run{N}.csv` - Detailed iteration data for each run
 
 ### Summary CSV Format
 
 ```csv
 environment,planner_type,run_number,total_time_seconds,final_cost,final_iterations,final_tree_size
-Empty,OKPAX_Original,0,12.345,145.678,287,15234
+Empty,KinoPaxPlus_Original,0,12.345,145.678,287,15234
 ...
 ```
 
@@ -72,7 +72,7 @@ iteration,min_cost,execution_time_ms,tree_size,goal_set_size
 1. **Download results from Linux machine**:
    ```bash
    # On your local machine (from Linux SSH session)
-   scp -r username@server:path/to/Kino-PAX/build/Data/Benchmarks/OKPAX ./
+   scp -r username@server:path/to/Kino-PAX/build/Data/Benchmarks/KinoPaxPlus ./
    ```
 
 2. **Open MATLAB and run visualization script**:
@@ -80,9 +80,9 @@ iteration,min_cost,execution_time_ms,tree_size,goal_set_size
    % In MATLAB, navigate to the scripts directory
    cd scripts
 
-   % Edit the DATA_DIR variable in plot_okpax_benchmark.m if needed
+   % Edit the DATA_DIR variable in plot_kinopaxplus_benchmark.m if needed
    % Then run:
-   plot_okpax_benchmark
+   plot_kinopaxplus_benchmark
    ```
 
 This generates:
@@ -96,7 +96,7 @@ This generates:
 
 ### Output
 
-Plots are saved to `Data/Benchmarks/OKPAX/plots/`:
+Plots are saved to `Data/Benchmarks/KinoPaxPlus/plots/`:
 - `cost_convergence_Empty.png` / `.fig`
 - `cost_convergence_Pillars.png` / `.fig`
 - `cost_convergence_NarrowPassage.png` / `.fig`
@@ -132,7 +132,7 @@ The planner stops early if:
 
 ### Modify Environments
 
-Edit `examples/gpu/okpax_comprehensive_benchmark.cu`:
+Edit `examples/gpu/kinopaxplus_comprehensive_benchmark.cu`:
 
 ```cpp
 // Add new environment
@@ -156,7 +156,7 @@ const int MAX_ITERATIONS = 300; // Maximum iterations per run
 
 ### Compare Original vs Spatial Hash
 
-To compare OKPAX with the spatial hash version (PruneKPAX), uncomment the PruneKPAX section in the benchmark code (currently commented out as it requires interface adaptation).
+To compare KinoPaxPlus with the spatial hash version (PruneKPAX), uncomment the PruneKPAX section in the benchmark code (currently commented out as it requires interface adaptation).
 
 ## Understanding the Metrics
 
@@ -173,7 +173,7 @@ To compare OKPAX with the spatial hash version (PruneKPAX), uncomment the PruneK
 ### Goal Set Size (`goal_set_size`)
 - Number of nodes that reached the goal
 - More solutions = better chance of finding optimal path
-- OKPAX can track multiple goal configurations
+- KinoPaxPlus can track multiple goal configurations
 
 ### Execution Time
 - **Per-iteration time**: Time to propagate frontier and update
@@ -194,7 +194,7 @@ Ensure you have MATLAB installed (any recent version should work).
 ### No Results Generated
 Check that:
 1. Benchmark completed successfully
-2. `Data/Benchmarks/OKPAX/` directory exists
+2. `Data/Benchmarks/KinoPaxPlus/` directory exists
 3. CSV files were created
 
 ## Performance Tips
@@ -214,8 +214,8 @@ Check that:
 If you use this benchmark in your research, please cite:
 
 ```bibtex
-@software{okpax_benchmark,
-  title = {OKPAX Comprehensive Benchmark Suite},
+@software{kinopaxplus_benchmark,
+  title = {KinoPaxPlus Comprehensive Benchmark Suite},
   author = {Your Name},
   year = {2025},
   url = {https://github.com/your-repo/Kino-PAX}
@@ -225,7 +225,7 @@ If you use this benchmark in your research, please cite:
 ## Contributing
 
 To add new benchmark scenarios or metrics:
-1. Modify `okpax_comprehensive_benchmark.cu`
+1. Modify `kinopaxplus_comprehensive_benchmark.cu`
 2. Update `IterationData` struct for new metrics
 3. Extend visualization scripts as needed
 

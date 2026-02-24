@@ -1,13 +1,13 @@
-#include "graphs/OKPAXRegions.cuh"
+#include "graphs/KinoPaxPlusRegions.cuh"
 #include "config/config.h"
 #include <filesystem>
 
-OKPAXRegions::OKPAXRegions(const float ws)
+KinoPaxPlusRegions::KinoPaxPlusRegions(const float ws)
 {
     if(VERBOSE)
         {
             printf("/***************************/\n");
-            printf("/* OKPAX Regions Initialized */\n");
+            printf("/* KinoPaxPlus Regions Initialized */\n");
             printf("/* Number of R1 Regions: %d */\n", NUM_R1_REGIONS);
             printf("/***************************/\n");
         }
@@ -18,7 +18,7 @@ OKPAXRegions::OKPAXRegions(const float ws)
     initializeRegions();
 }
 
-void OKPAXRegions::initializeRegions()
+void KinoPaxPlusRegions::initializeRegions()
 {
     thrust::fill(d_minCostsR1_.begin(), d_minCostsR1_.end(), MAX_FLOAT);
 }

@@ -9,7 +9,7 @@
 #include <chrono>
 #include "planners/originalKPAX.cuh"
 #include "planners/KPAX.cuh"
-#include "planners/OKPAX.cuh"
+#include "planners/KinoPaxPlus.cuh"
 #include "ReKino/ReKinoLite.cuh"
 
 
@@ -175,11 +175,11 @@ void runBenchmark(
     }
 
     // ========================================================================
-    // PLANNER 3: OKPAX (Optimized KPAX with Pruning)
+    // PLANNER 3: KinoPaxPlus
     // ========================================================================
-    printf("\n--- Testing OKPAX (Optimized with Pruning) ---\n");
+    printf("\n--- Testing KinoPaxPlus ---\n");
     {
-        OKPAX planner;
+        KinoPaxPlus planner;
 
         for(int run = 0; run < NUM_RUNS; run++)
         {
@@ -210,7 +210,7 @@ void runBenchmark(
 
             BenchmarkResult result;
             result.environment = environment_name;
-            result.planner = "OKPAX";
+            result.planner = "KinoPaxPlus";
             result.run_number = run + 1;
             result.execution_time = seconds;
             result.success = success;
@@ -295,7 +295,7 @@ int main(void)
     printf("    COMPREHENSIVE PLANNER BENCHMARK\n");
     printf("=======================================================\n");
     printf("Environments: House, Narrow Passage, Trees (quadTrees)\n");
-    printf("Planners: OriginalKPAX, KPAX+SpatialHash, OKPAX, ReKinoLite\n");
+    printf("Planners: OriginalKPAX, KPAX+SpatialHash, KinoPaxPlus, ReKinoLite\n");
     printf("Runs per configuration: 50\n");
     printf("Timeout: 6 seconds\n");
     printf("=======================================================\n");

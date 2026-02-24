@@ -12,6 +12,7 @@ public:
     void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount) override;
     void planDebug(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount);
     void planBench(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, int benchItr);
+    void resetPlanner(float* h_initial, float* h_goal);
     void propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount);
     void updateFrontier();
     void writeDeviceVectorsToCSV(int itr);

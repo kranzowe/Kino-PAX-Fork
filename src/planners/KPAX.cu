@@ -38,15 +38,8 @@ KPAX::KPAX()
         }
 }
 
-void KPAX::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
+void KPAX::resetPlanner(float* h_initial, float* h_goal)
 {
-    cudaEvent_t start, stop;
-    float milliseconds = 0;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    cudaEventRecord(start);
-
-    // --- INITIALIZE KPAX ---
     thrust::fill(d_frontier_.begin(), d_frontier_.end(), false);
     thrust::fill(d_frontierNext_.begin(), d_frontierNext_.end(), false);
     thrust::fill(d_activeFrontierIdxs_.begin(), d_activeFrontierIdxs_.end(), 0);
@@ -64,7 +57,7 @@ void KPAX::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_
     thrust::fill(d_treeSampleCosts_.begin(), d_treeSampleCosts_.end(), 0.0f);
     thrust::fill(d_frontier_.begin(), d_frontier_.begin() + 1, true);
     thrust::fill(d_activeFrontierRepeatCount_.begin(), d_activeFrontierRepeatCount_.end(), 0);
-    thrust::fill(d_activeFrontierRepeatCount_.begin(), d_activeFrontierRepeatCount_.begin() + 1, 5);  // TODO make this not hard coded to 5.
+    thrust::fill(d_activeFrontierRepeatCount_.begin(), d_activeFrontierRepeatCount_.begin() + 1, 5);
 
     h_treeSize_     = 1;
     h_itr_          = 0;
@@ -79,7 +72,18 @@ void KPAX::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_
 
     initializeRandomSeeds(static_cast<unsigned int>(
       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()));
-    // --- END INITIALIZATION ---
+}
+
+void KPAX::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
+{
+    cudaEvent_t start, stop;
+    float milliseconds = 0;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start);
+
+    // --- INITIALIZE KPAX ---
+    resetPlanner(h_initial, h_goal);
 
     while(h_itr_ < MAX_ITER)
         {
@@ -113,39 +117,7 @@ void KPAX::planDebug(float* h_initial, float* h_goal, float* d_obstacles_ptr, ui
     cudaEventRecord(start);
 
     // --- INITIALIZE KPAX ---
-    thrust::fill(d_frontier_.begin(), d_frontier_.end(), false);
-    thrust::fill(d_frontierNext_.begin(), d_frontierNext_.end(), false);
-    thrust::fill(d_activeFrontierIdxs_.begin(), d_activeFrontierIdxs_.end(), 0);
-    thrust::fill(d_unexploredSamples_.begin(), d_unexploredSamples_.end(), 0.0f);
-    thrust::fill(d_unexploredSamplesParentIdxs_.begin(), d_unexploredSamplesParentIdxs_.end(), -1);
-    thrust::fill(d_frontierScanIdx_.begin(), d_frontierScanIdx_.end(), 0);
-    thrust::fill(d_frontierRepeatScanIdx_.begin(), d_frontierRepeatScanIdx_.end(), 0);
-    thrust::fill(d_goalSample_.begin(), d_goalSample_.end(), 0.0f);
-    thrust::fill(graph_.d_activeSubVertices_.begin(), graph_.d_activeSubVertices_.end(), false);
-    thrust::fill(graph_.d_vertexScoreArray_.begin(), graph_.d_vertexScoreArray_.end(), 0.0f);
-    thrust::fill(graph_.d_counterArray_.begin(), graph_.d_counterArray_.end(), 0);
-    thrust::fill(graph_.d_validCounterArray_.begin(), graph_.d_validCounterArray_.end(), 0);
-    thrust::fill(d_treeSamples_.begin(), d_treeSamples_.end(), 0.0f);
-    thrust::fill(d_treeSamplesParentIdxs_.begin(), d_treeSamplesParentIdxs_.end(), -1);
-    thrust::fill(d_treeSampleCosts_.begin(), d_treeSampleCosts_.end(), 0.0f);
-    thrust::fill(d_frontier_.begin(), d_frontier_.begin() + 1, true);
-    thrust::fill(d_activeFrontierRepeatCount_.begin(), d_activeFrontierRepeatCount_.end(), 0);
-    thrust::fill(d_activeFrontierRepeatCount_.begin(), d_activeFrontierRepeatCount_.begin() + 1, 5);
-
-    h_treeSize_     = 1;
-    h_itr_          = 0;
-    h_costToGoal_   = 0;
-    h_pathToGoal_   = 0;
-    h_frontierSize_ = 0;
-
-    cudaMemcpy(d_treeSamples_ptr_, h_initial, SAMPLE_DIM * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_goalSample_ptr_, h_goal, SAMPLE_DIM * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_costToGoal_ptr_, &h_costToGoal_, sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_pathToGoal_ptr_, &h_pathToGoal_, sizeof(int), cudaMemcpyHostToDevice);
-
-    initializeRandomSeeds(static_cast<unsigned int>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()));
-    // --- END INITIALIZATION ---
+    resetPlanner(h_initial, h_goal);
 
     // Create timing events for profiling
     cudaEvent_t propagateStart, propagateStop;
@@ -235,39 +207,7 @@ void KPAX::planBench(float* h_initial, float* h_goal, float* d_obstacles_ptr, ui
     double t_kgmtStart = std::clock();
 
     // --- KPAX INITIALIZATION ---
-    thrust::fill(d_frontier_.begin(), d_frontier_.end(), false);
-    thrust::fill(d_frontierNext_.begin(), d_frontierNext_.end(), false);
-    thrust::fill(d_activeFrontierIdxs_.begin(), d_activeFrontierIdxs_.end(), 0);
-    thrust::fill(d_unexploredSamples_.begin(), d_unexploredSamples_.end(), 0.0f);
-    thrust::fill(d_unexploredSamplesParentIdxs_.begin(), d_unexploredSamplesParentIdxs_.end(), -1);
-    thrust::fill(d_frontierScanIdx_.begin(), d_frontierScanIdx_.end(), 0);
-    thrust::fill(d_frontierRepeatScanIdx_.begin(), d_frontierRepeatScanIdx_.end(), 0);
-    thrust::fill(d_goalSample_.begin(), d_goalSample_.end(), 0.0f);
-    thrust::fill(graph_.d_activeSubVertices_.begin(), graph_.d_activeSubVertices_.end(), false);
-    thrust::fill(graph_.d_vertexScoreArray_.begin(), graph_.d_vertexScoreArray_.end(), 0.0f);
-    thrust::fill(graph_.d_counterArray_.begin(), graph_.d_counterArray_.end(), 0);
-    thrust::fill(graph_.d_validCounterArray_.begin(), graph_.d_validCounterArray_.end(), 0);
-    thrust::fill(d_treeSamples_.begin(), d_treeSamples_.end(), 0.0f);
-    thrust::fill(d_treeSamplesParentIdxs_.begin(), d_treeSamplesParentIdxs_.end(), -1);
-    thrust::fill(d_treeSampleCosts_.begin(), d_treeSampleCosts_.end(), 0.0f);
-    thrust::fill(d_frontier_.begin(), d_frontier_.begin() + 1, true);
-    thrust::fill(d_activeFrontierRepeatCount_.begin(), d_activeFrontierRepeatCount_.end(), 0);
-    thrust::fill(d_activeFrontierRepeatCount_.begin(), d_activeFrontierRepeatCount_.begin() + 1, 5);
-
-    h_treeSize_     = 1;
-    h_itr_          = 0;
-    h_costToGoal_   = 0;
-    h_pathToGoal_   = 0;
-    h_frontierSize_ = 0;
-
-    cudaMemcpy(d_treeSamples_ptr_, h_initial, SAMPLE_DIM * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_goalSample_ptr_, h_goal, SAMPLE_DIM * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_costToGoal_ptr_, &h_costToGoal_, sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_pathToGoal_ptr_, &h_pathToGoal_, sizeof(int), cudaMemcpyHostToDevice);
-
-    initializeRandomSeeds(static_cast<unsigned int>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()));
-    // --- END INITIALIZATION ---
+    resetPlanner(h_initial, h_goal);
 
     while(h_itr_ < MAX_ITER)
         {

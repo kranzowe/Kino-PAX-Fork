@@ -6,7 +6,7 @@
 #include <vector>
 #include <string>
 #include <chrono>
-#include "planners/OKPAX.cuh"
+#include "planners/KinoPaxPlus.cuh"
 #include "planners/PruneKPAX.cuh"
 
 struct IterationData
@@ -34,10 +34,10 @@ void writeResultsToCSV(const std::vector<BenchmarkResult>& results, const std::s
 {
     std::filesystem::create_directories("Data");
     std::filesystem::create_directories("Data/Benchmarks");
-    std::filesystem::create_directories("Data/Benchmarks/OKPAX");
+    std::filesystem::create_directories("Data/Benchmarks/KinoPaxPlus");
 
     // Write summary file
-    std::ofstream summary("Data/Benchmarks/OKPAX/" + filename + "_summary.csv");
+    std::ofstream summary("Data/Benchmarks/KinoPaxPlus/" + filename + "_summary.csv");
     summary << "environment,planner_type,run_number,total_time_seconds,final_cost,final_iterations,final_tree_size\n";
 
     for(const auto& result : results)
@@ -56,7 +56,7 @@ void writeResultsToCSV(const std::vector<BenchmarkResult>& results, const std::s
     for(const auto& result : results)
     {
         std::stringstream ss;
-        ss << "Data/Benchmarks/OKPAX/" << filename << "_"
+        ss << "Data/Benchmarks/KinoPaxPlus/" << filename << "_"
            << result.environment << "_"
            << result.planner_type << "_run"
            << result.run_number << ".csv";
@@ -75,12 +75,12 @@ void writeResultsToCSV(const std::vector<BenchmarkResult>& results, const std::s
         detail.close();
     }
 
-    printf("\n✓ Results written to Data/Benchmarks/OKPAX/%s_*.csv\n", filename.c_str());
+    printf("\n✓ Results written to Data/Benchmarks/KinoPaxPlus/%s_*.csv\n", filename.c_str());
 }
 
-// Modified version of OKPAX planOptimize that tracks iteration data
-BenchmarkResult runOKPAXBenchmark(
-    OKPAX& planner,
+// Modified version of KinoPaxPlus planOptimize that tracks iteration data
+BenchmarkResult runKinoPaxPlusBenchmark(
+    KinoPaxPlus& planner,
     float* h_initial,
     float* h_goal,
     float* d_obstacles,
@@ -204,18 +204,18 @@ void runEnvironmentBenchmark(
     printf("Loaded %d obstacles\n", numObstacles);
     printf("Running %d iterations per run, %d runs total\n\n", max_iterations, num_runs);
 
-    // Test OKPAX (original)
-    printf("--- Testing OKPAX (Original) ---\n");
+    // Test KinoPaxPlus (original)
+    printf("--- Testing KinoPaxPlus (Original) ---\n");
     {
-        OKPAX planner;
+        KinoPaxPlus planner;
 
         for(int run = 0; run < num_runs; run++)
         {
             printf("Run %d/%d:\n", run + 1, num_runs);
 
-            BenchmarkResult result = runOKPAXBenchmark(
+            BenchmarkResult result = runKinoPaxPlusBenchmark(
                 planner, h_initial, h_goal, d_obstacles, numObstacles,
-                env_name, "OKPAX_Original", run, max_iterations);
+                env_name, "KinoPaxPlus_Original", run, max_iterations);
 
             printf("  Completed: %.3fs, final_cost=%.3f, iterations=%d, tree_size=%d\n",
                    result.total_time_seconds, result.final_cost,
@@ -225,10 +225,10 @@ void runEnvironmentBenchmark(
         }
     }
 
-    // Test OKPAX with spatial hashing
-    printf("\n--- Testing OKPAX with Spatial Hashing (PruneKPAX) ---\n");
+    // Test KinoPaxPlus with spatial hashing
+    printf("\n--- Testing KinoPaxPlus with Spatial Hashing (PruneKPAX) ---\n");
     // Note: PruneKPAX uses spatial hashing internally
-    // We would need to adapt it to work like OKPAX with iteration tracking
+    // We would need to adapt it to work like KinoPaxPlus with iteration tracking
     // For now, commenting this out as it would require significant modifications
     /*
     {
@@ -252,7 +252,7 @@ void runEnvironmentBenchmark(
 int main(void)
 {
     printf("╔══════════════════════════════════════════════════════════╗\n");
-    printf("║   OKPAX Comprehensive Benchmark - Iteration Tracking    ║\n");
+    printf("║   KinoPaxPlus Comprehensive Benchmark - Iteration Tracking    ║\n");
     printf("║   300 iterations × 10 runs × 3 environments             ║\n");
     printf("╚══════════════════════════════════════════════════════════╝\n\n");
 
@@ -301,7 +301,7 @@ int main(void)
     std::stringstream timestamp;
     timestamp << std::put_time(std::localtime(&time_t), "%Y%m%d_%H%M%S");
 
-    std::string filename = "okpax_benchmark_" + timestamp.str();
+    std::string filename = "kinopaxplus_benchmark_" + timestamp.str();
     writeResultsToCSV(all_results, filename);
 
     printf("\n╔══════════════════════════════════════════════════════════╗\n");

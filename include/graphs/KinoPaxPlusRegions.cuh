@@ -10,12 +10,12 @@
 #include <thrust/count.h>
 #include "helper/helper.cuh"
 
-class OKPAXRegions
+class KinoPaxPlusRegions
 {
 public:
     // --- constructor ---
-    OKPAXRegions() = default;
-    OKPAXRegions(float h_ws);
+    KinoPaxPlusRegions() = default;
+    KinoPaxPlusRegions(float h_ws);
 
     // --- device fields ---
     thrust::device_vector<float> d_minCostsR1_;

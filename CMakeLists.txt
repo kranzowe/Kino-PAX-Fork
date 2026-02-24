@@ -24,7 +24,7 @@ include_directories(
 
 set(SOURCE_FILES
     src/planners/KPAX.cu
-    src/planners/OKPAX.cu
+    src/planners/KinoPaxPlus.cu
     src/planners/originalKPAX.cu
     src/planners/originalPlanner.cu
     src/planners/PruneKPAX.cu
@@ -34,7 +34,7 @@ set(SOURCE_FILES
     src/collisionCheck/collisionCheck.cu
     src/collisionCheck/spatialHash.cu
     src/graphs/Graph.cu
-    src/graphs/OKPAXRegions.cu
+    src/graphs/KinoPaxPlusRegions.cu
     src/helper/helper.cu
     src/statePropagator/statePropagator.cu
     src/statePropagator/statePropagatorSpatialHash.cu
@@ -92,8 +92,8 @@ target_link_libraries(ReKinoMain
     Python3::NumPy
 )
 
-add_executable(OKPAXMain examples/gpu/okpax_main.cu)
-target_link_libraries(OKPAXMain
+add_executable(KinoPaxPlusMain examples/gpu/kinopaxplus_main.cu)
+target_link_libraries(KinoPaxPlusMain
     PUBLIC KPAX_lib
     ${CUDA_LIBRARIES}
     ${Boost_LIBRARIES}
@@ -114,8 +114,19 @@ target_link_libraries(ComprehensiveBenchmark
     Python3::NumPy
 )
 
-add_executable(OKPAXComprehensiveBenchmark examples/gpu/okpax_comprehensive_benchmark.cu)
-target_link_libraries(OKPAXComprehensiveBenchmark
+add_executable(KinoPaxPlusComprehensiveBenchmark examples/gpu/kinopaxplus_comprehensive_benchmark.cu)
+target_link_libraries(KinoPaxPlusComprehensiveBenchmark
+    PUBLIC KPAX_lib
+    ${CUDA_LIBRARIES}
+    ${Boost_LIBRARIES}
+    ${EIGEN3_LIBRARIES}
+    yaml-cpp
+    Python3::Python
+    Python3::NumPy
+)
+
+add_executable(PlannerComparisonBenchmark examples/gpu/planner_comparison_benchmark.cu)
+target_link_libraries(PlannerComparisonBenchmark
     PUBLIC KPAX_lib
     ${CUDA_LIBRARIES}
     ${Boost_LIBRARIES}
@@ -130,9 +141,10 @@ set_target_properties(main PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(benchMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(executionTimeMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(ReKinoMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-set_target_properties(OKPAXMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(KinoPaxPlusMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(ComprehensiveBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-set_target_properties(OKPAXComprehensiveBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(KinoPaxPlusComprehensiveBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(PlannerComparisonBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
 
 set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -diag-suppress=20012,20013,20014,20015 --expt-relaxed-constexpr --ptxas-options=-v")
@@ -141,9 +153,10 @@ set_property(TARGET benchMain PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET executionTimeMain PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET KPAX_lib PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET ReKinoMain PROPERTY CUDA_ARCHITECTURES 61 86)
-set_property(TARGET OKPAXMain PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET KinoPaxPlusMain PROPERTY CUDA_ARCHITECTURES 61 86)
 set_property(TARGET ComprehensiveBenchmark PROPERTY CUDA_ARCHITECTURES 61 86)
-set_property(TARGET OKPAXComprehensiveBenchmark PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET KinoPaxPlusComprehensiveBenchmark PROPERTY CUDA_ARCHITECTURES 61 86)
+set_property(TARGET PlannerComparisonBenchmark PROPERTY CUDA_ARCHITECTURES 61 86)
 add_definitions(-DEIGEN_NO_DEBUG)
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations -Wno-unused-function")

@@ -1,12 +1,12 @@
 #pragma once
 #include "planners/Planner.cuh"
-#include "graphs/OKPAXRegions.cuh"
+#include "graphs/KinoPaxPlusRegions.cuh"
 
-class OKPAX : public Planner
+class KinoPaxPlus : public Planner
 {
 public:
     /**************************** CONSTRUCTORS ****************************/
-    OKPAX();
+    KinoPaxPlus();
 
     /****************************    METHODS    ****************************/
     void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount) override;
@@ -27,7 +27,7 @@ public:
 
     /****************************    FIELDS    ****************************/
     // --- host fields ---
-    OKPAXRegions graph_;
+    KinoPaxPlusRegions graph_;
     uint h_frontierSize_, h_frontierNextSize_, h_activeBlockSize_, h_propIterations_, h_solSetSize_;
     float h_minCost_;
     int h_previousExpansionCount_;
@@ -59,13 +59,13 @@ public:
 /***************************/
 // --- Propagates current frontier. Builds new frontier. ---
 // --- One Block Per Frontier Sample ---
-__global__ void OKPAX_propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
+__global__ void KinoPaxPlus_propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
                                                 float* unexploredSamples, uint frontierSize, curandState* randomSeeds,
                                                 int* unexploredSamplesParentIdxs, float* obstacles, int obstaclesCount,
                                                 bool* frontierNext, float* treeSampleCosts, float* minCostsR1,
                                                 int* frontierNextXR1s, float* unexploredSampleCosts);
 
-__global__ void OKPAX_propagateFrontier_kernel1V2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
+__global__ void KinoPaxPlus_propagateFrontier_kernel1V2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
                                                    float* unexploredSamples, uint frontierSize, curandState* randomSeeds,
                                                    int* unexploredSamplesParentIdxs, float* obstacles, int obstaclesCount,
                                                    bool* frontierNext, float* treeSampleCosts, float* minCostsR1,
@@ -75,7 +75,7 @@ __global__ void OKPAX_propagateFrontier_kernel1V2(bool* frontier, uint* activeFr
 /* PROPAGATE FRONTIER KERNEL 2 */
 /***************************/
 // --- Iterations new samples per frontier sample ---
-__global__ void OKPAX_propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
+__global__ void KinoPaxPlus_propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
                                                 float* unexploredSamples, uint frontierSize, curandState* randomSeeds,
                                                 int* unexploredSamplesParentIdxs, float* obstacles, int obstaclesCount,
                                                 bool* frontierNext, int iterations, float* treeSampleCosts,
@@ -84,13 +84,13 @@ __global__ void OKPAX_propagateFrontier_kernel2(bool* frontier, uint* activeFron
 /***************************/
 /* TREE PRUNING KERNEL */
 /***************************/
-__global__ void OKPAX_pruningTree_kernel(int treeSize, int* treeSamplesParentIdxs, float* treeSampleCosts, bool* goalSet,
+__global__ void KinoPaxPlus_pruningTree_kernel(int treeSize, int* treeSamplesParentIdxs, float* treeSampleCosts, bool* goalSet,
                                          float* minCostsR1, int* treeXR1s, bool* pruned, uint* inactiveIterations);
 
 /***************************/
 /* FRONTIER PRUNING KERNEL */
 /***************************/
-__global__ void OKPAX_pruningFrontier_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
+__global__ void KinoPaxPlus_pruningFrontier_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                              int* unexploredSamplesParentIdxs, int* treeSamplesParentIdxs,
                                              float* treeSampleCosts, float* minCostsR1, int* frontierNextXR1s,
                                              int* treeXR1s, bool* frontierNext, float* unexploredSampleCosts,
@@ -99,7 +99,7 @@ __global__ void OKPAX_pruningFrontier_kernel(uint* activeFrontierNextIdxs, uint 
 /***************************/
 /* COMBINED PRUNING KERNEL */
 /***************************/
-__global__ void OKPAX_pruning_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize, int treeSize,
+__global__ void KinoPaxPlus_pruning_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize, int treeSize,
                                      int* unexploredSamplesParentIdxs, int* treeSamplesParentIdxs,
                                      float* treeSampleCosts, bool* goalSet, float* minCostsR1, int* treeXR1s,
                                      int* frontierNextXR1s, bool* frontierNext, float* unexploredSampleCosts,
@@ -109,7 +109,7 @@ __global__ void OKPAX_pruning_kernel(uint* activeFrontierNextIdxs, uint frontier
 /* FRONTIER UPDATE KERNEL */
 /***************************/
 // --- Adds previous frontier to the tree and builds new frontier. ---
-__global__ void OKPAX_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs,
+__global__ void KinoPaxPlus_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs,
                                             uint frontierNextSize, float* xGoal, int treeSize, float* unexploredSamples,
                                             float* treeSamples, int* unexploredSamplesParentIdxs,
                                             int* treeSamplesParentIdxs, float* treeSampleCosts, curandState* randomSeeds,
@@ -120,7 +120,7 @@ __global__ void OKPAX_updateFrontier_kernel(bool* frontier, bool* frontierNext, 
 /***************************/
 /* GET CONTROL PATH TO GOAL KERNEL */
 /***************************/
-__global__ void OKPAX_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSamples,
+__global__ void KinoPaxPlus_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSamples,
                                                   int* treeSamplesParentIdxs, uint* goalSetIdxs, int goalSetSize,
                                                   float* pathCosts, float* treeSampleCosts, int* iterations,
                                                   float* minCost);
@@ -128,13 +128,13 @@ __global__ void OKPAX_getControlPathToGoal_kernel(float* controlPathsToGoal, flo
 /***************************/
 /* GET CONTROL PATH TO GOAL PATHS COLLECT KERNEL */
 /***************************/
-__global__ void OKPAX_getControlPathToGoalPathsCollect_kernel(float* controlPathsToGoal, float* treeSamples,
+__global__ void KinoPaxPlus_getControlPathToGoalPathsCollect_kernel(float* controlPathsToGoal, float* treeSamples,
                                                               int* treeSamplesParentIdxs, uint* goalSetIdxs,
                                                               int goalSetSize, float* pathCosts,
                                                               float* treeSampleCosts, int* iterations,
                                                               float* minCost, int itr, int numSols);
 
 /***************************/
-/* OKPAX GET REGION DEVICE FUNCTION */
+/* KinoPaxPlus GET REGION DEVICE FUNCTION */
 /***************************/
-__device__ int OKPAX_getRegion(float* coord);
+__device__ int KinoPaxPlus_getRegion(float* coord);
