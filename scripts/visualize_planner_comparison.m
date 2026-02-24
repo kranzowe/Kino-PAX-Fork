@@ -9,6 +9,10 @@
 clear; clc; close all;
 
 %% --- Configuration ---
+% Cost metric: cumulative workspace path length (sum of edge distances from
+% root to goal node). All three planners report the same metric:
+%   KPAX / PruneKPAX : computed post-hoc by walking d_treeSamplesParentIdxs_
+%   KinoPaxPlus       : tracked directly as h_minCost_ in the GPU kernel
 dataDir = '../Data/Benchmarks/PlannerComparison';
 
 planners     = {'KPAX', 'PruneKPAX', 'KinoPaxPlus'};
@@ -156,13 +160,13 @@ for ei = 1:length(environments)
     end
 
     xlabel('Iteration');
-    ylabel('Best Solution Cost');
+    ylabel('Path Length (workspace units)');
     title(envLabels{ei});
     legend('Location', 'best');
     grid on;
     set(gca, 'FontSize', 10);
 end
-sgtitle('Best Solution Cost over Iterations', 'FontSize', 14, 'FontWeight', 'bold');
+sgtitle('Path Length over Iterations (cumulative root-to-goal, all planners same metric)', 'FontSize', 13, 'FontWeight', 'bold');
 
 %% ======================================================================
 %  FIGURE 3: Best Cost vs Elapsed Time (ms)
@@ -211,13 +215,13 @@ for ei = 1:length(environments)
     end
 
     xlabel('Elapsed Time (ms)');
-    ylabel('Best Solution Cost');
+    ylabel('Path Length (workspace units)');
     title(envLabels{ei});
     legend('Location', 'best');
     grid on;
     set(gca, 'FontSize', 10);
 end
-sgtitle('Solution Cost Convergence over Time', 'FontSize', 14, 'FontWeight', 'bold');
+sgtitle('Path Length Convergence over Time (cumulative root-to-goal)', 'FontSize', 13, 'FontWeight', 'bold');
 
 %% ======================================================================
 %  FIGURE 4: Tree Size Growth vs Iteration
@@ -338,8 +342,8 @@ for pi = 1:nbars
 end
 
 set(gca, 'XTickLabel', envLabels, 'FontSize', 10);
-ylabel('Cost');
-title('Final Best Solution Cost');
+ylabel('Path Length (workspace units)');
+title('Final Best Solution Path Length');
 legend(planners, 'Location', 'best');
 grid on;
 
@@ -378,7 +382,9 @@ title('Total Execution Time');
 legend(planners, 'Location', 'best');
 grid on;
 
-sgtitle('Planner Comparison Summary (mean +/- std over runs)', 'FontSize', 14, 'FontWeight', 'bold');
+sgtitle({'Planner Comparison Summary (mean +/- std over runs)', ...
+         'Cost = cumulative workspace path length (same metric for all planners)'}, ...
+         'FontSize', 12, 'FontWeight', 'bold');
 
 %% ======================================================================
 %  FIGURE 6: Solution Success Rate

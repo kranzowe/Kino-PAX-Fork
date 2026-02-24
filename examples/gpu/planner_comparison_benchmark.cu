@@ -7,6 +7,7 @@
 #include <string>
 #include <thread>
 #include <chrono>
+#include <cmath>
 #include "planners/KPAX.cuh"
 #include "planners/PruneKPAX.cuh"
 #include "planners/KinoPaxPlus.cuh"
@@ -17,7 +18,7 @@ struct IterationData
     int frontier_size;
     int tree_size;
     float elapsed_time_ms;
-    float best_cost;
+    float best_cost;   // cumulative path cost from root to best goal found so far
 };
 
 struct RunResult
@@ -27,12 +28,57 @@ struct RunResult
     int run_number;
     double total_time_seconds;
     int first_solution_iteration;
-    float first_solution_cost;
-    float final_best_cost;
+    float first_solution_cost;   // cumulative path cost at first solution
+    float final_best_cost;       // cumulative path cost of best solution at end
     int final_tree_size;
     int total_iterations;
     std::vector<IterationData> per_iteration;
 };
+
+// =========================================================================
+// Compute cumulative root-to-goal path cost on the CPU by walking the tree.
+// This produces the same metric that KinoPaxPlus tracks via h_minCost_:
+//   cost = sum of distance(node, parent) along the path from root to goalIdx
+// Only the first W_DIM components of each SAMPLE_DIM sample are workspace
+// positions; distance() uses exactly those.
+// =========================================================================
+float computePathCost(
+    const std::vector<float>& h_treeSamples,   // flat [treeSize * SAMPLE_DIM]
+    const std::vector<int>&   h_parents,        // [treeSize]
+    int                       goalIdx)
+{
+    float totalCost = 0.0f;
+    int cur = goalIdx;
+    while(true)
+    {
+        int par = h_parents[cur];
+        if(par < 0) break;  // reached root (parent of root is -1)
+
+        float dist = 0.0f;
+        for(int d = 0; d < W_DIM; d++)
+        {
+            float diff = h_treeSamples[cur * SAMPLE_DIM + d]
+                       - h_treeSamples[par * SAMPLE_DIM + d];
+            dist += diff * diff;
+        }
+        totalCost += std::sqrt(dist);
+        cur = par;
+    }
+    return totalCost;
+}
+
+// Copies the tree to host and computes path cost to goalIdx.
+// Call only when a new solution is found to avoid redundant copies.
+float devicePathCost(float* d_treeSamples_ptr, int* d_treeSamplesParentIdxs_ptr, int treeSize, int goalIdx)
+{
+    std::vector<float> h_treeSamples(treeSize * SAMPLE_DIM);
+    std::vector<int>   h_parents(treeSize);
+    cudaMemcpy(h_treeSamples.data(), d_treeSamples_ptr,
+               treeSize * SAMPLE_DIM * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_parents.data(), d_treeSamplesParentIdxs_ptr,
+               treeSize * sizeof(int), cudaMemcpyDeviceToHost);
+    return computePathCost(h_treeSamples, h_parents, goalIdx);
+}
 
 void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
 {
@@ -65,6 +111,7 @@ void writeSummaryCSV(const std::vector<RunResult>& results, const std::string& o
     filename << outputDir << "/planner_comparison_" << timestamp.str() << "_summary.csv";
 
     std::ofstream file(filename.str());
+    // Note: best_cost is the cumulative workspace path length (same metric for all planners)
     file << "environment,planner,run,total_time_s,first_sol_iteration,first_sol_cost,"
          << "final_best_cost,final_tree_size,total_iterations\n";
 
@@ -86,6 +133,10 @@ void writeSummaryCSV(const std::vector<RunResult>& results, const std::string& o
 
 // ========================================================================
 // KPAX Benchmark
+//
+// Cost metric: cumulative path length from root to goal, computed by walking
+// d_treeSamplesParentIdxs_ on the CPU the first time a solution is found.
+// (d_treeSampleCosts_ in KPAX stores distance-to-goal, NOT path length.)
 // ========================================================================
 RunResult benchmarkKPAX(
     KPAX& planner,
@@ -111,7 +162,6 @@ RunResult benchmarkKPAX(
     cudaEventCreate(&iterStop);
 
     planner.resetPlanner(h_initial, h_goal);
-
     cudaEventRecord(start);
 
     int itr = 0;
@@ -123,54 +173,50 @@ RunResult benchmarkKPAX(
         planner.graph_.updateVertices();
         planner.updateFrontier();
 
-        // Record timing
         cudaEventRecord(iterStop);
         cudaEventSynchronize(iterStop);
         cudaEventElapsedTime(&elapsedMs, start, iterStop);
 
-        // Check if goal was found and read cost
-        float bestCost = INFINITY;
-        if(planner.h_pathToGoal_ != 0)
+        if(planner.h_pathToGoal_ != 0 && result.first_solution_iteration == -1)
         {
-            // Read cost of the goal node from device
-            float goalCost;
-            cudaMemcpy(&goalCost, planner.d_treeSampleCosts_ptr_ + planner.h_pathToGoal_, sizeof(float), cudaMemcpyDeviceToHost);
-            bestCost = goalCost;
+            // Compute the true cumulative path cost by walking the tree
+            float pathCost = devicePathCost(
+                planner.d_treeSamples_ptr_,
+                planner.d_treeSamplesParentIdxs_ptr_,
+                planner.h_treeSize_,
+                planner.h_pathToGoal_);
 
-            if(result.first_solution_iteration == -1)
-            {
-                result.first_solution_iteration = itr;
-                result.first_solution_cost = bestCost;
-            }
-            if(bestCost < result.final_best_cost)
-                result.final_best_cost = bestCost;
+            result.first_solution_iteration = itr;
+            result.first_solution_cost      = pathCost;
+            result.final_best_cost          = pathCost;
+            // KPAX finds one solution and the tree stops improving; carry it forward
         }
 
         IterationData d;
-        d.iteration = itr;
+        d.iteration    = itr;
         d.frontier_size = planner.h_frontierSize_;
-        d.tree_size = planner.h_treeSize_;
+        d.tree_size    = planner.h_treeSize_;
         d.elapsed_time_ms = elapsedMs;
-        d.best_cost = result.final_best_cost;
+        d.best_cost    = result.final_best_cost;
         result.per_iteration.push_back(d);
 
-        // KPAX breaks on first solution in normal mode, but for benchmark we continue
-        // to track if tree is full
         if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
     }
 
     result.total_time_seconds = elapsedMs / 1000.0;
-    result.final_tree_size = planner.h_treeSize_;
-    result.total_iterations = itr;
+    result.final_tree_size    = planner.h_treeSize_;
+    result.total_iterations   = itr;
 
     cudaEventDestroy(start);
     cudaEventDestroy(iterStop);
-
     return result;
 }
 
 // ========================================================================
 // PruneKPAX Benchmark
+//
+// Same cost fix as KPAX: walk the parent chain to get the true path length.
+// (d_treeSampleCosts_ in PruneKPAX stores distance-to-goal, NOT path length.)
 // ========================================================================
 RunResult benchmarkPruneKPAX(
     PruneKPAX& planner,
@@ -196,7 +242,6 @@ RunResult benchmarkPruneKPAX(
     cudaEventCreate(&iterStop);
 
     planner.resetPlanner(h_initial, h_goal);
-
     cudaEventRecord(start);
 
     int itr = 0;
@@ -208,51 +253,53 @@ RunResult benchmarkPruneKPAX(
         planner.graph_.updateVertices();
         planner.updateFrontier();
 
-        // Record timing
         cudaEventRecord(iterStop);
         cudaEventSynchronize(iterStop);
         cudaEventElapsedTime(&elapsedMs, start, iterStop);
 
-        // Check if goal was found and read cost
-        float bestCost = INFINITY;
-        if(planner.h_pathToGoal_ != 0)
+        if(planner.h_pathToGoal_ != 0 && result.first_solution_iteration == -1)
         {
-            float goalCost;
-            cudaMemcpy(&goalCost, planner.d_treeSampleCosts_ptr_ + planner.h_pathToGoal_, sizeof(float), cudaMemcpyDeviceToHost);
-            bestCost = goalCost;
+            float pathCost = devicePathCost(
+                planner.d_treeSamples_ptr_,
+                planner.d_treeSamplesParentIdxs_ptr_,
+                planner.h_treeSize_,
+                planner.h_pathToGoal_);
 
-            if(result.first_solution_iteration == -1)
-            {
-                result.first_solution_iteration = itr;
-                result.first_solution_cost = bestCost;
-            }
-            if(bestCost < result.final_best_cost)
-                result.final_best_cost = bestCost;
+            result.first_solution_iteration = itr;
+            result.first_solution_cost      = pathCost;
+            result.final_best_cost          = pathCost;
         }
 
         IterationData d;
-        d.iteration = itr;
+        d.iteration    = itr;
         d.frontier_size = planner.h_frontierSize_;
-        d.tree_size = planner.h_treeSize_;
+        d.tree_size    = planner.h_treeSize_;
         d.elapsed_time_ms = elapsedMs;
-        d.best_cost = result.final_best_cost;
+        d.best_cost    = result.final_best_cost;
         result.per_iteration.push_back(d);
 
         if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
     }
 
     result.total_time_seconds = elapsedMs / 1000.0;
-    result.final_tree_size = planner.h_treeSize_;
-    result.total_iterations = itr;
+    result.final_tree_size    = planner.h_treeSize_;
+    result.total_iterations   = itr;
 
     cudaEventDestroy(start);
     cudaEventDestroy(iterStop);
-
     return result;
 }
 
 // ========================================================================
 // KinoPaxPlus Benchmark
+//
+// h_minCost_ already IS the cumulative path length from root to the best
+// goal node found so far — no fix needed here. It is updated via
+// atomicMinFloat(d_minCost_ptr_, cost) in the updateFrontier kernel, where
+// cost = parentCost + distance(parent, node).
+//
+// First-solution detection: h_minCost_ drops below MAX_FLOAT when any goal
+// node is first accepted. h_pathToGoal_ is NOT used by KinoPaxPlus.
 // ========================================================================
 RunResult benchmarkKinoPaxPlus(
     KinoPaxPlus& planner,
@@ -278,7 +325,6 @@ RunResult benchmarkKinoPaxPlus(
     cudaEventCreate(&iterStop);
 
     planner.resetPlanner(h_initial, h_goal);
-
     cudaEventRecord(start);
 
     int itr = 0;
@@ -290,41 +336,38 @@ RunResult benchmarkKinoPaxPlus(
         if(planner.h_propIterations_ == 0) break;
         planner.updateFrontier();
 
-        // Record timing
         cudaEventRecord(iterStop);
         cudaEventSynchronize(iterStop);
         cudaEventElapsedTime(&elapsedMs, start, iterStop);
 
-        // Read min cost from device
+        // h_minCost_ is the cumulative root-to-goal path length (set in GPU kernel)
         cudaMemcpy(&planner.h_minCost_, planner.d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
-        float bestCost = planner.h_minCost_;
 
-        if(planner.h_pathToGoal_ != 0 && result.first_solution_iteration == -1)
+        if(planner.h_minCost_ < MAX_FLOAT && result.first_solution_iteration == -1)
         {
             result.first_solution_iteration = itr;
-            result.first_solution_cost = bestCost;
+            result.first_solution_cost      = planner.h_minCost_;
         }
-        if(bestCost < result.final_best_cost)
-            result.final_best_cost = bestCost;
+        if(planner.h_minCost_ < result.final_best_cost)
+            result.final_best_cost = planner.h_minCost_;
 
         IterationData d;
-        d.iteration = itr;
+        d.iteration    = itr;
         d.frontier_size = planner.h_frontierSize_;
-        d.tree_size = planner.h_treeSize_;
+        d.tree_size    = planner.h_treeSize_;
         d.elapsed_time_ms = elapsedMs;
-        d.best_cost = result.final_best_cost;
+        d.best_cost    = result.final_best_cost;
         result.per_iteration.push_back(d);
 
         if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
     }
 
     result.total_time_seconds = elapsedMs / 1000.0;
-    result.final_tree_size = planner.h_treeSize_;
-    result.total_iterations = itr;
+    result.final_tree_size    = planner.h_treeSize_;
+    result.total_iterations   = itr;
 
     cudaEventDestroy(start);
     cudaEventDestroy(iterStop);
-
     return result;
 }
 
@@ -345,7 +388,6 @@ void runEnvironmentBenchmark(
     printf("ENVIRONMENT: %s\n", environment_name.c_str());
     printf("========================================\n");
 
-    // Load obstacles
     int numObstacles;
     float* d_obstacles;
     std::vector<float> obstacles = readObstaclesFromCSV(obstacle_path, numObstacles, W_DIM);
@@ -361,7 +403,7 @@ void runEnvironmentBenchmark(
         {
             RunResult result = benchmarkKPAX(planner, environment_name, run, h_initial, h_goal,
                                               d_obstacles, numObstacles, maxIterations);
-            printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, best_cost=%.3f\n",
+            printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, path_cost=%.3f\n",
                    run + 1, numRuns, result.total_time_seconds, result.total_iterations,
                    result.final_tree_size, result.first_solution_iteration, result.final_best_cost);
             writePerIterationCSV(result, outputDir);
@@ -380,7 +422,7 @@ void runEnvironmentBenchmark(
         {
             RunResult result = benchmarkPruneKPAX(planner, environment_name, run, h_initial, h_goal,
                                                    d_obstacles, numObstacles, maxIterations);
-            printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, best_cost=%.3f\n",
+            printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, path_cost=%.3f\n",
                    run + 1, numRuns, result.total_time_seconds, result.total_iterations,
                    result.final_tree_size, result.first_solution_iteration, result.final_best_cost);
             writePerIterationCSV(result, outputDir);
@@ -399,7 +441,7 @@ void runEnvironmentBenchmark(
         {
             RunResult result = benchmarkKinoPaxPlus(planner, environment_name, run, h_initial, h_goal,
                                                      d_obstacles, numObstacles, maxIterations);
-            printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, best_cost=%.3f\n",
+            printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, path_cost=%.3f\n",
                    run + 1, numRuns, result.total_time_seconds, result.total_iterations,
                    result.final_tree_size, result.first_solution_iteration, result.final_best_cost);
             writePerIterationCSV(result, outputDir);
@@ -417,7 +459,7 @@ int main(void)
 {
     system("rm -rf Data/Benchmarks/PlannerComparison/*");
 
-    const int NUM_RUNS = 10;
+    const int NUM_RUNS      = 10;
     const int MAX_ITERATIONS = 300;
 
     std::string outputDir = "Data/Benchmarks/PlannerComparison";
@@ -430,6 +472,7 @@ int main(void)
     printf("Environments: Empty, House, NarrowPassage, Trees\n");
     printf("Runs per configuration: %d\n", NUM_RUNS);
     printf("Max iterations: %d\n", MAX_ITERATIONS);
+    printf("Cost metric: cumulative workspace path length (root to goal)\n");
     printf("=======================================================\n");
 
     float h_initial[SAMPLE_DIM] = {10.0, 8, 5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
@@ -437,31 +480,22 @@ int main(void)
 
     std::vector<RunResult> all_results;
 
-    // --- Empty ---
-    runEnvironmentBenchmark(
-        "Empty",
+    runEnvironmentBenchmark("Empty",
         "../include/config/obstacles/empty/obstacles.csv",
         h_initial, h_goal, all_results, outputDir, NUM_RUNS, MAX_ITERATIONS);
 
-    // --- House ---
-    runEnvironmentBenchmark(
-        "House",
+    runEnvironmentBenchmark("House",
         "../include/config/obstacles/house/obstacles.csv",
         h_initial, h_goal, all_results, outputDir, NUM_RUNS, MAX_ITERATIONS);
 
-    // --- Narrow Passage ---
-    runEnvironmentBenchmark(
-        "NarrowPassage",
+    runEnvironmentBenchmark("NarrowPassage",
         "../include/config/obstacles/narrowPassage/obstacles.csv",
         h_initial, h_goal, all_results, outputDir, NUM_RUNS, MAX_ITERATIONS);
 
-    // --- Trees ---
-    runEnvironmentBenchmark(
-        "Trees",
+    runEnvironmentBenchmark("Trees",
         "../include/config/obstacles/quadTrees/obstacles.csv",
         h_initial, h_goal, all_results, outputDir, NUM_RUNS, MAX_ITERATIONS);
 
-    // --- Write summary ---
     writeSummaryCSV(all_results, outputDir);
 
     printf("\n=======================================================\n");
