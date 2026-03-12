@@ -7,7 +7,10 @@
 #include <string>
 #include <chrono>
 #include "planners/KinoPaxPlus.cuh"
+#include "planners/KPAX.cuh"
 #include "planners/PruneKPAX.cuh"
+#include <cmath>
+#include <cstring>
 
 struct IterationData
 {
@@ -76,6 +79,282 @@ void writeResultsToCSV(const std::vector<BenchmarkResult>& results, const std::s
     }
 
     printf("\n✓ Results written to Data/Benchmarks/KinoPaxPlus/%s_*.csv\n", filename.c_str());
+}
+
+// Host-side distance function matching the device distance() function
+float hostDistance(float* a, float* b)
+{
+    if(W_DIM == 2)
+        return sqrtf((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]));
+    else if(W_DIM == 3)
+        return sqrtf((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+    return -1.0f;
+}
+
+// Compute accumulated path cost by walking parent chain from goalIdx to root
+float computeAccumulatedCost(float* h_treeSamples, int* h_parentIdxs, int goalIdx)
+{
+    float cost     = 0.0f;
+    int currentIdx = goalIdx;
+    while(h_parentIdxs[currentIdx] != -1)
+        {
+            int parentIdx  = h_parentIdxs[currentIdx];
+            float* current = &h_treeSamples[currentIdx * SAMPLE_DIM];
+            float* parent  = &h_treeSamples[parentIdx * SAMPLE_DIM];
+            cost += hostDistance(current, parent);
+            currentIdx = parentIdx;
+        }
+    return cost;
+}
+
+// KPAX benchmark with naive optimality: continues past first solution and tracks best cost
+BenchmarkResult runKPAXBenchmark(
+    KPAX& planner,
+    float* h_initial,
+    float* h_goal,
+    float* d_obstacles,
+    int numObstacles,
+    const std::string& environment_name,
+    const std::string& planner_type,
+    int run_number,
+    int max_iterations = 300)
+{
+    BenchmarkResult result;
+    result.environment  = environment_name;
+    result.planner_type = planner_type;
+    result.run_number   = run_number;
+
+    cudaEvent_t start, stop, iter_start, iter_stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventCreate(&iter_start);
+    cudaEventCreate(&iter_stop);
+
+    cudaEventRecord(start);
+
+    // Initialize planner
+    planner.resetPlanner(h_initial, h_goal);
+
+    // Host buffers for computing path cost when a goal is found
+    std::vector<float> h_treeSamples(MAX_TREE_SIZE * SAMPLE_DIM);
+    std::vector<int> h_parentIdxs(MAX_TREE_SIZE);
+
+    float best_cost       = MAX_FLOAT;
+    int total_goals_found = 0;
+    int zero              = 0;
+
+    // Run planning with iteration tracking - do NOT break on first solution
+    while(planner.h_itr_ < max_iterations)
+    {
+        cudaEventRecord(iter_start);
+
+        planner.h_itr_++;
+
+        // Reset pathToGoal before each iteration to detect new goals
+        cudaMemcpy(planner.d_pathToGoal_ptr_, &zero, sizeof(int), cudaMemcpyHostToDevice);
+        planner.h_pathToGoal_ = 0;
+
+        planner.propagateFrontier(d_obstacles, numObstacles);
+        planner.graph_.updateVertices();
+        planner.updateFrontier();
+
+        cudaEventRecord(iter_stop);
+        cudaEventSynchronize(iter_stop);
+
+        float iter_ms = 0;
+        cudaEventElapsedTime(&iter_ms, iter_start, iter_stop);
+
+        // Check if a new path to goal was found this iteration
+        if(planner.h_pathToGoal_ != 0)
+        {
+            total_goals_found++;
+            int goalIdx = planner.h_pathToGoal_;
+
+            // Copy tree data to host for cost computation
+            cudaMemcpy(h_treeSamples.data(), planner.d_treeSamples_ptr_,
+                       planner.h_treeSize_ * SAMPLE_DIM * sizeof(float), cudaMemcpyDeviceToHost);
+            cudaMemcpy(h_parentIdxs.data(), planner.d_treeSamplesParentIdxs_ptr_,
+                       planner.h_treeSize_ * sizeof(int), cudaMemcpyDeviceToHost);
+
+            float path_cost = computeAccumulatedCost(h_treeSamples.data(), h_parentIdxs.data(), goalIdx);
+
+            if(path_cost < best_cost)
+            {
+                best_cost = path_cost;
+                // Copy the control path for the best solution
+                cudaMemcpy(planner.h_controlPathToGoal_, planner.d_controlPathToGoal_ptr_,
+                           planner.h_itr_ * SAMPLE_DIM * sizeof(float), cudaMemcpyDeviceToHost);
+            }
+        }
+
+        // Check if tree is full
+        if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
+
+        // Record iteration data
+        IterationData iter_data;
+        iter_data.iteration        = planner.h_itr_;
+        iter_data.min_cost         = best_cost;
+        iter_data.execution_time_ms = iter_ms;
+        iter_data.tree_size        = planner.h_treeSize_;
+        iter_data.goal_set_size    = total_goals_found;
+
+        result.iteration_history.push_back(iter_data);
+
+        // Print progress every 50 iterations
+        if(planner.h_itr_ % 50 == 0)
+        {
+            printf("  Iter %d: best_cost=%.3f, tree_size=%d, goals_found=%d\n",
+                   planner.h_itr_, best_cost, planner.h_treeSize_, total_goals_found);
+        }
+    }
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    float total_ms = 0;
+    cudaEventElapsedTime(&total_ms, start, stop);
+
+    result.total_time_seconds = total_ms / 1000.0;
+    result.final_cost         = best_cost;
+    result.final_iterations   = planner.h_itr_;
+    result.final_tree_size    = planner.h_treeSize_;
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+    cudaEventDestroy(iter_start);
+    cudaEventDestroy(iter_stop);
+
+    return result;
+}
+
+// PruneKPAX benchmark with spatial hashing and tunable pruning parameters.
+// Set goalBias=0 for flat acceptance (no pruning), or use PruneKPAX defaults for full pruning.
+// Naive optimality: continues past first solution and tracks best cost.
+BenchmarkResult runPruneKPAXBenchmark(
+    PruneKPAX& planner,
+    float* h_initial,
+    float* h_goal,
+    float* d_obstacles,
+    int numObstacles,
+    const std::string& environment_name,
+    const std::string& planner_type,
+    int run_number,
+    float explorationBias = 0.5f,
+    float goalBias = 0.0f,
+    float maxRegression = 10.0f,
+    int max_iterations = 300)
+{
+    BenchmarkResult result;
+    result.environment  = environment_name;
+    result.planner_type = planner_type;
+    result.run_number   = run_number;
+
+    // Configure pruning parameters
+    planner.h_goalBias_        = goalBias;
+    planner.h_explorationBias_ = explorationBias;
+    planner.h_maxRegression_   = maxRegression;
+
+    cudaEvent_t start, stop, iter_start, iter_stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventCreate(&iter_start);
+    cudaEventCreate(&iter_stop);
+
+    cudaEventRecord(start);
+
+    // Initialize planner
+    planner.resetPlanner(h_initial, h_goal);
+
+    // Host buffers for computing path cost when a goal is found
+    std::vector<float> h_treeSamples(MAX_TREE_SIZE * SAMPLE_DIM);
+    std::vector<int> h_parentIdxs(MAX_TREE_SIZE);
+
+    float best_cost       = MAX_FLOAT;
+    int total_goals_found = 0;
+    int zero              = 0;
+
+    // Run planning with iteration tracking - do NOT break on first solution
+    while(planner.h_itr_ < max_iterations)
+    {
+        cudaEventRecord(iter_start);
+
+        planner.h_itr_++;
+
+        // Reset pathToGoal before each iteration to detect new goals
+        cudaMemcpy(planner.d_pathToGoal_ptr_, &zero, sizeof(int), cudaMemcpyHostToDevice);
+        planner.h_pathToGoal_ = 0;
+
+        planner.propagateFrontier(d_obstacles, numObstacles);
+        planner.graph_.updateVertices();
+        planner.updateFrontier();
+
+        cudaEventRecord(iter_stop);
+        cudaEventSynchronize(iter_stop);
+
+        float iter_ms = 0;
+        cudaEventElapsedTime(&iter_ms, iter_start, iter_stop);
+
+        // Check if a new path to goal was found this iteration
+        if(planner.h_pathToGoal_ != 0)
+        {
+            total_goals_found++;
+            int goalIdx = planner.h_pathToGoal_;
+
+            // Copy tree data to host for cost computation
+            cudaMemcpy(h_treeSamples.data(), planner.d_treeSamples_ptr_,
+                       planner.h_treeSize_ * SAMPLE_DIM * sizeof(float), cudaMemcpyDeviceToHost);
+            cudaMemcpy(h_parentIdxs.data(), planner.d_treeSamplesParentIdxs_ptr_,
+                       planner.h_treeSize_ * sizeof(int), cudaMemcpyDeviceToHost);
+
+            float path_cost = computeAccumulatedCost(h_treeSamples.data(), h_parentIdxs.data(), goalIdx);
+
+            if(path_cost < best_cost)
+            {
+                best_cost = path_cost;
+                // Copy the control path for the best solution
+                cudaMemcpy(planner.h_controlPathToGoal_, planner.d_controlPathToGoal_ptr_,
+                           planner.h_itr_ * SAMPLE_DIM * sizeof(float), cudaMemcpyDeviceToHost);
+            }
+        }
+
+        // Check if tree is full
+        if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
+
+        // Record iteration data
+        IterationData iter_data;
+        iter_data.iteration         = planner.h_itr_;
+        iter_data.min_cost          = best_cost;
+        iter_data.execution_time_ms = iter_ms;
+        iter_data.tree_size         = planner.h_treeSize_;
+        iter_data.goal_set_size     = total_goals_found;
+
+        result.iteration_history.push_back(iter_data);
+
+        // Print progress every 50 iterations
+        if(planner.h_itr_ % 50 == 0)
+        {
+            printf("  Iter %d: best_cost=%.3f, tree_size=%d, goals_found=%d\n",
+                   planner.h_itr_, best_cost, planner.h_treeSize_, total_goals_found);
+        }
+    }
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    float total_ms = 0;
+    cudaEventElapsedTime(&total_ms, start, stop);
+
+    result.total_time_seconds = total_ms / 1000.0;
+    result.final_cost         = best_cost;
+    result.final_iterations   = planner.h_itr_;
+    result.final_tree_size    = planner.h_treeSize_;
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+    cudaEventDestroy(iter_start);
+    cudaEventDestroy(iter_stop);
+
+    return result;
 }
 
 // Modified version of KinoPaxPlus planOptimize that tracks iteration data
@@ -187,7 +466,8 @@ void runEnvironmentBenchmark(
     float* h_goal,
     std::vector<BenchmarkResult>& results,
     int num_runs = 10,
-    int max_iterations = 300)
+    int max_iterations = 300,
+    float acceptanceProbability = 0.5f)
 {
     printf("\n========================================\n");
     printf("ENVIRONMENT: %s\n", env_name.c_str());
@@ -225,12 +505,54 @@ void runEnvironmentBenchmark(
         }
     }
 
-    // Test KinoPaxPlus with spatial hashing
-    printf("\n--- Testing KinoPaxPlus with Spatial Hashing (PruneKPAX) ---\n");
-    // Note: PruneKPAX uses spatial hashing internally
-    // We would need to adapt it to work like KinoPaxPlus with iteration tracking
-    // For now, commenting this out as it would require significant modifications
-    /*
+    // Test KPAX with naive optimality (continues past first solution, tracks best cost)
+    printf("\n--- Testing KPAX (Naive Optimality) ---\n");
+    {
+        KPAX planner;
+
+        for(int run = 0; run < num_runs; run++)
+        {
+            printf("Run %d/%d:\n", run + 1, num_runs);
+
+            BenchmarkResult result = runKPAXBenchmark(
+                planner, h_initial, h_goal, d_obstacles, numObstacles,
+                env_name, "KPAX_NaiveOptimal", run, max_iterations);
+
+            printf("  Completed: %.3fs, final_cost=%.3f, iterations=%d, tree_size=%d\n",
+                   result.total_time_seconds, result.final_cost,
+                   result.final_iterations, result.final_tree_size);
+
+            results.push_back(result);
+        }
+    }
+
+    // Test KPAX with spatial hashing, no pruning, tunable acceptance probability
+    {
+        std::stringstream label;
+        label << "KPAX_SpatialHash_Accept" << std::fixed << std::setprecision(2) << acceptanceProbability;
+        printf("\n--- Testing KPAX + Spatial Hashing (acceptance=%.2f, no pruning) ---\n", acceptanceProbability);
+
+        PruneKPAX planner;
+
+        for(int run = 0; run < num_runs; run++)
+        {
+            printf("Run %d/%d:\n", run + 1, num_runs);
+
+            BenchmarkResult result = runPruneKPAXBenchmark(
+                planner, h_initial, h_goal, d_obstacles, numObstacles,
+                env_name, label.str(), run,
+                acceptanceProbability, 0.0f, 10.0f, max_iterations);
+
+            printf("  Completed: %.3fs, final_cost=%.3f, iterations=%d, tree_size=%d\n",
+                   result.total_time_seconds, result.final_cost,
+                   result.final_iterations, result.final_tree_size);
+
+            results.push_back(result);
+        }
+    }
+
+    // Test KPAX with spatial hashing AND goal-biased pruning (PruneKPAX defaults)
+    printf("\n--- Testing KPAX + Spatial Hashing + Goal-Biased Pruning ---\n");
     {
         PruneKPAX planner;
 
@@ -238,23 +560,28 @@ void runEnvironmentBenchmark(
         {
             printf("Run %d/%d:\n", run + 1, num_runs);
 
-            // PruneKPAX would need a similar benchmark function
-            // This is left as a TODO since it has a different interface
+            BenchmarkResult result = runPruneKPAXBenchmark(
+                planner, h_initial, h_goal, d_obstacles, numObstacles,
+                env_name, "KPAX_SpatialHash_Pruned", run,
+                0.3f, 0.7f, 10.0f, max_iterations);
+
+            printf("  Completed: %.3fs, final_cost=%.3f, iterations=%d, tree_size=%d\n",
+                   result.total_time_seconds, result.final_cost,
+                   result.final_iterations, result.final_tree_size);
 
             results.push_back(result);
         }
     }
-    */
 
     cudaFree(d_obstacles);
 }
 
 int main(void)
 {
-    printf("╔══════════════════════════════════════════════════════════╗\n");
-    printf("║   KinoPaxPlus Comprehensive Benchmark - Iteration Tracking    ║\n");
-    printf("║   300 iterations × 10 runs × 3 environments             ║\n");
-    printf("╚══════════════════════════════════════════════════════════╝\n\n");
+    printf("╔══════════════════════════════════════════════════════════════╗\n");
+    printf("║  KPAX vs KinoPaxPlus Benchmark - Iteration Tracking          ║\n");
+    printf("║  300 iterations x 10 runs x 3 environments                   ║\n");
+    printf("╚══════════════════════════════════════════════════════════════╝\n\n");
 
     std::vector<BenchmarkResult> all_results;
 

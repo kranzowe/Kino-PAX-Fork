@@ -1,45 +1,57 @@
 %% Planner Comparison Benchmark Visualization
-% Reads per-iteration CSVs and summary CSV from PlannerComparisonBenchmark
-% and generates plots comparing KPAX, PruneKPAX, and KinoPaxPlus.
+% Reads per-iteration CSVs and summary CSV produced by
+% examples/gpu/planner_comparison_benchmark.cu and generates plots
+% comparing all four planner variants.
 %
-% Output files are located in: Data/Benchmarks/PlannerComparison/
-%   Per-iteration: {env}_{planner}_run{n}.csv
+% Output directory: Data/Benchmarks/PlannerComparison/
 %   Summary:       planner_comparison_{timestamp}_summary.csv
+%   Per-iteration: {Environment}_{Planner}_run{n}.csv
+%
+% Per-iteration columns: iteration, frontier_size, tree_size, elapsed_time_ms, best_cost
+%   - best_cost        : best accumulated workspace path cost found so far
+%   - elapsed_time_ms  : cumulative wall time since planner start (NOT per-iteration)
+%   - frontier_size    : frontier size at this iteration
 
 clear; clc; close all;
 
 %% --- Configuration ---
-% Cost metric: cumulative workspace path length (sum of edge distances from
-% root to goal node). All three planners report the same metric:
-%   KPAX / PruneKPAX : computed post-hoc by walking d_treeSamplesParentIdxs_
-%   KinoPaxPlus       : tracked directly as h_minCost_ in the GPU kernel
 dataDir = '../Data/Benchmarks/PlannerComparison';
 
-planners     = {'KPAX', 'PruneKPAX', 'KinoPaxPlus'};
+planners = {'KPAX', ...
+            'KPAX_SpatialHash', ...
+            'PruneKPAX', ...
+            'KinoPaxPlus'};
+
+plannerLabels = {'KPAX (Naive Optimal)', ...
+                 'KPAX + SpatialHash', ...
+                 'PruneKPAX', ...
+                 'KinoPaxPlus'};
+
 environments = {'Empty', 'House', 'NarrowPassage', 'Trees'};
 envLabels    = {'Empty', 'House', 'Narrow Passage', 'Trees'};
 
-plannerColors = [0.2 0.4 0.8;    % KPAX - blue
-                 0.9 0.5 0.1;    % PruneKPAX - orange
-                 0.2 0.7 0.3];   % KinoPaxPlus - green
+plannerColors = [0.2 0.4 0.8;    % KPAX              - blue
+                 0.9 0.5 0.1;    % KPAX SpatialHash  - orange
+                 0.7 0.1 0.6;    % PruneKPAX         - purple
+                 0.2 0.7 0.3];   % KinoPaxPlus       - green
 
-plannerMarkers = {'o', 's', 'd'};
+plannerStyles = {'-', '--', '-.', ':'};
 
 numRuns = 10;
 
-%% --- Load Summary CSV ---
+%% --- Locate the most recent summary file ---
 summaryFiles = dir(fullfile(dataDir, 'planner_comparison_*_summary.csv'));
 if isempty(summaryFiles)
     error('No summary CSV found in %s. Run the benchmark first.', dataDir);
 end
-% Use the most recent summary file
 [~, idx] = max([summaryFiles.datenum]);
 summaryPath = fullfile(dataDir, summaryFiles(idx).name);
 fprintf('Loading summary: %s\n', summaryPath);
 summaryTable = readtable(summaryPath);
 
 %% --- Load Per-Iteration Data ---
-% Structure: iterData{envIdx}{plannerIdx}{runIdx} = table
+% Per-iteration filenames: {Environment}_{Planner}_run{n}.csv (no prefix)
+% Structure: iterData{envIdx, plannerIdx}{runIdx} = table
 iterData = cell(length(environments), length(planners));
 
 for ei = 1:length(environments)
@@ -58,11 +70,22 @@ end
 
 fprintf('Data loaded for %d environments x %d planners.\n', length(environments), length(planners));
 
+%% --- Helper: find first solution iteration (first iter where best_cost < very large) ---
+function firstIter = firstSolutionIter(tbl)
+    % MAX_FLOAT ~ 3.4e38; treat anything above 1e30 as "no solution yet"
+    solIdx = find(tbl.best_cost < 1e30, 1, 'first');
+    if isempty(solIdx)
+        firstIter = -1;
+    else
+        firstIter = tbl.iteration(solIdx);
+    end
+end
+
 %% ======================================================================
-%  FIGURE 1: Frontier Size (Nodes Propagated) vs Iteration
-%  Per-environment subplots, mean +/- std across runs
+%  FIGURE 1: Frontier Size vs Iteration
+%  Per-environment subplots (2x2), mean +/- std across runs
 %  ======================================================================
-figure('Name', 'Frontier Size vs Iteration', 'Position', [50 50 1400 900]);
+figure('Name', 'Frontier Size vs Iteration', 'Position', [50 50 1200 900]);
 
 for ei = 1:length(environments)
     subplot(2, 2, ei); hold on;
@@ -70,7 +93,6 @@ for ei = 1:length(environments)
     for pi = 1:length(planners)
         runs = iterData{ei, pi};
 
-        % Collect all frontier sizes aligned by iteration
         maxIter = 0;
         for ri = 1:numRuns
             if ~isempty(runs{ri})
@@ -87,36 +109,35 @@ for ei = 1:length(environments)
             end
         end
 
-        meanF = nanmean(allFrontier, 1);
-        stdF  = nanstd(allFrontier, 0, 1);
+        meanF = mean(allFrontier, 1, 'omitnan');
+        stdF  = std(allFrontier, 0, 1, 'omitnan');
         itrVec = 1:maxIter;
 
-        % Shaded region for std
         validIdx = ~isnan(meanF);
         xFill = [itrVec(validIdx), fliplr(itrVec(validIdx))];
         yFill = [meanF(validIdx) + stdF(validIdx), fliplr(meanF(validIdx) - stdF(validIdx))];
         yFill = max(yFill, 0);
         fill(xFill, yFill, plannerColors(pi, :), ...
             'FaceAlpha', 0.15, 'EdgeColor', 'none', 'HandleVisibility', 'off');
-        plot(itrVec(validIdx), meanF(validIdx), '-', ...
+        plot(itrVec(validIdx), meanF(validIdx), plannerStyles{pi}, ...
             'Color', plannerColors(pi, :), 'LineWidth', 1.8, ...
-            'DisplayName', planners{pi});
+            'DisplayName', plannerLabels{pi});
     end
 
     xlabel('Iteration');
     ylabel('Frontier Size');
     title(envLabels{ei});
-    legend('Location', 'best');
+    legend('Location', 'best', 'FontSize', 7);
     grid on;
     set(gca, 'FontSize', 10);
 end
-sgtitle('Frontier Size (Nodes Propagated) per Iteration', 'FontSize', 14, 'FontWeight', 'bold');
+sgtitle('Frontier Size per Iteration', 'FontSize', 14, 'FontWeight', 'bold');
 
 %% ======================================================================
 %  FIGURE 2: Best Cost vs Iteration
-%  Per-environment subplots, mean across runs
+%  Per-environment subplots (2x2), mean across runs
 %  ======================================================================
-figure('Name', 'Best Cost vs Iteration', 'Position', [100 100 1400 900]);
+figure('Name', 'Best Cost vs Iteration', 'Position', [100 100 1200 900]);
 
 for ei = 1:length(environments)
     subplot(2, 2, ei); hold on;
@@ -140,11 +161,11 @@ for ei = 1:length(environments)
             end
         end
 
-        % Replace Inf with NaN for plotting
-        allCost(isinf(allCost)) = NaN;
+        % Replace huge values (MAX_FLOAT ~ 3.4e38) with NaN for plotting
+        allCost(allCost > 1e30) = NaN;
 
-        meanC = nanmean(allCost, 1);
-        stdC  = nanstd(allCost, 0, 1);
+        meanC = mean(allCost, 1, 'omitnan');
+        stdC  = std(allCost, 0, 1, 'omitnan');
         itrVec = 1:maxIter;
 
         validIdx = ~isnan(meanC);
@@ -153,26 +174,28 @@ for ei = 1:length(environments)
             yFill = [meanC(validIdx) + stdC(validIdx), fliplr(meanC(validIdx) - stdC(validIdx))];
             fill(xFill, yFill, plannerColors(pi, :), ...
                 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'HandleVisibility', 'off');
-            plot(itrVec(validIdx), meanC(validIdx), '-', ...
+            plot(itrVec(validIdx), meanC(validIdx), plannerStyles{pi}, ...
                 'Color', plannerColors(pi, :), 'LineWidth', 1.8, ...
-                'DisplayName', planners{pi});
+                'DisplayName', plannerLabels{pi});
         end
     end
 
     xlabel('Iteration');
-    ylabel('Path Length (workspace units)');
+    ylabel('Path Cost (workspace distance)');
     title(envLabels{ei});
-    legend('Location', 'best');
+    legend('Location', 'best', 'FontSize', 7);
     grid on;
     set(gca, 'FontSize', 10);
 end
-sgtitle('Path Length over Iterations (cumulative root-to-goal, all planners same metric)', 'FontSize', 13, 'FontWeight', 'bold');
+sgtitle('Best Path Cost over Iterations (accumulated root-to-goal distance)', ...
+    'FontSize', 13, 'FontWeight', 'bold');
 
 %% ======================================================================
-%  FIGURE 3: Best Cost vs Elapsed Time (ms)
-%  Per-environment subplots
+%  FIGURE 3: Best Cost vs Cumulative Elapsed Time (ms)
+%  elapsed_time_ms is ALREADY cumulative — no cumsum needed.
+%  Per-environment subplots (2x2)
 %  ======================================================================
-figure('Name', 'Best Cost vs Time', 'Position', [150 150 1400 900]);
+figure('Name', 'Best Cost vs Time', 'Position', [150 150 1200 900]);
 
 for ei = 1:length(environments)
     subplot(2, 2, ei); hold on;
@@ -180,53 +203,56 @@ for ei = 1:length(environments)
     for pi = 1:length(planners)
         runs = iterData{ei, pi};
 
-        % Plot each run as a thin line, and overlay mean
+        % Plot each run as a thin line
         for ri = 1:numRuns
             if ~isempty(runs{ri})
                 costs = runs{ri}.best_cost;
-                costs(isinf(costs)) = NaN;
-                t = runs{ri}.elapsed_time_ms;
+                costs(costs > 1e30) = NaN;
+                t = runs{ri}.elapsed_time_ms;  % already cumulative
                 plot(t, costs, '-', 'Color', [plannerColors(pi,:), 0.2], ...
                     'LineWidth', 0.5, 'HandleVisibility', 'off');
             end
         end
 
-        % Compute mean over time bins (approximate since times differ per run)
-        % Use first run's time vector as reference
+        % Overlay mean using first run's time axis as reference
         if ~isempty(runs{1})
             refTime = runs{1}.elapsed_time_ms;
+            refCost = runs{1}.best_cost;
+            refCost(refCost > 1e30) = NaN;
             allCostTime = NaN(numRuns, length(refTime));
-            allCostTime(1, :) = runs{1}.best_cost;
+            allCostTime(1, :) = refCost;
             for ri = 2:numRuns
                 if ~isempty(runs{ri})
-                    allCostTime(ri, :) = interp1(runs{ri}.elapsed_time_ms, ...
-                        runs{ri}.best_cost, refTime, 'previous', NaN);
+                    riCost = runs{ri}.best_cost;
+                    riCost(riCost > 1e30) = NaN;
+                    riTime = runs{ri}.elapsed_time_ms;
+                    allCostTime(ri, :) = interp1(riTime, riCost, ...
+                        refTime, 'previous', NaN);
                 end
             end
-            allCostTime(isinf(allCostTime)) = NaN;
-            meanCT = nanmean(allCostTime, 1);
+            meanCT = mean(allCostTime, 1, 'omitnan');
             validIdx = ~isnan(meanCT);
             if any(validIdx)
-                plot(refTime(validIdx), meanCT(validIdx), '-', ...
+                plot(refTime(validIdx), meanCT(validIdx), plannerStyles{pi}, ...
                     'Color', plannerColors(pi,:), 'LineWidth', 2.0, ...
-                    'DisplayName', planners{pi});
+                    'DisplayName', plannerLabels{pi});
             end
         end
     end
 
     xlabel('Elapsed Time (ms)');
-    ylabel('Path Length (workspace units)');
+    ylabel('Path Cost (workspace distance)');
     title(envLabels{ei});
-    legend('Location', 'best');
+    legend('Location', 'best', 'FontSize', 7);
     grid on;
     set(gca, 'FontSize', 10);
 end
-sgtitle('Path Length Convergence over Time (cumulative root-to-goal)', 'FontSize', 13, 'FontWeight', 'bold');
+sgtitle('Path Cost Convergence over Wall Time', 'FontSize', 13, 'FontWeight', 'bold');
 
 %% ======================================================================
 %  FIGURE 4: Tree Size Growth vs Iteration
 %  ======================================================================
-figure('Name', 'Tree Size vs Iteration', 'Position', [200 50 1400 900]);
+figure('Name', 'Tree Size vs Iteration', 'Position', [200 50 1200 900]);
 
 for ei = 1:length(environments)
     subplot(2, 2, ei); hold on;
@@ -250,19 +276,19 @@ for ei = 1:length(environments)
             end
         end
 
-        meanT = nanmean(allTree, 1);
+        meanT = mean(allTree, 1, 'omitnan');
         itrVec = 1:maxIter;
         validIdx = ~isnan(meanT);
 
-        plot(itrVec(validIdx), meanT(validIdx), '-', ...
+        plot(itrVec(validIdx), meanT(validIdx), plannerStyles{pi}, ...
             'Color', plannerColors(pi, :), 'LineWidth', 1.8, ...
-            'DisplayName', planners{pi});
+            'DisplayName', plannerLabels{pi});
     end
 
     xlabel('Iteration');
     ylabel('Tree Size');
     title(envLabels{ei});
-    legend('Location', 'best');
+    legend('Location', 'best', 'FontSize', 7);
     grid on;
     set(gca, 'FontSize', 10);
 end
@@ -270,33 +296,39 @@ sgtitle('Tree Size Growth over Iterations', 'FontSize', 14, 'FontWeight', 'bold'
 
 %% ======================================================================
 %  FIGURE 5: Summary Bar Charts
-%  Left: First Solution Iteration, Right: Final Best Cost
+%  Left: First Solution Iteration, Centre: Final Best Cost, Right: Total Time
 %  ======================================================================
-figure('Name', 'Summary Statistics', 'Position', [250 100 1400 500]);
+figure('Name', 'Summary Statistics', 'Position', [250 100 1600 500]);
 
-% --- First Solution Iteration ---
+nEnv = length(environments);
+nPl  = length(planners);
+
+% --- First Solution Iteration (computed from per-iteration data) ---
 subplot(1, 3, 1); hold on;
 
-barData = NaN(length(environments), length(planners));
-barErr  = NaN(length(environments), length(planners));
+barData = NaN(nEnv, nPl);
+barErr  = NaN(nEnv, nPl);
 
-for ei = 1:length(environments)
-    for pi = 1:length(planners)
-        mask = strcmp(summaryTable.environment, environments{ei}) & ...
-               strcmp(summaryTable.planner, planners{pi});
-        vals = summaryTable.first_sol_iteration(mask);
-        vals(vals < 0) = NaN;  % -1 means no solution
-        barData(ei, pi) = nanmean(vals);
-        barErr(ei, pi)  = nanstd(vals);
+for ei = 1:nEnv
+    for pi = 1:nPl
+        runs = iterData{ei, pi};
+        vals = NaN(1, numRuns);
+        for ri = 1:numRuns
+            if ~isempty(runs{ri})
+                vals(ri) = firstSolutionIter(runs{ri});
+            end
+        end
+        vals(vals < 0) = NaN;  % -1 means no solution found
+        barData(ei, pi) = mean(vals, 'omitnan');
+        barErr(ei, pi)  = std(vals, 'omitnan');
     end
 end
 
 b = bar(barData, 'grouped');
-for pi = 1:length(planners)
+for pi = 1:nPl
     b(pi).FaceColor = plannerColors(pi, :);
 end
 
-% Add error bars
 ngroups = size(barData, 1);
 nbars = size(barData, 2);
 groupwidth = min(0.8, nbars / (nbars + 1.5));
@@ -305,31 +337,31 @@ for pi = 1:nbars
     errorbar(x, barData(:, pi), barErr(:, pi), 'k.', 'LineWidth', 1, 'HandleVisibility', 'off');
 end
 
-set(gca, 'XTickLabel', envLabels, 'FontSize', 10);
+set(gca, 'XTickLabel', envLabels, 'FontSize', 9);
 ylabel('Iteration');
 title('First Solution Iteration');
-legend(planners, 'Location', 'best');
+legend(plannerLabels, 'Location', 'best', 'FontSize', 6);
 grid on;
 
 % --- Final Best Cost ---
 subplot(1, 3, 2); hold on;
 
-barData2 = NaN(length(environments), length(planners));
-barErr2  = NaN(length(environments), length(planners));
+barData2 = NaN(nEnv, nPl);
+barErr2  = NaN(nEnv, nPl);
 
-for ei = 1:length(environments)
-    for pi = 1:length(planners)
+for ei = 1:nEnv
+    for pi = 1:nPl
         mask = strcmp(summaryTable.environment, environments{ei}) & ...
                strcmp(summaryTable.planner, planners{pi});
         vals = summaryTable.final_best_cost(mask);
-        vals(isinf(vals)) = NaN;
-        barData2(ei, pi) = nanmean(vals);
-        barErr2(ei, pi)  = nanstd(vals);
+        vals(vals > 1e30) = NaN;  % MAX_FLOAT = no solution
+        barData2(ei, pi) = mean(vals, 'omitnan');
+        barErr2(ei, pi)  = std(vals, 'omitnan');
     end
 end
 
 b2 = bar(barData2, 'grouped');
-for pi = 1:length(planners)
+for pi = 1:nPl
     b2(pi).FaceColor = plannerColors(pi, :);
 end
 
@@ -341,30 +373,30 @@ for pi = 1:nbars
     errorbar(x, barData2(:, pi), barErr2(:, pi), 'k.', 'LineWidth', 1, 'HandleVisibility', 'off');
 end
 
-set(gca, 'XTickLabel', envLabels, 'FontSize', 10);
-ylabel('Path Length (workspace units)');
-title('Final Best Solution Path Length');
-legend(planners, 'Location', 'best');
+set(gca, 'XTickLabel', envLabels, 'FontSize', 9);
+ylabel('Path Cost (workspace distance)');
+title('Final Best Path Cost');
+legend(plannerLabels, 'Location', 'best', 'FontSize', 6);
 grid on;
 
 % --- Total Execution Time ---
 subplot(1, 3, 3); hold on;
 
-barData3 = NaN(length(environments), length(planners));
-barErr3  = NaN(length(environments), length(planners));
+barData3 = NaN(nEnv, nPl);
+barErr3  = NaN(nEnv, nPl);
 
-for ei = 1:length(environments)
-    for pi = 1:length(planners)
+for ei = 1:nEnv
+    for pi = 1:nPl
         mask = strcmp(summaryTable.environment, environments{ei}) & ...
                strcmp(summaryTable.planner, planners{pi});
         vals = summaryTable.total_time_s(mask);
-        barData3(ei, pi) = nanmean(vals);
-        barErr3(ei, pi)  = nanstd(vals);
+        barData3(ei, pi) = mean(vals, 'omitnan');
+        barErr3(ei, pi)  = std(vals, 'omitnan');
     end
 end
 
 b3 = bar(barData3, 'grouped');
-for pi = 1:length(planners)
+for pi = 1:nPl
     b3(pi).FaceColor = plannerColors(pi, :);
 end
 
@@ -376,34 +408,44 @@ for pi = 1:nbars
     errorbar(x, barData3(:, pi), barErr3(:, pi), 'k.', 'LineWidth', 1, 'HandleVisibility', 'off');
 end
 
-set(gca, 'XTickLabel', envLabels, 'FontSize', 10);
+set(gca, 'XTickLabel', envLabels, 'FontSize', 9);
 ylabel('Time (s)');
 title('Total Execution Time');
-legend(planners, 'Location', 'best');
+legend(plannerLabels, 'Location', 'best', 'FontSize', 6);
 grid on;
 
 sgtitle({'Planner Comparison Summary (mean +/- std over runs)', ...
-         'Cost = cumulative workspace path length (same metric for all planners)'}, ...
+         'Cost = accumulated workspace path length (same metric for all planners)'}, ...
          'FontSize', 12, 'FontWeight', 'bold');
 
 %% ======================================================================
 %  FIGURE 6: Solution Success Rate
 %  ======================================================================
-figure('Name', 'Solution Success Rate', 'Position', [300 150 800 400]);
+figure('Name', 'Solution Success Rate', 'Position', [300 150 900 400]);
 
-successRate = NaN(length(environments), length(planners));
+successRate = NaN(nEnv, nPl);
 
-for ei = 1:length(environments)
-    for pi = 1:length(planners)
-        mask = strcmp(summaryTable.environment, environments{ei}) & ...
-               strcmp(summaryTable.planner, planners{pi});
-        vals = summaryTable.first_sol_iteration(mask);
-        successRate(ei, pi) = sum(vals > 0) / length(vals) * 100;
+for ei = 1:nEnv
+    for pi = 1:nPl
+        runs = iterData{ei, pi};
+        nSuccess = 0;
+        nTotal   = 0;
+        for ri = 1:numRuns
+            if ~isempty(runs{ri})
+                nTotal = nTotal + 1;
+                if firstSolutionIter(runs{ri}) > 0
+                    nSuccess = nSuccess + 1;
+                end
+            end
+        end
+        if nTotal > 0
+            successRate(ei, pi) = nSuccess / nTotal * 100;
+        end
     end
 end
 
 b4 = bar(successRate, 'grouped');
-for pi = 1:length(planners)
+for pi = 1:nPl
     b4(pi).FaceColor = plannerColors(pi, :);
 end
 
@@ -411,16 +453,16 @@ set(gca, 'XTickLabel', envLabels, 'FontSize', 11);
 ylabel('Success Rate (%)');
 ylim([0 110]);
 title('Solution Success Rate Across Environments', 'FontSize', 13);
-legend(planners, 'Location', 'best');
+legend(plannerLabels, 'Location', 'best', 'FontSize', 7);
 grid on;
 
 % Add percentage labels on bars
-for pi = 1:length(planners)
+for pi = 1:nPl
     xtips = b4(pi).XEndPoints;
     ytips = b4(pi).YEndPoints;
     labels = string(round(successRate(:, pi))) + "%";
     text(xtips, ytips + 2, labels, 'HorizontalAlignment', 'center', ...
-        'VerticalAlignment', 'bottom', 'FontSize', 9, 'FontWeight', 'bold');
+        'VerticalAlignment', 'bottom', 'FontSize', 8, 'FontWeight', 'bold');
 end
 
 fprintf('\nAll figures generated.\n');
