@@ -11,6 +11,7 @@
 #include "planners/KPAX.cuh"
 #include "planners/PruneKPAX.cuh"
 #include "planners/KinoPaxPlus.cuh"
+#include "planners/KPAXPlus.cuh"
 
 struct IterationData
 {
@@ -401,6 +402,83 @@ RunResult benchmarkKinoPaxPlus(
 }
 
 // ========================================================================
+// KPAXPlus Benchmark (hybrid exploration + optimization)
+//
+// h_minCost_ is the cumulative path length from root to the best goal
+// node found so far — same metric as KinoPaxPlus. Updated via
+// atomicMinFloat(d_minCost_ptr_, cost) in the updateFrontier kernel.
+// ========================================================================
+RunResult benchmarkKPAXPlus(
+    KPAXPlus& planner,
+    const std::string& environment,
+    int runNumber,
+    float* h_initial,
+    float* h_goal,
+    float* d_obstacles,
+    uint numObstacles,
+    int maxIterations)
+{
+    RunResult result;
+    result.planner_name = "KPAXPlus";
+    result.environment = environment;
+    result.run_number = runNumber;
+    result.first_solution_iteration = -1;
+    result.first_solution_cost = INFINITY;
+    result.final_best_cost = INFINITY;
+
+    cudaEvent_t start, iterStop;
+    float elapsedMs = 0;
+    cudaEventCreate(&start);
+    cudaEventCreate(&iterStop);
+
+    planner.resetPlanner(h_initial, h_goal);
+    cudaEventRecord(start);
+
+    int itr = 0;
+    while(itr < maxIterations)
+    {
+        itr++;
+        planner.h_itr_++;
+        planner.propagateFrontier(d_obstacles, numObstacles);
+        planner.graph_.updateVertices();
+        planner.updateFrontier();
+
+        cudaEventRecord(iterStop);
+        cudaEventSynchronize(iterStop);
+        cudaEventElapsedTime(&elapsedMs, start, iterStop);
+
+        // h_minCost_ is the cumulative root-to-goal path length (set in GPU kernel)
+        cudaMemcpy(&planner.h_minCost_, planner.d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
+
+        if(planner.h_minCost_ < MAX_FLOAT && result.first_solution_iteration == -1)
+        {
+            result.first_solution_iteration = itr;
+            result.first_solution_cost      = planner.h_minCost_;
+        }
+        if(planner.h_minCost_ < result.final_best_cost)
+            result.final_best_cost = planner.h_minCost_;
+
+        IterationData d;
+        d.iteration    = itr;
+        d.frontier_size = planner.h_frontierSize_;
+        d.tree_size    = planner.h_treeSize_;
+        d.elapsed_time_ms = elapsedMs;
+        d.best_cost    = result.final_best_cost;
+        result.per_iteration.push_back(d);
+
+        if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
+    }
+
+    result.total_time_seconds = elapsedMs / 1000.0;
+    result.final_tree_size    = planner.h_treeSize_;
+    result.total_iterations   = itr;
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(iterStop);
+    return result;
+}
+
+// ========================================================================
 // Run all planners on one environment
 // ========================================================================
 void runEnvironmentBenchmark(
@@ -507,6 +585,25 @@ void runEnvironmentBenchmark(
         }
     }
 
+    // --- KPAXPlus (hybrid exploration + optimization) ---
+    printf("\n--- KPAXPlus ---\n");
+    {
+        KPAXPlus planner;
+        for(int run = 0; run < numRuns; run++)
+        {
+            RunResult result = benchmarkKPAXPlus(planner, environment_name, run, h_initial, h_goal,
+                                                  d_obstacles, numObstacles, maxIterations);
+            printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, path_cost=%.3f\n",
+                   run + 1, numRuns, result.total_time_seconds, result.total_iterations,
+                   result.final_tree_size, result.first_solution_iteration, result.final_best_cost);
+            writePerIterationCSV(result, outputDir);
+            all_results.push_back(result);
+
+            if(run < numRuns - 1)
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+    }
+
     cudaFree(d_obstacles);
 }
 
@@ -523,7 +620,7 @@ int main(void)
     printf("=======================================================\n");
     printf("    PLANNER COMPARISON BENCHMARK\n");
     printf("=======================================================\n");
-    printf("Planners: KPAX, KPAX_SpatialHash, PruneKPAX, KinoPaxPlus\n");
+    printf("Planners: KPAX, KPAX_SpatialHash, PruneKPAX, KinoPaxPlus, KPAXPlus\n");
     printf("Environments: Empty, House, NarrowPassage, Trees\n");
     printf("Runs per configuration: %d\n", NUM_RUNS);
     printf("Max iterations: %d\n", MAX_ITERATIONS);
@@ -556,7 +653,7 @@ int main(void)
     printf("\n=======================================================\n");
     printf("    BENCHMARK COMPLETE\n");
     printf("=======================================================\n");
-    printf("Total configurations: %d (4 environments x 4 planners)\n", 4 * 4);
+    printf("Total configurations: %d (4 environments x 5 planners)\n", 4 * 5);
     printf("Total runs: %zu\n", all_results.size());
     printf("Results saved to: %s\n", outputDir.c_str());
     printf("=======================================================\n");
