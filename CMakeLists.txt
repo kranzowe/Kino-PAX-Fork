@@ -148,6 +148,17 @@ target_link_libraries(JetsonSmokeTest
     Python3::NumPy
 )
 
+add_executable(KinoPaxPlusDeltaBenchmark examples/gpu/kinopaxplus_delta_benchmark.cu)
+target_link_libraries(KinoPaxPlusDeltaBenchmark
+    PUBLIC KPAX_lib
+    ${CUDA_LIBRARIES}
+    ${Boost_LIBRARIES}
+    ${EIGEN3_LIBRARIES}
+    yaml-cpp
+    Python3::Python
+    Python3::NumPy
+)
+
 set_target_properties(KPAX_lib PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(main PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(benchMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
@@ -158,6 +169,7 @@ set_target_properties(ComprehensiveBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATI
 set_target_properties(KinoPaxPlusComprehensiveBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(PlannerComparisonBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(JetsonSmokeTest PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(KinoPaxPlusDeltaBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
 
 set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -diag-suppress=20012,20013,20014,20015 --expt-relaxed-constexpr --ptxas-options=-v")
@@ -171,6 +183,7 @@ set_property(TARGET ComprehensiveBenchmark PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET KinoPaxPlusComprehensiveBenchmark PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET PlannerComparisonBenchmark PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET JetsonSmokeTest PROPERTY CUDA_ARCHITECTURES 61 86 87)
+set_property(TARGET KinoPaxPlusDeltaBenchmark PROPERTY CUDA_ARCHITECTURES 61 86 87)
 add_definitions(-DEIGEN_NO_DEBUG)
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations -Wno-unused-function")
