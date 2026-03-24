@@ -15,10 +15,10 @@ clear; clc; close all;
 dataDir = '../build/Data/Benchmarks/KinoPaxPlusDelta';
 
 deltas      = {'large', 'med_large', 'med_small', 'small'};
-deltaLabels = {'Large-\delta (27k)', ...
-               'Med-Large (216k)', ...
-               'Med-Small (1.7M)', ...
-               'Small-\delta (10M)'};
+deltaLabels = {'Large-\delta (111k)', ...
+               'Med-Large (1.7M)', ...
+               'Med-Small (7.1M)', ...
+               'Small-\delta (11.2M)'};
 
 deltaColors = [0.2 0.4 0.8;    % large     - blue
                0.9 0.5 0.1;    % med_large - orange
@@ -30,8 +30,8 @@ deltaStyles = {'-', '--', '-.', ':'};
 numRuns = 10;
 environment = 'Trees';
 
-% Model 1 MAX_FLOAT is 1e6 (not 1e38 like Model 3)
-MAX_FLOAT_THRESH = 1e5;
+% Model 3 MAX_FLOAT is 1e38
+MAX_FLOAT_THRESH = 1e30;
 
 %% --- Locate the most recent summary file ---
 summaryFiles = dir(fullfile(dataDir, 'delta_benchmark_*_summary.csv'));

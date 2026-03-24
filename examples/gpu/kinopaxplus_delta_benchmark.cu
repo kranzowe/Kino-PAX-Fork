@@ -240,7 +240,6 @@ int main(int argc, char* argv[])
     printf("=======================================================\n");
 
     // Start/goal states — workspace coordinates match W_MIN/W_MAX from config.h
-    // Model 1 [0,1]^3: (0.1,0.08,0.05) -> (0.8,0.95,0.9)
     // Model 3 [0,100]^3: (10,8,5) -> (80,95,90)
     float h_initial[SAMPLE_DIM] = {0};
     float h_goal[SAMPLE_DIM]    = {0};
