@@ -20,12 +20,14 @@ dataDir = '../Data/Benchmarks/PlannerComparison';
 planners = {'KPAX', ...
             'KPAX_SpatialHash', ...
             'PruneKPAX', ...
-            'KinoPaxPlus'};
+            'KinoPaxPlus', ...
+            'KPAXPlus'};
 
 plannerLabels = {'KPAX (Naive Optimal)', ...
                  'KPAX + SpatialHash', ...
                  'PruneKPAX', ...
-                 'KinoPaxPlus'};
+                 'KinoPaxPlus', ...
+                 'KPAXPlus (Hybrid)'};
 
 environments = {'Empty', 'House', 'NarrowPassage', 'Trees'};
 envLabels    = {'Empty', 'House', 'Narrow Passage', 'Trees'};
@@ -33,9 +35,10 @@ envLabels    = {'Empty', 'House', 'Narrow Passage', 'Trees'};
 plannerColors = [0.2 0.4 0.8;    % KPAX              - blue
                  0.9 0.5 0.1;    % KPAX SpatialHash  - orange
                  0.7 0.1 0.6;    % PruneKPAX         - purple
-                 0.2 0.7 0.3];   % KinoPaxPlus       - green
+                 0.2 0.7 0.3;    % KinoPaxPlus       - green
+                 0.8 0.2 0.2];   % KPAXPlus          - red
 
-plannerStyles = {'-', '--', '-.', ':'};
+plannerStyles = {'-', '--', '-.', ':', '-'};
 
 numRuns = 10;
 
