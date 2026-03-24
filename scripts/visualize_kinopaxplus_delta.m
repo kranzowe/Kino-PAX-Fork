@@ -12,13 +12,13 @@
 clear; clc; close all;
 
 %% --- Configuration ---
-dataDir = '../Data/Benchmarks/KinoPaxPlusDelta';
+dataDir = '../build/Data/Benchmarks/KinoPaxPlusDelta';
 
 deltas      = {'large', 'med_large', 'med_small', 'small'};
-deltaLabels = {'Large-\delta (~10^5)', ...
-               'Med-Large (~1.7\times10^6)', ...
-               'Med-Small (~7\times10^6)', ...
-               'Small-\delta (~10^7)'};
+deltaLabels = {'Large-\delta (27k)', ...
+               'Med-Large (216k)', ...
+               'Med-Small (1.7M)', ...
+               'Small-\delta (10M)'};
 
 deltaColors = [0.2 0.4 0.8;    % large     - blue
                0.9 0.5 0.1;    % med_large - orange
@@ -29,6 +29,9 @@ deltaStyles = {'-', '--', '-.', ':'};
 
 numRuns = 10;
 environment = 'Trees';
+
+% Model 1 MAX_FLOAT is 1e6 (not 1e38 like Model 3)
+MAX_FLOAT_THRESH = 1e5;
 
 %% --- Locate the most recent summary file ---
 summaryFiles = dir(fullfile(dataDir, 'delta_benchmark_*_summary.csv'));
@@ -61,8 +64,8 @@ end
 fprintf('Data loaded for %d delta configurations.\n', length(deltas));
 
 %% --- Helper: find first solution iteration ---
-function firstIter = firstSolutionIter(tbl)
-    solIdx = find(tbl.best_cost < 1e30, 1, 'first');
+function firstIter = firstSolutionIter(tbl, thresh)
+    solIdx = find(tbl.best_cost < thresh, 1, 'first');
     if isempty(solIdx)
         firstIter = -1;
     else
@@ -97,7 +100,7 @@ for di = 1:length(deltas)
     end
 
     % Replace MAX_FLOAT values with NaN
-    allCost(allCost > 1e30) = NaN;
+    allCost(allCost > MAX_FLOAT_THRESH) = NaN;
 
     meanC  = mean(allCost, 1, 'omitnan');
     stdC   = std(allCost, 0, 1, 'omitnan');
@@ -136,7 +139,7 @@ for di = 1:length(deltas)
     for ri = 1:numRuns
         if ~isempty(runs{ri})
             costs = runs{ri}.best_cost;
-            costs(costs > 1e30) = NaN;
+            costs(costs > MAX_FLOAT_THRESH) = NaN;
             t = runs{ri}.elapsed_time_ms;  % already cumulative
             plot(t, costs, '-', 'Color', [deltaColors(di,:), 0.2], ...
                 'LineWidth', 0.5, 'HandleVisibility', 'off');
@@ -147,13 +150,13 @@ for di = 1:length(deltas)
     if ~isempty(runs{1})
         refTime = runs{1}.elapsed_time_ms;
         refCost = runs{1}.best_cost;
-        refCost(refCost > 1e30) = NaN;
+        refCost(refCost > MAX_FLOAT_THRESH) = NaN;
         allCostTime = NaN(numRuns, length(refTime));
         allCostTime(1, :) = refCost;
         for ri = 2:numRuns
             if ~isempty(runs{ri})
                 riCost = runs{ri}.best_cost;
-                riCost(riCost > 1e30) = NaN;
+                riCost(riCost > MAX_FLOAT_THRESH) = NaN;
                 riTime = runs{ri}.elapsed_time_ms;
                 allCostTime(ri, :) = interp1(riTime, riCost, ...
                     refTime, 'previous', NaN);
@@ -196,7 +199,7 @@ if ~isempty(summaryTable)
         vals = NaN(1, numRuns);
         for ri = 1:numRuns
             if ~isempty(runs{ri})
-                vals(ri) = firstSolutionIter(runs{ri});
+                vals(ri) = firstSolutionIter(runs{ri}, MAX_FLOAT_THRESH);
             end
         end
         vals(vals < 0) = NaN;
@@ -226,7 +229,7 @@ if ~isempty(summaryTable)
     for di = 1:nDelta
         mask = strcmp(summaryTable.delta_label, deltas{di});
         vals = summaryTable.final_best_cost(mask);
-        vals(vals > 1e30) = NaN;
+        vals(vals > MAX_FLOAT_THRESH) = NaN;
         barData2(di) = mean(vals, 'omitnan');
         barErr2(di)  = std(vals, 'omitnan');
     end
@@ -273,5 +276,91 @@ if ~isempty(summaryTable)
     sgtitle(sprintf('KinoPaxPlus Delta Comparison — %s (mean \\pm std over %d runs)', ...
         environment, numRuns), 'FontSize', 12, 'FontWeight', 'bold');
 end
+
+%% ======================================================================
+%  FIGURE 4: Tree Size Growth vs Iteration
+%  ======================================================================
+figure('Name', 'Tree Size vs Iteration', 'Position', [200 50 900 600]);
+hold on;
+
+for di = 1:length(deltas)
+    runs = iterData{di};
+
+    maxIter = 0;
+    for ri = 1:numRuns
+        if ~isempty(runs{ri})
+            maxIter = max(maxIter, max(runs{ri}.iteration));
+        end
+    end
+    if maxIter == 0, continue; end
+
+    allTree = NaN(numRuns, maxIter);
+    for ri = 1:numRuns
+        if ~isempty(runs{ri})
+            iters = runs{ri}.iteration;
+            allTree(ri, iters) = runs{ri}.tree_size;
+        end
+    end
+
+    meanT = mean(allTree, 1, 'omitnan');
+    itrVec = 1:maxIter;
+    validIdx = ~isnan(meanT);
+
+    plot(itrVec(validIdx), meanT(validIdx), deltaStyles{di}, ...
+        'Color', deltaColors(di, :), 'LineWidth', 1.8, ...
+        'DisplayName', deltaLabels{di});
+end
+
+xlabel('Iteration');
+ylabel('Tree Size');
+title(sprintf('Tree Size Growth over Iterations — %s Environment', environment));
+legend('Location', 'best', 'FontSize', 7);
+grid on;
+set(gca, 'FontSize', 10);
+
+%% ======================================================================
+%  FIGURE 5: Solution Success Rate
+%  ======================================================================
+figure('Name', 'Solution Success Rate', 'Position', [250 100 700 400]);
+
+nDelta = length(deltas);
+successRate = NaN(1, nDelta);
+
+for di = 1:nDelta
+    runs = iterData{di};
+    nSuccess = 0;
+    nTotal   = 0;
+    for ri = 1:numRuns
+        if ~isempty(runs{ri})
+            nTotal = nTotal + 1;
+            if firstSolutionIter(runs{ri}, MAX_FLOAT_THRESH) > 0
+                nSuccess = nSuccess + 1;
+            end
+        end
+    end
+    if nTotal > 0
+        successRate(di) = nSuccess / nTotal * 100;
+    end
+end
+
+b4 = bar(successRate);
+b4.FaceColor = 'flat';
+for di = 1:nDelta
+    b4.CData(di,:) = deltaColors(di,:);
+end
+
+set(gca, 'XTick', 1:nDelta, 'XTickLabel', deltaLabels, 'FontSize', 11);
+xtickangle(25);
+ylabel('Success Rate (%)');
+ylim([0 110]);
+title('Solution Success Rate by Delta', 'FontSize', 13);
+grid on;
+
+% Add percentage labels on bars
+xtips = b4.XEndPoints;
+ytips = b4.YEndPoints;
+labels = string(round(successRate)) + "%";
+text(xtips, ytips + 2, labels, 'HorizontalAlignment', 'center', ...
+    'VerticalAlignment', 'bottom', 'FontSize', 10, 'FontWeight', 'bold');
 
 fprintf('\nAll figures generated.\n');

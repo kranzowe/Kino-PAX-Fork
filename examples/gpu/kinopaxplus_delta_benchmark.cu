@@ -217,7 +217,8 @@ void runEnvironmentBenchmark(
 
 int main(int argc, char* argv[])
 {
-    std::string deltaLabel = (argc > 1) ? argv[1] : "unknown";
+    std::string deltaLabel   = (argc > 1) ? argv[1] : "unknown";
+    std::string obstaclePath = (argc > 2) ? argv[2] : "../include/config/obstacles/quadTrees/obstacles.csv";
 
     const int NUM_RUNS       = 10;
     const int MAX_ITERATIONS = 300;
@@ -230,19 +231,30 @@ int main(int argc, char* argv[])
     printf("=======================================================\n");
     printf("Delta label:    %s\n", deltaLabel.c_str());
     printf("NUM_R1_REGIONS: %d\n", NUM_R1_REGIONS);
+    printf("MAX_TREE_SIZE:  %d\n", MAX_TREE_SIZE);
     printf("W_R1_LENGTH=%d  C_R1_LENGTH=%d  V_R1_LENGTH=%d\n", W_R1_LENGTH, C_R1_LENGTH, V_R1_LENGTH);
+    printf("Obstacle file:  %s\n", obstaclePath.c_str());
     printf("Environment:    Trees\n");
     printf("Runs:           %d\n", NUM_RUNS);
     printf("Max iterations: %d\n", MAX_ITERATIONS);
     printf("=======================================================\n");
 
-    float h_initial[SAMPLE_DIM] = {10.0, 8, 5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-    float h_goal[SAMPLE_DIM]    = {80, 95.0, 90.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    // Start/goal states — workspace coordinates match W_MIN/W_MAX from config.h
+    // Model 1 [0,1]^3: (0.1,0.08,0.05) -> (0.8,0.95,0.9)
+    // Model 3 [0,100]^3: (10,8,5) -> (80,95,90)
+    float h_initial[SAMPLE_DIM] = {0};
+    float h_goal[SAMPLE_DIM]    = {0};
+    h_initial[0] = W_MIN + 0.1f * W_SIZE;
+    h_initial[1] = W_MIN + 0.08f * W_SIZE;
+    h_initial[2] = W_MIN + 0.05f * W_SIZE;
+    h_goal[0]    = W_MIN + 0.8f * W_SIZE;
+    h_goal[1]    = W_MIN + 0.95f * W_SIZE;
+    h_goal[2]    = W_MIN + 0.9f * W_SIZE;
 
     std::vector<RunResult> all_results;
 
     runEnvironmentBenchmark("Trees",
-        "../include/config/obstacles/quadTrees/obstacles.csv",
+        obstaclePath,
         h_initial, h_goal, all_results, outputDir, deltaLabel, NUM_RUNS, MAX_ITERATIONS);
 
     writeSummaryCSV(all_results, outputDir, deltaLabel);
