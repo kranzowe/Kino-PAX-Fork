@@ -157,7 +157,8 @@ RunResult benchmarkKinoPaxPlus(
     float* h_goal,
     float* d_obstacles,
     uint numObstacles,
-    int maxIterations)
+    int maxIterations,
+    float maxTimeMs)
 {
     RunResult result;
     result.delta_label = deltaLabel;
@@ -208,6 +209,9 @@ RunResult benchmarkKinoPaxPlus(
         result.per_iteration.push_back(d);
 
         if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
+        
+        // Timeout check
+        if(elapsedMs >= maxTimeMs) break;
     }
 
     result.total_time_seconds = elapsedMs / 1000.0;
@@ -235,7 +239,8 @@ RunResult benchmarkKPAX(
     float* h_goal,
     float* d_obstacles,
     uint numObstacles,
-    int maxIterations)
+    int maxIterations,
+    float maxTimeMs)
 {
     RunResult result;
     result.delta_label = "KPAX";
@@ -299,6 +304,9 @@ RunResult benchmarkKPAX(
         result.per_iteration.push_back(d);
 
         if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
+        
+        // Timeout check
+        if(elapsedMs >= maxTimeMs) break;
     }
 
     result.total_time_seconds = elapsedMs / 1000.0;
@@ -322,7 +330,8 @@ void runKPAXBaseline(
     std::vector<RunResult>& all_results,
     const std::string& outputDir,
     int numRuns,
-    int maxIterations)
+    int maxIterations,
+    float maxTimeMs)
 {
     printf("\n========================================\n");
     printf("KPAX BASELINE: %s | %d runs\n", environment_name.c_str(), numRuns);
@@ -334,7 +343,7 @@ void runKPAXBaseline(
         {
             RunResult result = benchmarkKPAX(planner, environment_name, run,
                                              h_initial, h_goal, d_obstacles,
-                                             numObstacles, maxIterations);
+                                             numObstacles, maxIterations, maxTimeMs);
             printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
                    run + 1, numRuns, result.total_time_seconds, result.total_iterations,
                    result.final_tree_size, result.first_solution_iteration,
@@ -361,7 +370,8 @@ void runKinoPaxPlusBenchmark(
     const std::string& outputDir,
     const std::string& deltaLabel,
     int numRuns,
-    int maxIterations)
+    int maxIterations,
+    float maxTimeMs)
 {
     printf("\n========================================\n");
     printf("KINOPAXPLUS: %s | Delta: %s | Regions: %d\n",
@@ -374,7 +384,7 @@ void runKinoPaxPlusBenchmark(
         {
             RunResult result = benchmarkKinoPaxPlus(planner, deltaLabel, environment_name, run,
                                                      h_initial, h_goal, d_obstacles,
-                                                     numObstacles, maxIterations);
+                                                     numObstacles, maxIterations, maxTimeMs);
             printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f\n",
                    run + 1, numRuns, result.total_time_seconds, result.total_iterations,
                    result.final_tree_size, result.first_solution_iteration, result.final_best_cost);
@@ -404,6 +414,7 @@ int main(int argc, char* argv[])
     const int NUM_KPAX_RUNS      = 20;
     const int NUM_KPAXPLUS_RUNS  = 10;
     const int MAX_ITERATIONS     = 300;
+    const float MAX_TIME_MS      = 10000.0f;  // 10 second timeout
 
     std::string outputDir = "Data/Benchmarks/KinoPaxPlusDelta";
     std::filesystem::create_directories(outputDir);
@@ -447,12 +458,12 @@ int main(int argc, char* argv[])
     if(runKPAX)
     {
         runKPAXBaseline(envName, h_initial, h_goal, d_obstacles, numObstacles,
-                        all_results, outputDir, NUM_KPAX_RUNS, MAX_ITERATIONS);
+                        all_results, outputDir, NUM_KPAX_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
     }
 
     // --- KinoPaxPlus delta benchmark ---
     runKinoPaxPlusBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
-                            all_results, outputDir, deltaLabel, NUM_KPAXPLUS_RUNS, MAX_ITERATIONS);
+                            all_results, outputDir, deltaLabel, NUM_KPAXPLUS_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
 
     cudaFree(d_obstacles);
 
