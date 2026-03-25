@@ -320,6 +320,7 @@ for ei = 1:length(environments)
     ylabel('Path Cost (workspace distance)');
     title(sprintf('Best Cost vs Time \x2014 %s Environment', envTitle));
     legend('Location', 'best', 'FontSize', 7);
+    xlim([0 10000]);  % 10 seconds max
     grid on;
     set(gca, 'FontSize', 10);
 
@@ -426,6 +427,7 @@ for ei = 1:length(environments)
     ylabel('Path Cost (workspace distance)');
     title(sprintf('Cost Convergence over Wall Time \x2014 %s Environment', envTitle));
     legend('Location', 'best', 'FontSize', 7);
+    xlim([0 10000]);  % 10 seconds max
     grid on;
     set(gca, 'FontSize', 10);
 
