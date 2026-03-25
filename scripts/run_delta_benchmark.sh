@@ -29,7 +29,7 @@ BUILD_DIR="$PROJECT_DIR/build"
 
 # Delta configs: label W_R1 C_R1 V_R1
 DELTA_LABELS=("extra_large" "larger" "large" "med_large" "med_small")
-DELTA_W_R1=(6 8 10 20 30)
+DELTA_W_R1=(6 8 10 20 25)
 DELTA_C_R1=(1  1  1  1  1)
 DELTA_V_R1=(3  3  3  3  3)
 
@@ -87,7 +87,7 @@ write_config() {
 /* 6D DOUBLE INTEGRATOR    */
 /***************************/
 #define MODEL 1
-#define MAX_TREE_SIZE 3000000
+#define MAX_TREE_SIZE 500000
 #define MAX_FLOAT 1e38f
 #define MAX_SOL_SET_SIZE 500
 #define MAX_ITER 300
