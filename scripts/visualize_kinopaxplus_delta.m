@@ -46,7 +46,7 @@ MAX_FLOAT_THRESH = 1e30;
 
 % Box plot settings
 numTimePoints = 15;   % number of time sample points for box plots
-boxWidth      = 0.6;  % relative width of each box group
+boxWidth      = 0.85;  % relative width of each box group (increased from 0.6)
 
 %% --- Locate the most recent summary file ---
 summaryFiles = dir(fullfile(dataDir, 'delta_benchmark_*_summary.csv'));
@@ -359,7 +359,13 @@ for ei = 1:length(environments)
     xlabel('Elapsed Time (ms)');
     ylabel('Path Cost (workspace distance)');
     title(sprintf('Cost Distribution over Wall Time \x2014 %s Environment', envTitle));
-    legend(legendHandles(isvalid(legendHandles)), 'Location', 'best', 'FontSize', 7);
+    
+    % Only create legend if we have valid handles
+    validHandles = legendHandles(isvalid(legendHandles));
+    if ~isempty(validHandles)
+        legend(validHandles, 'Location', 'best', 'FontSize', 7);
+    end
+    
     grid on;
     set(gca, 'FontSize', 10);
 

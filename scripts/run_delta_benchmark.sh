@@ -95,7 +95,7 @@ write_config() {
 #define STEP_SIZE 0.1f
 #define MAX_PROPAGATION_DURATION 10
 #define ACCEPT 0.99f
-#define AGENT_RADIUS 0.5f
+#define AGENT_RADIUS 0.005f
 #define GOAL_THRESH 0.05f
 #define STATE_DIM 6
 #define CONTROL_DIM 3
