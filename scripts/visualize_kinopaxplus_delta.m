@@ -25,12 +25,18 @@ deltaLabels = {'Extra-Large-\delta (3.3k)', ...
                'Med-Large (216k)', ...
                'Med-Small (1.7M)'};
 
-deltaColors = [0.2 0.4 0.8;    % large     - blue
-               0.9 0.5 0.1;    % med_large - orange
-               0.2 0.7 0.3;    % med_small - green
-               0.8 0.2 0.2];   % small     - red
+deltaColors = [0.2 0.4 0.8;    % extra_large - blue
+               0.9 0.5 0.1;    % larger      - orange
+               0.2 0.7 0.3;    % large       - green
+               0.8 0.2 0.2;    % med_large   - red
+               0.6 0.1 0.7];   % med_small   - purple
 
-deltaStyles = {'-', '--', '-.', ':'};
+deltaStyles = {'-', '--', '-.', ':', '-'};
+
+kpaxColor = [0.1 0.1 0.1];     % near-black for KPAX curve
+kpaxFirstColor = [0.5 0.5 0.5]; % gray for reference lines
+kpaxFinalColor = [0.2 0.2 0.2]; % dark gray
+kpaxTimeColor  = [0.6 0.3 0.6]; % purple-ish
 
 numRuns      = 10;   % KinoPaxPlus runs per delta
 numKPAXRuns  = 20;   % KPAX baseline runs
@@ -38,10 +44,9 @@ numKPAXRuns  = 20;   % KPAX baseline runs
 % Model 1 MAX_FLOAT is 1e38
 MAX_FLOAT_THRESH = 1e30;
 
-% KPAX reference line colors
-kpaxFirstColor = [0.5 0.5 0.5];   % gray
-kpaxFinalColor = [0.2 0.2 0.2];   % dark gray
-kpaxTimeColor  = [0.6 0.3 0.6];   % purple-ish
+% Box plot settings
+numTimePoints = 15;   % number of time sample points for box plots
+boxWidth      = 0.6;  % relative width of each box group
 
 %% --- Locate the most recent summary file ---
 summaryFiles = dir(fullfile(dataDir, 'delta_benchmark_*_summary.csv'));
@@ -54,8 +59,6 @@ else
     fprintf('Loading summary: %s\n', summaryPath);
     summaryTable = readtable(summaryPath);
 end
-
-
 
 %% ======================================================================
 %  LOOP OVER ENVIRONMENTS
@@ -129,8 +132,7 @@ for ei = 1:length(environments)
     fprintf('  KPAX mean first time:  %.1f ms\n', kpaxMeanFirstTime);
 
     %% ==================================================================
-    %  FIGURE: Best Cost vs Iteration
-    %  Mean +/- std across runs for each delta
+    %  FIGURE: Best Cost vs Iteration (mean +/- std)
     %  ==================================================================
     figNum = figNum + 1;
     figure('Name', sprintf('%s - Cost vs Iteration', envTitle), ...
@@ -155,8 +157,6 @@ for ei = 1:length(environments)
                 allCost(ri, iters) = runs{ri}.best_cost;
             end
         end
-
-        % Replace MAX_FLOAT values with NaN
         allCost(allCost > MAX_FLOAT_THRESH) = NaN;
 
         meanC  = mean(allCost, 1, 'omitnan');
@@ -175,14 +175,38 @@ for ei = 1:length(environments)
         end
     end
 
-    % KPAX reference lines
-    if ~isnan(kpaxMeanFirstCost)
-        yline(kpaxMeanFirstCost, '--', 'Color', kpaxFirstColor, 'LineWidth', 1.5, ...
-            'Label', 'KPAX first cost', 'DisplayName', 'KPAX First Cost');
+    % --- KPAX curve on iteration plot ---
+    kpaxMaxIter = 0;
+    for ri = 1:numKPAXRuns
+        if ~isempty(kpaxData{ri})
+            kpaxMaxIter = max(kpaxMaxIter, max(kpaxData{ri}.iteration));
+        end
     end
-    if ~isnan(kpaxMeanFinalCost)
-        yline(kpaxMeanFinalCost, '-.', 'Color', kpaxFinalColor, 'LineWidth', 1.5, ...
-            'Label', 'KPAX final cost', 'DisplayName', 'KPAX Final Cost');
+    if kpaxMaxIter > 0
+        kpaxAllCost = NaN(numKPAXRuns, kpaxMaxIter);
+        for ri = 1:numKPAXRuns
+            if ~isempty(kpaxData{ri})
+                iters = kpaxData{ri}.iteration;
+                kpaxAllCost(ri, iters) = kpaxData{ri}.best_cost;
+            end
+        end
+        kpaxAllCost(kpaxAllCost > MAX_FLOAT_THRESH) = NaN;
+
+        kpaxMeanC = mean(kpaxAllCost, 1, 'omitnan');
+        kpaxStdC  = std(kpaxAllCost, 0, 1, 'omitnan');
+        kpaxItrVec = 1:kpaxMaxIter;
+        kpaxValidIdx = ~isnan(kpaxMeanC);
+
+        if any(kpaxValidIdx)
+            xFill = [kpaxItrVec(kpaxValidIdx), fliplr(kpaxItrVec(kpaxValidIdx))];
+            yFill = [kpaxMeanC(kpaxValidIdx) + kpaxStdC(kpaxValidIdx), ...
+                     fliplr(kpaxMeanC(kpaxValidIdx) - kpaxStdC(kpaxValidIdx))];
+            fill(xFill, yFill, kpaxColor, ...
+                'FaceAlpha', 0.10, 'EdgeColor', 'none', 'HandleVisibility', 'off');
+            plot(kpaxItrVec(kpaxValidIdx), kpaxMeanC(kpaxValidIdx), '-', ...
+                'Color', kpaxColor, 'LineWidth', 2.0, ...
+                'DisplayName', 'KPAX');
+        end
     end
 
     xlabel('Iteration');
@@ -193,19 +217,165 @@ for ei = 1:length(environments)
     set(gca, 'FontSize', 10);
 
     %% ==================================================================
-    %  FIGURE: Best Cost vs Elapsed Time
-    %  Individual runs as thin lines, mean as bold line
-    %  KPAX reference: horizontal (first/final cost) + vertical (first time)
+    %  FIGURE: Best Cost vs Elapsed Time — BOX PLOTS
+    %  Grouped box plots at sampled time points for each delta + KPAX
     %  ==================================================================
     figNum = figNum + 1;
-    figure('Name', sprintf('%s - Cost vs Time', envTitle), ...
-           'Position', [100 100 900 600]);
+    figure('Name', sprintf('%s - Cost vs Time (Box)', envTitle), ...
+           'Position', [100 100 1100 650]);
+    hold on;
+
+    % Determine global time range across all deltas and KPAX
+    globalMaxTime = 0;
+    for di = 1:length(deltas)
+        runs = iterData{di};
+        for ri = 1:numRuns
+            if ~isempty(runs{ri})
+                globalMaxTime = max(globalMaxTime, max(runs{ri}.elapsed_time_ms));
+            end
+        end
+    end
+    for ri = 1:numKPAXRuns
+        if ~isempty(kpaxData{ri})
+            globalMaxTime = max(globalMaxTime, max(kpaxData{ri}.elapsed_time_ms));
+        end
+    end
+
+    if globalMaxTime > 0
+        % Sample time points (evenly spaced)
+        sampleTimes = linspace(0, globalMaxTime, numTimePoints + 2);
+        sampleTimes = sampleTimes(2:end-1);  % skip 0 and max edge
+
+        nGroups = length(deltas) + 1;  % deltas + KPAX
+        groupLabels = [deltaLabels, {'KPAX'}];
+        groupColors = [deltaColors; kpaxColor];
+
+        % Interpolate costs at sample times for each group
+        allGroupCosts = cell(1, nGroups);
+
+        % KinoPaxPlus deltas
+        for di = 1:length(deltas)
+            runs = iterData{di};
+            costMatrix = NaN(numRuns, numTimePoints);
+            for ri = 1:numRuns
+                if ~isempty(runs{ri})
+                    riCost = runs{ri}.best_cost;
+                    riCost(riCost > MAX_FLOAT_THRESH) = NaN;
+                    riTime = runs{ri}.elapsed_time_ms;
+                    costMatrix(ri, :) = interp1(riTime, riCost, sampleTimes, 'previous', NaN);
+                end
+            end
+            allGroupCosts{di} = costMatrix;
+        end
+
+        % KPAX
+        kpaxCostMatrix = NaN(numKPAXRuns, numTimePoints);
+        for ri = 1:numKPAXRuns
+            if ~isempty(kpaxData{ri})
+                riCost = kpaxData{ri}.best_cost;
+                riCost(riCost > MAX_FLOAT_THRESH) = NaN;
+                riTime = kpaxData{ri}.elapsed_time_ms;
+                kpaxCostMatrix(ri, :) = interp1(riTime, riCost, sampleTimes, 'previous', NaN);
+            end
+        end
+        allGroupCosts{nGroups} = kpaxCostMatrix;
+
+        % Draw grouped box plots at each time point
+        % Each time point gets nGroups boxes side by side
+        timeSpacing = sampleTimes(2) - sampleTimes(1);
+        singleBoxWidth = timeSpacing * boxWidth / nGroups;
+
+        legendHandles = gobjects(1, nGroups);
+
+        for gi = 1:nGroups
+            costMatrix = allGroupCosts{gi};
+            color = groupColors(gi, :);
+
+            % Offset for this group within each time cluster
+            offset = (gi - (nGroups + 1) / 2) * singleBoxWidth;
+
+            for ti = 1:numTimePoints
+                vals = costMatrix(:, ti);
+                vals = vals(~isnan(vals));
+                if isempty(vals), continue; end
+
+                xCenter = sampleTimes(ti) + offset;
+
+                q1 = quantile(vals, 0.25);
+                q2 = median(vals);
+                q3 = quantile(vals, 0.75);
+                iqr_val = q3 - q1;
+                wLow  = max(min(vals), q1 - 1.5 * iqr_val);
+                wHigh = min(max(vals), q3 + 1.5 * iqr_val);
+
+                hw = singleBoxWidth * 0.4;  % half-width of box
+
+                % Box (Q1 to Q3)
+                hBox = fill([xCenter-hw, xCenter+hw, xCenter+hw, xCenter-hw], ...
+                     [q1, q1, q3, q3], color, ...
+                     'FaceAlpha', 0.4, 'EdgeColor', color, 'LineWidth', 0.8, ...
+                     'HandleVisibility', 'off');
+
+                % Median line
+                plot([xCenter-hw, xCenter+hw], [q2, q2], '-', ...
+                    'Color', color, 'LineWidth', 1.5, 'HandleVisibility', 'off');
+
+                % Whiskers
+                plot([xCenter, xCenter], [wLow, q1], '-', ...
+                    'Color', color, 'LineWidth', 0.8, 'HandleVisibility', 'off');
+                plot([xCenter, xCenter], [q3, wHigh], '-', ...
+                    'Color', color, 'LineWidth', 0.8, 'HandleVisibility', 'off');
+
+                % Whisker caps
+                plot([xCenter-hw*0.5, xCenter+hw*0.5], [wLow, wLow], '-', ...
+                    'Color', color, 'LineWidth', 0.8, 'HandleVisibility', 'off');
+                plot([xCenter-hw*0.5, xCenter+hw*0.5], [wHigh, wHigh], '-', ...
+                    'Color', color, 'LineWidth', 0.8, 'HandleVisibility', 'off');
+
+                % Save first box handle for legend
+                if ti == 1 || ~isvalid(legendHandles(gi))
+                    legendHandles(gi) = hBox;
+                    set(hBox, 'HandleVisibility', 'on', 'DisplayName', groupLabels{gi});
+                end
+            end
+        end
+
+        % KPAX reference lines
+        if ~isnan(kpaxMeanFirstCost)
+            yline(kpaxMeanFirstCost, '--', 'Color', kpaxFirstColor, 'LineWidth', 1.2, ...
+                'Label', 'KPAX first cost', 'HandleVisibility', 'off');
+        end
+        if ~isnan(kpaxMeanFinalCost)
+            yline(kpaxMeanFinalCost, '-.', 'Color', kpaxFinalColor, 'LineWidth', 1.2, ...
+                'Label', 'KPAX final cost', 'HandleVisibility', 'off');
+        end
+        if ~isnan(kpaxMeanFirstTime)
+            xline(kpaxMeanFirstTime, '--', 'Color', kpaxTimeColor, 'LineWidth', 1.2, ...
+                'Label', sprintf('KPAX t_{first} = %.0f ms', kpaxMeanFirstTime), ...
+                'HandleVisibility', 'off');
+        end
+    end
+
+    xlabel('Elapsed Time (ms)');
+    ylabel('Path Cost (workspace distance)');
+    title(sprintf('Cost Distribution over Wall Time \x2014 %s Environment', envTitle));
+    legend(legendHandles(isvalid(legendHandles)), 'Location', 'best', 'FontSize', 7);
+    grid on;
+    set(gca, 'FontSize', 10);
+
+    %% ==================================================================
+    %  FIGURE: Best Cost vs Time — LINE PLOT (mean + individual runs)
+    %  Kept alongside box plot for reference
+    %  ==================================================================
+    figNum = figNum + 1;
+    figure('Name', sprintf('%s - Cost vs Time (Lines)', envTitle), ...
+           'Position', [120 120 900 600]);
     hold on;
 
     for di = 1:length(deltas)
         runs = iterData{di};
 
-        % Plot each run as a thin line
+        % Thin individual runs
         for ri = 1:numRuns
             if ~isempty(runs{ri})
                 costs = runs{ri}.best_cost;
@@ -216,7 +386,7 @@ for ei = 1:length(environments)
             end
         end
 
-        % Overlay mean using first run's time axis as reference
+        % Bold mean
         if ~isempty(runs{1})
             refTime = runs{1}.elapsed_time_ms;
             refCost = runs{1}.best_cost;
@@ -239,6 +409,41 @@ for ei = 1:length(environments)
                     'Color', deltaColors(di,:), 'LineWidth', 2.0, ...
                     'DisplayName', deltaLabels{di});
             end
+        end
+    end
+
+    % --- KPAX curve: thin individual + bold mean ---
+    for ri = 1:numKPAXRuns
+        if ~isempty(kpaxData{ri})
+            costs = kpaxData{ri}.best_cost;
+            costs(costs > MAX_FLOAT_THRESH) = NaN;
+            t = kpaxData{ri}.elapsed_time_ms;
+            plot(t, costs, '-', 'Color', [kpaxColor, 0.15], ...
+                'LineWidth', 0.5, 'HandleVisibility', 'off');
+        end
+    end
+    % KPAX mean
+    if ~isempty(kpaxData{1})
+        refTime = kpaxData{1}.elapsed_time_ms;
+        refCost = kpaxData{1}.best_cost;
+        refCost(refCost > MAX_FLOAT_THRESH) = NaN;
+        kpaxAllCostTime = NaN(numKPAXRuns, length(refTime));
+        kpaxAllCostTime(1, :) = refCost;
+        for ri = 2:numKPAXRuns
+            if ~isempty(kpaxData{ri})
+                riCost = kpaxData{ri}.best_cost;
+                riCost(riCost > MAX_FLOAT_THRESH) = NaN;
+                riTime = kpaxData{ri}.elapsed_time_ms;
+                kpaxAllCostTime(ri, :) = interp1(riTime, riCost, ...
+                    refTime, 'previous', NaN);
+            end
+        end
+        kpaxMeanCT = mean(kpaxAllCostTime, 1, 'omitnan');
+        validIdx = ~isnan(kpaxMeanCT);
+        if any(validIdx)
+            plot(refTime(validIdx), kpaxMeanCT(validIdx), '-', ...
+                'Color', kpaxColor, 'LineWidth', 2.0, ...
+                'DisplayName', 'KPAX');
         end
     end
 
@@ -266,7 +471,6 @@ for ei = 1:length(environments)
 
     %% ==================================================================
     %  FIGURE: Summary Bar Charts
-    %  Left: First Solution Iteration, Centre: Final Best Cost, Right: Total Time
     %  ==================================================================
     if ~isempty(summaryTable)
         figNum = figNum + 1;
@@ -329,7 +533,6 @@ for ei = 1:length(environments)
         end
         errorbar(1:nDelta, barData2, barErr2, 'k.', 'LineWidth', 1);
 
-        % KPAX final cost reference
         if ~isnan(kpaxMeanFinalCost)
             yline(kpaxMeanFinalCost, '-.', 'Color', kpaxFinalColor, 'LineWidth', 1.5, ...
                 'Label', 'KPAX final');

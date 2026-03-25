@@ -2,14 +2,12 @@
 # =============================================================================
 # KinoPaxPlus Delta Benchmark Runner
 #
-# Iterates over 4 delta (region discretization) configs for Model 1
-# (6D double integrator). For each config:
-#   1. Writes a complete Model 1 config.h with the appropriate W_R1 length
-#   2. Rebuilds the KinoPaxPlusDeltaBenchmark target
-#   3. Runs the benchmark with the delta label
+# Iterates over delta (region discretization) configs for Model 1
+# (6D double integrator). Two phases:
+#   Phase 1 (BUILD): For each delta, write config.h, build, cache binary
+#   Phase 2 (RUN):   For each environment × delta, run cached binary
 #
-# Also runs a KPAX baseline (20 runs, once per environment on the first delta)
-# for comparison against KinoPaxPlus convergence.
+# Also runs a KPAX baseline (20 runs, once per environment) for comparison.
 #
 # Runs on two environments: Trees and House.
 # Original config.h is backed up and restored on exit/error.
@@ -17,12 +15,9 @@
 # Delta configs (Model 1: W_DIM=3, C_DIM=1, V_DIM=3):
 #   NUM_R1_REGIONS = W_R1^3 * V_R1^3  (C_R1=1 throughout)
 #
-#   large:     W=10, V=3 ->  1000 * 27 =      27,000 regions
-#   med_large: W=20, V=3 ->  8000 * 27 =     216,000 regions
-#   med_small: W=40, V=3 -> 64000 * 27 =   1,728,000 regions
-#   small:     W=72, V=3 -> 373248 * 27 = 10,077,696 regions
-#
-# Usage: cd scripts && bash run_delta_benchmark.sh
+# Usage:
+#   cd scripts && bash run_delta_benchmark.sh             # build + run
+#   cd scripts && bash run_delta_benchmark.sh --skip-build # run only (use cached binaries)
 # =============================================================================
 set -euo pipefail
 
@@ -44,6 +39,23 @@ ENV_OBSTACLES=(
     "../include/config/obstacles/trees/obstacles.csv"
     "../include/config/obstacles/house/obstacles.csv"
 )
+
+# --- Parse arguments ---
+SKIP_BUILD=false
+for arg in "$@"; do
+    if [ "$arg" = "--skip-build" ]; then
+        SKIP_BUILD=true
+    fi
+done
+
+# --- Auto-detect compilers (cluster has gcc-12, Jetson uses default gcc) ---
+CMAKE_COMPILER_FLAGS=""
+if command -v gcc-12 &> /dev/null; then
+    echo "Detected gcc-12 (cluster environment)"
+    CMAKE_COMPILER_FLAGS="-DCMAKE_C_COMPILER=$(which gcc-12) -DCMAKE_CXX_COMPILER=$(which g++-12) -DCMAKE_CUDA_HOST_COMPILER=$(which g++-12)"
+else
+    echo "Using default system compilers (Jetson/local environment)"
+fi
 
 # Restore config.h on exit
 cleanup() {
@@ -162,17 +174,74 @@ CONFIGEOF
 }
 
 # =============================================================================
-# Run benchmarks
-# =============================================================================
 echo ""
 echo "======================================================="
 echo "  KinoPaxPlus Delta Benchmark Sweep"
 echo "  Model: 1 (6D Double Integrator)"
 echo "  Environments: ${ENV_NAMES[*]}"
-echo "  MAX_TREE_SIZE: 2,000,000"
+echo "  MAX_TREE_SIZE: 3,000,000"
 echo "  Deltas: ${DELTA_LABELS[*]}"
 echo "  KPAX Baseline: 20 runs per environment"
+echo "  Skip build: $SKIP_BUILD"
 echo "======================================================="
+
+# =============================================================================
+# PHASE 1: BUILD — compile each delta config and cache the binary
+# =============================================================================
+if [ "$SKIP_BUILD" = false ]; then
+    echo ""
+    echo "=== PHASE 1: BUILDING ALL DELTA CONFIGS ==="
+
+    for i in "${!DELTA_LABELS[@]}"; do
+        LABEL="${DELTA_LABELS[$i]}"
+        W_R1="${DELTA_W_R1[$i]}"
+        C_R1="${DELTA_C_R1[$i]}"
+        V_R1="${DELTA_V_R1[$i]}"
+        REGIONS=$(( W_R1**3 * V_R1**3 ))
+
+        echo ""
+        echo "-------------------------------------------------------"
+        echo "  Building delta: $LABEL | W_R1=$W_R1 C_R1=$C_R1 V_R1=$V_R1 | Regions=$REGIONS"
+        echo "-------------------------------------------------------"
+
+        write_config "$W_R1" "$C_R1" "$V_R1"
+
+        cd "$BUILD_DIR"
+        # shellcheck disable=SC2086
+        cmake .. -DCMAKE_BUILD_TYPE=Release $CMAKE_COMPILER_FLAGS 2>&1 | tail -5
+        make KinoPaxPlusDeltaBenchmark -j"$(nproc)" 2>&1 | tail -20
+
+        # Cache the binary with a unique name
+        cp KinoPaxPlusDeltaBenchmark "KinoPaxPlusDeltaBenchmark_${LABEL}"
+        echo "  Cached binary: KinoPaxPlusDeltaBenchmark_${LABEL}"
+
+        cd "$PROJECT_DIR"
+    done
+
+    echo ""
+    echo "=== ALL BUILDS COMPLETE ==="
+else
+    echo ""
+    echo "=== SKIPPING BUILD PHASE (using cached binaries) ==="
+
+    # Verify cached binaries exist
+    cd "$BUILD_DIR"
+    for LABEL in "${DELTA_LABELS[@]}"; do
+        if [ ! -f "KinoPaxPlusDeltaBenchmark_${LABEL}" ]; then
+            echo "ERROR: Cached binary not found: KinoPaxPlusDeltaBenchmark_${LABEL}"
+            echo "Run without --skip-build first to create cached binaries."
+            exit 1
+        fi
+    done
+    echo "  All cached binaries found."
+    cd "$PROJECT_DIR"
+fi
+
+# =============================================================================
+# PHASE 2: RUN — execute benchmarks using cached binaries (no rebuilds)
+# =============================================================================
+echo ""
+echo "=== PHASE 2: RUNNING BENCHMARKS ==="
 
 for env_idx in "${!ENV_NAMES[@]}"; do
     ENV="${ENV_NAMES[$env_idx]}"
@@ -188,37 +257,22 @@ for env_idx in "${!ENV_NAMES[@]}"; do
     for i in "${!DELTA_LABELS[@]}"; do
         LABEL="${DELTA_LABELS[$i]}"
         W_R1="${DELTA_W_R1[$i]}"
-        C_R1="${DELTA_C_R1[$i]}"
         V_R1="${DELTA_V_R1[$i]}"
         REGIONS=$(( W_R1**3 * V_R1**3 ))
 
         echo ""
         echo "-------------------------------------------------------"
-        echo "  Delta: $LABEL | W_R1=$W_R1 C_R1=$C_R1 V_R1=$V_R1 | Regions=$REGIONS"
+        echo "  Running delta: $LABEL | Regions=$REGIONS | Env=$ENV"
         echo "-------------------------------------------------------"
 
-        # Write config
-        write_config "$W_R1" "$C_R1" "$V_R1"
-        echo "  config.h written (W_R1=$W_R1, C_R1=$C_R1, V_R1=$V_R1)"
-
-        # Build
-        echo "  Building..."
         cd "$BUILD_DIR"
-        cmake .. -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=/usr/bin/gcc-12 \
-            -DCMAKE_CXX_COMPILER=/usr/bin/g++-12 \
-            -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-12 \
-            > /dev/null 2>&1
-        make KinoPaxPlusDeltaBenchmark -j"$(nproc)" 2>&1 | tail -20
-        echo "  Build complete"
 
         # Run — pass --run-kpax only on first delta for this environment
-        echo "  Running benchmark..."
         if [ "$FIRST_DELTA_FOR_ENV" = true ]; then
-            ./KinoPaxPlusDeltaBenchmark "$LABEL" "$OBS" "$ENV" --run-kpax
+            "./KinoPaxPlusDeltaBenchmark_${LABEL}" "$LABEL" "$OBS" "$ENV" --run-kpax
             FIRST_DELTA_FOR_ENV=false
         else
-            ./KinoPaxPlusDeltaBenchmark "$LABEL" "$OBS" "$ENV"
+            "./KinoPaxPlusDeltaBenchmark_${LABEL}" "$LABEL" "$OBS" "$ENV"
         fi
 
         cd "$PROJECT_DIR"
