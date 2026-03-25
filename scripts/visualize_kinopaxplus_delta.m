@@ -217,12 +217,12 @@ for ei = 1:length(environments)
     set(gca, 'FontSize', 10);
 
     %% ==================================================================
-    %  FIGURE: Best Cost vs Elapsed Time — BOX PLOTS
-    %  Grouped box plots at sampled time points for each delta + KPAX
+    %  FIGURE: Best Cost vs Elapsed Time (mean +/- std)
+    %  Same style as iteration plot but with time on x-axis
     %  ==================================================================
     figNum = figNum + 1;
-    figure('Name', sprintf('%s - Cost vs Time (Box)', envTitle), ...
-           'Position', [100 100 1100 650]);
+    figure('Name', sprintf('%s - Cost vs Time', envTitle), ...
+           'Position', [100 100 900 600]);
     hold on;
 
     % Determine global time range across all deltas and KPAX
@@ -242,102 +242,62 @@ for ei = 1:length(environments)
     end
 
     if globalMaxTime > 0
-        % Sample time points (evenly spaced)
-        sampleTimes = linspace(0, globalMaxTime, numTimePoints + 2);
-        sampleTimes = sampleTimes(2:end-1);  % skip 0 and max edge
+        % Common time grid for interpolation
+        numTimeSamples = 500;
+        commonTime = linspace(0, globalMaxTime, numTimeSamples);
 
-        nGroups = length(deltas) + 1;  % deltas + KPAX
-        groupLabels = [deltaLabels, {'KPAX'}];
-        groupColors = [deltaColors; kpaxColor];
-
-        % Interpolate costs at sample times for each group
-        allGroupCosts = cell(1, nGroups);
-
-        % KinoPaxPlus deltas
         for di = 1:length(deltas)
             runs = iterData{di};
-            costMatrix = NaN(numRuns, numTimePoints);
+
+            allCostTime = NaN(numRuns, numTimeSamples);
             for ri = 1:numRuns
                 if ~isempty(runs{ri})
                     riCost = runs{ri}.best_cost;
                     riCost(riCost > MAX_FLOAT_THRESH) = NaN;
                     riTime = runs{ri}.elapsed_time_ms;
-                    costMatrix(ri, :) = interp1(riTime, riCost, sampleTimes, 'previous', NaN);
+                    allCostTime(ri, :) = interp1(riTime, riCost, commonTime, 'previous', NaN);
                 end
             end
-            allGroupCosts{di} = costMatrix;
+
+            meanC  = mean(allCostTime, 1, 'omitnan');
+            stdC   = std(allCostTime, 0, 1, 'omitnan');
+
+            validIdx = ~isnan(meanC);
+            if any(validIdx)
+                xFill = [commonTime(validIdx), fliplr(commonTime(validIdx))];
+                yFill = [meanC(validIdx) + stdC(validIdx), fliplr(meanC(validIdx) - stdC(validIdx))];
+                fill(xFill, yFill, deltaColors(di, :), ...
+                    'FaceAlpha', 0.15, 'EdgeColor', 'none', 'HandleVisibility', 'off');
+                plot(commonTime(validIdx), meanC(validIdx), deltaStyles{di}, ...
+                    'Color', deltaColors(di, :), 'LineWidth', 1.8, ...
+                    'DisplayName', deltaLabels{di});
+            end
         end
 
-        % KPAX
-        kpaxCostMatrix = NaN(numKPAXRuns, numTimePoints);
+        % --- KPAX curve ---
+        kpaxAllCostTime = NaN(numKPAXRuns, numTimeSamples);
         for ri = 1:numKPAXRuns
             if ~isempty(kpaxData{ri})
                 riCost = kpaxData{ri}.best_cost;
                 riCost(riCost > MAX_FLOAT_THRESH) = NaN;
                 riTime = kpaxData{ri}.elapsed_time_ms;
-                kpaxCostMatrix(ri, :) = interp1(riTime, riCost, sampleTimes, 'previous', NaN);
+                kpaxAllCostTime(ri, :) = interp1(riTime, riCost, commonTime, 'previous', NaN);
             end
         end
-        allGroupCosts{nGroups} = kpaxCostMatrix;
 
-        % Draw grouped box plots at each time point
-        % Each time point gets nGroups boxes side by side
-        timeSpacing = sampleTimes(2) - sampleTimes(1);
-        singleBoxWidth = timeSpacing * boxWidth / nGroups;
+        kpaxMeanC = mean(kpaxAllCostTime, 1, 'omitnan');
+        kpaxStdC  = std(kpaxAllCostTime, 0, 1, 'omitnan');
+        kpaxValidIdx = ~isnan(kpaxMeanC);
 
-        legendHandles = gobjects(1, nGroups);
-
-        for gi = 1:nGroups
-            costMatrix = allGroupCosts{gi};
-            color = groupColors(gi, :);
-
-            % Offset for this group within each time cluster
-            offset = (gi - (nGroups + 1) / 2) * singleBoxWidth;
-
-            for ti = 1:numTimePoints
-                vals = costMatrix(:, ti);
-                vals = vals(~isnan(vals));
-                if isempty(vals), continue; end
-
-                xCenter = sampleTimes(ti) + offset;
-
-                q1 = quantile(vals, 0.25);
-                q2 = median(vals);
-                q3 = quantile(vals, 0.75);
-                iqr_val = q3 - q1;
-                wLow  = max(min(vals), q1 - 1.5 * iqr_val);
-                wHigh = min(max(vals), q3 + 1.5 * iqr_val);
-
-                hw = singleBoxWidth * 0.4;  % half-width of box
-
-                % Box (Q1 to Q3)
-                hBox = fill([xCenter-hw, xCenter+hw, xCenter+hw, xCenter-hw], ...
-                     [q1, q1, q3, q3], color, ...
-                     'FaceAlpha', 0.4, 'EdgeColor', color, 'LineWidth', 0.8, ...
-                     'HandleVisibility', 'off');
-
-                % Median line
-                plot([xCenter-hw, xCenter+hw], [q2, q2], '-', ...
-                    'Color', color, 'LineWidth', 1.5, 'HandleVisibility', 'off');
-
-                % Whiskers
-                plot([xCenter, xCenter], [wLow, q1], '-', ...
-                    'Color', color, 'LineWidth', 0.8, 'HandleVisibility', 'off');
-                plot([xCenter, xCenter], [q3, wHigh], '-', ...
-                    'Color', color, 'LineWidth', 0.8, 'HandleVisibility', 'off');
-
-                % Whisker caps
-                plot([xCenter-hw*0.5, xCenter+hw*0.5], [wLow, wLow], '-', ...
-                    'Color', color, 'LineWidth', 0.8, 'HandleVisibility', 'off');
-                plot([xCenter-hw*0.5, xCenter+hw*0.5], [wHigh, wHigh], '-', ...
-                    'Color', color, 'LineWidth', 0.8, 'HandleVisibility', 'off');
-
-                % Save first box handle for legend
-                if ti == 1 || ~isvalid(legendHandles(gi))
-                    legendHandles(gi) = hBox;
-                    set(hBox, 'HandleVisibility', 'on', 'DisplayName', groupLabels{gi});
-                end
-            end
+        if any(kpaxValidIdx)
+            xFill = [commonTime(kpaxValidIdx), fliplr(commonTime(kpaxValidIdx))];
+            yFill = [kpaxMeanC(kpaxValidIdx) + kpaxStdC(kpaxValidIdx), ...
+                     fliplr(kpaxMeanC(kpaxValidIdx) - kpaxStdC(kpaxValidIdx))];
+            fill(xFill, yFill, kpaxColor, ...
+                'FaceAlpha', 0.10, 'EdgeColor', 'none', 'HandleVisibility', 'off');
+            plot(commonTime(kpaxValidIdx), kpaxMeanC(kpaxValidIdx), '-', ...
+                'Color', kpaxColor, 'LineWidth', 2.0, ...
+                'DisplayName', 'KPAX');
         end
 
         % KPAX reference lines
@@ -358,14 +318,8 @@ for ei = 1:length(environments)
 
     xlabel('Elapsed Time (ms)');
     ylabel('Path Cost (workspace distance)');
-    title(sprintf('Cost Distribution over Wall Time \x2014 %s Environment', envTitle));
-    
-    % Only create legend if we have valid handles
-    validHandles = legendHandles(isvalid(legendHandles));
-    if ~isempty(validHandles)
-        legend(validHandles, 'Location', 'best', 'FontSize', 7);
-    end
-    
+    title(sprintf('Best Cost vs Time \x2014 %s Environment', envTitle));
+    legend('Location', 'best', 'FontSize', 7);
     grid on;
     set(gca, 'FontSize', 10);
 
