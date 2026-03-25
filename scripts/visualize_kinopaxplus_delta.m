@@ -13,16 +13,17 @@
 clear; clc; close all;
 
 %% --- Configuration ---
-dataDir = '../build/Data/Benchmarks/KinoPaxPlusDelta';
+dataDir = 'deltacsvs2';
 
 environments = {'trees', 'house'};
 envTitles    = {'Trees', 'House'};
 
-deltas      = {'large', 'med_large', 'med_small', 'small'};
-deltaLabels = {'Large-\delta (27k)', ...
+deltas      = {'extra_large', 'larger', 'large', 'med_large', 'med_small'};
+deltaLabels = {'Extra-Large-\delta (3.3k)', ...
+                'Larger-\delta (14k)', ...
+                'Large-\delta (27k)', ...
                'Med-Large (216k)', ...
-               'Med-Small (1.7M)', ...
-               'Small-\delta (10.1M)'};
+               'Med-Small (1.7M)'};
 
 deltaColors = [0.2 0.4 0.8;    % large     - blue
                0.9 0.5 0.1;    % med_large - orange
@@ -54,25 +55,7 @@ else
     summaryTable = readtable(summaryPath);
 end
 
-%% --- Helper: find first solution iteration ---
-function firstIter = firstSolutionIter(tbl, thresh)
-    solIdx = find(tbl.best_cost < thresh, 1, 'first');
-    if isempty(solIdx)
-        firstIter = -1;
-    else
-        firstIter = tbl.iteration(solIdx);
-    end
-end
 
-%% --- Helper: find first solution time (ms) ---
-function firstTime = firstSolutionTime(tbl, thresh)
-    solIdx = find(tbl.best_cost < thresh, 1, 'first');
-    if isempty(solIdx)
-        firstTime = NaN;
-    else
-        firstTime = tbl.elapsed_time_ms(solIdx);
-    end
-end
 
 %% ======================================================================
 %  LOOP OVER ENVIRONMENTS
@@ -482,3 +465,23 @@ for ei = 1:length(environments)
 end  % environment loop
 
 fprintf('\nAll figures generated (%d total).\n', figNum);
+
+%% --- Helper: find first solution iteration ---
+function firstIter = firstSolutionIter(tbl, thresh)
+    solIdx = find(tbl.best_cost < thresh, 1, 'first');
+    if isempty(solIdx)
+        firstIter = -1;
+    else
+        firstIter = tbl.iteration(solIdx);
+    end
+end
+
+%% --- Helper: find first solution time (ms) ---
+function firstTime = firstSolutionTime(tbl, thresh)
+    solIdx = find(tbl.best_cost < thresh, 1, 'first');
+    if isempty(solIdx)
+        firstTime = NaN;
+    else
+        firstTime = tbl.elapsed_time_ms(solIdx);
+    end
+end

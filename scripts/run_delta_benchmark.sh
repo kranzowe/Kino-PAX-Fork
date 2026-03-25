@@ -33,10 +33,10 @@ CONFIG_BACKUP="$CONFIG_FILE.bak"
 BUILD_DIR="$PROJECT_DIR/build"
 
 # Delta configs: label W_R1 C_R1 V_R1
-DELTA_LABELS=("large" "med_large" "med_small" "small")
-DELTA_W_R1=(10 20 40 72)
-DELTA_C_R1=(1  1  1  1)
-DELTA_V_R1=(3  3  3  3)
+DELTA_LABELS=("extra_large" "larger" "large" "med_large" "med_small")
+DELTA_W_R1=(5 8 10 20 40)
+DELTA_C_R1=(1  1  1  1  1)
+DELTA_V_R1=(3  3  3  3  3)
 
 # Environments and their obstacle files (already in [0,1]^3 for Model 1)
 ENV_NAMES=("trees" "house")
@@ -75,7 +75,7 @@ write_config() {
 /* 6D DOUBLE INTEGRATOR    */
 /***************************/
 #define MODEL 1
-#define MAX_TREE_SIZE 2000000
+#define MAX_TREE_SIZE 3000000
 #define MAX_FLOAT 1e38f
 #define MAX_SOL_SET_SIZE 500
 #define MAX_ITER 300
