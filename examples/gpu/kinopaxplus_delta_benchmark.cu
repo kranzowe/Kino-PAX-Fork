@@ -412,7 +412,7 @@ int main(int argc, char* argv[])
     }
 
     const int NUM_KPAX_RUNS      = 20;
-    const int NUM_KPAXPLUS_RUNS  = 10;
+    const int NUM_KPAXPLUS_RUNS  = 20;
     const int MAX_ITERATIONS     = 300;
     const float MAX_TIME_MS      = 10000.0f;  // 10 second timeout
 
