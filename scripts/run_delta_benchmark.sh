@@ -29,7 +29,7 @@ BUILD_DIR="$PROJECT_DIR/build"
 
 # Delta configs: label W_R1 C_R1 V_R1
 DELTA_LABELS=("extra_large" "larger" "large" "med_large" "med_small")
-DELTA_W_R1=(5 8 10 20 40)
+DELTA_W_R1=(6 8 10 20 30)
 DELTA_C_R1=(1  1  1  1  1)
 DELTA_V_R1=(3  3  3  3  3)
 
