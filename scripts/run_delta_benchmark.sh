@@ -2,21 +2,25 @@
 # =============================================================================
 # KinoPaxPlus Delta Benchmark Runner
 #
-# Iterates over 4 delta (region discretization) configs for Model 3
-# (12D nonlinear quadrotor). For each config:
-#   1. Writes a complete Model 3 config.h with the appropriate R1 lengths
+# Iterates over 4 delta (region discretization) configs for Model 1
+# (6D double integrator). For each config:
+#   1. Writes a complete Model 1 config.h with the appropriate W_R1 length
 #   2. Rebuilds the KinoPaxPlusDeltaBenchmark target
 #   3. Runs the benchmark with the delta label
 #
+# Also runs a KPAX baseline (20 runs, once per environment on the first delta)
+# for comparison against KinoPaxPlus convergence.
+#
+# Runs on two environments: Trees and House.
 # Original config.h is backed up and restored on exit/error.
 #
-# Delta configs (Model 3: W_DIM=3, C_DIM=3, V_DIM=3):
-#   NUM_R1_REGIONS = W_R1^3 * C_R1^3 * V_R1^3
+# Delta configs (Model 1: W_DIM=3, C_DIM=1, V_DIM=3):
+#   NUM_R1_REGIONS = W_R1^3 * V_R1^3  (C_R1=1 throughout)
 #
-#   large:     W=8,  C=3, V=2 ->  512 *  27 *   8 =     110,592 regions
-#   med_large: W=10, C=4, V=3 -> 1000 *  64 *  27 =   1,728,000 regions
-#   med_small: W=12, C=4, V=4 -> 1728 *  64 *  64 =   7,077,888 regions
-#   small:     W=14, C=4, V=4 -> 2744 *  64 *  64 =  11,239,424 regions
+#   large:     W=10, V=3 ->  1000 * 27 =      27,000 regions
+#   med_large: W=20, V=3 ->  8000 * 27 =     216,000 regions
+#   med_small: W=40, V=3 -> 64000 * 27 =   1,728,000 regions
+#   small:     W=72, V=3 -> 373248 * 27 = 10,077,696 regions
 #
 # Usage: cd scripts && bash run_delta_benchmark.sh
 # =============================================================================
@@ -30,9 +34,16 @@ BUILD_DIR="$PROJECT_DIR/build"
 
 # Delta configs: label W_R1 C_R1 V_R1
 DELTA_LABELS=("large" "med_large" "med_small" "small")
-DELTA_W_R1=(8 10 12 14)
-DELTA_C_R1=(3  4  4  4)
-DELTA_V_R1=(2  3  4  4)
+DELTA_W_R1=(10 20 40 72)
+DELTA_C_R1=(1  1  1  1)
+DELTA_V_R1=(3  3  3  3)
+
+# Environments and their obstacle files (already in [0,1]^3 for Model 1)
+ENV_NAMES=("trees" "house")
+ENV_OBSTACLES=(
+    "../include/config/obstacles/trees/obstacles.csv"
+    "../include/config/obstacles/house/obstacles.csv"
+)
 
 # Restore config.h on exit
 cleanup() {
@@ -53,7 +64,7 @@ cp "$CONFIG_FILE" "$CONFIG_BACKUP"
 # --- Ensure build directory exists ---
 mkdir -p "$BUILD_DIR"
 
-# Function to write complete Model 3 config.h
+# Function to write complete Model 1 config.h
 write_config() {
     local W_R1=$1
     local C_R1=$2
@@ -61,10 +72,10 @@ write_config() {
     cat > "$CONFIG_FILE" << CONFIGEOF
 #pragma once
 /***************************/
-/* NON LINEAR QUAD CONFIG  */
+/* 6D DOUBLE INTEGRATOR    */
 /***************************/
-#define MODEL 3
-#define MAX_TREE_SIZE 1000000
+#define MODEL 1
+#define MAX_TREE_SIZE 2000000
 #define MAX_FLOAT 1e38f
 #define MAX_SOL_SET_SIZE 500
 #define MAX_ITER 300
@@ -73,22 +84,22 @@ write_config() {
 #define MAX_PROPAGATION_DURATION 10
 #define ACCEPT 0.99f
 #define AGENT_RADIUS 0.5f
-#define GOAL_THRESH 5.0f
-#define STATE_DIM 12
-#define CONTROL_DIM 4
+#define GOAL_THRESH 0.05f
+#define STATE_DIM 6
+#define CONTROL_DIM 3
 #define SAMPLE_DIM (STATE_DIM + CONTROL_DIM + 1)
 #define W_DIM 3
-#define C_DIM 3
+#define C_DIM 1
 #define V_DIM 3
 #define W_MIN 0.0f
-#define W_MAX 100.0f
-#define W_SIZE 100.0f
+#define W_MAX 1.0f
+#define W_SIZE 1.0f
 #define C_MIN -M_PI
 #define C_MAX M_PI
-#define V_MIN -30.0f
-#define V_MAX 30.0f
-#define A_MIN -30.0f
-#define A_MAX 30.0f
+#define V_MIN -0.3f
+#define V_MAX 0.3f
+#define A_MIN -0.2f
+#define A_MAX 0.2f
 #define W_R1_LENGTH ${W_R1}
 #define C_R1_LENGTH ${C_R1}
 #define V_R1_LENGTH ${V_R1}
@@ -99,9 +110,9 @@ write_config() {
 #define C_R1_SIZE ((C_MAX - C_MIN) / C_R1_LENGTH)
 #define V_R1_SIZE ((V_MAX - V_MIN) / V_R1_LENGTH)
 #define W_R1_VOL (W_R1_SIZE * W_R1_SIZE * W_R1_SIZE)
-#define NUM_R1_REGIONS (W_R1_LENGTH * W_R1_LENGTH * W_R1_LENGTH * C_R1_LENGTH * C_R1_LENGTH * C_R1_LENGTH * V_R1_LENGTH * V_R1_LENGTH * V_R1_LENGTH)
-#define NUM_R2_REGIONS (NUM_R1_REGIONS * W_R2_LENGTH * W_R2_LENGTH * W_R2_LENGTH * C_R2_LENGTH * C_R2_LENGTH * C_R2_LENGTH * V_R2_LENGTH * V_R2_LENGTH * V_R2_LENGTH)
-#define NUM_R2_PER_R1 W_R2_LENGTH *W_R2_LENGTH *W_R2_LENGTH *C_R2_LENGTH *C_R2_LENGTH *C_R2_LENGTH *V_R2_LENGTH *V_R2_LENGTH *V_R2_LENGTH
+#define NUM_R1_REGIONS (W_R1_LENGTH * W_R1_LENGTH * W_R1_LENGTH * V_R1_LENGTH * V_R1_LENGTH * V_R1_LENGTH)
+#define NUM_R2_REGIONS (NUM_R1_REGIONS * W_R2_LENGTH * W_R2_LENGTH * W_R2_LENGTH * V_R2_LENGTH * V_R2_LENGTH * V_R2_LENGTH)
+#define NUM_R2_PER_R1 W_R2_LENGTH *W_R2_LENGTH *W_R2_LENGTH *V_R2_LENGTH *V_R2_LENGTH *V_R2_LENGTH
 #define NUM_R1_REGIONS_KERNEL1 1024
 #define NUM_PARTIAL_SUMS 1024
 #define EPSILON 1e-2f
@@ -156,44 +167,62 @@ CONFIGEOF
 echo ""
 echo "======================================================="
 echo "  KinoPaxPlus Delta Benchmark Sweep"
-echo "  Model: 3 (12D Nonlinear Quadrotor)"
-echo "  Environment: Trees ([0,100]^3)"
-echo "  MAX_TREE_SIZE: 100,000"
+echo "  Model: 1 (6D Double Integrator)"
+echo "  Environments: ${ENV_NAMES[*]}"
+echo "  MAX_TREE_SIZE: 2,000,000"
 echo "  Deltas: ${DELTA_LABELS[*]}"
+echo "  KPAX Baseline: 20 runs per environment"
 echo "======================================================="
 
-for i in "${!DELTA_LABELS[@]}"; do
-    LABEL="${DELTA_LABELS[$i]}"
-    W_R1="${DELTA_W_R1[$i]}"
-    C_R1="${DELTA_C_R1[$i]}"
-    V_R1="${DELTA_V_R1[$i]}"
-    REGIONS=$(( W_R1 * W_R1 * W_R1 * C_R1 * C_R1 * C_R1 * V_R1 * V_R1 * V_R1 ))
+for env_idx in "${!ENV_NAMES[@]}"; do
+    ENV="${ENV_NAMES[$env_idx]}"
+    OBS="${ENV_OBSTACLES[$env_idx]}"
+    FIRST_DELTA_FOR_ENV=true
 
     echo ""
     echo "======================================================="
-    echo "  Delta: $LABEL | W_R1=$W_R1 C_R1=$C_R1 V_R1=$V_R1 | Regions=$REGIONS"
+    echo "  ENVIRONMENT: $ENV"
+    echo "  Obstacles: $OBS"
     echo "======================================================="
 
-    # Write config
-    write_config "$W_R1" "$C_R1" "$V_R1"
-    echo "  config.h written (W_R1=$W_R1, C_R1=$C_R1, V_R1=$V_R1)"
+    for i in "${!DELTA_LABELS[@]}"; do
+        LABEL="${DELTA_LABELS[$i]}"
+        W_R1="${DELTA_W_R1[$i]}"
+        C_R1="${DELTA_C_R1[$i]}"
+        V_R1="${DELTA_V_R1[$i]}"
+        REGIONS=$(( W_R1**3 * V_R1**3 ))
 
-    # Build
-    echo "  Building..."
-    cd "$BUILD_DIR"
-    cmake .. -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_COMPILER=/usr/bin/gcc-12 \
-        -DCMAKE_CXX_COMPILER=/usr/bin/g++-12 \
-        -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-12 \
-        > /dev/null 2>&1
-    make KinoPaxPlusDeltaBenchmark -j"$(nproc)" 2>&1 | tail -20
-    echo "  Build complete"
+        echo ""
+        echo "-------------------------------------------------------"
+        echo "  Delta: $LABEL | W_R1=$W_R1 C_R1=$C_R1 V_R1=$V_R1 | Regions=$REGIONS"
+        echo "-------------------------------------------------------"
 
-    # Run
-    echo "  Running benchmark..."
-    ./KinoPaxPlusDeltaBenchmark "$LABEL"
+        # Write config
+        write_config "$W_R1" "$C_R1" "$V_R1"
+        echo "  config.h written (W_R1=$W_R1, C_R1=$C_R1, V_R1=$V_R1)"
 
-    cd "$PROJECT_DIR"
+        # Build
+        echo "  Building..."
+        cd "$BUILD_DIR"
+        cmake .. -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=/usr/bin/gcc-12 \
+            -DCMAKE_CXX_COMPILER=/usr/bin/g++-12 \
+            -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-12 \
+            > /dev/null 2>&1
+        make KinoPaxPlusDeltaBenchmark -j"$(nproc)" 2>&1 | tail -20
+        echo "  Build complete"
+
+        # Run — pass --run-kpax only on first delta for this environment
+        echo "  Running benchmark..."
+        if [ "$FIRST_DELTA_FOR_ENV" = true ]; then
+            ./KinoPaxPlusDeltaBenchmark "$LABEL" "$OBS" "$ENV" --run-kpax
+            FIRST_DELTA_FOR_ENV=false
+        else
+            ./KinoPaxPlusDeltaBenchmark "$LABEL" "$OBS" "$ENV"
+        fi
+
+        cd "$PROJECT_DIR"
+    done
 done
 
 echo ""
