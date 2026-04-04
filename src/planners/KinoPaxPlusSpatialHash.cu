@@ -1,7 +1,8 @@
-#include "planners/KinoPaxPlus.cuh"
+#include "planners/KinoPaxPlusSpatialHash.cuh"
 #include "config/config.h"
+#include "statePropagator/statePropagatorSpatialHash.cuh"
 
-KinoPaxPlus::KinoPaxPlus()
+KinoPaxPlusSpatialHash::KinoPaxPlusSpatialHash()
 {
     graph_ = KinoPaxPlusRegions(W_SIZE);
 
@@ -48,16 +49,25 @@ KinoPaxPlus::KinoPaxPlus()
     h_activeBlockSize_ = 32;
     h_controlPathsToGoal_ = new float[MAX_ITER * SAMPLE_DIM];
 
+    // Create spatial hash grid for fast collision detection
+    d_spatialHashGrid_ = createSpatialHashGrid();
+
     if(VERBOSE)
         {
-            printf("/* Planner Type: KinoPaxPlus */\n");
+            printf("/* Planner Type: KinoPaxPlusSpatialHash */\n");
             printf("/* Number of R1 Vertices: %d */\n", NUM_R1_REGIONS);
             printf("/* Number of R2 Vertices: %d */\n", NUM_R2_REGIONS);
+            printf("/* Spatial Hash Grid: %dx%dx%d cells */\n", GRID_DIM_X, GRID_DIM_Y, GRID_DIM_Z);
             printf("/***************************/\n");
         }
 }
 
-void KinoPaxPlus::resetPlanner(float* h_initial, float* h_goal)
+KinoPaxPlusSpatialHash::~KinoPaxPlusSpatialHash()
+{
+    destroySpatialHashGrid(d_spatialHashGrid_);
+}
+
+void KinoPaxPlusSpatialHash::resetPlanner(float* h_initial, float* h_goal)
 {
     // --- Resetting Device Vectors: ---
     thrust::fill(d_frontier_.begin(), d_frontier_.end(), false);
@@ -103,7 +113,7 @@ void KinoPaxPlus::resetPlanner(float* h_initial, float* h_goal)
       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()));
 }
 
-void KinoPaxPlus::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
+void KinoPaxPlusSpatialHash::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
 {
     cudaEvent_t start, stop;
     float milliseconds = 0;
@@ -132,13 +142,13 @@ void KinoPaxPlus::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, 
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&milliseconds, start, stop);
     writeExecutionTimeToCSV(milliseconds / 1000.0);
-    std::cout << "KinoPaxPlus execution time: " << milliseconds / 1000.0 << " seconds. Iterations: " << h_itr_ << ". Tree Size: " << h_treeSize_
+    std::cout << "KinoPaxPlusSpatialHash execution time: " << milliseconds / 1000.0 << " seconds. Iterations: " << h_itr_ << ". Tree Size: " << h_treeSize_
               << std::endl;
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
 }
 
-float KinoPaxPlus::planOptimize(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
+float KinoPaxPlusSpatialHash::planOptimize(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
 {
     cudaEvent_t start, stop;
     float milliseconds = 0;
@@ -146,7 +156,7 @@ float KinoPaxPlus::planOptimize(float* h_initial, float* h_goal, float* d_obstac
     cudaEventCreate(&stop);
     cudaEventRecord(start);
 
-    // --- INITIALIZE KinoPaxPlus ---
+    // --- INITIALIZE ---
     resetPlanner(h_initial, h_goal);
 
     // --- PLANNING ---
@@ -169,14 +179,14 @@ float KinoPaxPlus::planOptimize(float* h_initial, float* h_goal, float* d_obstac
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&milliseconds, start, stop);
     writeExecutionTimeToCSV(milliseconds / 1000.0);
-    std::cout << "KinoPaxPlus execution time: " << milliseconds / 1000.0 << " seconds. Iterations: " << h_itr_ << ". Tree Size: " << h_treeSize_
+    std::cout << "KinoPaxPlusSpatialHash execution time: " << milliseconds / 1000.0 << " seconds. Iterations: " << h_itr_ << ". Tree Size: " << h_treeSize_
               << std::endl;
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
     return h_minCost_;
 }
 
-void KinoPaxPlus::planBenchmark(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, int benchItr)
+void KinoPaxPlusSpatialHash::planBenchmark(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, int benchItr)
 {
     std::vector<float> iterationTimes;
     cudaEvent_t start, stop;
@@ -185,7 +195,7 @@ void KinoPaxPlus::planBenchmark(float* h_initial, float* h_goal, float* d_obstac
     cudaEventCreate(&stop);
     cudaEventRecord(start);
 
-    // --- INITIALIZE KinoPaxPlus ---
+    // --- INITIALIZE ---
     resetPlanner(h_initial, h_goal);
 
     // --- PLANNING ---
@@ -207,7 +217,7 @@ void KinoPaxPlus::planBenchmark(float* h_initial, float* h_goal, float* d_obstac
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&milliseconds, start, stop);
     writeExecutionTimeToCSV(milliseconds / 1000.0);
-    std::cout << "KinoPaxPlus execution time: " << milliseconds / 1000.0 << " seconds. Iterations: " << h_itr_ << ". Tree Size: " << h_treeSize_
+    std::cout << "KinoPaxPlusSpatialHash execution time: " << milliseconds / 1000.0 << " seconds. Iterations: " << h_itr_ << ". Tree Size: " << h_treeSize_
               << std::endl;
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
@@ -219,7 +229,7 @@ void KinoPaxPlus::planBenchmark(float* h_initial, float* h_goal, float* d_obstac
     // Until here.
 }
 
-void KinoPaxPlus::planPathsCollect(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, int benchItr)
+void KinoPaxPlusSpatialHash::planPathsCollect(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, int benchItr)
 {
     std::vector<float> iterationTimes;
     cudaEvent_t start, stop;
@@ -228,7 +238,7 @@ void KinoPaxPlus::planPathsCollect(float* h_initial, float* h_goal, float* d_obs
     cudaEventCreate(&stop);
     cudaEventRecord(start);
 
-    // --- INITIALIZE KinoPaxPlus ---
+    // --- INITIALIZE ---
     resetPlanner(h_initial, h_goal);
 
     // --- PLANNING ---
@@ -251,7 +261,7 @@ void KinoPaxPlus::planPathsCollect(float* h_initial, float* h_goal, float* d_obs
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&milliseconds, start, stop);
     writeExecutionTimeToCSV(milliseconds / 1000.0);
-    std::cout << "KinoPaxPlus execution time: " << milliseconds / 1000.0 << " seconds. Iterations: " << h_itr_ << ". Tree Size: " << h_treeSize_
+    std::cout << "KinoPaxPlusSpatialHash execution time: " << milliseconds / 1000.0 << " seconds. Iterations: " << h_itr_ << ". Tree Size: " << h_treeSize_
               << std::endl;
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
@@ -263,9 +273,9 @@ void KinoPaxPlus::planPathsCollect(float* h_initial, float* h_goal, float* d_obs
     // Until here.
 }
 
-void KinoPaxPlus::planDataCollect(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, int benchItr)
+void KinoPaxPlusSpatialHash::planDataCollect(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, int benchItr)
 {
-    // --- KinoPaxPlus INITIALIZATION ---
+    // --- INITIALIZATION ---
     resetPlanner(h_initial, h_goal);
 
     // --- PLANNING ---
@@ -291,8 +301,12 @@ void KinoPaxPlus::planDataCollect(float* h_initial, float* h_goal, float* d_obst
     writeDeviceVectorsToCSV(h_itr_);
 }
 
-void KinoPaxPlus::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount)
+void KinoPaxPlusSpatialHash::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount)
 {
+    // --- Build/update spatial hash grid for fast collision detection ---
+    updateSpatialHashGrid(d_spatialHashGrid_, d_obstacles_ptr, h_obstaclesCount);
+    cudaMemcpy(&h_spatialHashGrid_, d_spatialHashGrid_, sizeof(SpatialHashGrid), cudaMemcpyDeviceToHost);
+
     // --- Find indices and size of frontier. ---
     thrust::exclusive_scan(d_frontier_.begin(), d_frontier_.end(), d_frontierScanIdx_.begin(), 0, thrust::plus<uint>());
     h_frontierSize_ = d_frontierScanIdx_[MAX_TREE_SIZE - 1];
@@ -308,19 +322,21 @@ void KinoPaxPlus::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCoun
                     return;
                 }
             // --- Propagate Frontier. iterations times each.---
-            KinoPaxPlus_propagateFrontier_kernel2<<<iDivUp(h_propIterations_ * h_frontierSize_, h_activeBlockSize_), h_activeBlockSize_>>>(
+            KinoPaxPlusSH_propagateFrontier_kernel2<<<iDivUp(h_propIterations_ * h_frontierSize_, h_activeBlockSize_), h_activeBlockSize_>>>(
               d_frontier_ptr_, d_activeFrontierIdxs_ptr_, d_treeSamples_ptr_, d_unexploredSamples_ptr_, h_frontierSize_, d_randomSeeds_ptr_,
               d_unexploredSamplesParentIdxs_ptr_, d_obstacles_ptr, h_obstaclesCount, d_frontierNext_ptr_, h_propIterations_,
-              d_treeSampleCosts_ptr_, graph_.d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_unexploredSampleCosts_ptr_);
+              d_treeSampleCosts_ptr_, graph_.d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_unexploredSampleCosts_ptr_,
+              h_spatialHashGrid_);
         }
     else
         {
             int bf = std::floor(float(MAX_TREE_SIZE) / (float(h_frontierSize_) * float(h_activeBlockSize_)));
             // --- Propagate Frontier. bf*BlockSize times each. ---
-            KinoPaxPlus_propagateFrontier_kernel1V2<<<iDivUp(bf * h_frontierSize_ * h_activeBlockSize_, h_activeBlockSize_), h_activeBlockSize_>>>(
+            KinoPaxPlusSH_propagateFrontier_kernel1V2<<<iDivUp(bf * h_frontierSize_ * h_activeBlockSize_, h_activeBlockSize_), h_activeBlockSize_>>>(
               d_frontier_ptr_, d_activeFrontierIdxs_ptr_, d_treeSamples_ptr_, d_unexploredSamples_ptr_, h_frontierSize_, d_randomSeeds_ptr_,
               d_unexploredSamplesParentIdxs_ptr_, d_obstacles_ptr, h_obstaclesCount, d_frontierNext_ptr_, d_treeSampleCosts_ptr_,
-              graph_.d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_unexploredSampleCosts_ptr_, bf);
+              graph_.d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_unexploredSampleCosts_ptr_, bf,
+              h_spatialHashGrid_);
         }
 }
 
@@ -329,12 +345,12 @@ void KinoPaxPlus::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCoun
 /***************************/
 // --- Propagates current frontier. Builds new frontier. ---
 // --- One Block Per Frontier Sample ---
-__global__ void KinoPaxPlus_propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples,
+__global__ void KinoPaxPlusSH_propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples,
                                                 uint frontierSize, curandState* randomSeeds, int* unexploredSamplesParentIdxs,
                                                 float* obstacles, int obstaclesCount, bool* frontierNext, float* treeSampleCosts,
-                                                float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts)
+                                                float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
+                                                SpatialHashGrid spatialHashGrid)
 {
-    // if(blockIdx.x >= frontierSize) return;
     int tid       = blockIdx.x * blockDim.x + threadIdx.x;
     frontier[tid] = false;
     if(tid >= MAX_TREE_SIZE) return;
@@ -359,13 +375,13 @@ __global__ void KinoPaxPlus_propagateFrontier_kernel1(bool* frontier, uint* acti
     float* x1                        = &unexploredSamples[tid * SAMPLE_DIM];
     unexploredSamplesParentIdxs[tid] = s_x0Idx;
     curandState randSeed             = randomSeeds[tid];
-    bool valid                       = propagateAndCheck(s_x0, x1, &randSeed, obstacles, obstaclesCount);
+    bool valid                       = propagateAndCheckSpatialHash(s_x0, x1, &randSeed, spatialHashGrid, obstacles, obstaclesCount);
 
     // --- Update Graph sample count and populate next Frontier ---
     if(valid)
         {
-            int x1R1   = KinoPaxPlus_getRegion(x1);
-            float cost = s_x0Cost + distance(s_x0, x1);  // TODO: Currently just distance.
+            int x1R1   = KinoPaxPlusSH_getRegion(x1);
+            float cost = s_x0Cost + distance(s_x0, x1);
             if(minCostsR1[x1R1] > cost) atomicMinFloat(&minCostsR1[x1R1], cost);
             if(cost <= minCostsR1[x1R1])
                 {
@@ -379,16 +395,16 @@ __global__ void KinoPaxPlus_propagateFrontier_kernel1(bool* frontier, uint* acti
 }
 
 /***************************/
-/* PROPAGATE FRONTIER KERNEL  1*/
+/* PROPAGATE FRONTIER KERNEL  1V2*/
 /***************************/
 // --- Propagates current frontier. Builds new frontier. ---
 // --- One Block Per Frontier Sample ---
-__global__ void KinoPaxPlus_propagateFrontier_kernel1V2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples,
+__global__ void KinoPaxPlusSH_propagateFrontier_kernel1V2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples,
                                                   uint frontierSize, curandState* randomSeeds, int* unexploredSamplesParentIdxs,
                                                   float* obstacles, int obstaclesCount, bool* frontierNext, float* treeSampleCosts,
-                                                  float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts, int bf)
+                                                  float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts, int bf,
+                                                  SpatialHashGrid spatialHashGrid)
 {
-    // if(blockIdx.x >= frontierSize) return;
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if(tid >= MAX_TREE_SIZE) return;
 
@@ -412,13 +428,13 @@ __global__ void KinoPaxPlus_propagateFrontier_kernel1V2(bool* frontier, uint* ac
     float* x1                        = &unexploredSamples[tid * SAMPLE_DIM];
     unexploredSamplesParentIdxs[tid] = s_x0Idx;
     curandState randSeed             = randomSeeds[tid];
-    bool valid                       = propagateAndCheck(s_x0, x1, &randSeed, obstacles, obstaclesCount);
+    bool valid                       = propagateAndCheckSpatialHash(s_x0, x1, &randSeed, spatialHashGrid, obstacles, obstaclesCount);
 
     // --- Update Graph sample count and populate next Frontier ---
     if(valid)
         {
-            int x1R1   = KinoPaxPlus_getRegion(x1);
-            float cost = s_x0Cost + distance(s_x0, x1);  // TODO: Currently just distance.
+            int x1R1   = KinoPaxPlusSH_getRegion(x1);
+            float cost = s_x0Cost + distance(s_x0, x1);
             if(minCostsR1[x1R1] > cost) atomicMinFloat(&minCostsR1[x1R1], cost);
             if(cost <= minCostsR1[x1R1])
                 {
@@ -436,10 +452,10 @@ __global__ void KinoPaxPlus_propagateFrontier_kernel1V2(bool* frontier, uint* ac
 /***************************/
 // --- Iterations new samples per frontier sample---
 __global__ void
-KinoPaxPlus_propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples, uint frontierSize,
+KinoPaxPlusSH_propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples, float* unexploredSamples, uint frontierSize,
                                 curandState* randomSeeds, int* unexploredSamplesParentIdxs, float* obstacles, int obstaclesCount,
                                 bool* frontierNext, int iterations, float* treeSampleCosts, float* minCostsR1, int* frontierNextXR1s,
-                                float* unexploredSampleCosts)
+                                float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid)
 {
     int tid       = blockIdx.x * blockDim.x + threadIdx.x;
     frontier[tid] = false;
@@ -457,13 +473,13 @@ KinoPaxPlus_propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, 
     float* x1                        = &unexploredSamples[tid * SAMPLE_DIM];
     unexploredSamplesParentIdxs[tid] = x0Idx;
     curandState randSeed             = randomSeeds[tid];
-    bool valid                       = propagateAndCheck(x0, x1, &randSeed, obstacles, obstaclesCount);
+    bool valid                       = propagateAndCheckSpatialHash(x0, x1, &randSeed, spatialHashGrid, obstacles, obstaclesCount);
 
     // --- Update Graph sample count and populate next Frontier ---
     if(valid)
         {
-            int x1R1   = KinoPaxPlus_getRegion(x1);
-            float cost = x0Cost + distance(x0, x1);  // TODO: Currently just distance.
+            int x1R1   = KinoPaxPlusSH_getRegion(x1);
+            float cost = x0Cost + distance(x0, x1);
             if(minCostsR1[x1R1] > cost) atomicMinFloat(&minCostsR1[x1R1], cost);
             if(cost <= minCostsR1[x1R1])
                 {
@@ -476,10 +492,10 @@ KinoPaxPlus_propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, 
     randomSeeds[tid] = randSeed;
 }
 
-void KinoPaxPlus::updateFrontier()
+void KinoPaxPlusSpatialHash::updateFrontier()
 {
     // --- Pruning Tree ---
-    KinoPaxPlus_pruningTree_kernel<<<iDivUp(h_treeSize_, h_blockSize_), h_blockSize_>>>(
+    KinoPaxPlusSH_pruningTree_kernel<<<iDivUp(h_treeSize_, h_blockSize_), h_blockSize_>>>(
       h_treeSize_, d_treeSamplesParentIdxs_ptr_, d_treeSampleCosts_ptr_, d_goalSet_ptr_, graph_.d_minCostsR1_ptr_, d_treeXR1s_ptr_,
       d_pruned_ptr_, d_treeInactiveIterations_ptr_);
 
@@ -489,7 +505,7 @@ void KinoPaxPlus::updateFrontier()
     findInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_frontierNext_ptr_, d_frontierScanIdx_ptr_, d_activeFrontierIdxs_ptr_);
 
     // --- Pruning Frontier ---
-    KinoPaxPlus_pruningFrontier_kernel<<<iDivUp(h_frontierNextSize_, h_blockSize_), h_blockSize_>>>(
+    KinoPaxPlusSH_pruningFrontier_kernel<<<iDivUp(h_frontierNextSize_, h_blockSize_), h_blockSize_>>>(
       d_activeFrontierIdxs_ptr_, h_frontierNextSize_, d_unexploredSamplesParentIdxs_ptr_, d_treeSamplesParentIdxs_ptr_,
       d_treeSampleCosts_ptr_, graph_.d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_treeXR1s_ptr_, d_frontierNext_ptr_,
       d_unexploredSampleCosts_ptr_, d_pruned_ptr_, d_treeInactiveIterations_ptr_);
@@ -507,7 +523,7 @@ void KinoPaxPlus::updateFrontier()
         }
 
     // --- Update Frontier ---
-    KinoPaxPlus_updateFrontier_kernel<<<iDivUp(h_frontierNextSize_ + h_treeSize_, h_blockSize_), h_blockSize_>>>(
+    KinoPaxPlusSH_updateFrontier_kernel<<<iDivUp(h_frontierNextSize_ + h_treeSize_, h_blockSize_), h_blockSize_>>>(
       d_frontier_ptr_, d_frontierNext_ptr_, d_activeFrontierIdxs_ptr_, h_frontierNextSize_, d_goalSample_ptr_, h_treeSize_,
       d_unexploredSamples_ptr_, d_treeSamples_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_treeSamplesParentIdxs_ptr_,
       d_treeSampleCosts_ptr_, d_randomSeeds_ptr_, d_controlPathsToGoal_ptr_, d_goalSet_ptr_, d_iterations_ptr_, h_itr_,
@@ -522,7 +538,7 @@ void KinoPaxPlus::updateFrontier()
 /***************************/
 /* TREE PRUNING Kernel */
 /***************************/
-__global__ void KinoPaxPlus_pruningTree_kernel(int treeSize, int* treeSamplesParentIdxs, float* treeSampleCosts, bool* goalSet, float* minCostsR1,
+__global__ void KinoPaxPlusSH_pruningTree_kernel(int treeSize, int* treeSamplesParentIdxs, float* treeSampleCosts, bool* goalSet, float* minCostsR1,
                                          int* treeXR1s, bool* pruned, uint* inactiveIterations)
 {
     int treeIdx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -578,7 +594,7 @@ __global__ void KinoPaxPlus_pruningTree_kernel(int treeSize, int* treeSamplesPar
 /* Frontier PRUNING Kernel */
 /***************************/
 __global__ void
-KinoPaxPlus_pruningFrontier_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize, int* unexploredSamplesParentIdxs,
+KinoPaxPlusSH_pruningFrontier_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize, int* unexploredSamplesParentIdxs,
                              int* treeSamplesParentIdxs, float* treeSampleCosts, float* minCostsR1, int* frontierNextXR1s, int* treeXR1s,
                              bool* frontierNext, float* unexploredSampleCosts, bool* pruned, uint* inactiveIterations)
 {
@@ -598,7 +614,7 @@ KinoPaxPlus_pruningFrontier_kernel(uint* activeFrontierNextIdxs, uint frontierNe
         }
 }
 
-__global__ void KinoPaxPlus_pruning_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize, int treeSize, int* unexploredSamplesParentIdxs,
+__global__ void KinoPaxPlusSH_pruning_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize, int treeSize, int* unexploredSamplesParentIdxs,
                                      int* treeSamplesParentIdxs, float* treeSampleCosts, bool* goalSet, float* minCostsR1, int* treeXR1s,
                                      int* frontierNextXR1s, bool* frontierNext, float* unexploredSampleCosts, bool* pruned)
 {
@@ -670,7 +686,7 @@ __global__ void KinoPaxPlus_pruning_kernel(uint* activeFrontierNextIdxs, uint fr
 /***************************/
 // --- Adds previous frontier to the tree and builds new frontier. ---
 __global__ void
-KinoPaxPlus_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs, uint frontierNextSize, float* xGoal,
+KinoPaxPlusSH_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs, uint frontierNextSize, float* xGoal,
                             int treeSize, float* unexploredSamples, float* treeSamples, int* unexploredSamplesParentIdxs,
                             int* treeSamplesParentIdxs, float* treeSampleCosts, curandState* randomSeeds, float* controlPathToGoal,
                             bool* goalSet, int* iterations, int iteration, float* minCostsR1, int* treeXR1s, int* frontierNextXR1s,
@@ -711,7 +727,7 @@ KinoPaxPlus_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* acti
                     atomicMinFloat(minCost, cost);
                     goalSet[x1TreeIdx]    = true;
                     frontier[x1TreeIdx]   = false;
-                    iterations[x1TreeIdx] = iteration;  // TODO: Remove this. Only for creating cost/iteration plot.
+                    iterations[x1TreeIdx] = iteration;
                 }
         }
 
@@ -726,14 +742,14 @@ KinoPaxPlus_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* acti
         }
 }
 
-void KinoPaxPlus::getControlPathToGoal()
+void KinoPaxPlusSpatialHash::getControlPathToGoal()
 {
     thrust::exclusive_scan(d_goalSet_.begin(), d_goalSet_.end(), d_goalSetScanIdx_.begin(), 0, thrust::plus<uint>());
     h_solSetSize_ = d_goalSetScanIdx_[MAX_TREE_SIZE - 1];
     (d_goalSet_[MAX_TREE_SIZE - 1]) ? ++h_solSetSize_ : 0;
     findInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_goalSet_ptr_, d_goalSetScanIdx_ptr_, d_goalSetIdxs_ptr_);
 
-    KinoPaxPlus_getControlPathToGoal_kernel<<<iDivUp(h_solSetSize_, h_blockSize_), h_blockSize_>>>(
+    KinoPaxPlusSH_getControlPathToGoal_kernel<<<iDivUp(h_solSetSize_, h_blockSize_), h_blockSize_>>>(
       d_controlPathsToGoal_ptr_, d_treeSamples_ptr_, d_treeSamplesParentIdxs_ptr_, d_goalSetIdxs_ptr_, h_solSetSize_, d_pathCosts_ptr_,
       d_treeSampleCosts_ptr_, d_iterations_ptr_, d_minCost_ptr_);
 
@@ -742,7 +758,7 @@ void KinoPaxPlus::getControlPathToGoal()
 }
 
 __global__ void
-KinoPaxPlus_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSamples, int* treeSamplesParentIdxs, uint* goalSetIdxs,
+KinoPaxPlusSH_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSamples, int* treeSamplesParentIdxs, uint* goalSetIdxs,
                                   int goalSetSize, float* pathCosts, float* treeSampleCosts, int* iterations, float* minCost)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -753,15 +769,13 @@ KinoPaxPlus_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSa
     int x0Idx  = goalIdx;
     float cost = treeSampleCosts[goalIdx];
 
-    // TODO: Remove this: only for creating cost/iteration plot. Keep if you would like information on when paths are found.
     int pathCostsIdx            = 3 * tid;
     pathCosts[pathCostsIdx]     = goalIdx;
     pathCosts[pathCostsIdx + 1] = cost;
     pathCosts[pathCostsIdx + 2] = iterations[goalIdx];
-    // Until here.
 
     if(cost != *minCost) return;
-    int i = 0;  // --- Iteration counter ---
+    int i = 0;
     while(x0Idx != -1)
         {
             for(int j = 0; j < SAMPLE_DIM; j++)
@@ -773,7 +787,7 @@ KinoPaxPlus_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSa
         }
 }
 
-void KinoPaxPlus::getControlPathToGoalPathsCollect()
+void KinoPaxPlusSpatialHash::getControlPathToGoalPathsCollect()
 {
     thrust::exclusive_scan(d_goalSet_.begin(), d_goalSet_.end(), d_goalSetScanIdx_.begin(), 0, thrust::plus<uint>());
     h_solSetSize_ = d_goalSetScanIdx_[MAX_TREE_SIZE - 1];
@@ -781,7 +795,7 @@ void KinoPaxPlus::getControlPathToGoalPathsCollect()
     findInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_goalSet_ptr_, d_goalSetScanIdx_ptr_, d_goalSetIdxs_ptr_);
 
     if(h_solSetSize_ == 0) return;
-    KinoPaxPlus_getControlPathToGoalPathsCollect_kernel<<<iDivUp(h_solSetSize_, h_blockSize_), h_blockSize_>>>(
+    KinoPaxPlusSH_getControlPathToGoalPathsCollect_kernel<<<iDivUp(h_solSetSize_, h_blockSize_), h_blockSize_>>>(
       d_controlPathsToGoal_ptr_, d_treeSamples_ptr_, d_treeSamplesParentIdxs_ptr_, d_goalSetIdxs_ptr_, h_solSetSize_, d_pathCosts_ptr_,
       d_treeSampleCosts_ptr_, d_iterations_ptr_, d_minCost_ptr_, h_itr_, h_solSetSize_);
 
@@ -789,7 +803,7 @@ void KinoPaxPlus::getControlPathToGoalPathsCollect()
     printf("Cost to Goal: %f\n", h_minCost_);
 }
 
-__global__ void KinoPaxPlus_getControlPathToGoalPathsCollect_kernel(float* controlPathsToGoal, float* treeSamples, int* treeSamplesParentIdxs,
+__global__ void KinoPaxPlusSH_getControlPathToGoalPathsCollect_kernel(float* controlPathsToGoal, float* treeSamples, int* treeSamplesParentIdxs,
                                                               uint* goalSetIdxs, int goalSetSize, float* pathCosts, float* treeSampleCosts,
                                                               int* iterations, float* minCost, int itr, int numSols)
 {
@@ -800,13 +814,12 @@ __global__ void KinoPaxPlus_getControlPathToGoalPathsCollect_kernel(float* contr
 
     int x0Idx  = goalIdx;
     float cost = treeSampleCosts[goalIdx];
-    // TODO: Remove this: only for creating cost/iteration plot.
     int pathCostsIdx            = 3 * tid;
     pathCosts[pathCostsIdx]     = goalIdx;
     pathCosts[pathCostsIdx + 1] = cost;
     pathCosts[pathCostsIdx + 2] = iterations[goalIdx];
     if(cost != *minCost) return;
-    int i = 0;  // --- Iteration counter ---
+    int i = 0;
     while(x0Idx != -1)
         {
             for(int j = 0; j < SAMPLE_DIM; j++)
@@ -819,37 +832,35 @@ __global__ void KinoPaxPlus_getControlPathToGoalPathsCollect_kernel(float* contr
 }
 
 // Placeholder implementations for CSV writing methods
-void KinoPaxPlus::writeDeviceVectorsToCSV(int itr)
+void KinoPaxPlusSpatialHash::writeDeviceVectorsToCSV(int itr)
 {
     // TODO: Implement if needed
 }
 
-void KinoPaxPlus::writeSolutionsToCSV(int benchItr)
+void KinoPaxPlusSpatialHash::writeSolutionsToCSV(int benchItr)
 {
     // TODO: Implement if needed
 }
 
-void KinoPaxPlus::writeSolutionCostsToCSV(int benchItr)
+void KinoPaxPlusSpatialHash::writeSolutionCostsToCSV(int benchItr)
 {
     // TODO: Implement if needed
 }
 
-void KinoPaxPlus::writeIterationTimeToCSV(std::vector<float>& iterationTimes, int benchItr)
+void KinoPaxPlusSpatialHash::writeIterationTimeToCSV(std::vector<float>& iterationTimes, int benchItr)
 {
     // TODO: Implement if needed
 }
 
-void KinoPaxPlus::writeExecutionTimeToCSV(double time)
+void KinoPaxPlusSpatialHash::writeExecutionTimeToCSV(double time)
 {
     // TODO: Implement if needed
 }
 
 /***************************/
-/* KinoPaxPlus GET REGION DEVICE FUNCTION */
+/* KinoPaxPlusSH GET REGION DEVICE FUNCTION */
 /***************************/
-// --- Returns the R1 region index for a given coordinate ---
-// --- This is implemented in KinoPaxPlusRegions.cu but declared here for kernel usage ---
-__device__ int KinoPaxPlus_getRegion(float* coord)
+__device__ int KinoPaxPlusSH_getRegion(float* coord)
 {
     // --- Workspace ---
     int wRegion = 0;

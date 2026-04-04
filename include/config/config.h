@@ -264,6 +264,10 @@
 #define MAX_FLOAT 1e38f
 #define VERBOSE 1
 
+// Set to 1 to enable parent-chain validation in pruning (default behavior)
+// Set to 0 to only check the node itself, not its ancestors
+#define KINOPAXPLUS_PARENT_CHAIN_PRUNING 1
+
 // --- UNICYCLE MODEL: MODEL 0 ---
 #define UNI_MIN_STEERING -M_PI / 2
 #define UNI_MAX_STEERING M_PI / 2
