@@ -10,6 +10,9 @@
 #include <cmath>
 #include "planners/KinoPaxPlus.cuh"
 #include "planners/KPAX.cuh"
+#include "planners/PruneKPAX.cuh"
+#include <thrust/count.h>
+#include <thrust/reduce.h>
 
 struct IterationData
 {
@@ -18,11 +21,16 @@ struct IterationData
     int tree_size;
     float elapsed_time_ms;
     float best_cost;
+    int num_regions;          // NUM_R1_REGIONS for this build (all planners share it)
+    float r2_coverage_pct;    // % of R2 sub-regions ever activated (KPAX/PruneKPAX; NaN otherwise)
+    float mean_vertex_score;  // mean Syclop region score (KPAX/PruneKPAX; NaN otherwise)
+    int reactivated;          // dormant tree nodes re-added to frontier this iter (KPAX/PruneKPAX; -1 otherwise)
 };
 
 struct RunResult
 {
-    std::string delta_label;
+    std::string delta_label;   // planner identity: "KPAX", "PruneKPAX", or the KinoPaxPlus delta label
+    std::string build_delta;   // discretization label of this binary (for filename disambiguation)
     std::string environment;
     int run_number;
     double total_time_seconds;
@@ -83,17 +91,24 @@ float devicePathCost(float* d_treeSamples_ptr, int* d_treeSamplesParentIdxs_ptr,
 void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
 {
     std::ostringstream filename;
-    // KPAX baseline: {env}_KPAX_run{n}.csv
-    // KinoPaxPlus:   {env}_delta{label}_run{n}.csv
+    // Baselines include the build's delta label so runs at different discretizations
+    // don't overwrite each other:
+    //   KPAX baseline: {env}_KPAX_delta{build}_run{n}.csv
+    //   PruneKPAX:     {env}_PruneKPAX_delta{build}_run{n}.csv
+    //   KinoPaxPlus:   {env}_delta{label}_run{n}.csv
     if(result.delta_label == "KPAX")
-        filename << outputDir << "/" << result.environment << "_KPAX_run"
-                 << result.run_number << ".csv";
+        filename << outputDir << "/" << result.environment << "_KPAX_delta" << result.build_delta
+                 << "_run" << result.run_number << ".csv";
+    else if(result.delta_label == "PruneKPAX")
+        filename << outputDir << "/" << result.environment << "_PruneKPAX_delta" << result.build_delta
+                 << "_run" << result.run_number << ".csv";
     else
         filename << outputDir << "/" << result.environment << "_delta" << result.delta_label
                  << "_run" << result.run_number << ".csv";
 
     std::ofstream file(filename.str());
-    file << "iteration,frontier_size,tree_size,elapsed_time_ms,best_cost\n";
+    file << "iteration,frontier_size,tree_size,elapsed_time_ms,best_cost,"
+         << "num_regions,r2_coverage_pct,mean_vertex_score,reactivated\n";
 
     for(const auto& d : result.per_iteration)
     {
@@ -101,7 +116,11 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
              << d.frontier_size << ","
              << d.tree_size << ","
              << std::fixed << std::setprecision(3) << d.elapsed_time_ms << ","
-             << std::fixed << std::setprecision(6) << d.best_cost << "\n";
+             << std::fixed << std::setprecision(6) << d.best_cost << ","
+             << d.num_regions << ","
+             << std::fixed << std::setprecision(3) << d.r2_coverage_pct << ","
+             << std::fixed << std::setprecision(6) << d.mean_vertex_score << ","
+             << d.reactivated << "\n";
     }
     file.close();
 }
@@ -126,7 +145,7 @@ void writeSummaryCSV(const std::vector<RunResult>& results, const std::string& o
 
     for(const auto& r : results)
     {
-        int regions = (r.delta_label == "KPAX") ? 0 : NUM_R1_REGIONS;
+        int regions = NUM_R1_REGIONS;  // all planners compile under the same discretization
         file << r.environment << ","
              << r.delta_label << ","
              << regions << ","
@@ -162,32 +181,37 @@ RunResult benchmarkKinoPaxPlus(
 {
     RunResult result;
     result.delta_label = deltaLabel;
+    result.build_delta = deltaLabel;
     result.environment = environment;
     result.run_number = runNumber;
     result.first_solution_iteration = -1;
     result.first_solution_cost = INFINITY;
     result.final_best_cost = INFINITY;
 
-    cudaEvent_t start, iterStop;
-    float elapsedMs = 0;
-    cudaEventCreate(&start);
+    // Per-iteration planner-only timing: only propagate+update is inside the timed
+    // window, so between-iteration host reads never inflate elapsed_time_ms.
+    cudaEvent_t iterStart, iterStop;
+    cudaEventCreate(&iterStart);
     cudaEventCreate(&iterStop);
+    float plannerMs = 0.0f;
+    float iterMs    = 0.0f;
 
     planner.resetPlanner(h_initial, h_goal);
-    cudaEventRecord(start);
 
     int itr = 0;
     while(itr < maxIterations)
     {
         itr++;
         planner.h_itr_++;
+
+        cudaEventRecord(iterStart);
         planner.propagateFrontier(d_obstacles, numObstacles);
         if(planner.h_propIterations_ == 0) break;
         planner.updateFrontier();
-
         cudaEventRecord(iterStop);
         cudaEventSynchronize(iterStop);
-        cudaEventElapsedTime(&elapsedMs, start, iterStop);
+        cudaEventElapsedTime(&iterMs, iterStart, iterStop);
+        plannerMs += iterMs;
 
         // h_minCost_ is the cumulative root-to-goal path length
         cudaMemcpy(&planner.h_minCost_, planner.d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
@@ -204,21 +228,25 @@ RunResult benchmarkKinoPaxPlus(
         d.iteration     = itr;
         d.frontier_size = planner.h_frontierSize_;
         d.tree_size     = planner.h_treeSize_;
-        d.elapsed_time_ms = elapsedMs;
+        d.elapsed_time_ms = plannerMs;
         d.best_cost     = result.final_best_cost;
+        d.num_regions       = NUM_R1_REGIONS;
+        d.r2_coverage_pct   = NAN;   // KinoPaxPlus has no R2/vertexScore machinery
+        d.mean_vertex_score = NAN;
+        d.reactivated       = -1;
         result.per_iteration.push_back(d);
 
         if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
-        
-        // Timeout check
-        if(elapsedMs >= maxTimeMs) break;
+
+        // Timeout check (planner-only time)
+        if(plannerMs >= maxTimeMs) break;
     }
 
-    result.total_time_seconds = elapsedMs / 1000.0;
+    result.total_time_seconds = plannerMs / 1000.0;
     result.final_tree_size    = planner.h_treeSize_;
     result.total_iterations   = itr;
 
-    cudaEventDestroy(start);
+    cudaEventDestroy(iterStart);
     cudaEventDestroy(iterStop);
     return result;
 }
@@ -233,6 +261,7 @@ RunResult benchmarkKinoPaxPlus(
 // ========================================================================
 RunResult benchmarkKPAX(
     KPAX& planner,
+    const std::string& deltaLabel,
     const std::string& environment,
     int runNumber,
     float* h_initial,
@@ -244,19 +273,21 @@ RunResult benchmarkKPAX(
 {
     RunResult result;
     result.delta_label = "KPAX";
+    result.build_delta = deltaLabel;
     result.environment = environment;
     result.run_number = runNumber;
     result.first_solution_iteration = -1;
     result.first_solution_cost = INFINITY;
     result.final_best_cost = INFINITY;
 
-    cudaEvent_t start, iterStop;
-    float elapsedMs = 0;
-    cudaEventCreate(&start);
+    // Per-iteration planner-only timing (diagnostics + path-cost walks excluded).
+    cudaEvent_t iterStart, iterStop;
+    cudaEventCreate(&iterStart);
     cudaEventCreate(&iterStop);
+    float plannerMs = 0.0f;
+    float iterMs    = 0.0f;
 
     planner.resetPlanner(h_initial, h_goal);
-    cudaEventRecord(start);
 
     int zero = 0;
     int itr = 0;
@@ -269,13 +300,15 @@ RunResult benchmarkKPAX(
         cudaMemcpy(planner.d_pathToGoal_ptr_, &zero, sizeof(int), cudaMemcpyHostToDevice);
         planner.h_pathToGoal_ = 0;
 
+        cudaEventRecord(iterStart);
         planner.propagateFrontier(d_obstacles, numObstacles);
         planner.graph_.updateVertices();
+        int oldTreeSize = planner.h_treeSize_;   // nodes before this iter's additions
         planner.updateFrontier();
-
         cudaEventRecord(iterStop);
         cudaEventSynchronize(iterStop);
-        cudaEventElapsedTime(&elapsedMs, start, iterStop);
+        cudaEventElapsedTime(&iterMs, iterStart, iterStop);
+        plannerMs += iterMs;
 
         // Check if a new path to goal was found THIS iteration
         if(planner.h_pathToGoal_ != 0)
@@ -295,25 +328,154 @@ RunResult benchmarkKPAX(
                 result.final_best_cost = pathCost;
         }
 
+        // --- Frontier-death diagnostics (outside the timed window) ---
+        // reactivated: old tree nodes (idx < oldTreeSize) re-added to the frontier.
+        // New nodes live at idx >= oldTreeSize, so they are excluded.
+        int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
+                                             planner.d_frontier_.begin() + oldTreeSize, true);
+        // R2 coverage: fraction of sub-regions ever activated (activeSubVertices != 0).
+        int inactiveR2 = (int)thrust::count(planner.graph_.d_activeSubVertices_.begin(),
+                                            planner.graph_.d_activeSubVertices_.end(), 0);
+        float r2CoveragePct = 100.0f * float(NUM_R2_REGIONS - inactiveR2) / float(NUM_R2_REGIONS);
+        // Mean Syclop vertex score across all R1 regions.
+        float scoreSum  = thrust::reduce(planner.graph_.d_vertexScoreArray_.begin(),
+                                         planner.graph_.d_vertexScoreArray_.end(), 0.0f);
+        float meanScore = scoreSum / float(NUM_R1_REGIONS);
+
         IterationData d;
         d.iteration     = itr;
         d.frontier_size = planner.h_frontierSize_;
         d.tree_size     = planner.h_treeSize_;
-        d.elapsed_time_ms = elapsedMs;
+        d.elapsed_time_ms = plannerMs;
         d.best_cost     = result.final_best_cost;
+        d.num_regions       = NUM_R1_REGIONS;
+        d.r2_coverage_pct   = r2CoveragePct;
+        d.mean_vertex_score = meanScore;
+        d.reactivated       = reactivated;
         result.per_iteration.push_back(d);
 
         if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
-        
-        // Timeout check
-        if(elapsedMs >= maxTimeMs) break;
+
+        // Timeout check (planner-only time)
+        if(plannerMs >= maxTimeMs) break;
     }
 
-    result.total_time_seconds = elapsedMs / 1000.0;
+    result.total_time_seconds = plannerMs / 1000.0;
     result.final_tree_size    = planner.h_treeSize_;
     result.total_iterations   = itr;
 
-    cudaEventDestroy(start);
+    cudaEventDestroy(iterStart);
+    cudaEventDestroy(iterStop);
+    return result;
+}
+
+// ========================================================================
+// PruneKPAX Benchmark (KPAX + spatial-hash collision + goal-progress pruning)
+//
+// Same instrumentation as benchmarkKPAX. The spatial-hash grid is (re)built
+// inside PruneKPAX::propagateFrontier, so no extra setup is needed here.
+// ========================================================================
+RunResult benchmarkPruneKPAX(
+    PruneKPAX& planner,
+    const std::string& deltaLabel,
+    const std::string& environment,
+    int runNumber,
+    float* h_initial,
+    float* h_goal,
+    float* d_obstacles,
+    uint numObstacles,
+    int maxIterations,
+    float maxTimeMs)
+{
+    RunResult result;
+    result.delta_label = "PruneKPAX";
+    result.build_delta = deltaLabel;
+    result.environment = environment;
+    result.run_number = runNumber;
+    result.first_solution_iteration = -1;
+    result.first_solution_cost = INFINITY;
+    result.final_best_cost = INFINITY;
+
+    cudaEvent_t iterStart, iterStop;
+    cudaEventCreate(&iterStart);
+    cudaEventCreate(&iterStop);
+    float plannerMs = 0.0f;
+    float iterMs    = 0.0f;
+
+    planner.resetPlanner(h_initial, h_goal);
+
+    int zero = 0;
+    int itr = 0;
+    while(itr < maxIterations)
+    {
+        itr++;
+        planner.h_itr_++;
+
+        // Reset pathToGoal before each iteration so we can detect new goals
+        cudaMemcpy(planner.d_pathToGoal_ptr_, &zero, sizeof(int), cudaMemcpyHostToDevice);
+        planner.h_pathToGoal_ = 0;
+
+        cudaEventRecord(iterStart);
+        planner.propagateFrontier(d_obstacles, numObstacles);
+        planner.graph_.updateVertices();
+        int oldTreeSize = planner.h_treeSize_;   // nodes before this iter's additions
+        planner.updateFrontier();
+        cudaEventRecord(iterStop);
+        cudaEventSynchronize(iterStop);
+        cudaEventElapsedTime(&iterMs, iterStart, iterStop);
+        plannerMs += iterMs;
+
+        // Check if a new path to goal was found THIS iteration
+        if(planner.h_pathToGoal_ != 0)
+        {
+            float pathCost = devicePathCost(
+                planner.d_treeSamples_ptr_,
+                planner.d_treeSamplesParentIdxs_ptr_,
+                planner.h_treeSize_,
+                planner.h_pathToGoal_);
+
+            if(result.first_solution_iteration == -1)
+            {
+                result.first_solution_iteration = itr;
+                result.first_solution_cost      = pathCost;
+            }
+            if(pathCost < result.final_best_cost)
+                result.final_best_cost = pathCost;
+        }
+
+        // --- Frontier-death diagnostics (outside the timed window) ---
+        int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
+                                             planner.d_frontier_.begin() + oldTreeSize, true);
+        int inactiveR2 = (int)thrust::count(planner.graph_.d_activeSubVertices_.begin(),
+                                            planner.graph_.d_activeSubVertices_.end(), 0);
+        float r2CoveragePct = 100.0f * float(NUM_R2_REGIONS - inactiveR2) / float(NUM_R2_REGIONS);
+        float scoreSum  = thrust::reduce(planner.graph_.d_vertexScoreArray_.begin(),
+                                         planner.graph_.d_vertexScoreArray_.end(), 0.0f);
+        float meanScore = scoreSum / float(NUM_R1_REGIONS);
+
+        IterationData d;
+        d.iteration     = itr;
+        d.frontier_size = planner.h_frontierSize_;
+        d.tree_size     = planner.h_treeSize_;
+        d.elapsed_time_ms = plannerMs;
+        d.best_cost     = result.final_best_cost;
+        d.num_regions       = NUM_R1_REGIONS;
+        d.r2_coverage_pct   = r2CoveragePct;
+        d.mean_vertex_score = meanScore;
+        d.reactivated       = reactivated;
+        result.per_iteration.push_back(d);
+
+        if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
+
+        // Timeout check (planner-only time)
+        if(plannerMs >= maxTimeMs) break;
+    }
+
+    result.total_time_seconds = plannerMs / 1000.0;
+    result.final_tree_size    = planner.h_treeSize_;
+    result.total_iterations   = itr;
+
+    cudaEventDestroy(iterStart);
     cudaEventDestroy(iterStop);
     return result;
 }
@@ -322,6 +484,7 @@ RunResult benchmarkKPAX(
 // Run KPAX baseline on one environment for 20 runs
 // ========================================================================
 void runKPAXBaseline(
+    const std::string& deltaLabel,
     const std::string& environment_name,
     float* h_initial,
     float* h_goal,
@@ -334,16 +497,56 @@ void runKPAXBaseline(
     float maxTimeMs)
 {
     printf("\n========================================\n");
-    printf("KPAX BASELINE: %s | %d runs\n", environment_name.c_str(), numRuns);
+    printf("KPAX BASELINE: %s | Delta: %s | %d runs\n", environment_name.c_str(), deltaLabel.c_str(), numRuns);
     printf("========================================\n");
 
     {
         KPAX planner;
         for(int run = 0; run < numRuns; run++)
         {
-            RunResult result = benchmarkKPAX(planner, environment_name, run,
+            RunResult result = benchmarkKPAX(planner, deltaLabel, environment_name, run,
                                              h_initial, h_goal, d_obstacles,
                                              numObstacles, maxIterations, maxTimeMs);
+            printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                   run + 1, numRuns, result.total_time_seconds, result.total_iterations,
+                   result.final_tree_size, result.first_solution_iteration,
+                   result.first_solution_cost, result.final_best_cost);
+            writePerIterationCSV(result, outputDir);
+            all_results.push_back(result);
+
+            if(run < numRuns - 1)
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+    }
+}
+
+// ========================================================================
+// Run PruneKPAX baseline on one environment
+// ========================================================================
+void runPruneKPAXBaseline(
+    const std::string& deltaLabel,
+    const std::string& environment_name,
+    float* h_initial,
+    float* h_goal,
+    float* d_obstacles,
+    uint numObstacles,
+    std::vector<RunResult>& all_results,
+    const std::string& outputDir,
+    int numRuns,
+    int maxIterations,
+    float maxTimeMs)
+{
+    printf("\n========================================\n");
+    printf("PRUNEKPAX BASELINE: %s | Delta: %s | %d runs\n", environment_name.c_str(), deltaLabel.c_str(), numRuns);
+    printf("========================================\n");
+
+    {
+        PruneKPAX planner;
+        for(int run = 0; run < numRuns; run++)
+        {
+            RunResult result = benchmarkPruneKPAX(planner, deltaLabel, environment_name, run,
+                                                  h_initial, h_goal, d_obstacles,
+                                                  numObstacles, maxIterations, maxTimeMs);
             printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
                    run + 1, numRuns, result.total_time_seconds, result.total_iterations,
                    result.final_tree_size, result.first_solution_iteration,
@@ -403,12 +606,12 @@ int main(int argc, char* argv[])
     std::string obstaclePath  = (argc > 2) ? argv[2] : "../include/config/obstacles/trees/obstacles.csv";
     std::string envName       = (argc > 3) ? argv[3] : "trees";
 
-    // Check for --run-kpax flag in remaining args
-    bool runKPAX = false;
+    // Baselines (KPAX + PruneKPAX) run by default; pass --skip-baselines to omit them.
+    bool skipBaselines = false;
     for(int i = 4; i < argc; i++)
     {
-        if(std::string(argv[i]) == "--run-kpax")
-            runKPAX = true;
+        if(std::string(argv[i]) == "--skip-baselines")
+            skipBaselines = true;
     }
 
     const int NUM_KPAX_RUNS      = 50;
@@ -428,7 +631,7 @@ int main(int argc, char* argv[])
     printf("W_R1_LENGTH=%d  C_R1_LENGTH=%d  V_R1_LENGTH=%d\n", W_R1_LENGTH, C_R1_LENGTH, V_R1_LENGTH);
     printf("Obstacle file:  %s\n", obstaclePath.c_str());
     printf("Environment:    %s\n", envName.c_str());
-    printf("KPAX baseline:  %s (%d runs)\n", runKPAX ? "YES" : "NO", NUM_KPAX_RUNS);
+    printf("Baselines:      %s (KPAX + PruneKPAX, %d runs each)\n", skipBaselines ? "NO" : "YES", NUM_KPAX_RUNS);
     printf("KinoPaxPlus:    %d runs\n", NUM_KPAXPLUS_RUNS);
     printf("Max iterations: %d\n", MAX_ITERATIONS);
     printf("=======================================================\n");
@@ -454,11 +657,13 @@ int main(int argc, char* argv[])
 
     std::vector<RunResult> all_results;
 
-    // --- KPAX baseline (only when flagged) ---
-    if(runKPAX)
+    // --- KPAX + PruneKPAX baselines (matched to this build's discretization) ---
+    if(!skipBaselines)
     {
-        runKPAXBaseline(envName, h_initial, h_goal, d_obstacles, numObstacles,
+        runKPAXBaseline(deltaLabel, envName, h_initial, h_goal, d_obstacles, numObstacles,
                         all_results, outputDir, NUM_KPAX_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
+        runPruneKPAXBaseline(deltaLabel, envName, h_initial, h_goal, d_obstacles, numObstacles,
+                             all_results, outputDir, NUM_KPAX_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
     }
 
     // --- KinoPaxPlus delta benchmark ---

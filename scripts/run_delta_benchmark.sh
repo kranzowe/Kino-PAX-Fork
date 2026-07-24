@@ -7,7 +7,7 @@
 #   Phase 1 (BUILD): For each delta, write config.h, build, cache binary
 #   Phase 2 (RUN):   For each environment × delta, run cached binary
 #
-# Also runs a KPAX baseline (20 runs, once per environment) for comparison.
+# Also runs KPAX + PruneKPAX baselines at every delta (matched discretization).
 #
 # Runs on two environments: Trees and House.
 # Original config.h is backed up and restored on exit/error.
@@ -181,7 +181,7 @@ echo "  Model: 1 (6D Double Integrator)"
 echo "  Environments: ${ENV_NAMES[*]}"
 echo "  MAX_TREE_SIZE: 3,000,000"
 echo "  Deltas: ${DELTA_LABELS[*]}"
-echo "  KPAX Baseline: 20 runs per environment"
+echo "  Baselines: KPAX + PruneKPAX at every delta"
 echo "  Skip build: $SKIP_BUILD"
 echo "======================================================="
 
@@ -246,7 +246,6 @@ echo "=== PHASE 2: RUNNING BENCHMARKS ==="
 for env_idx in "${!ENV_NAMES[@]}"; do
     ENV="${ENV_NAMES[$env_idx]}"
     OBS="${ENV_OBSTACLES[$env_idx]}"
-    FIRST_DELTA_FOR_ENV=true
 
     echo ""
     echo "======================================================="
@@ -267,13 +266,11 @@ for env_idx in "${!ENV_NAMES[@]}"; do
 
         cd "$BUILD_DIR"
 
-        # Run — pass --run-kpax only on first delta for this environment
-        if [ "$FIRST_DELTA_FOR_ENV" = true ]; then
-            "./KinoPaxPlusDeltaBenchmark_${LABEL}" "$LABEL" "$OBS" "$ENV" --run-kpax
-            FIRST_DELTA_FOR_ENV=false
-        else
-            "./KinoPaxPlusDeltaBenchmark_${LABEL}" "$LABEL" "$OBS" "$ENV"
-        fi
+        # Each delta binary runs all three planners (KPAX + PruneKPAX baselines +
+        # KinoPaxPlus) at THIS delta's discretization, so the baselines span the sweep.
+        # NOTE: baselines now run at every delta x every env. For a cheaper sweep, pass
+        # --skip-baselines here, trim DELTA_LABELS, or lower the run counts in the .cu.
+        "./KinoPaxPlusDeltaBenchmark_${LABEL}" "$LABEL" "$OBS" "$ENV"
 
         cd "$PROJECT_DIR"
     done
