@@ -34,8 +34,9 @@ DELTA_C_R1=(1  1  1  1)
 DELTA_V_R1=(3  3  3  3)
 
 # Environments and their obstacle files (already in [0,1]^3 for Model 1)
-ENV_NAMES=("house")
+ENV_NAMES=("house") # add trees back if you want
 ENV_OBSTACLES=(
+    #"../include/config/obstacles/trees/obstacles.csv"
     "../include/config/obstacles/house/obstacles.csv"
 )
 

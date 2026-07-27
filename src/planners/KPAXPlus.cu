@@ -1,5 +1,6 @@
 #include "planners/KPAXPlus.cuh"
 #include "config/config.h"
+#include "statePropagator/statePropagatorSpatialHash.cuh"
 
 KPAXPlus::KPAXPlus()
 {
@@ -28,6 +29,8 @@ KPAXPlus::KPAXPlus()
     d_goalSetScanIdx_         = thrust::device_vector<uint>(MAX_TREE_SIZE);
     d_pruned_                 = thrust::device_vector<bool>(MAX_TREE_SIZE);
     d_iterations_             = thrust::device_vector<int>(MAX_TREE_SIZE);
+    d_pathCosts_              = thrust::device_vector<float>(MAX_TREE_SIZE * 3);
+    d_controlPathsToGoal_     = thrust::device_vector<float>(MAX_ITER * SAMPLE_DIM);
 
     // Raw pointers
     d_frontier_ptr_                    = thrust::raw_pointer_cast(d_frontier_.data());
@@ -51,8 +54,22 @@ KPAXPlus::KPAXPlus()
     d_goalSetScanIdx_ptr_         = thrust::raw_pointer_cast(d_goalSetScanIdx_.data());
     d_pruned_ptr_                 = thrust::raw_pointer_cast(d_pruned_.data());
     d_iterations_ptr_             = thrust::raw_pointer_cast(d_iterations_.data());
+    d_pathCosts_ptr_              = thrust::raw_pointer_cast(d_pathCosts_.data());
+    d_controlPathsToGoal_ptr_     = thrust::raw_pointer_cast(d_controlPathsToGoal_.data());
 
     cudaMalloc(&d_minCost_ptr_, sizeof(float));
+
+    // Spatial hash grid for fast collision detection
+    d_spatialHashGrid_ = createSpatialHashGrid();
+
+    // Host buffer for the best (min-cost) reconstructed trajectory
+    h_controlPathsToGoal_ = new float[MAX_ITER * SAMPLE_DIM];
+
+    // PruneKPAX goal-progress gate tunables. maxRegression auto-scales to the workspace
+    // (PruneKPAX's Model-3 default of 10 == 0.1*(100-0)); tune per environment as needed.
+    h_maxRegression_   = 0.1f * (W_MAX - W_MIN);
+    h_explorationBias_ = 0.3f;
+    h_goalBias_        = 0.7f;
 
     h_activeBlockSize_ = 32;
 
@@ -63,6 +80,12 @@ KPAXPlus::KPAXPlus()
             printf("/* Number of R2 Vertices: %d */\n", NUM_R2_REGIONS);
             printf("/***************************/\n");
         }
+}
+
+KPAXPlus::~KPAXPlus()
+{
+    destroySpatialHashGrid(d_spatialHashGrid_);
+    delete[] h_controlPathsToGoal_;
 }
 
 void KPAXPlus::resetPlanner(float* h_initial, float* h_goal)
@@ -100,6 +123,8 @@ void KPAXPlus::resetPlanner(float* h_initial, float* h_goal)
     thrust::fill(d_goalSet_.begin(), d_goalSet_.end(), false);
     thrust::fill(d_pruned_.begin(), d_pruned_.end(), false);
     thrust::fill(d_iterations_.begin(), d_iterations_.end(), 0);
+    thrust::fill(d_pathCosts_.begin(), d_pathCosts_.end(), 0.0f);
+    thrust::fill(d_controlPathsToGoal_.begin(), d_controlPathsToGoal_.end(), 0.0f);
 
     h_treeSize_     = 1;
     h_itr_          = 0;
@@ -107,6 +132,7 @@ void KPAXPlus::resetPlanner(float* h_initial, float* h_goal)
     h_pathToGoal_   = 0;
     h_frontierSize_ = 0;
     h_minCost_      = MAX_FLOAT;
+    h_solSetSize_   = 0;
 
     cudaMemcpy(d_treeSamples_ptr_, h_initial, SAMPLE_DIM * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_goalSample_ptr_, h_goal, SAMPLE_DIM * sizeof(float), cudaMemcpyHostToDevice);
@@ -135,10 +161,11 @@ void KPAXPlus::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uin
             graph_.updateVertices();
             updateFrontier();
 
-            cudaMemcpy(&h_minCost_, d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
-            if(h_minCost_ < MAX_FLOAT) break;
+            // Run to MAX_ITER / tree-full, continuing to improve minCost (no first-solution break).
+            if(h_propIterations_ == 0) break;
             if(h_treeSize_ >= MAX_TREE_SIZE - 1) break;
         }
+    getControlPathToGoal();
 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
@@ -163,18 +190,55 @@ void KPAXPlus::planBench(float* h_initial, float* h_goal, float* d_obstacles_ptr
             graph_.updateVertices();
             updateFrontier();
 
-            cudaMemcpy(&h_minCost_, d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
-            if(h_minCost_ < MAX_FLOAT) break;
+            if(h_propIterations_ == 0) break;
             if(h_treeSize_ >= MAX_TREE_SIZE - 1) break;
         }
+    getControlPathToGoal();
 
     double executionTime = (std::clock() - t_start) / (double)CLOCKS_PER_SEC;
     std::cout << "KPAXPlus execution time: " << executionTime << " seconds. Iterations: " << h_itr_
-              << ". Tree Size: " << h_treeSize_ << std::endl;
+              << ". Tree Size: " << h_treeSize_ << ". Best Cost: " << h_minCost_ << std::endl;
+}
+
+float KPAXPlus::planOptimize(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
+{
+    cudaEvent_t start, stop;
+    float milliseconds = 0;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start);
+
+    resetPlanner(h_initial, h_goal);
+
+    // Run to MAX_ITER / tree-full, continuing to improve minCost after the first solution.
+    while(h_itr_ < MAX_ITER)
+        {
+            h_itr_++;
+            propagateFrontier(d_obstacles_ptr, h_obstaclesCount);
+            graph_.updateVertices();
+            updateFrontier();
+            if(h_propIterations_ == 0) break;
+            if(h_treeSize_ >= MAX_TREE_SIZE - 1) break;
+        }
+    getControlPathToGoal();
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&milliseconds, start, stop);
+    writeExecutionTimeToCSV(milliseconds / 1000.0);
+    std::cout << "KPAXPlus execution time: " << milliseconds / 1000.0 << " seconds. Iterations: " << h_itr_
+              << ". Tree Size: " << h_treeSize_ << ". Best Cost: " << h_minCost_ << std::endl;
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+    return h_minCost_;
 }
 
 void KPAXPlus::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount)
 {
+    // --- Build spatial hash grid for fast collision detection ---
+    updateSpatialHashGrid(d_spatialHashGrid_, d_obstacles_ptr, h_obstaclesCount);
+    cudaMemcpy(&h_spatialHashGrid_, d_spatialHashGrid_, sizeof(SpatialHashGrid), cudaMemcpyDeviceToHost);
+
     // --- Find indices and size of frontier ---
     thrust::exclusive_scan(d_frontier_.begin(), d_frontier_.end(), d_frontierScanIdx_.begin(), 0, thrust::plus<uint>());
     h_frontierSize_ = d_frontierScanIdx_[MAX_TREE_SIZE - 1];
@@ -205,7 +269,7 @@ void KPAXPlus::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount)
               d_randomSeeds_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_obstacles_ptr, h_obstaclesCount, graph_.d_activeSubVertices_ptr_,
               graph_.d_vertexScoreArray_ptr_, d_frontierNext_ptr_, graph_.d_counterArray_ptr_, graph_.d_validCounterArray_ptr_,
               h_propIterations_, graph_.d_minValueInRegion_ptr_,
-              d_treeSampleCosts_ptr_, d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_unexploredSampleCosts_ptr_);
+              d_treeSampleCosts_ptr_, d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_unexploredSampleCosts_ptr_, h_spatialHashGrid_);
         }
     else
         {
@@ -214,7 +278,7 @@ void KPAXPlus::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount)
               d_randomSeeds_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_obstacles_ptr, h_obstaclesCount, graph_.d_activeSubVertices_ptr_,
               graph_.d_vertexScoreArray_ptr_, d_frontierNext_ptr_, graph_.d_counterArray_ptr_, graph_.d_validCounterArray_ptr_,
               graph_.d_minValueInRegion_ptr_,
-              d_treeSampleCosts_ptr_, d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_unexploredSampleCosts_ptr_);
+              d_treeSampleCosts_ptr_, d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_unexploredSampleCosts_ptr_, h_spatialHashGrid_);
         }
 }
 
@@ -228,7 +292,7 @@ __global__ void KPAXPlus_propagateFrontier_kernel1(bool* frontier, uint* activeF
                                                    int* activeSubVertices, float* vertexScores, bool* frontierNext,
                                                    int* vertexCounter, int* validVertexCounter, float* minValueInRegion,
                                                    float* treeSampleCosts, float* minCostsR1, int* frontierNextXR1s,
-                                                   float* unexploredSampleCosts)
+                                                   float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid)
 {
     if(blockIdx.x >= frontierSize) return;
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -254,7 +318,7 @@ __global__ void KPAXPlus_propagateFrontier_kernel1(bool* frontier, uint* activeF
     float* x1                        = &unexploredSamples[tid * SAMPLE_DIM];
     unexploredSamplesParentIdxs[tid] = s_x0Idx;
     curandState randSeed             = randomSeeds[tid];
-    bool valid                       = propagateAndCheck(s_x0, x1, &randSeed, obstacles, obstaclesCount);
+    bool valid                       = propagateAndCheckSpatialHash(s_x0, x1, &randSeed, spatialHashGrid, obstacles, obstaclesCount);
     int x1Vertex                     = getRegion(x1);
     int x1SubVertex                  = getSubRegion(x1, x1Vertex, minValueInRegion);
 
@@ -299,7 +363,7 @@ __global__ void KPAXPlus_propagateFrontier_kernel2(bool* frontier, uint* activeF
                                                    int* vertexCounter, int* validVertexCounter, int iterations,
                                                    float* minValueInRegion,
                                                    float* treeSampleCosts, float* minCostsR1, int* frontierNextXR1s,
-                                                   float* unexploredSampleCosts)
+                                                   float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid)
 {
     int tid       = blockIdx.x * blockDim.x + threadIdx.x;
     frontier[tid] = false;
@@ -317,7 +381,7 @@ __global__ void KPAXPlus_propagateFrontier_kernel2(bool* frontier, uint* activeF
     float* x1                        = &unexploredSamples[tid * SAMPLE_DIM];
     unexploredSamplesParentIdxs[tid] = x0Idx;
     curandState randSeed             = randomSeeds[tid];
-    bool valid                       = propagateAndCheck(x0, x1, &randSeed, obstacles, obstaclesCount);
+    bool valid                       = propagateAndCheckSpatialHash(x0, x1, &randSeed, spatialHashGrid, obstacles, obstaclesCount);
     int x1Vertex                     = getRegion(x1);
     int x1SubVertex                  = getSubRegion(x1, x1Vertex, minValueInRegion);
 
@@ -351,24 +415,43 @@ __global__ void KPAXPlus_propagateFrontier_kernel2(bool* frontier, uint* activeF
 }
 
 /***************************/
-/* FRONTIER PRUNING KERNEL */
+/* GOAL-PROGRESS PRUNING KERNEL */
 /***************************/
-// Simple cost check — prune candidates strictly worse than region best
-__global__ void KPAXPlus_pruningFrontier_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
-                                                float* minCostsR1, int* frontierNextXR1s,
-                                                bool* frontierNext, float* unexploredSampleCosts)
+// Min-cost (best-in-region) candidates are exempt and always kept. Non-best candidates
+// pass PruneKPAX's greedy-toward-goal probabilistic gate before insertion.
+__global__ void KPAXPlus_goalProgressPrune_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
+                                                  float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
+                                                  float* unexploredSamples, int* unexploredSamplesParentIdxs,
+                                                  float* treeSamples, float* xGoal, bool* frontierNext,
+                                                  curandState* randomSeeds, float maxRegression, float explorationBias,
+                                                  float goalBias)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if(tid >= frontierNextSize) return;
 
-    int idx  = activeFrontierNextIdxs[tid];
+    int idx    = activeFrontierNextIdxs[tid];
     float cost = unexploredSampleCosts[idx];
     int xR1    = frontierNextXR1s[idx];
 
-    if(cost > minCostsR1[xR1])
-        {
-            frontierNext[idx] = false;
-        }
+    // --- Min-cost candidates are exempt: always inserted (every region best stays in the frontier). ---
+    if(cost <= minCostsR1[xR1]) return;
+
+    // --- Non-best candidates: greedy-toward-goal probabilistic gate (xGoal read from global). ---
+    float* x1              = &unexploredSamples[idx * SAMPLE_DIM];
+    int x0Idx              = unexploredSamplesParentIdxs[idx];
+    float distToGoal       = distance(x1, xGoal);
+    float parentDistToGoal = distance(&treeSamples[x0Idx * SAMPLE_DIM], xGoal);
+    float progressToGoal   = parentDistToGoal - distToGoal;  // positive = moved toward goal
+
+    float normalizedProgress    = (progressToGoal + maxRegression) / (2.0f * maxRegression);
+    normalizedProgress          = fminf(fmaxf(normalizedProgress, 0.0f), 1.0f);
+    float acceptanceProbability = fminf(explorationBias + goalBias * normalizedProgress, 1.0f);
+
+    curandState seed = randomSeeds[idx];
+    bool accept      = curand_uniform(&seed) < acceptanceProbability;
+    randomSeeds[idx] = seed;
+
+    if(!accept) frontierNext[idx] = false;
 }
 
 /***************************/
@@ -383,7 +466,7 @@ KPAXPlus_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeF
                                float* vertexScores, float fAccept,
                                float* minCostsR1, int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet, bool* pruned,
-                               float* controlPathToGoal, int* iterations, int iteration)
+                               int* iterations, int iteration)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -423,26 +506,14 @@ KPAXPlus_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeF
             if(cost <= minCostsR1[xR1])
                 atomicExch(&bestNodeIdxPerR1[xR1], x1TreeIdx);
 
-            // Goal criteria check (KinoPaxPlus style)
+            // Goal criteria check — accumulate goal nodes into goalSet; the min-cost
+            // path is reconstructed afterwards by getControlPathToGoal.
             if(distance(x1, s_xGoal) < GOAL_THRESH && cost <= *minCost)
                 {
                     atomicMinFloat(minCost, cost);
                     goalSet[x1TreeIdx]    = true;
                     frontier[x1TreeIdx]   = false;
                     iterations[x1TreeIdx] = iteration;
-
-                    // Extract path to goal
-                    int i = 0;
-                    for(int j = 0; j < SAMPLE_DIM; j++)
-                        controlPathToGoal[i * SAMPLE_DIM + j] = x1[j];
-                    i++;
-                    while(x0Idx != -1)
-                        {
-                            for(int j = 0; j < SAMPLE_DIM; j++)
-                                controlPathToGoal[i * SAMPLE_DIM + j] = treeSamples[x0Idx * SAMPLE_DIM + j];
-                            x0Idx = treeSamplesParentIdxs[x0Idx];
-                            i++;
-                        }
                 }
         }
 
@@ -483,10 +554,12 @@ void KPAXPlus::updateFrontier()
     h_frontierNextSize_ = d_frontierScanIdx_[MAX_TREE_SIZE - 1];
     findInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_frontierNext_ptr_, d_frontierScanIdx_ptr_, d_activeFrontierIdxs_ptr_);
 
-    // --- Lightweight pruning: remove candidates worse than region best ---
-    KPAXPlus_pruningFrontier_kernel<<<iDivUp(h_frontierNextSize_, h_blockSize_), h_blockSize_>>>(
+    // --- Goal-progress admission gate: min-cost candidates exempt; non-best pass the greedy-goal roll ---
+    KPAXPlus_goalProgressPrune_kernel<<<iDivUp(h_frontierNextSize_, h_blockSize_), h_blockSize_>>>(
       d_activeFrontierIdxs_ptr_, h_frontierNextSize_, d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_,
-      d_frontierNext_ptr_, d_unexploredSampleCosts_ptr_);
+      d_unexploredSampleCosts_ptr_, d_unexploredSamples_ptr_, d_unexploredSamplesParentIdxs_ptr_,
+      d_treeSamples_ptr_, d_goalSample_ptr_, d_frontierNext_ptr_, d_randomSeeds_ptr_,
+      h_maxRegression_, h_explorationBias_, h_goalBias_);
 
     // --- Re-scan after pruning ---
     thrust::exclusive_scan(d_frontierNext_.begin(), d_frontierNext_.end(), d_frontierScanIdx_.begin(), 0, thrust::plus<uint>());
@@ -513,13 +586,67 @@ void KPAXPlus::updateFrontier()
       graph_.d_vertexScoreArray_ptr_, h_fAccept_,
       d_minCostsR1_ptr_, d_treeXR1s_ptr_, d_frontierNextXR1s_ptr_, d_bestNodeIdxPerR1_ptr_,
       d_minCost_ptr_, d_unexploredSampleCosts_ptr_, d_goalSet_ptr_, d_pruned_ptr_,
-      d_controlPathToGoal_ptr_, d_iterations_ptr_, h_itr_);
+      d_iterations_ptr_, h_itr_);
 
     // --- Sync goal state ---
     cudaMemcpy(&h_minCost_, d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
 
     // --- Update Tree Size ---
     h_treeSize_ += h_frontierNextSize_;
+}
+
+/***************************/
+/* GET CONTROL PATH TO GOAL */
+/***************************/
+void KPAXPlus::getControlPathToGoal()
+{
+    thrust::exclusive_scan(d_goalSet_.begin(), d_goalSet_.end(), d_goalSetScanIdx_.begin(), 0, thrust::plus<uint>());
+    h_solSetSize_ = d_goalSetScanIdx_[MAX_TREE_SIZE - 1];
+    (d_goalSet_[MAX_TREE_SIZE - 1]) ? ++h_solSetSize_ : 0;
+    findInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_goalSet_ptr_, d_goalSetScanIdx_ptr_, d_goalSetIdxs_ptr_);
+
+    if(h_solSetSize_ == 0) return;
+
+    KPAXPlus_getControlPathToGoal_kernel<<<iDivUp(h_solSetSize_, h_blockSize_), h_blockSize_>>>(
+      d_controlPathsToGoal_ptr_, d_treeSamples_ptr_, d_treeSamplesParentIdxs_ptr_, d_goalSetIdxs_ptr_, h_solSetSize_,
+      d_pathCosts_ptr_, d_treeSampleCosts_ptr_, d_iterations_ptr_, d_minCost_ptr_);
+
+    cudaMemcpy(&h_minCost_, d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_controlPathsToGoal_, d_controlPathsToGoal_ptr_, MAX_ITER * SAMPLE_DIM * sizeof(float),
+               cudaMemcpyDeviceToHost);
+    printf("Cost to Goal: %f\n", h_minCost_);
+}
+
+/***************************/
+/* GET CONTROL PATH TO GOAL KERNEL */
+/***************************/
+// Every goal thread records (idx, cost, iteration); only the min-cost goal reconstructs its full path.
+__global__ void KPAXPlus_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSamples,
+                                                     int* treeSamplesParentIdxs, uint* goalSetIdxs, int goalSetSize,
+                                                     float* pathCosts, float* treeSampleCosts, int* iterations,
+                                                     float* minCost)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if(tid >= MAX_TREE_SIZE || tid >= goalSetSize) return;
+
+    int goalIdx = goalSetIdxs[tid];
+    int x0Idx   = goalIdx;
+    float cost  = treeSampleCosts[goalIdx];
+
+    int pathCostsIdx            = 3 * tid;
+    pathCosts[pathCostsIdx]     = goalIdx;
+    pathCosts[pathCostsIdx + 1] = cost;
+    pathCosts[pathCostsIdx + 2] = iterations[goalIdx];
+
+    if(cost != *minCost) return;
+    int i = 0;
+    while(x0Idx != -1)
+        {
+            for(int j = 0; j < SAMPLE_DIM; j++)
+                controlPathsToGoal[SAMPLE_DIM * i + j] = treeSamples[x0Idx * SAMPLE_DIM + j];
+            i++;
+            x0Idx = treeSamplesParentIdxs[x0Idx];
+        }
 }
 
 void KPAXPlus::writeExecutionTimeToCSV(double time)
