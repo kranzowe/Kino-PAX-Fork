@@ -777,7 +777,7 @@ int main(int argc, char* argv[])
     printf("Environment:    %s\n", envName.c_str());
     printf("Baselines:      %s (KPAX + PruneKPAX, %d runs each)\n", skipBaselines ? "NO" : "YES", NUM_KPAX_RUNS);
     printf("KinoPaxPlus:    %d runs\n", NUM_KPAXPLUS_RUNS);
-    printf("KPAXPlus:       %d runs\n", NUM_KPAXPLUS_RUNS);
+    printf("KPAXPlus:       DISABLED (kept out of runs for now)\n");
     printf("Max iterations: %d\n", MAX_ITERATIONS);
     printf("=======================================================\n");
 
@@ -816,8 +816,11 @@ int main(int argc, char* argv[])
                             all_results, outputDir, deltaLabel, NUM_KPAXPLUS_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
 
     // --- KPAXPlus delta benchmark (the hybrid combo under development) ---
-    runKPAXPlusBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
-                         all_results, outputDir, deltaLabel, NUM_KPAXPLUS_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
+    // TEMPORARILY DISABLED — kept out of the runs while debugging the other algorithms.
+    // The benchmarkKPAXPlus / runKPAXPlusBenchmark code is intact; re-enable this call to
+    // include KPAXPlus in the sweep.
+    // runKPAXPlusBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
+    //                      all_results, outputDir, deltaLabel, NUM_KPAXPLUS_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
 
     cudaFree(d_obstacles);
 

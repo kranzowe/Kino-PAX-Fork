@@ -640,7 +640,9 @@ __global__ void KPAXPlus_getControlPathToGoal_kernel(float* controlPathsToGoal, 
 
     if(cost != *minCost) return;
     int i = 0;
-    while(x0Idx != -1)
+    // controlPathsToGoal holds MAX_ITER nodes; guard so a maximal-depth path can't write
+    // one node past the buffer.
+    while(x0Idx != -1 && i < MAX_ITER)
         {
             for(int j = 0; j < SAMPLE_DIM; j++)
                 controlPathsToGoal[SAMPLE_DIM * i + j] = treeSamples[x0Idx * SAMPLE_DIM + j];

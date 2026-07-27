@@ -164,7 +164,11 @@ __device__ bool isMotionValidSpatialHash(
             for(int gx = gMinX; gx <= gMaxX; gx++)
             {
                 int cellIdx = gridToIndex(gx, gy, gz);
-                int count = grid.cellCounts[cellIdx];
+                // cellCounts is the RAW (uncapped) number of obstacles that mapped to this
+                // cell, but buildSpatialHashGrid only stored the first MAX_OBSTACLES_PER_CELL.
+                // Cap the read bound so we never index past this cell's slots (this was the
+                // intermittent illegal-memory-access when a cell held > MAX_OBSTACLES_PER_CELL).
+                int count = min(grid.cellCounts[cellIdx], MAX_OBSTACLES_PER_CELL);
                 int start = grid.cellStarts[cellIdx];
 
                 // Check each obstacle in this cell
