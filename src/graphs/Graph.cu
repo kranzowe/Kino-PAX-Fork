@@ -206,37 +206,31 @@ __device__ int getSubRegion(float* coord, int r1, float* minRegion)
 
 void Graph::updateVertices()
 {
-    if(NUM_R1_REGIONS > 1024)
-        {
-            // --- Update R1 Scores ---
-            partialReduction_kernel<<<h_numPartialSums_, h_blockSize_>>>(d_activeSubVertices_ptr_, d_validCounterArray_ptr_,
-                                                                         d_counterArray_ptr_, d_vertexScoreArray_ptr_, d_partialSums_ptr_);
-            // --- Sum R1 Scores ---
-            globalReduction_kernel<<<1, h_numPartialSums_>>>(d_partialSums_ptr_, d_totalScore_ptr_, h_numPartialSums_);
+    int blocks = iDivUp(NUM_R1_REGIONS, h_blockSize_);
 
-            // --- Normalize R1 Scores ---
-            updateSampleAcceptance_kernel<<<h_numPartialSums_, h_blockSize_>>>(d_validCounterArray_ptr_, d_vertexScoreArray_ptr_,
-                                                                               d_totalScore_ptr_);
-        }
-    else
-        {
-            // --- Update vertex scores and sampleScoreThreshold ---
-            updateVertices_kernel<<<1, NUM_R1_REGIONS>>>(d_activeSubVertices_ptr_, d_validCounterArray_ptr_, d_counterArray_ptr_,
+    // --- Compute raw per-region scores (one thread per region; 0 for inactive regions). ---
+    computeVertexScores_kernel<<<blocks, h_blockSize_>>>(d_activeSubVertices_ptr_, d_validCounterArray_ptr_, d_counterArray_ptr_,
                                                          d_vertexScoreArray_ptr_);
-        }
+
+    // --- Sum scores -> totalScore. thrust::reduce is correct for any region count, unlike the
+    //     old single-block cub reduction which launched > 1024 threads/block for large grids. ---
+    float total = thrust::reduce(d_vertexScoreArray_.begin(), d_vertexScoreArray_.end(), 0.0f);
+    cudaMemcpy(d_totalScore_ptr_, &total, sizeof(float), cudaMemcpyHostToDevice);
+
+    // --- Normalize: active regions -> EPSILON + score/total; inactive regions -> 1.0. ---
+    updateSampleAcceptance_kernel<<<blocks, h_blockSize_>>>(d_validCounterArray_ptr_, d_vertexScoreArray_ptr_, d_totalScore_ptr_);
 }
 
 /***************************/
-/* PARTIAL REDUCTION KERNEL */
+/* COMPUTE VERTEX SCORES KERNEL */
 /***************************/
-// --- calculates score for each region and does a partial blockwise sum of scores. ---
+// --- Calculates the raw Syclop desirability score for each region (0 for inactive regions).
+//     The total is summed separately with thrust::reduce in Graph::updateVertices. ---
 __global__ void
-partialReduction_kernel(int* activeSubVertices, int* validCounterArray, int* counterArray, float* vertexScores, float* partialSums)
+computeVertexScores_kernel(int* activeSubVertices, int* validCounterArray, int* counterArray, float* vertexScores)
 {
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
     if(tid >= NUM_R1_REGIONS) return;
-
-    float score = 0.0;
 
     if(validCounterArray[tid] > 0)
         {
@@ -252,37 +246,11 @@ partialReduction_kernel(int* activeSubVertices, int* validCounterArray, int* cou
 
             // --- From OMPL Syclop ref: https://ompl.kavrakilab.org/classompl_1_1control_1_1Syclop.html---
             float freeVol = (EPSILON + numValidSamples) / (EPSILON + numValidSamples + (counterArray[tid] - numValidSamples)) * W_R1_VOL;
-            score         = pow(freeVol, 4) / ((1 + coverage) * (1 + pow(counterArray[tid], 2)));
-            vertexScores[tid] = score;
+            vertexScores[tid] = pow(freeVol, 4) / ((1 + coverage) * (1 + pow(counterArray[tid], 2)));
         }
-
-    // --- Sum scores from each thread to determine score threshold ---
-    typedef cub::BlockReduce<float, NUM_PARTIAL_SUMS> BlockReduceFloatT;
-    __shared__ typename BlockReduceFloatT::TempStorage tempStorageFloat;
-    float blockSum = BlockReduceFloatT(tempStorageFloat).Sum(score);
-
-    if(threadIdx.x == 0)
+    else
         {
-            partialSums[threadIdx.x] = blockSum;
-        }
-}
-
-/***************************/
-/* GLOBAL REDUCTION KERNEL */
-/***************************/
-// --- Sums all partial sums into totalScore ---
-__global__ void globalReduction_kernel(float* partialSums, float* totalScore, int numPartialSums)
-{
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
-    if(tid >= numPartialSums) return;
-
-    typedef cub::BlockReduce<float, NUM_PARTIAL_SUMS> BlockReduceFloatT;
-    __shared__ typename BlockReduceFloatT::TempStorage tempStorageFloat;
-    float blockSum = BlockReduceFloatT(tempStorageFloat).Sum(partialSums[tid]);
-
-    if(threadIdx.x == 0)
-        {
-            atomicAdd(totalScore, blockSum);
+            vertexScores[tid] = 0.0f;  // inactive region contributes nothing to totalScore
         }
 }
 
@@ -301,58 +269,5 @@ __global__ void updateSampleAcceptance_kernel(int* validCounterArray, float* ver
     else
         {
             vertexScores[tid] = EPSILON + (vertexScores[tid] / *totalScore);
-        }
-}
-
-/***************************/
-/* VERTICES UPDATE KERNEL  */
-/***************************/
-// --- Updates Vertex Scores for device graph vectors. Determines new threshold score for future samples in expansion set. ---
-__global__ void updateVertices_kernel(int* activeSubVertices, int* validCounterArray, int* counterArray, float* vertexScores)
-{
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
-    if(tid >= NUM_R1_REGIONS - 1) return;
-
-    __shared__ float s_totalScore;
-    float score = 0.0;
-
-    if(validCounterArray[tid] > 0)
-        {
-            int numValidSamples = validCounterArray[tid];
-            float coverage      = 0;
-
-            // --- Thread loops through all sub vertices to determine vertex coverage. ---
-            for(int i = tid * NUM_R2_PER_R1; i < (tid + 1) * NUM_R2_PER_R1; ++i)
-                {
-                    coverage += activeSubVertices[i];
-                }
-
-            coverage /= NUM_R2_PER_R1;
-
-            // --- From OMPL Syclop ref: https://ompl.kavrakilab.org/classompl_1_1control_1_1Syclop.html---
-            float freeVol = (EPSILON + numValidSamples) / (EPSILON + numValidSamples + (counterArray[tid] - numValidSamples)) * W_R1_VOL;
-            score         = pow(freeVol, 4) / ((1 + coverage) * (1 + pow(counterArray[tid], 2)));
-        }
-
-    // --- Sum scores from each thread to determine score threshold ---
-    typedef cub::BlockReduce<float, NUM_R1_REGIONS_KERNEL1> BlockReduceFloatT;
-    __shared__ typename BlockReduceFloatT::TempStorage tempStorageFloat;
-    float blockSum = BlockReduceFloatT(tempStorageFloat).Sum(score);
-
-    if(threadIdx.x == 0)
-        {
-            s_totalScore = blockSum;
-        }
-    __syncthreads();
-
-    // --- Update vertex scores ---
-    if(validCounterArray[tid] == 0)
-        {
-            vertexScores[tid] = 1.0f;
-        }
-    else
-        {
-            // TODO: check if adding epsilon is ok.
-            vertexScores[tid] = EPSILON + (score / s_totalScore);
         }
 }

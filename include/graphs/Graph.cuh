@@ -40,16 +40,12 @@ private:
 __host__ __device__ int getRegion(float* coord);
 __device__ int getSubRegion(float* coord, int r1, float* minRegion);
 
-__global__ void
-partialReduction_kernel(int* activeSubVertices, int* validCounterArray, int* counterArray, float* vertexScores, float* partialSums);
-__global__ void globalReduction_kernel(float* partialSums, float* totalScore, int numPartialSums);
+// --- Computes the raw Syclop desirability score for every R1 region (0 for inactive regions).
+//     One thread per region; the total is summed with thrust::reduce, which is correct for any
+//     region count. (The old cub reduction launched > 1024 threads/block once NUM_R1_REGIONS
+//     exceeded 32768, causing an illegal-memory-access crash at the larger deltas.) ---
+__global__ void computeVertexScores_kernel(int* activeSubVertices, int* validCounterArray, int* counterArray, float* vertexScores);
 __global__ void updateSampleAcceptance_kernel(int* validCounterArray, float* vertexScores, float* totalScore);
-
-/***************************/
-/* VERTICES UPDATE KERNEL */
-/***************************/
-// --- Updates Vertex Scores for device graph vectors. Determines new threshold score for future samples in expansion set. ---
-__global__ void updateVertices_kernel(int* activeSubVertices, int* validCounterArray, int* counterArray, float* vertexScores);
 
 /***************************/
 /* INITIALIZE REGIONS KERNEL */
