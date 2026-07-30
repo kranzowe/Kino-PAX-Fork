@@ -7,7 +7,7 @@
 %   KinoPaxPlus:  {env}_delta{label}_run{n}.csv
 %   KPAX:         {env}_KPAX_delta{label}_run{n}.csv
 %   PruneKPAX:    {env}_PruneKPAX_delta{label}_run{n}.csv
-%   KPAXPlus:     {env}_KPAXPlus_delta{label}_run{n}.csv
+%   KinoPaxSTAR:     {env}_KinoPaxSTAR_delta{label}_run{n}.csv
 %   Summary:      delta_benchmark_{timestamp}_summary.csv
 %
 % Per-iteration columns: iteration, frontier_size, tree_size, elapsed_time_ms, best_cost
@@ -34,7 +34,7 @@ deltaColors = [0.9 0.5 0.1;    % larger    - orange
 deltaStyles = {'-', '--', '-.', ':'};
 
 % KPAX baseline gets its own cool-tone palette so it reads as clearly
-% separate from the optimal planners (KinoPaxPlus / KPAXPlus), which use
+% separate from the optimal planners (KinoPaxPlus / KinoPaxSTAR), which use
 % the warm deltaColors above. Kept internally distinct per delta.
 kpaxDeltaColors = [0.20 0.75 0.85;    % larger    - cyan
                    0.10 0.45 0.85;    % large     - blue
@@ -48,7 +48,7 @@ kpaxTimeColor  = [0.6 0.3 0.6]; % purple-ish
 
 numRuns        = 50;   % KinoPaxPlus runs per delta
 numKPAXRuns    = 50;   % KPAX baseline runs
-numKPPplusRuns = 50;   % KPAXPlus runs per delta (new benchmark; dotted overlay)
+numKinoPaxStarRuns = 50;   % KinoPaxSTAR runs per delta (new benchmark; dotted overlay)
 
 % Model 1 MAX_FLOAT is 1e38
 MAX_FLOAT_THRESH = 1e30;
@@ -110,20 +110,20 @@ for ei = 1:length(environments)
     end
     fprintf('  KPAX data loaded for %d delta configurations.\n', length(deltas));
 
-    %% --- Load KPAXPlus Per-Iteration Data (new benchmark: {env}_KPAXPlus_delta{delta}_run{n}.csv) ---
-    kpaxPlusIterData = cell(1, length(deltas));
+    %% --- Load KinoPaxSTAR Per-Iteration Data (new benchmark: {env}_KinoPaxSTAR_delta{delta}_run{n}.csv) ---
+    kinoPaxStarIterData = cell(1, length(deltas));
     for di = 1:length(deltas)
-        runs = cell(1, numKPPplusRuns);
-        for ri = 0:(numKPPplusRuns - 1)
-            fname = sprintf('%s_KPAXPlus_delta%s_run%d.csv', env, deltas{di}, ri);
+        runs = cell(1, numKinoPaxStarRuns);
+        for ri = 0:(numKinoPaxStarRuns - 1)
+            fname = sprintf('%s_KinoPaxSTAR_delta%s_run%d.csv', env, deltas{di}, ri);
             fpath = fullfile(dataDir, fname);
             if isfile(fpath)
                 runs{ri + 1} = readtable(fpath);
             end
         end
-        kpaxPlusIterData{di} = runs;
+        kinoPaxStarIterData{di} = runs;
     end
-    fprintf('  KPAXPlus data loaded for %d delta configurations.\n', length(deltas));
+    fprintf('  KinoPaxSTAR data loaded for %d delta configurations.\n', length(deltas));
 
     %% ==================================================================
     %  FIGURE: Best Cost vs Iteration (mean +/- std)
@@ -169,16 +169,16 @@ for ei = 1:length(environments)
         end
     end
 
-    % --- KPAXPlus curves on iteration plot (dotted, same delta colors) ---
+    % --- KinoPaxSTAR curves on iteration plot (dotted, same delta colors) ---
     for di = 1:length(deltas)
-        runs = kpaxPlusIterData{di};
+        runs = kinoPaxStarIterData{di};
         maxIter = 0;
-        for ri = 1:numKPPplusRuns
+        for ri = 1:numKinoPaxStarRuns
             if ~isempty(runs{ri}), maxIter = max(maxIter, max(runs{ri}.iteration)); end
         end
         if maxIter == 0, continue; end
-        allCost = NaN(numKPPplusRuns, maxIter);
-        for ri = 1:numKPPplusRuns
+        allCost = NaN(numKinoPaxStarRuns, maxIter);
+        for ri = 1:numKinoPaxStarRuns
             if ~isempty(runs{ri})
                 iters = runs{ri}.iteration;
                 allCost(ri, iters) = runs{ri}.best_cost;
@@ -191,7 +191,7 @@ for ei = 1:length(environments)
         if any(validIdx)
             plot(itrVec(validIdx), meanC(validIdx), ':', ...
                 'Color', deltaColors(di, :), 'LineWidth', 1.8, ...
-                'DisplayName', [deltaLabels{di} ' (KPAX+)']);
+                'DisplayName', [deltaLabels{di} ' (STAR)']);
         end
     end
 
@@ -256,8 +256,8 @@ for ei = 1:length(environments)
         end
     end
     for di = 1:length(deltas)
-        runs = kpaxPlusIterData{di};
-        for ri = 1:numKPPplusRuns
+        runs = kinoPaxStarIterData{di};
+        for ri = 1:numKinoPaxStarRuns
             if ~isempty(runs{ri})
                 globalMaxTime = max(globalMaxTime, max(runs{ri}.elapsed_time_ms));
             end
@@ -304,11 +304,11 @@ for ei = 1:length(environments)
             end
         end
 
-        % --- KPAXPlus curves (dotted, same delta colors) ---
+        % --- KinoPaxSTAR curves (dotted, same delta colors) ---
         for di = 1:length(deltas)
-            runs = kpaxPlusIterData{di};
-            allCostTime = NaN(numKPPplusRuns, numTimeSamples);
-            for ri = 1:numKPPplusRuns
+            runs = kinoPaxStarIterData{di};
+            allCostTime = NaN(numKinoPaxStarRuns, numTimeSamples);
+            for ri = 1:numKinoPaxStarRuns
                 if ~isempty(runs{ri})
                     riCost = runs{ri}.best_cost;
                     riCost(riCost > MAX_FLOAT_THRESH) = NaN;
@@ -325,7 +325,7 @@ for ei = 1:length(environments)
             if any(validIdx)
                 plot(commonTime(validIdx), meanC(validIdx), ':', ...
                     'Color', deltaColors(di, :), 'LineWidth', 1.8, ...
-                    'DisplayName', [deltaLabels{di} ' (KPAX+)']);
+                    'DisplayName', [deltaLabels{di} ' (STAR)']);
             end
         end
 
@@ -669,26 +669,26 @@ for ei = 1:length(environments)
         'VerticalAlignment', 'bottom', 'FontSize', 10, 'FontWeight', 'bold');
 
     %% ==================================================================
-    %  FIGURE: Final Best Cost — KinoPaxPlus vs KPAXPlus (per delta)
+    %  FIGURE: Final Best Cost — KinoPaxPlus vs KinoPaxSTAR (per delta)
     %  Computed from per-iteration data (robust to the summary-table
-    %  delta_label limitation, where all KPAXPlus rows share "KPAXPlus").
+    %  delta_label limitation, where all KinoPaxSTAR rows share "KinoPaxSTAR").
     %  ==================================================================
     figNum = figNum + 1;
-    figure('Name', sprintf('%s - KinoPaxPlus vs KPAXPlus Final Cost', envTitle), ...
+    figure('Name', sprintf('%s - KinoPaxPlus vs KinoPaxSTAR Final Cost', envTitle), ...
            'Position', [300 150 900 500]);
     nDelta = length(deltas);
     kppFinal      = NaN(1, nDelta);
-    kpaxplusFinal = NaN(1, nDelta);
+    kinoPaxStarFinal = NaN(1, nDelta);
     for di = 1:nDelta
         kppFinal(di)      = meanFinalCost(iterData{di},         numRuns,        MAX_FLOAT_THRESH);
-        kpaxplusFinal(di) = meanFinalCost(kpaxPlusIterData{di}, numKPPplusRuns, MAX_FLOAT_THRESH);
+        kinoPaxStarFinal(di) = meanFinalCost(kinoPaxStarIterData{di}, numKinoPaxStarRuns, MAX_FLOAT_THRESH);
     end
-    bar([kppFinal(:), kpaxplusFinal(:)]);
-    legend({'KinoPaxPlus', 'KPAXPlus'}, 'Location', 'best', 'FontSize', 8);
+    bar([kppFinal(:), kinoPaxStarFinal(:)]);
+    legend({'KinoPaxPlus', 'KinoPaxSTAR'}, 'Location', 'best', 'FontSize', 8);
     set(gca, 'XTick', 1:nDelta, 'XTickLabel', deltaLabels, 'FontSize', 8);
     xtickangle(25);
     ylabel('Final Path Cost (workspace distance)');
-    title(sprintf('Final Best Cost: KinoPaxPlus vs KPAXPlus \x2014 %s', envTitle));
+    title(sprintf('Final Best Cost: KinoPaxPlus vs KinoPaxSTAR \x2014 %s', envTitle));
     grid on;
 
 end  % environment loop

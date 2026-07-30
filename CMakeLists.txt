@@ -27,7 +27,7 @@ set(SOURCE_FILES
     src/planners/KinoPaxPlus.cu
     src/planners/originalKPAX.cu
     src/planners/originalPlanner.cu
-    src/planners/KPAXPlus.cu
+    src/planners/KinoPaxSTAR.cu
     src/planners/PruneKPAX.cu
     src/planners/KinoPaxPlusSpatialHash.cu
     src/planners/Planner.cu

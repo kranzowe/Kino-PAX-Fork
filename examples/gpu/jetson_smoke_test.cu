@@ -4,7 +4,7 @@
 #include "planners/KPAX.cuh"
 #include "planners/PruneKPAX.cuh"
 #include "planners/KinoPaxPlus.cuh"
-#include "planners/KPAXPlus.cuh"
+#include "planners/KinoPaxSTAR.cuh"
 
 // Print free/total GPU memory in MB
 void printGPUMemory(const char* label)
@@ -173,7 +173,7 @@ int main(void)
     passed += runSmokeTest<KinoPaxPlus>("KinoPaxPlus",
         h_initial, h_goal, d_obstacles, numObstacles, MAX_ITERATIONS);
 
-    passed += runSmokeTest<KPAXPlus>("KPAXPlus",
+    passed += runSmokeTest<KinoPaxSTAR>("KinoPaxSTAR",
         h_initial, h_goal, d_obstacles, numObstacles, MAX_ITERATIONS);
 
     cudaFree(d_obstacles);

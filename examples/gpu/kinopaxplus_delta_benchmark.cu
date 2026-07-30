@@ -11,7 +11,7 @@
 #include "planners/KinoPaxPlus.cuh"
 #include "planners/KPAX.cuh"
 #include "planners/PruneKPAX.cuh"
-#include "planners/KPAXPlus.cuh"
+#include "planners/KinoPaxSTAR.cuh"
 #include <thrust/count.h>
 #include <thrust/reduce.h>
 
@@ -96,7 +96,7 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
     // don't overwrite each other:
     //   KPAX baseline: {env}_KPAX_delta{build}_run{n}.csv
     //   PruneKPAX:     {env}_PruneKPAX_delta{build}_run{n}.csv
-    //   KPAXPlus:      {env}_KPAXPlus_delta{build}_run{n}.csv
+    //   KinoPaxSTAR:      {env}_KinoPaxSTAR_delta{build}_run{n}.csv
     //   KinoPaxPlus:   {env}_delta{label}_run{n}.csv
     if(result.delta_label == "KPAX")
         filename << outputDir << "/" << result.environment << "_KPAX_delta" << result.build_delta
@@ -104,8 +104,8 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
     else if(result.delta_label == "PruneKPAX")
         filename << outputDir << "/" << result.environment << "_PruneKPAX_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
-    else if(result.delta_label == "KPAXPlus")
-        filename << outputDir << "/" << result.environment << "_KPAXPlus_delta" << result.build_delta
+    else if(result.delta_label == "KinoPaxSTAR")
+        filename << outputDir << "/" << result.environment << "_KinoPaxSTAR_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
     else
         filename << outputDir << "/" << result.environment << "_delta" << result.delta_label
@@ -486,12 +486,12 @@ RunResult benchmarkPruneKPAX(
 }
 
 // ========================================================================
-// KPAXPlus Benchmark (KPAX exploration + KinoPaxPlus cost + spatial hash +
+// KinoPaxSTAR Benchmark (KPAX exploration + KinoPaxPlus cost + spatial hash +
 // goal-progress admission). Cost is tracked via h_minCost_ like KinoPaxPlus;
 // the KPAX Graph is present, so the frontier-death diagnostics apply too.
 // ========================================================================
-RunResult benchmarkKPAXPlus(
-    KPAXPlus& planner,
+RunResult benchmarkKinoPaxSTAR(
+    KinoPaxSTAR& planner,
     const std::string& deltaLabel,
     const std::string& environment,
     int runNumber,
@@ -503,7 +503,7 @@ RunResult benchmarkKPAXPlus(
     float maxTimeMs)
 {
     RunResult result;
-    result.delta_label = "KPAXPlus";
+    result.delta_label = "KinoPaxSTAR";
     result.build_delta = deltaLabel;
     result.environment = environment;
     result.run_number = runNumber;
@@ -545,7 +545,7 @@ RunResult benchmarkKPAXPlus(
         if(planner.h_minCost_ < result.final_best_cost)
             result.final_best_cost = planner.h_minCost_;
 
-        // --- Frontier diagnostics (outside the timed window; KPAXPlus uses the KPAX Graph) ---
+        // --- Frontier diagnostics (outside the timed window; KinoPaxSTAR uses the KPAX Graph) ---
         int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
                                              planner.d_frontier_.begin() + oldTreeSize, true);
         int inactiveR2 = (int)thrust::count(planner.graph_.d_activeSubVertices_.begin(),
@@ -704,9 +704,9 @@ void runKinoPaxPlusBenchmark(
 }
 
 // ========================================================================
-// Run KPAXPlus on one environment for multiple runs
+// Run KinoPaxSTAR on one environment for multiple runs
 // ========================================================================
-void runKPAXPlusBenchmark(
+void runKinoPaxSTARBenchmark(
     const std::string& environment_name,
     float* h_initial,
     float* h_goal,
@@ -720,15 +720,15 @@ void runKPAXPlusBenchmark(
     float maxTimeMs)
 {
     printf("\n========================================\n");
-    printf("KPAXPLUS: %s | Delta: %s | Regions: %d\n",
+    printf("KINOPAXSTAR: %s | Delta: %s | Regions: %d\n",
            environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
     printf("========================================\n");
 
     {
-        KPAXPlus planner;
+        KinoPaxSTAR planner;
         for(int run = 0; run < numRuns; run++)
         {
-            RunResult result = benchmarkKPAXPlus(planner, deltaLabel, environment_name, run,
+            RunResult result = benchmarkKinoPaxSTAR(planner, deltaLabel, environment_name, run,
                                                  h_initial, h_goal, d_obstacles,
                                                  numObstacles, maxIterations, maxTimeMs);
             printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
@@ -758,9 +758,10 @@ int main(int argc, char* argv[])
             skipBaselines = true;
     }
 
-    const int NUM_KPAX_RUNS      = 5;
-    const int NUM_KPAXPLUS_RUNS  = 5;
-    const int MAX_ITERATIONS     = 300;
+    const int NUM_KPAX_RUNS        = 5;
+    const int NUM_KINOPAXPLUS_RUNS = 5;   // drives the KinoPaxPlus runner
+    const int NUM_KINOPAXSTAR_RUNS = 5;   // drives the KinoPaxSTAR runner
+    const int MAX_ITERATIONS       = 300;
     const float MAX_TIME_MS      = 10000.0f;  // 10 second timeout
 
     std::string outputDir = "Data/Benchmarks/KinoPaxPlusDelta";
@@ -776,8 +777,8 @@ int main(int argc, char* argv[])
     printf("Obstacle file:  %s\n", obstaclePath.c_str());
     printf("Environment:    %s\n", envName.c_str());
     printf("Baselines:      %s (KPAX + PruneKPAX, %d runs each)\n", skipBaselines ? "NO" : "YES", NUM_KPAX_RUNS);
-    printf("KinoPaxPlus:    %d runs\n", NUM_KPAXPLUS_RUNS);
-    printf("KPAXPlus:       DISABLED (kept out of runs for now)\n");
+    printf("KinoPaxPlus:    %d runs\n", NUM_KINOPAXPLUS_RUNS);
+    printf("KinoPaxSTAR:    %d runs\n", NUM_KINOPAXSTAR_RUNS);
     printf("Max iterations: %d\n", MAX_ITERATIONS);
     printf("=======================================================\n");
 
@@ -813,14 +814,11 @@ int main(int argc, char* argv[])
 
     // --- KinoPaxPlus delta benchmark ---
     runKinoPaxPlusBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
-                            all_results, outputDir, deltaLabel, NUM_KPAXPLUS_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
+                            all_results, outputDir, deltaLabel, NUM_KINOPAXPLUS_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
 
-    // --- KPAXPlus delta benchmark (the hybrid combo under development) ---
-    // TEMPORARILY DISABLED — kept out of the runs while debugging the other algorithms.
-    // The benchmarkKPAXPlus / runKPAXPlusBenchmark code is intact; re-enable this call to
-    // include KPAXPlus in the sweep.
-    // runKPAXPlusBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
-    //                      all_results, outputDir, deltaLabel, NUM_KPAXPLUS_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
+    // --- KinoPaxSTAR delta benchmark (KPAX exploration + KinoPaxPlus cost + PruneKPAX pruning) ---
+    runKinoPaxSTARBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
+                            all_results, outputDir, deltaLabel, NUM_KINOPAXSTAR_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
 
     cudaFree(d_obstacles);
 

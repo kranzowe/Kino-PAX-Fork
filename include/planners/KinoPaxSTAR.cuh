@@ -3,12 +3,12 @@
 #include "graphs/Graph.cuh"
 #include "collisionCheck/spatialHash.cuh"
 
-class KPAXPlus : public Planner
+class KinoPaxSTAR : public Planner
 {
 public:
     /**************************** CONSTRUCTORS ****************************/
-    KPAXPlus();
-    ~KPAXPlus();
+    KinoPaxSTAR();
+    ~KinoPaxSTAR();
 
     /****************************    METHODS    ****************************/
     void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount) override;
@@ -67,7 +67,7 @@ public:
 /***************************/
 /* PROPAGATE FRONTIER KERNEL 1 */
 /***************************/
-__global__ void KPAXPlus_propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
+__global__ void KinoPaxSTAR_propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
                                                    float* unexploredSamples, uint frontierSize, curandState* randomSeeds,
                                                    int* unexploredSamplesParentIdxs, float* obstacles, int obstaclesCount,
                                                    int* activeSubVertices, float* vertexScores, bool* frontierNext,
@@ -78,7 +78,7 @@ __global__ void KPAXPlus_propagateFrontier_kernel1(bool* frontier, uint* activeF
 /***************************/
 /* PROPAGATE FRONTIER KERNEL 2 */
 /***************************/
-__global__ void KPAXPlus_propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
+__global__ void KinoPaxSTAR_propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
                                                    float* unexploredSamples, uint frontierSize, curandState* randomSeeds,
                                                    int* unexploredSamplesParentIdxs, float* obstacles, int obstaclesCount,
                                                    int* activeSubVertices, float* vertexScores, bool* frontierNext,
@@ -92,7 +92,7 @@ __global__ void KPAXPlus_propagateFrontier_kernel2(bool* frontier, uint* activeF
 /***************************/
 // Min-cost (best-in-region) candidates are exempt; non-best candidates pass the
 // PruneKPAX greedy-toward-goal probabilistic gate before insertion.
-__global__ void KPAXPlus_goalProgressPrune_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
+__global__ void KinoPaxSTAR_goalProgressPrune_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                   float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
                                                   float* unexploredSamples, int* unexploredSamplesParentIdxs,
                                                   float* treeSamples, float* xGoal, bool* frontierNext,
@@ -103,11 +103,12 @@ __global__ void KPAXPlus_goalProgressPrune_kernel(uint* activeFrontierNextIdxs, 
 /* FRONTIER UPDATE KERNEL */
 /***************************/
 __global__ void
-KPAXPlus_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs, uint frontierNextSize,
+KinoPaxSTAR_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs, uint frontierNextSize,
                                float* xGoal, int treeSize, float* unexploredSamples, float* treeSamples,
                                int* unexploredSamplesParentIdxs, int* treeSamplesParentIdxs, float* treeSampleCosts,
                                uint* activeFrontierRepeatCount, int* validVertexCounter, curandState* randomSeeds,
                                float* vertexScores, float fAccept,
+                               float maxRegression, float explorationBias, float goalBias,
                                float* minCostsR1, int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet, bool* pruned,
                                int* iterations, int iteration);
@@ -115,7 +116,7 @@ KPAXPlus_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeF
 /***************************/
 /* GET CONTROL PATH TO GOAL KERNEL */
 /***************************/
-__global__ void KPAXPlus_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSamples,
+__global__ void KinoPaxSTAR_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSamples,
                                                      int* treeSamplesParentIdxs, uint* goalSetIdxs, int goalSetSize,
                                                      float* pathCosts, float* treeSampleCosts, int* iterations,
                                                      float* minCost);

@@ -38,7 +38,7 @@ numBaselineRuns = 50;   % KPAX / PruneKPAX runs per delta
 colKPAX    = [0.10 0.10 0.10];   % near-black
 colPrune   = [0.85 0.45 0.10];   % orange
 colKPP     = [0.20 0.40 0.80];   % blue (KinoPaxPlus)
-colKPPplus = [0.55 0.15 0.60];   % purple (KPAXPlus)
+colStar    = [0.55 0.15 0.60];   % purple (KinoPaxSTAR)
 
 MAX_FLOAT_THRESH = 1e30;
 numTimeSamples   = 500;
@@ -50,14 +50,14 @@ for ei = 1:numel(environments)
     fprintf('\n=== Environment: %s ===\n', env);
 
     % --- Load all runs, grouped by delta and planner ---
-    K = struct('kpp', {{}}, 'kpax', {{}}, 'prune', {{}}, 'kpaxplus', {{}}, 'regions', {[]});
+    K = struct('kpp', {{}}, 'kpax', {{}}, 'prune', {{}}, 'star', {{}}, 'regions', {[]});
     data = repmat(K, 1, numel(deltas));
     for di = 1:numel(deltas)
         data(di).kpp      = loadRuns(dataDir, env, 'KinoPaxPlus', deltas{di}, numRuns);
         data(di).kpax     = loadRuns(dataDir, env, 'KPAX',        deltas{di}, numBaselineRuns);
         data(di).prune    = loadRuns(dataDir, env, 'PruneKPAX',   deltas{di}, numBaselineRuns);
-        data(di).kpaxplus = loadRuns(dataDir, env, 'KPAXPlus',    deltas{di}, numRuns);
-        data(di).regions  = regionCount(data(di).kpp, data(di).kpax, data(di).prune, data(di).kpaxplus);
+        data(di).star     = loadRuns(dataDir, env, 'KinoPaxSTAR',    deltas{di}, numRuns);
+        data(di).regions  = regionCount(data(di).kpp, data(di).kpax, data(di).prune, data(di).star);
     end
 
     nD = numel(deltas);
@@ -68,13 +68,13 @@ for ei = 1:numel(environments)
     tl = tiledlayout(nRows, nCols, 'TileSpacing', 'compact', 'Padding', 'compact');
     for di = 1:nD
         nexttile; hold on;
-        tmax = globalMaxTime({data(di).kpax, data(di).prune, data(di).kpp, data(di).kpaxplus});
+        tmax = globalMaxTime({data(di).kpax, data(di).prune, data(di).kpp, data(di).star});
         if tmax > 0
             ct = linspace(0, tmax, numTimeSamples);
             plotBandTime(data(di).kpax,     'frontier_size', ct, colKPAX,    '-', 'KPAX');
             plotBandTime(data(di).prune,    'frontier_size', ct, colPrune,   '-', 'PruneKPAX');
             plotBandTime(data(di).kpp,      'frontier_size', ct, colKPP,     '-', 'KinoPaxPlus');
-            plotBandTime(data(di).kpaxplus, 'frontier_size', ct, colKPPplus, '-', 'KPAXPlus');
+            plotBandTime(data(di).star, 'frontier_size', ct, colStar, '-', 'KinoPaxSTAR');
         end
         title(sprintf('%s  (R1=%s)', deltas{di}, regStr(data(di).regions)), 'Interpreter', 'none');
         xlabel('Elapsed Time (ms)'); ylabel('Frontier Size'); grid on;
@@ -90,7 +90,7 @@ for ei = 1:numel(environments)
         plotBandIter(data(di).kpax,     'frontier_size', colKPAX,    '-', 'KPAX');
         plotBandIter(data(di).prune,    'frontier_size', colPrune,   '-', 'PruneKPAX');
         plotBandIter(data(di).kpp,      'frontier_size', colKPP,     '-', 'KinoPaxPlus');
-        plotBandIter(data(di).kpaxplus, 'frontier_size', colKPPplus, '-', 'KPAXPlus');
+        plotBandIter(data(di).star, 'frontier_size', colStar, '-', 'KinoPaxSTAR');
         title(sprintf('%s  (R1=%s)', deltas{di}, regStr(data(di).regions)), 'Interpreter', 'none');
         xlabel('Iteration'); ylabel('Frontier Size'); grid on;
         if di == 1, legend('Location', 'best', 'FontSize', 7); end
@@ -105,7 +105,7 @@ for ei = 1:numel(environments)
         plotBandIter(data(di).kpax,     'tree_size', colKPAX,    '-', 'KPAX');
         plotBandIter(data(di).prune,    'tree_size', colPrune,   '-', 'PruneKPAX');
         plotBandIter(data(di).kpp,      'tree_size', colKPP,     '-', 'KinoPaxPlus');
-        plotBandIter(data(di).kpaxplus, 'tree_size', colKPPplus, '-', 'KPAXPlus');
+        plotBandIter(data(di).star, 'tree_size', colStar, '-', 'KinoPaxSTAR');
         title(sprintf('%s  (R1=%s)', deltas{di}, regStr(data(di).regions)), 'Interpreter', 'none');
         xlabel('Iteration'); ylabel('Tree Size'); grid on;
         if di == 1, legend('Location', 'best', 'FontSize', 7); end
@@ -123,7 +123,7 @@ for ei = 1:numel(environments)
             nexttile; hold on;
             plotBandIter(data(di).kpax,     diagCols{ci}, colKPAX,    '-',  'KPAX');
             plotBandIter(data(di).prune,    diagCols{ci}, colPrune,   '--', 'PruneKPAX');
-            plotBandIter(data(di).kpaxplus, diagCols{ci}, colKPPplus, ':',  'KPAXPlus');
+            plotBandIter(data(di).star, diagCols{ci}, colStar, ':',  'KinoPaxSTAR');
             if ci == 1, ylabel(sprintf('%s\nR1=%s', deltas{di}, regStr(data(di).regions)), 'Interpreter', 'none'); end
             if di == 1, title(diagTitles{ci}); end
             if di == nD, xlabel('Iteration'); end
@@ -131,7 +131,7 @@ for ei = 1:numel(environments)
             if di == 1 && ci == 3, legend('Location', 'best', 'FontSize', 7); end
         end
     end
-    title(tl, sprintf('Frontier-Death Diagnostics (KPAX / PruneKPAX / KPAXPlus) \x2014 %s', envTitle), 'FontWeight', 'bold');
+    title(tl, sprintf('Frontier-Death Diagnostics (KPAX / PruneKPAX / KinoPaxSTAR) \x2014 %s', envTitle), 'FontWeight', 'bold');
 end
 
 fprintf('\nDone.\n');
@@ -148,8 +148,8 @@ function runs = loadRuns(dataDir, env, planner, delta, numRuns)
                 fn = sprintf('%s_KPAX_delta%s_run%d.csv', env, delta, ri);
             case 'PruneKPAX'
                 fn = sprintf('%s_PruneKPAX_delta%s_run%d.csv', env, delta, ri);
-            case 'KPAXPlus'
-                fn = sprintf('%s_KPAXPlus_delta%s_run%d.csv', env, delta, ri);
+            case 'KinoPaxSTAR'
+                fn = sprintf('%s_KinoPaxSTAR_delta%s_run%d.csv', env, delta, ri);
             otherwise
                 error('unknown planner %s', planner);
         end

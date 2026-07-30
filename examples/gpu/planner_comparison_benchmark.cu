@@ -11,7 +11,7 @@
 #include "planners/KPAX.cuh"
 #include "planners/PruneKPAX.cuh"
 #include "planners/KinoPaxPlus.cuh"
-#include "planners/KPAXPlus.cuh"
+#include "planners/KinoPaxSTAR.cuh"
 
 struct IterationData
 {
@@ -402,14 +402,14 @@ RunResult benchmarkKinoPaxPlus(
 }
 
 // ========================================================================
-// KPAXPlus Benchmark (hybrid exploration + optimization)
+// KinoPaxSTAR Benchmark (hybrid exploration + optimization)
 //
 // h_minCost_ is the cumulative path length from root to the best goal
 // node found so far — same metric as KinoPaxPlus. Updated via
 // atomicMinFloat(d_minCost_ptr_, cost) in the updateFrontier kernel.
 // ========================================================================
-RunResult benchmarkKPAXPlus(
-    KPAXPlus& planner,
+RunResult benchmarkKinoPaxSTAR(
+    KinoPaxSTAR& planner,
     const std::string& environment,
     int runNumber,
     float* h_initial,
@@ -419,7 +419,7 @@ RunResult benchmarkKPAXPlus(
     int maxIterations)
 {
     RunResult result;
-    result.planner_name = "KPAXPlus";
+    result.planner_name = "KinoPaxSTAR";
     result.environment = environment;
     result.run_number = runNumber;
     result.first_solution_iteration = -1;
@@ -585,13 +585,13 @@ void runEnvironmentBenchmark(
         }
     }
 
-    // --- KPAXPlus (hybrid exploration + optimization) ---
-    printf("\n--- KPAXPlus ---\n");
+    // --- KinoPaxSTAR (hybrid exploration + optimization) ---
+    printf("\n--- KinoPaxSTAR ---\n");
     {
-        KPAXPlus planner;
+        KinoPaxSTAR planner;
         for(int run = 0; run < numRuns; run++)
         {
-            RunResult result = benchmarkKPAXPlus(planner, environment_name, run, h_initial, h_goal,
+            RunResult result = benchmarkKinoPaxSTAR(planner, environment_name, run, h_initial, h_goal,
                                                   d_obstacles, numObstacles, maxIterations);
             printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, path_cost=%.3f\n",
                    run + 1, numRuns, result.total_time_seconds, result.total_iterations,
@@ -620,7 +620,7 @@ int main(void)
     printf("=======================================================\n");
     printf("    PLANNER COMPARISON BENCHMARK\n");
     printf("=======================================================\n");
-    printf("Planners: KPAX, KPAX_SpatialHash, PruneKPAX, KinoPaxPlus, KPAXPlus\n");
+    printf("Planners: KPAX, KPAX_SpatialHash, PruneKPAX, KinoPaxPlus, KinoPaxSTAR\n");
     printf("Environments: Empty, House, NarrowPassage, Trees\n");
     printf("Runs per configuration: %d\n", NUM_RUNS);
     printf("Max iterations: %d\n", MAX_ITERATIONS);
