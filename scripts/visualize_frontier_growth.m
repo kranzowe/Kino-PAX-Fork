@@ -14,8 +14,9 @@
 %   (r2_coverage_pct / mean_vertex_score are NaN and reactivated is -1 for KinoPaxPlus)
 %
 % Figures, per environment:
-%   A) frontier_size vs elapsed_time_ms  (one tile per delta, 3 planners, mean +/- std)
+%   A) frontier_size vs elapsed_time_ms  (one tile per delta, 4 planners, mean +/- std)
 %   B) frontier_size vs iteration        (same layout)
+%   B2) tree_size vs iteration           (same layout)
 %   C) frontier-death diagnostics vs iteration (KPAX + PruneKPAX):
 %      r2_coverage_pct, mean_vertex_score, reactivated
 
@@ -24,11 +25,11 @@ clear; clc; close all;
 %% --- Configuration ---
 dataDir = 'KinoPaxPlusDelta500kmore';   % <-- point at your results folder
 
-environments = {'trees', 'house'};
-envTitles    = {'Trees', 'House'};
+environments = {'house'};
+envTitles    = {'House'};
 
 % Delta labels must match those used by run_delta_benchmark.sh
-deltas   = {'extra_large', 'larger', 'large', 'med_large', 'med_small'};
+deltas   = {'larger', 'large', 'med_large', 'med_small'};
 
 numRuns         = 50;   % KinoPaxPlus runs per delta
 numBaselineRuns = 50;   % KPAX / PruneKPAX runs per delta
@@ -95,6 +96,21 @@ for ei = 1:numel(environments)
         if di == 1, legend('Location', 'best', 'FontSize', 7); end
     end
     title(tl, sprintf('Frontier Size vs Iteration \x2014 %s', envTitle), 'FontWeight', 'bold');
+
+    %% ---------- FIGURE B2: tree size vs iteration ----------
+    figure('Name', sprintf('%s - Tree Size vs Iteration', envTitle), 'Position', [100 80 1100 700]);
+    tl = tiledlayout(nRows, nCols, 'TileSpacing', 'compact', 'Padding', 'compact');
+    for di = 1:nD
+        nexttile; hold on;
+        plotBandIter(data(di).kpax,     'tree_size', colKPAX,    '-', 'KPAX');
+        plotBandIter(data(di).prune,    'tree_size', colPrune,   '-', 'PruneKPAX');
+        plotBandIter(data(di).kpp,      'tree_size', colKPP,     '-', 'KinoPaxPlus');
+        plotBandIter(data(di).kpaxplus, 'tree_size', colKPPplus, '-', 'KPAXPlus');
+        title(sprintf('%s  (R1=%s)', deltas{di}, regStr(data(di).regions)), 'Interpreter', 'none');
+        xlabel('Iteration'); ylabel('Tree Size'); grid on;
+        if di == 1, legend('Location', 'best', 'FontSize', 7); end
+    end
+    title(tl, sprintf('Tree Size vs Iteration \x2014 %s', envTitle), 'FontWeight', 'bold');
 
     %% ---------- FIGURE C: frontier-death diagnostics (KPAX + PruneKPAX) ----------
     % Rows = delta, Cols = [R2 coverage %, mean vertex score, reactivated]
