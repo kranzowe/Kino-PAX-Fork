@@ -1,21 +1,26 @@
-%% KinoPaxPlus Delta Benchmark Visualization
+%% Delta Benchmark Visualization — all planners, per-delta panels
 % Reads per-iteration CSVs produced by kinopaxplus_delta_benchmark.cu
-% (run via run_delta_benchmark.sh) and generates convergence plots
-% comparing different region discretizations (delta) with a KPAX baseline.
+% (run via run_delta_benchmark.sh) and compares all four planners across the
+% delta (R1 discretization) sweep. One tiled panel per delta; every panel
+% overlays KinoPaxPlus, KinoPaxSTAR, KPAX, and PruneKPAX (color = planner).
 %
-% Output directory: Data/Benchmarks/KinoPaxPlusDelta/
+% Per-run CSVs (in dataDir):
 %   KinoPaxPlus:  {env}_delta{label}_run{n}.csv
 %   KPAX:         {env}_KPAX_delta{label}_run{n}.csv
 %   PruneKPAX:    {env}_PruneKPAX_delta{label}_run{n}.csv
-%   KinoPaxSTAR:     {env}_KinoPaxSTAR_delta{label}_run{n}.csv
-%   Summary:      delta_benchmark_{timestamp}_summary.csv
+%   KinoPaxSTAR:  {env}_KinoPaxSTAR_delta{label}_run{n}.csv
 %
 % Per-iteration columns: iteration, frontier_size, tree_size, elapsed_time_ms, best_cost
+%
+% FAIR-COMPARISON NOTE: an "iteration" is a different unit of work per planner
+% (frontier size x branching differ), so cost-vs-TIME is the fair cross-planner
+% axis; read cost-vs-iteration as within-planner. Time panels auto-scale to each
+% delta's data (no fixed xlim), so a planner still improving late is not hidden.
 
 clear; clc; close all;
 
 %% --- Configuration ---
-dataDir = '';
+dataDir = '';   % results folder ('' = current directory)
 
 environments = {'house'};
 envTitles    = {'House'};
@@ -26,705 +31,271 @@ deltaLabels = {'Larger-\delta (14k)', ...
                'Med-Large (216k)', ...
                'Med-Small (422k)'};
 
-deltaColors = [0.9 0.5 0.1;    % larger    - orange
-               0.2 0.7 0.3;    % large     - green
-               0.8 0.2 0.2;    % med_large - red
-               0.6 0.1 0.7];   % med_small - purple
+% Planners overlaid in every panel (color = planner, consistent with
+% visualize_frontier_growth.m). Order controls legend/bar order.
+plannerNames  = {'KinoPaxPlus', 'KinoPaxSTAR', 'KPAX', 'PruneKPAX'};
+plannerColors = [0.20 0.40 0.80;    % KinoPaxPlus - blue
+                 0.55 0.15 0.60;    % KinoPaxSTAR - purple
+                 0.10 0.10 0.10;    % KPAX        - near-black
+                 0.85 0.45 0.10];   % PruneKPAX   - orange
+plannerStyles = {'-', '-', '-', '-'};
+numRunsPer    = [50, 50, 50, 50];   % max runs searched per planner (missing files skipped)
 
-deltaStyles = {'-', '--', '-.', ':'};
+MAX_FLOAT_THRESH = 1e30;   % best_cost sentinel (MAX_FLOAT / INFINITY) -> NaN
+numTimeSamples   = 500;
 
-% KPAX baseline gets its own cool-tone palette so it reads as clearly
-% separate from the optimal planners (KinoPaxPlus / KinoPaxSTAR), which use
-% the warm deltaColors above. Kept internally distinct per delta.
-kpaxDeltaColors = [0.20 0.75 0.85;    % larger    - cyan
-                   0.10 0.45 0.85;    % large     - blue
-                   0.05 0.10 0.45;    % med_large - navy
-                   0.40 0.60 0.75];   % med_small - steel blue
-
-kpaxColor = [0.1 0.1 0.1];     % near-black for KPAX curve
-kpaxFirstColor = [0.5 0.5 0.5]; % gray for reference lines
-kpaxFinalColor = [0.2 0.2 0.2]; % dark gray
-kpaxTimeColor  = [0.6 0.3 0.6]; % purple-ish
-
-numRuns        = 50;   % KinoPaxPlus runs per delta
-numKPAXRuns    = 50;   % KPAX baseline runs
-numKinoPaxStarRuns = 50;   % KinoPaxSTAR runs per delta (new benchmark; dotted overlay)
-
-% Model 1 MAX_FLOAT is 1e38
-MAX_FLOAT_THRESH = 1e30;
-
-% Box plot settings
-numTimePoints = 15;   % number of time sample points for box plots
-boxWidth      = 0.85;  % relative width of each box group (increased from 0.6)
-
-%% --- Locate the most recent summary file ---
-summaryFiles = dir(fullfile(dataDir, 'delta_benchmark_*_summary.csv'));
-if isempty(summaryFiles)
-    warning('No summary CSV found in %s. Summary bar charts will be skipped.', dataDir);
-    summaryTable = [];
-else
-    [~, idx] = max([summaryFiles.datenum]);
-    summaryPath = fullfile(dataDir, summaryFiles(idx).name);
-    fprintf('Loading summary: %s\n', summaryPath);
-    summaryTable = readtable(summaryPath);
-end
+nDelta   = numel(deltas);
+nPlanner = numel(plannerNames);
+nCols = 2; nRows = ceil(nDelta / nCols);
 
 %% ======================================================================
-%  LOOP OVER ENVIRONMENTS
-%  ======================================================================
 figNum = 0;
-
-for ei = 1:length(environments)
+for ei = 1:numel(environments)
     env      = environments{ei};
     envTitle = envTitles{ei};
+    fprintf('\n=== Environment: %s ===\n', env);
 
-    fprintf('\n=== Processing environment: %s ===\n', env);
-
-    %% --- Load KinoPaxPlus Per-Iteration Data ---
-    iterData = cell(1, length(deltas));
-    for di = 1:length(deltas)
-        runs = cell(1, numRuns);
-        for ri = 0:(numRuns - 1)
-            fname = sprintf('%s_delta%s_run%d.csv', env, deltas{di}, ri);
-            fpath = fullfile(dataDir, fname);
-            if isfile(fpath)
-                runs{ri + 1} = readtable(fpath);
-            end
-        end
-        iterData{di} = runs;
-    end
-    fprintf('  KinoPaxPlus data loaded for %d delta configurations.\n', length(deltas));
-
-    %% --- Load KPAX Per-Iteration Data (per-delta: {env}_KPAX_delta{delta}_run{n}.csv) ---
-    kpaxIterData = cell(1, length(deltas));
-    for di = 1:length(deltas)
-        runs = cell(1, numKPAXRuns);
-        for ri = 0:(numKPAXRuns - 1)
-            fname = sprintf('%s_KPAX_delta%s_run%d.csv', env, deltas{di}, ri);
-            fpath = fullfile(dataDir, fname);
-            if isfile(fpath)
-                runs{ri + 1} = readtable(fpath);
-            end
-        end
-        kpaxIterData{di} = runs;
-    end
-    fprintf('  KPAX data loaded for %d delta configurations.\n', length(deltas));
-
-    %% --- Load KinoPaxSTAR Per-Iteration Data (new benchmark: {env}_KinoPaxSTAR_delta{delta}_run{n}.csv) ---
-    kinoPaxStarIterData = cell(1, length(deltas));
-    for di = 1:length(deltas)
-        runs = cell(1, numKinoPaxStarRuns);
-        for ri = 0:(numKinoPaxStarRuns - 1)
-            fname = sprintf('%s_KinoPaxSTAR_delta%s_run%d.csv', env, deltas{di}, ri);
-            fpath = fullfile(dataDir, fname);
-            if isfile(fpath)
-                runs{ri + 1} = readtable(fpath);
-            end
-        end
-        kinoPaxStarIterData{di} = runs;
-    end
-    fprintf('  KinoPaxSTAR data loaded for %d delta configurations.\n', length(deltas));
-
-    %% ==================================================================
-    %  FIGURE: Best Cost vs Iteration (mean +/- std)
-    %  ==================================================================
-    figNum = figNum + 1;
-    figure('Name', sprintf('%s - Cost vs Iteration', envTitle), ...
-           'Position', [50 50 900 600]);
-    hold on;
-
-    for di = 1:length(deltas)
-        runs = iterData{di};
-
-        maxIter = 0;
-        for ri = 1:numRuns
-            if ~isempty(runs{ri})
-                maxIter = max(maxIter, max(runs{ri}.iteration));
-            end
-        end
-        if maxIter == 0, continue; end
-
-        allCost = NaN(numRuns, maxIter);
-        for ri = 1:numRuns
-            if ~isempty(runs{ri})
-                iters = runs{ri}.iteration;
-                allCost(ri, iters) = runs{ri}.best_cost;
-            end
-        end
-        allCost(allCost > MAX_FLOAT_THRESH) = NaN;
-
-        meanC  = mean(allCost, 1, 'omitnan');
-        stdC   = std(allCost, 0, 1, 'omitnan');
-        itrVec = 1:maxIter;
-
-        validIdx = ~isnan(meanC);
-        if any(validIdx)
-            xFill = [itrVec(validIdx), fliplr(itrVec(validIdx))];
-            yFill = [meanC(validIdx) + stdC(validIdx), fliplr(meanC(validIdx) - stdC(validIdx))];
-            fill(xFill, yFill, deltaColors(di, :), ...
-                'FaceAlpha', 0.15, 'EdgeColor', 'none', 'HandleVisibility', 'off');
-            plot(itrVec(validIdx), meanC(validIdx), deltaStyles{di}, ...
-                'Color', deltaColors(di, :), 'LineWidth', 1.8, ...
-                'DisplayName', deltaLabels{di});
-        end
-    end
-
-    % --- KinoPaxSTAR curves on iteration plot (dotted, same delta colors) ---
-    for di = 1:length(deltas)
-        runs = kinoPaxStarIterData{di};
-        maxIter = 0;
-        for ri = 1:numKinoPaxStarRuns
-            if ~isempty(runs{ri}), maxIter = max(maxIter, max(runs{ri}.iteration)); end
-        end
-        if maxIter == 0, continue; end
-        allCost = NaN(numKinoPaxStarRuns, maxIter);
-        for ri = 1:numKinoPaxStarRuns
-            if ~isempty(runs{ri})
-                iters = runs{ri}.iteration;
-                allCost(ri, iters) = runs{ri}.best_cost;
-            end
-        end
-        allCost(allCost > MAX_FLOAT_THRESH) = NaN;
-        meanC  = mean(allCost, 1, 'omitnan');
-        itrVec = 1:maxIter;
-        validIdx = ~isnan(meanC);
-        if any(validIdx)
-            plot(itrVec(validIdx), meanC(validIdx), ':', ...
-                'Color', deltaColors(di, :), 'LineWidth', 1.8, ...
-                'DisplayName', [deltaLabels{di} ' (STAR)']);
-        end
-    end
-
-    % --- KPAX curves on iteration plot (dashed, same delta colors) ---
-    for di = 1:length(deltas)
-        runs = kpaxIterData{di};
-        maxIter = 0;
-        for ri = 1:numKPAXRuns
-            if ~isempty(runs{ri}), maxIter = max(maxIter, max(runs{ri}.iteration)); end
-        end
-        if maxIter == 0, continue; end
-        allCost = NaN(numKPAXRuns, maxIter);
-        for ri = 1:numKPAXRuns
-            if ~isempty(runs{ri})
-                iters = runs{ri}.iteration;
-                allCost(ri, iters) = runs{ri}.best_cost;
-            end
-        end
-        allCost(allCost > MAX_FLOAT_THRESH) = NaN;
-        meanC  = mean(allCost, 1, 'omitnan');
-        itrVec = 1:maxIter;
-        validIdx = ~isnan(meanC);
-        if any(validIdx)
-            plot(itrVec(validIdx), meanC(validIdx), '--', ...
-                'Color', kpaxDeltaColors(di, :), 'LineWidth', 1.8, ...
-                'DisplayName', [deltaLabels{di} ' (KPAX)']);
-        end
-    end
-
-    xlabel('Iteration');
-    ylabel('Path Cost (workspace distance)');
-    title(sprintf('Best Cost vs Iteration \x2014 %s Environment', envTitle));
-    legend('Location', 'best', 'FontSize', 7);
-    grid on;
-    set(gca, 'FontSize', 10);
-
-    %% ==================================================================
-    %  FIGURE: Best Cost vs Elapsed Time (mean +/- std)
-    %  Same style as iteration plot but with time on x-axis
-    %  ==================================================================
-    figNum = figNum + 1;
-    figure('Name', sprintf('%s - Cost vs Time', envTitle), ...
-           'Position', [100 100 900 600]);
-    hold on;
-
-    % Determine global time range across all deltas and KPAX
-    globalMaxTime = 0;
-    for di = 1:length(deltas)
-        runs = iterData{di};
-        for ri = 1:numRuns
-            if ~isempty(runs{ri})
-                globalMaxTime = max(globalMaxTime, max(runs{ri}.elapsed_time_ms));
-            end
-        end
-    end
-    for di = 1:length(deltas)
-        runs = kpaxIterData{di};
-        for ri = 1:numKPAXRuns
-            if ~isempty(runs{ri})
-                globalMaxTime = max(globalMaxTime, max(runs{ri}.elapsed_time_ms));
-            end
-        end
-    end
-    for di = 1:length(deltas)
-        runs = kinoPaxStarIterData{di};
-        for ri = 1:numKinoPaxStarRuns
-            if ~isempty(runs{ri})
-                globalMaxTime = max(globalMaxTime, max(runs{ri}.elapsed_time_ms));
-            end
-        end
-    end
-
-    if globalMaxTime > 0
-        % Common time grid for interpolation
-        numTimeSamples = 500;
-        commonTime = linspace(0, globalMaxTime, numTimeSamples);
-
-        for di = 1:length(deltas)
-            runs = iterData{di};
-
-            allCostTime = NaN(numRuns, numTimeSamples);
-            for ri = 1:numRuns
-                if ~isempty(runs{ri})
-                    riCost = runs{ri}.best_cost;
-                    riCost(riCost > MAX_FLOAT_THRESH) = NaN;
-                    riTime = runs{ri}.elapsed_time_ms;
-                    
-                    % Handle duplicate time values - keep last occurrence
-                    [riTime, uniqueIdx] = unique(riTime, 'last');
-                    riCost = riCost(uniqueIdx);
-                    
-                    if length(riTime) >= 2
-                        allCostTime(ri, :) = interp1(riTime, riCost, commonTime, 'previous', NaN);
-                    end
-                end
-            end
-
-            meanC  = mean(allCostTime, 1, 'omitnan');
-            stdC   = std(allCostTime, 0, 1, 'omitnan');
-
-            validIdx = ~isnan(meanC);
-            if any(validIdx)
-                xFill = [commonTime(validIdx), fliplr(commonTime(validIdx))];
-                yFill = [meanC(validIdx) + stdC(validIdx), fliplr(meanC(validIdx) - stdC(validIdx))];
-                fill(xFill, yFill, deltaColors(di, :), ...
-                    'FaceAlpha', 0.15, 'EdgeColor', 'none', 'HandleVisibility', 'off');
-                plot(commonTime(validIdx), meanC(validIdx), deltaStyles{di}, ...
-                    'Color', deltaColors(di, :), 'LineWidth', 1.8, ...
-                    'DisplayName', deltaLabels{di});
-            end
-        end
-
-        % --- KinoPaxSTAR curves (dotted, same delta colors) ---
-        for di = 1:length(deltas)
-            runs = kinoPaxStarIterData{di};
-            allCostTime = NaN(numKinoPaxStarRuns, numTimeSamples);
-            for ri = 1:numKinoPaxStarRuns
-                if ~isempty(runs{ri})
-                    riCost = runs{ri}.best_cost;
-                    riCost(riCost > MAX_FLOAT_THRESH) = NaN;
-                    riTime = runs{ri}.elapsed_time_ms;
-                    [riTime, uniqueIdx] = unique(riTime, 'last');
-                    riCost = riCost(uniqueIdx);
-                    if length(riTime) >= 2
-                        allCostTime(ri, :) = interp1(riTime, riCost, commonTime, 'previous', NaN);
-                    end
-                end
-            end
-            meanC = mean(allCostTime, 1, 'omitnan');
-            validIdx = ~isnan(meanC);
-            if any(validIdx)
-                plot(commonTime(validIdx), meanC(validIdx), ':', ...
-                    'Color', deltaColors(di, :), 'LineWidth', 1.8, ...
-                    'DisplayName', [deltaLabels{di} ' (STAR)']);
-            end
-        end
-
-        % --- KPAX curves (dashed, same delta colors) ---
-        for di = 1:length(deltas)
-            runs = kpaxIterData{di};
-            allCostTime = NaN(numKPAXRuns, numTimeSamples);
-            for ri = 1:numKPAXRuns
-                if ~isempty(runs{ri})
-                    riCost = runs{ri}.best_cost;
-                    riCost(riCost > MAX_FLOAT_THRESH) = NaN;
-                    riTime = runs{ri}.elapsed_time_ms;
-                    [riTime, uniqueIdx] = unique(riTime, 'last');
-                    riCost = riCost(uniqueIdx);
-                    if length(riTime) >= 2
-                        allCostTime(ri, :) = interp1(riTime, riCost, commonTime, 'previous', NaN);
-                    end
-                end
-            end
-            meanC = mean(allCostTime, 1, 'omitnan');
-            validIdx = ~isnan(meanC);
-            if any(validIdx)
-                plot(commonTime(validIdx), meanC(validIdx), '--', ...
-                    'Color', kpaxDeltaColors(di, :), 'LineWidth', 1.8, ...
-                    'DisplayName', [deltaLabels{di} ' (KPAX)']);
-            end
-        end
-    end
-
-    xlabel('Elapsed Time (ms)');
-    ylabel('Path Cost (workspace distance)');
-    title(sprintf('Best Cost vs Time \x2014 %s Environment', envTitle));
-    legend('Location', 'best', 'FontSize', 7);
-    xlim([0 1000]);  % 10 seconds max
-    grid on;
-    set(gca, 'FontSize', 10);
-
-    %% ==================================================================
-    %  FIGURE: Best Cost vs Time — LINE PLOT (mean + individual runs)
-    %  Kept alongside box plot for reference
-    %  ==================================================================
-    figNum = figNum + 1;
-    figure('Name', sprintf('%s - Cost vs Time (Lines)', envTitle), ...
-           'Position', [120 120 900 600]);
-    hold on;
-
-    for di = 1:length(deltas)
-        runs = iterData{di};
-
-        % Thin individual runs
-        for ri = 1:numRuns
-            if ~isempty(runs{ri})
-                costs = runs{ri}.best_cost;
-                costs(costs > MAX_FLOAT_THRESH) = NaN;
-                t = runs{ri}.elapsed_time_ms;
-                plot(t, costs, '-', 'Color', [deltaColors(di,:), 0.2], ...
-                    'LineWidth', 0.5, 'HandleVisibility', 'off');
-            end
-        end
-
-        % Bold mean
-        if ~isempty(runs{1})
-            refTime = runs{1}.elapsed_time_ms;
-            refCost = runs{1}.best_cost;
-            refCost(refCost > MAX_FLOAT_THRESH) = NaN;
-            
-            % Handle duplicates in reference
-            [refTime, uniqueIdx] = unique(refTime, 'last');
-            refCost = refCost(uniqueIdx);
-            
-            allCostTime = NaN(numRuns, length(refTime));
-            allCostTime(1, :) = refCost;
-            for ri = 2:numRuns
-                if ~isempty(runs{ri})
-                    riCost = runs{ri}.best_cost;
-                    riCost(riCost > MAX_FLOAT_THRESH) = NaN;
-                    riTime = runs{ri}.elapsed_time_ms;
-                    
-                    % Handle duplicate time values
-                    [riTime, uniqueIdx] = unique(riTime, 'last');
-                    riCost = riCost(uniqueIdx);
-                    
-                    if length(riTime) >= 2
-                        allCostTime(ri, :) = interp1(riTime, riCost, ...
-                            refTime, 'previous', NaN);
-                    end
-                end
-            end
-            meanCT = mean(allCostTime, 1, 'omitnan');
-            validIdx = ~isnan(meanCT);
-            if any(validIdx)
-                plot(refTime(validIdx), meanCT(validIdx), deltaStyles{di}, ...
-                    'Color', deltaColors(di,:), 'LineWidth', 2.0, ...
-                    'DisplayName', deltaLabels{di});
-            end
-        end
-    end
-
-    % --- KPAX curves: all runs (thin) + per-delta mean (dashed, KPAX colors) ---
-    for di = 1:length(deltas)
-        runs = kpaxIterData{di};
-
-        % Thin individual runs
-        for ri = 1:numKPAXRuns
-            if ~isempty(runs{ri})
-                costs = runs{ri}.best_cost;
-                costs(costs > MAX_FLOAT_THRESH) = NaN;
-                t = runs{ri}.elapsed_time_ms;
-                plot(t, costs, '-', 'Color', [kpaxDeltaColors(di,:), 0.2], ...
-                    'LineWidth', 0.5, 'HandleVisibility', 'off');
-            end
-        end
-
-        % Bold mean
-        if isempty(runs{1}), continue; end
-        refTime = runs{1}.elapsed_time_ms;
-        refCost = runs{1}.best_cost;
-        refCost(refCost > MAX_FLOAT_THRESH) = NaN;
-        [refTime, uniqueIdx] = unique(refTime, 'last');
-        refCost = refCost(uniqueIdx);
-        allCostTime = NaN(numKPAXRuns, length(refTime));
-        allCostTime(1, :) = refCost;
-        for ri = 2:numKPAXRuns
-            if ~isempty(runs{ri})
-                riCost = runs{ri}.best_cost;
-                riCost(riCost > MAX_FLOAT_THRESH) = NaN;
-                riTime = runs{ri}.elapsed_time_ms;
-                [riTime, uniqueIdx] = unique(riTime, 'last');
-                riCost = riCost(uniqueIdx);
-                if length(riTime) >= 2
-                    allCostTime(ri, :) = interp1(riTime, riCost, refTime, 'previous', NaN);
-                end
-            end
-        end
-        meanCT = mean(allCostTime, 1, 'omitnan');
-        validIdx = ~isnan(meanCT);
-        if any(validIdx)
-            plot(refTime(validIdx), meanCT(validIdx), '--', ...
-                'Color', kpaxDeltaColors(di,:), 'LineWidth', 2.0, ...
-                'DisplayName', [deltaLabels{di} ' (KPAX)']);
-        end
-    end
-
-    xlabel('Elapsed Time (ms)');
-    ylabel('Path Cost (workspace distance)');
-    title(sprintf('Cost Convergence over Wall Time \x2014 %s Environment', envTitle));
-    legend('Location', 'best', 'FontSize', 7);
-    xlim([0 1000]);  % 10 seconds max
-    grid on;
-    set(gca, 'FontSize', 10);
-
-    %% ==================================================================
-    %  FIGURE: Summary Bar Charts
-    %  ==================================================================
-    if ~isempty(summaryTable)
-        figNum = figNum + 1;
-        figure('Name', sprintf('%s - Summary', envTitle), ...
-               'Position', [150 150 1400 450]);
-
-        nDelta = length(deltas);
-
-        % --- First Solution Iteration ---
-        subplot(1, 3, 1); hold on;
-
-        barData = NaN(1, nDelta);
-        barErr  = NaN(1, nDelta);
-
-        for di = 1:nDelta
-            runs = iterData{di};
-            vals = NaN(1, numRuns);
-            for ri = 1:numRuns
-                if ~isempty(runs{ri})
-                    vals(ri) = firstSolutionIter(runs{ri}, MAX_FLOAT_THRESH);
-                end
-            end
-            vals(vals < 0) = NaN;
-            barData(di) = mean(vals, 'omitnan');
-            barErr(di)  = std(vals, 'omitnan');
-        end
-
-        b1 = bar(barData);
-        b1.FaceColor = 'flat';
-        for di = 1:nDelta
-            b1.CData(di,:) = deltaColors(di,:);
-        end
-        errorbar(1:nDelta, barData, barErr, 'k.', 'LineWidth', 1);
-
-        set(gca, 'XTick', 1:nDelta, 'XTickLabel', deltaLabels, 'FontSize', 8);
-        xtickangle(25);
-        ylabel('Iteration');
-        title('First Solution Iteration');
-        grid on;
-
-        % --- Final Best Cost ---
-        subplot(1, 3, 2); hold on;
-
-        barData2 = NaN(1, nDelta);
-        barErr2  = NaN(1, nDelta);
-
-        for di = 1:nDelta
-            mask = strcmp(summaryTable.delta_label, deltas{di}) & ...
-                   strcmp(summaryTable.environment, env);
-            vals = summaryTable.final_best_cost(mask);
-            vals(vals > MAX_FLOAT_THRESH) = NaN;
-            barData2(di) = mean(vals, 'omitnan');
-            barErr2(di)  = std(vals, 'omitnan');
-        end
-
-        b2 = bar(barData2);
-        b2.FaceColor = 'flat';
-        for di = 1:nDelta
-            b2.CData(di,:) = deltaColors(di,:);
-        end
-        errorbar(1:nDelta, barData2, barErr2, 'k.', 'LineWidth', 1);
-
-        set(gca, 'XTick', 1:nDelta, 'XTickLabel', deltaLabels, 'FontSize', 8);
-        xtickangle(25);
-        ylabel('Path Cost (workspace distance)');
-        title('Final Best Cost');
-        grid on;
-
-        % --- Total Execution Time ---
-        subplot(1, 3, 3); hold on;
-
-        barData3 = NaN(1, nDelta);
-        barErr3  = NaN(1, nDelta);
-
-        for di = 1:nDelta
-            mask = strcmp(summaryTable.delta_label, deltas{di}) & ...
-                   strcmp(summaryTable.environment, env);
-            vals = summaryTable.total_time_s(mask);
-            barData3(di) = mean(vals, 'omitnan');
-            barErr3(di)  = std(vals, 'omitnan');
-        end
-
-        b3 = bar(barData3);
-        b3.FaceColor = 'flat';
-        for di = 1:nDelta
-            b3.CData(di,:) = deltaColors(di,:);
-        end
-        errorbar(1:nDelta, barData3, barErr3, 'k.', 'LineWidth', 1);
-
-        set(gca, 'XTick', 1:nDelta, 'XTickLabel', deltaLabels, 'FontSize', 8);
-        xtickangle(25);
-        ylabel('Time (s)');
-        title('Total Execution Time');
-        grid on;
-
-        sgtitle(sprintf('KinoPaxPlus Delta Comparison \x2014 %s (mean \\pm std over %d runs)', ...
-            envTitle, numRuns), 'FontSize', 12, 'FontWeight', 'bold');
-    end
-
-    %% ==================================================================
-    %  FIGURE: Tree Size Growth vs Iteration
-    %  ==================================================================
-    figNum = figNum + 1;
-    figure('Name', sprintf('%s - Tree Size', envTitle), ...
-           'Position', [200 50 900 600]);
-    hold on;
-
-    for di = 1:length(deltas)
-        runs = iterData{di};
-
-        maxIter = 0;
-        for ri = 1:numRuns
-            if ~isempty(runs{ri})
-                maxIter = max(maxIter, max(runs{ri}.iteration));
-            end
-        end
-        if maxIter == 0, continue; end
-
-        allTree = NaN(numRuns, maxIter);
-        for ri = 1:numRuns
-            if ~isempty(runs{ri})
-                iters = runs{ri}.iteration;
-                allTree(ri, iters) = runs{ri}.tree_size;
-            end
-        end
-
-        meanT = mean(allTree, 1, 'omitnan');
-        itrVec = 1:maxIter;
-        validIdx = ~isnan(meanT);
-
-        plot(itrVec(validIdx), meanT(validIdx), deltaStyles{di}, ...
-            'Color', deltaColors(di, :), 'LineWidth', 1.8, ...
-            'DisplayName', deltaLabels{di});
-    end
-
-    xlabel('Iteration');
-    ylabel('Tree Size');
-    title(sprintf('Tree Size Growth over Iterations \x2014 %s Environment', envTitle));
-    legend('Location', 'best', 'FontSize', 7);
-    grid on;
-    set(gca, 'FontSize', 10);
-
-    %% ==================================================================
-    %  FIGURE: Solution Success Rate
-    %  ==================================================================
-    figNum = figNum + 1;
-    figure('Name', sprintf('%s - Success Rate', envTitle), ...
-           'Position', [250 100 700 400]);
-
-    nDelta = length(deltas);
-    successRate = NaN(1, nDelta);
-
+    % --- Load every planner's runs for every delta: R{di, pi} = cell of tables ---
+    R = cell(nDelta, nPlanner);
     for di = 1:nDelta
-        runs = iterData{di};
-        nSuccess = 0;
-        nTotal   = 0;
-        for ri = 1:numRuns
-            if ~isempty(runs{ri})
-                nTotal = nTotal + 1;
-                if firstSolutionIter(runs{ri}, MAX_FLOAT_THRESH) > 0
-                    nSuccess = nSuccess + 1;
-                end
+        for pi = 1:nPlanner
+            R{di, pi} = loadRuns(dataDir, env, plannerNames{pi}, deltas{di}, numRunsPer(pi));
+            fprintf('  %-12s delta=%-9s : %d runs\n', plannerNames{pi}, deltas{di}, numel(R{di, pi}));
+        end
+    end
+
+    %% ---------- FIGURE 1: Best Cost vs Iteration ----------
+    figNum = figNum + 1;
+    figure('Name', sprintf('%s - Cost vs Iteration', envTitle), 'Position', [40 40 1150 780]);
+    tl = tiledlayout(nRows, nCols, 'TileSpacing', 'compact', 'Padding', 'compact');
+    for di = 1:nDelta
+        nexttile; hold on;
+        for pi = 1:nPlanner
+            plotBandIter(R{di, pi}, 'best_cost', plannerColors(pi, :), plannerStyles{pi}, plannerNames{pi});
+        end
+        title(deltaLabels{di});
+        xlabel('Iteration'); ylabel('Path Cost (workspace distance)'); grid on;
+        if di == 1, legend('Location', 'best', 'FontSize', 7); end
+    end
+    title(tl, sprintf('Best Cost vs Iteration \x2014 %s Environment', envTitle), 'FontWeight', 'bold');
+
+    %% ---------- FIGURE 2: Best Cost vs Time (fair axis) ----------
+    figNum = figNum + 1;
+    figure('Name', sprintf('%s - Cost vs Time', envTitle), 'Position', [70 60 1150 780]);
+    tl = tiledlayout(nRows, nCols, 'TileSpacing', 'compact', 'Padding', 'compact');
+    for di = 1:nDelta
+        nexttile; hold on;
+        tmax = globalMaxTime(R(di, :));
+        if tmax > 0
+            ct = linspace(0, tmax, numTimeSamples);
+            for pi = 1:nPlanner
+                plotBandTime(R{di, pi}, 'best_cost', ct, plannerColors(pi, :), plannerStyles{pi}, plannerNames{pi});
             end
         end
-        if nTotal > 0
-            successRate(di) = nSuccess / nTotal * 100;
+        title(deltaLabels{di});
+        xlabel('Elapsed Time (ms)'); ylabel('Path Cost (workspace distance)'); grid on;
+        if di == 1, legend('Location', 'best', 'FontSize', 7); end
+    end
+    title(tl, sprintf('Best Cost vs Time \x2014 %s Environment', envTitle), 'FontWeight', 'bold');
+
+    %% ---------- FIGURE 3: Tree Size vs Iteration ----------
+    figNum = figNum + 1;
+    figure('Name', sprintf('%s - Tree Size', envTitle), 'Position', [100 40 1150 780]);
+    tl = tiledlayout(nRows, nCols, 'TileSpacing', 'compact', 'Padding', 'compact');
+    for di = 1:nDelta
+        nexttile; hold on;
+        for pi = 1:nPlanner
+            plotBandIter(R{di, pi}, 'tree_size', plannerColors(pi, :), plannerStyles{pi}, plannerNames{pi});
+        end
+        title(deltaLabels{di});
+        xlabel('Iteration'); ylabel('Tree Size'); grid on;
+        if di == 1, legend('Location', 'best', 'FontSize', 7); end
+    end
+    title(tl, sprintf('Tree Size Growth vs Iteration \x2014 %s Environment', envTitle), 'FontWeight', 'bold');
+
+    %% ---------- Aggregate summary metrics per (delta, planner) ----------
+    mFirstIter = NaN(nDelta, nPlanner); eFirstIter = NaN(nDelta, nPlanner);
+    mFinalCost = NaN(nDelta, nPlanner); eFinalCost = NaN(nDelta, nPlanner);
+    mTotalTime = NaN(nDelta, nPlanner); eTotalTime = NaN(nDelta, nPlanner);
+    mSuccess   = NaN(nDelta, nPlanner);
+    for di = 1:nDelta
+        for pi = 1:nPlanner
+            runs = R{di, pi};
+            fiVals = []; fcVals = []; ttVals = [];
+            nSol = 0; nTot = 0;
+            for ri = 1:numel(runs)
+                if isempty(runs{ri}), continue; end
+                nTot = nTot + 1;
+                fi = firstSolIter(runs{ri}, MAX_FLOAT_THRESH);
+                if fi > 0, nSol = nSol + 1; fiVals(end + 1) = fi; end %#ok<AGROW>
+                fc = finalCost(runs{ri}, MAX_FLOAT_THRESH);
+                if ~isnan(fc), fcVals(end + 1) = fc; end %#ok<AGROW>
+                ttVals(end + 1) = runs{ri}.elapsed_time_ms(end) / 1000; %#ok<AGROW>
+            end
+            if ~isempty(fiVals), mFirstIter(di, pi) = mean(fiVals); eFirstIter(di, pi) = std(fiVals); end
+            if ~isempty(fcVals), mFinalCost(di, pi) = mean(fcVals); eFinalCost(di, pi) = std(fcVals); end
+            if ~isempty(ttVals), mTotalTime(di, pi) = mean(ttVals); eTotalTime(di, pi) = std(ttVals); end
+            if nTot > 0,         mSuccess(di, pi)   = 100 * nSol / nTot; end
         end
     end
 
-    b4 = bar(successRate);
-    b4.FaceColor = 'flat';
-    for di = 1:nDelta
-        b4.CData(di,:) = deltaColors(di,:);
-    end
+    %% ---------- FIGURE 4: Summary bars (grouped by planner) ----------
+    figNum = figNum + 1;
+    figure('Name', sprintf('%s - Summary', envTitle), 'Position', [130 120 1500 460]);
 
-    set(gca, 'XTick', 1:nDelta, 'XTickLabel', deltaLabels, 'FontSize', 11);
-    xtickangle(25);
-    ylabel('Success Rate (%)');
+    subplot(1, 3, 1);
+    groupedBar(mFirstIter, eFirstIter, deltaLabels, plannerColors, 'Iteration', 'First Solution Iteration');
+    legend(plannerNames, 'Location', 'best', 'FontSize', 7);
+
+    subplot(1, 3, 2);
+    groupedBar(mFinalCost, eFinalCost, deltaLabels, plannerColors, 'Path Cost (workspace distance)', 'Final Best Cost');
+
+    subplot(1, 3, 3);
+    groupedBar(mTotalTime, eTotalTime, deltaLabels, plannerColors, 'Time (s)', 'Total Execution Time');
+
+    sgtitle(sprintf('Planner Comparison across Delta \x2014 %s (mean \\pm std)', envTitle), ...
+        'FontSize', 12, 'FontWeight', 'bold');
+
+    %% ---------- FIGURE 5: Solution Success Rate (grouped by planner) ----------
+    figNum = figNum + 1;
+    figure('Name', sprintf('%s - Success Rate', envTitle), 'Position', [160 160 900 480]);
+    groupedBar(mSuccess, [], deltaLabels, plannerColors, 'Success Rate (%)', ...
+        sprintf('Solution Success Rate \x2014 %s', envTitle));
     ylim([0 110]);
-    title(sprintf('Solution Success Rate by Delta \x2014 %s', envTitle), 'FontSize', 13);
-    grid on;
-
-    % Add percentage labels on bars
-    xtips = b4.XEndPoints;
-    ytips = b4.YEndPoints;
-    labels = string(round(successRate)) + "%";
-    text(xtips, ytips + 2, labels, 'HorizontalAlignment', 'center', ...
-        'VerticalAlignment', 'bottom', 'FontSize', 10, 'FontWeight', 'bold');
-
-    %% ==================================================================
-    %  FIGURE: Final Best Cost — KinoPaxPlus vs KinoPaxSTAR (per delta)
-    %  Computed from per-iteration data (robust to the summary-table
-    %  delta_label limitation, where all KinoPaxSTAR rows share "KinoPaxSTAR").
-    %  ==================================================================
-    figNum = figNum + 1;
-    figure('Name', sprintf('%s - KinoPaxPlus vs KinoPaxSTAR Final Cost', envTitle), ...
-           'Position', [300 150 900 500]);
-    nDelta = length(deltas);
-    kppFinal      = NaN(1, nDelta);
-    kinoPaxStarFinal = NaN(1, nDelta);
-    for di = 1:nDelta
-        kppFinal(di)      = meanFinalCost(iterData{di},         numRuns,        MAX_FLOAT_THRESH);
-        kinoPaxStarFinal(di) = meanFinalCost(kinoPaxStarIterData{di}, numKinoPaxStarRuns, MAX_FLOAT_THRESH);
-    end
-    bar([kppFinal(:), kinoPaxStarFinal(:)]);
-    legend({'KinoPaxPlus', 'KinoPaxSTAR'}, 'Location', 'best', 'FontSize', 8);
-    set(gca, 'XTick', 1:nDelta, 'XTickLabel', deltaLabels, 'FontSize', 8);
-    xtickangle(25);
-    ylabel('Final Path Cost (workspace distance)');
-    title(sprintf('Final Best Cost: KinoPaxPlus vs KinoPaxSTAR \x2014 %s', envTitle));
-    grid on;
+    legend(plannerNames, 'Location', 'best', 'FontSize', 8);
 
 end  % environment loop
 
 fprintf('\nAll figures generated (%d total).\n', figNum);
 
-%% --- Helper: find first solution iteration ---
-function firstIter = firstSolutionIter(tbl, thresh)
-    solIdx = find(tbl.best_cost < thresh, 1, 'first');
-    if isempty(solIdx)
-        firstIter = -1;
-    else
-        firstIter = tbl.iteration(solIdx);
-    end
-end
+%% ====================== helper functions ======================
 
-%% --- Helper: find first solution time (ms) ---
-function firstTime = firstSolutionTime(tbl, thresh)
-    solIdx = find(tbl.best_cost < thresh, 1, 'first');
-    if isempty(solIdx)
-        firstTime = NaN;
-    else
-        firstTime = tbl.elapsed_time_ms(solIdx);
-    end
-end
-
-%% --- Helper: mean final best cost across a delta's runs ---
-function c = meanFinalCost(runs, numRuns, thresh)
-    vals = NaN(1, numRuns);
-    for ri = 1:numel(runs)
-        if ~isempty(runs{ri})
-            costs = runs{ri}.best_cost;
-            costs(costs > thresh) = NaN;
-            v = costs(~isnan(costs));
-            if ~isempty(v), vals(ri) = v(end); end
+function runs = loadRuns(dataDir, env, planner, delta, numRuns)
+    % Load a planner's per-run CSVs for one delta; missing files are skipped.
+    runs = {};
+    for ri = 0:(numRuns - 1)
+        switch planner
+            case 'KinoPaxPlus'
+                fn = sprintf('%s_delta%s_run%d.csv', env, delta, ri);
+            case 'KPAX'
+                fn = sprintf('%s_KPAX_delta%s_run%d.csv', env, delta, ri);
+            case 'PruneKPAX'
+                fn = sprintf('%s_PruneKPAX_delta%s_run%d.csv', env, delta, ri);
+            case 'KinoPaxSTAR'
+                fn = sprintf('%s_KinoPaxSTAR_delta%s_run%d.csv', env, delta, ri);
+            otherwise
+                error('unknown planner %s', planner);
+        end
+        fp = fullfile(dataDir, fn);
+        if isfile(fp)
+            runs{end + 1} = readtable(fp); %#ok<AGROW>
         end
     end
-    c = mean(vals, 'omitnan');
+end
+
+function tmax = globalMaxTime(groups)
+    % Max elapsed_time_ms across a set of run-cell-arrays (one delta's planners).
+    tmax = 0;
+    for g = 1:numel(groups)
+        runs = groups{g};
+        for ri = 1:numel(runs)
+            if ~isempty(runs{ri})
+                tmax = max(tmax, max(runs{ri}.elapsed_time_ms));
+            end
+        end
+    end
+end
+
+function plotBandIter(runs, col, color, style, name)
+    % mean +/- std of column 'col' vs iteration across runs
+    if isempty(runs), return; end
+    maxIter = 0;
+    for ri = 1:numel(runs)
+        if ~isempty(runs{ri}), maxIter = max(maxIter, max(runs{ri}.iteration)); end
+    end
+    if maxIter == 0, return; end
+    A = NaN(numel(runs), maxIter);
+    for ri = 1:numel(runs)
+        if isempty(runs{ri}), continue; end
+        it = runs{ri}.iteration;
+        v  = getCol(runs{ri}, col);
+        if isempty(v), continue; end
+        A(ri, it) = v;
+    end
+    A = sanitize(A);
+    drawBand(1:maxIter, mean(A, 1, 'omitnan'), std(A, 0, 1, 'omitnan'), color, style, name);
+end
+
+function plotBandTime(runs, col, commonTime, color, style, name)
+    % mean +/- std of column 'col' vs a shared time grid (previous-sample hold)
+    if isempty(runs), return; end
+    A = NaN(numel(runs), numel(commonTime));
+    for ri = 1:numel(runs)
+        if isempty(runs{ri}), continue; end
+        t = runs{ri}.elapsed_time_ms;
+        v = getCol(runs{ri}, col);
+        if isempty(v), continue; end
+        [t, uix] = unique(t, 'last');
+        v = v(uix);
+        if numel(t) >= 2
+            A(ri, :) = interp1(t, v, commonTime, 'previous', NaN);
+        end
+    end
+    A = sanitize(A);
+    drawBand(commonTime, mean(A, 1, 'omitnan'), std(A, 0, 1, 'omitnan'), color, style, name);
+end
+
+function v = getCol(tbl, col)
+    if any(strcmp(col, tbl.Properties.VariableNames))
+        v = tbl.(col);
+    else
+        v = [];
+    end
+end
+
+function A = sanitize(A)
+    % Drop cost sentinels (MAX_FLOAT / INFINITY) so they don't distort means.
+    A(A > 1e30) = NaN;
+    A(A == -1)  = NaN;   % harmless for cost/tree_size; guards diagnostic sentinels
+end
+
+function drawBand(x, mu, sd, color, style, name)
+    valid = ~isnan(mu);
+    if ~any(valid), return; end
+    xv = x(valid); mv = mu(valid); sv = sd(valid); sv(isnan(sv)) = 0;
+    fill([xv, fliplr(xv)], [mv + sv, fliplr(mv - sv)], color, ...
+        'FaceAlpha', 0.12, 'EdgeColor', 'none', 'HandleVisibility', 'off');
+    plot(xv, mv, style, 'Color', color, 'LineWidth', 1.8, 'DisplayName', name);
+end
+
+function groupedBar(M, E, deltaLabels, plannerColors, ylab, ttl)
+    % Grouped bars: x-groups = deltas (rows of M), bars within group = planners (cols).
+    hold on;
+    b = bar(M);
+    nP = size(M, 2);
+    for pi = 1:nP
+        b(pi).FaceColor = plannerColors(pi, :);
+    end
+    if ~isempty(E)
+        for pi = 1:nP
+            errorbar(b(pi).XEndPoints, M(:, pi)', E(:, pi)', 'k.', 'LineWidth', 0.7, 'CapSize', 4);
+        end
+    end
+    set(gca, 'XTick', 1:size(M, 1), 'XTickLabel', deltaLabels, 'FontSize', 8);
+    xtickangle(20);
+    ylabel(ylab); title(ttl); grid on;
+end
+
+function it = firstSolIter(tbl, thresh)
+    % Iteration at which this run first reached a finite (< thresh) best_cost; -1 if never.
+    solIdx = find(tbl.best_cost < thresh, 1, 'first');
+    if isempty(solIdx), it = -1; else, it = tbl.iteration(solIdx); end
+end
+
+function c = finalCost(tbl, thresh)
+    % Last finite best_cost in one run; NaN if the run never found a solution.
+    costs = tbl.best_cost;
+    costs(costs > thresh) = NaN;
+    v = costs(~isnan(costs));
+    if isempty(v), c = NaN; else, c = v(end); end
 end
