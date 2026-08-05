@@ -33,13 +33,14 @@ deltaLabels = {'Larger-\delta (14k)', ...
 
 % Planners overlaid in every panel (color = planner, consistent with
 % visualize_frontier_growth.m). Order controls legend/bar order.
-plannerNames  = {'KinoPaxPlus', 'KinoPaxSTAR', 'KPAX', 'PruneKPAX'};
-plannerColors = [0.20 0.40 0.80;    % KinoPaxPlus - blue
-                 0.55 0.15 0.60;    % KinoPaxSTAR - purple
-                 0.10 0.10 0.10;    % KPAX        - near-black
-                 0.85 0.45 0.10];   % PruneKPAX   - orange
-plannerStyles = {'-', '-', '-', '-'};
-numRunsPer    = [50, 50, 50, 50];   % max runs searched per planner (missing files skipped)
+plannerNames  = {'KinoPaxPlus', 'KinoPaxSTAR', 'KinoPaxSTARcostprune', 'KPAX', 'PruneKPAX'};
+plannerColors = [0.20 0.40 0.80;    % KinoPaxPlus          - blue
+                 0.55 0.15 0.60;    % KinoPaxSTAR          - purple
+                 0.10 0.60 0.55;    % KinoPaxSTARcostprune - teal
+                 0.10 0.10 0.10;    % KPAX                 - near-black
+                 0.85 0.45 0.10];   % PruneKPAX            - orange
+plannerStyles = {'-', '-', '-', '-', '-'};
+numRunsPer    = [50, 50, 50, 50, 50];   % max runs searched per planner (missing files skipped)
 
 MAX_FLOAT_THRESH = 1e30;   % best_cost sentinel (MAX_FLOAT / INFINITY) -> NaN
 numTimeSamples   = 500;
@@ -183,6 +184,8 @@ function runs = loadRuns(dataDir, env, planner, delta, numRuns)
                 fn = sprintf('%s_PruneKPAX_delta%s_run%d.csv', env, delta, ri);
             case 'KinoPaxSTAR'
                 fn = sprintf('%s_KinoPaxSTAR_delta%s_run%d.csv', env, delta, ri);
+            case 'KinoPaxSTARcostprune'
+                fn = sprintf('%s_KinoPaxSTARcostprune_delta%s_run%d.csv', env, delta, ri);
             otherwise
                 error('unknown planner %s', planner);
         end
