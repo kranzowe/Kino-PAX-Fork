@@ -40,6 +40,7 @@ colPrune   = [0.85 0.45 0.10];   % orange
 colKPP     = [0.20 0.40 0.80];   % blue (KinoPaxPlus)
 colStar    = [0.55 0.15 0.60];   % purple (KinoPaxSTAR)
 colCostP   = [0.10 0.60 0.55];   % teal (KinoPaxSTARcostprune)
+colNoPrune = [0.20 0.65 0.25];   % green (KinoPaxSTARNoPrune)
 
 MAX_FLOAT_THRESH = 1e30;
 numTimeSamples   = 500;
@@ -51,7 +52,7 @@ for ei = 1:numel(environments)
     fprintf('\n=== Environment: %s ===\n', env);
 
     % --- Load all runs, grouped by delta and planner ---
-    K = struct('kpp', {{}}, 'kpax', {{}}, 'prune', {{}}, 'star', {{}}, 'costp', {{}}, 'regions', {[]});
+    K = struct('kpp', {{}}, 'kpax', {{}}, 'prune', {{}}, 'star', {{}}, 'costp', {{}}, 'noprune', {{}}, 'regions', {[]});
     data = repmat(K, 1, numel(deltas));
     for di = 1:numel(deltas)
         data(di).kpp      = loadRuns(dataDir, env, 'KinoPaxPlus', deltas{di}, numRuns);
@@ -59,7 +60,8 @@ for ei = 1:numel(environments)
         data(di).prune    = loadRuns(dataDir, env, 'PruneKPAX',   deltas{di}, numBaselineRuns);
         data(di).star     = loadRuns(dataDir, env, 'KinoPaxSTAR',    deltas{di}, numRuns);
         data(di).costp    = loadRuns(dataDir, env, 'KinoPaxSTARcostprune', deltas{di}, numRuns);
-        data(di).regions  = regionCount(data(di).kpp, data(di).kpax, data(di).prune, data(di).star, data(di).costp);
+        data(di).noprune  = loadRuns(dataDir, env, 'KinoPaxSTARNoPrune', deltas{di}, numRuns);
+        data(di).regions  = regionCount(data(di).kpp, data(di).kpax, data(di).prune, data(di).star, data(di).costp, data(di).noprune);
     end
 
     nD = numel(deltas);
@@ -70,7 +72,7 @@ for ei = 1:numel(environments)
     tl = tiledlayout(nRows, nCols, 'TileSpacing', 'compact', 'Padding', 'compact');
     for di = 1:nD
         nexttile; hold on;
-        tmax = globalMaxTime({data(di).kpax, data(di).prune, data(di).kpp, data(di).star, data(di).costp});
+        tmax = globalMaxTime({data(di).kpax, data(di).prune, data(di).kpp, data(di).star, data(di).costp, data(di).noprune});
         if tmax > 0
             ct = linspace(0, tmax, numTimeSamples);
             plotBandTime(data(di).kpax,     'frontier_size', ct, colKPAX,    '-', 'KPAX');
@@ -78,6 +80,7 @@ for ei = 1:numel(environments)
             plotBandTime(data(di).kpp,      'frontier_size', ct, colKPP,     '-', 'KinoPaxPlus');
             plotBandTime(data(di).star,     'frontier_size', ct, colStar,  '-', 'KinoPaxSTAR');
             plotBandTime(data(di).costp,    'frontier_size', ct, colCostP, '-', 'KinoPaxSTARcostprune');
+            plotBandTime(data(di).noprune,  'frontier_size', ct, colNoPrune, '-', 'KinoPaxSTARNoPrune');
         end
         title(sprintf('%s  (R1=%s)', deltas{di}, regStr(data(di).regions)), 'Interpreter', 'none');
         xlabel('Elapsed Time (ms)'); ylabel('Frontier Size'); grid on;
@@ -95,6 +98,7 @@ for ei = 1:numel(environments)
         plotBandIter(data(di).kpp,      'frontier_size', colKPP,     '-', 'KinoPaxPlus');
         plotBandIter(data(di).star,     'frontier_size', colStar,  '-', 'KinoPaxSTAR');
         plotBandIter(data(di).costp,    'frontier_size', colCostP, '-', 'KinoPaxSTARcostprune');
+        plotBandIter(data(di).noprune,  'frontier_size', colNoPrune, '-', 'KinoPaxSTARNoPrune');
         title(sprintf('%s  (R1=%s)', deltas{di}, regStr(data(di).regions)), 'Interpreter', 'none');
         xlabel('Iteration'); ylabel('Frontier Size'); grid on;
         if di == 1, legend('Location', 'best', 'FontSize', 7); end
@@ -111,6 +115,7 @@ for ei = 1:numel(environments)
         plotBandIter(data(di).kpp,      'tree_size', colKPP,     '-', 'KinoPaxPlus');
         plotBandIter(data(di).star,     'tree_size', colStar,  '-', 'KinoPaxSTAR');
         plotBandIter(data(di).costp,    'tree_size', colCostP, '-', 'KinoPaxSTARcostprune');
+        plotBandIter(data(di).noprune,  'tree_size', colNoPrune, '-', 'KinoPaxSTARNoPrune');
         title(sprintf('%s  (R1=%s)', deltas{di}, regStr(data(di).regions)), 'Interpreter', 'none');
         xlabel('Iteration'); ylabel('Tree Size'); grid on;
         if di == 1, legend('Location', 'best', 'FontSize', 7); end
@@ -130,6 +135,7 @@ for ei = 1:numel(environments)
             plotBandIter(data(di).prune,    diagCols{ci}, colPrune,   '--', 'PruneKPAX');
             plotBandIter(data(di).star,     diagCols{ci}, colStar,  ':',  'KinoPaxSTAR');
             plotBandIter(data(di).costp,    diagCols{ci}, colCostP, '-.', 'KinoPaxSTARcostprune');
+            plotBandIter(data(di).noprune,  diagCols{ci}, colNoPrune, '-', 'KinoPaxSTARNoPrune');
             if ci == 1, ylabel(sprintf('%s\nR1=%s', deltas{di}, regStr(data(di).regions)), 'Interpreter', 'none'); end
             if di == 1, title(diagTitles{ci}); end
             if di == nD, xlabel('Iteration'); end
@@ -158,6 +164,8 @@ function runs = loadRuns(dataDir, env, planner, delta, numRuns)
                 fn = sprintf('%s_KinoPaxSTAR_delta%s_run%d.csv', env, delta, ri);
             case 'KinoPaxSTARcostprune'
                 fn = sprintf('%s_KinoPaxSTARcostprune_delta%s_run%d.csv', env, delta, ri);
+            case 'KinoPaxSTARNoPrune'
+                fn = sprintf('%s_KinoPaxSTARNoPrune_delta%s_run%d.csv', env, delta, ri);
             otherwise
                 error('unknown planner %s', planner);
         end
