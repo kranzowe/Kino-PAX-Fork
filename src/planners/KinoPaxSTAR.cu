@@ -253,6 +253,11 @@ void KinoPaxSTAR::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCoun
     h_frontierRepeatSize_ = d_frontierRepeatScanIdx_[MAX_TREE_SIZE - 1];
     (d_activeFrontierRepeatCount_[MAX_TREE_SIZE - 1]) ? h_frontierRepeatSize_ += d_activeFrontierRepeatCount_[MAX_TREE_SIZE - 1] : 0;
 
+    // Cap the expanded frontier to the tree buffer: h_frontierRepeatSize_ (sum of the x15/x1
+    // repeat weights) is otherwise unbounded and would overrun the MAX_TREE_SIZE-length repeat
+    // index buffer and propagate grid near a full tree.
+    if(h_frontierRepeatSize_ > (uint)MAX_TREE_SIZE) h_frontierRepeatSize_ = MAX_TREE_SIZE;
+
     if(h_frontierRepeatSize_ * h_activeBlockSize_ > (MAX_TREE_SIZE - h_treeSize_))
         {
             h_propIterations_ = std::min(int(float(MAX_TREE_SIZE - h_treeSize_) / float(h_frontierRepeatSize_)), int(h_activeBlockSize_));
@@ -366,9 +371,9 @@ __global__ void KinoPaxSTAR_propagateFrontier_kernel2(bool* frontier, uint* acti
                                                    float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid)
 {
     int tid       = blockIdx.x * blockDim.x + threadIdx.x;
+    if(tid >= MAX_TREE_SIZE) return;
     frontier[tid] = false;
     if(tid >= frontierSize * iterations) return;
-    if(tid >= MAX_TREE_SIZE) return;
 
     int activeFrontierIdx = tid / iterations;
     int x0Idx             = activeFrontierIdxs[activeFrontierIdx];

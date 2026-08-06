@@ -73,7 +73,11 @@ __global__ void repeatInd(uint numSamples, uint* activeS, uint* C, uint* prefixS
     uint index    = activeS[tid];
     uint count    = C[index];
     uint startPos = prefixSum[index];
-    for(uint i = 0; i < count; ++i)
+    // repeatedInd (d_activeFrontierRepeatIdxs_) is MAX_TREE_SIZE long. The total expanded
+    // count (sum of C[]) is uncapped and, near a full tree with heavy reactivation + the x15
+    // branching weight, can exceed MAX_TREE_SIZE. Clamp writes to the array bound so this
+    // never writes out of bounds (the surplus repeats simply aren't emitted).
+    for(uint i = 0; i < count && startPos + i < MAX_TREE_SIZE; ++i)
         {
             repeatedInd[startPos + i] = index;
         }
