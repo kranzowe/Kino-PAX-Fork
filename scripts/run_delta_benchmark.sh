@@ -28,10 +28,10 @@ CONFIG_BACKUP="$CONFIG_FILE.bak"
 BUILD_DIR="$PROJECT_DIR/build"
 
 # Delta configs: label W_R1 C_R1 V_R1
-DELTA_LABELS=("larger" "large" "med_large" "med_small")
-DELTA_W_R1=(8 10 20 25)
-DELTA_C_R1=(1  1  1  1)
-DELTA_V_R1=(3  3  3  3)
+DELTA_LABELS=("larger" "large" "med_large") #"med_small")
+DELTA_W_R1=(8 10 20) # 25)
+DELTA_C_R1=(1  1  1) #  1)
+DELTA_V_R1=(3  3  3) #  3)
 
 # Environments and their obstacle files (already in [0,1]^3 for Model 1)
 ENV_NAMES=("house") # add trees back if you want
