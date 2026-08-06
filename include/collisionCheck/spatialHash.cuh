@@ -3,17 +3,22 @@
 #include "config/config.h"
 #include <cuda_runtime.h>
 
-// Spatial hash grid configuration
-// Grid cell size should be slightly larger than typical obstacle size
-// For 100x100x100 workspace with ~100 obstacles, 20x20x20 grid = 8000 cells
-#define GRID_CELL_SIZE 5.0f
+// Spatial hash grid configuration.
+// GRID_CELL_SIZE is workspace-relative: (W_MAX - W_MIN)/16 yields a ~17^3 grid for any
+// model's workspace scale. The old hardcoded 5.0f was tuned for a 100^3 workspace and
+// collapsed Model 1's [0,1]^3 into a SINGLE cell, so every obstacle past
+// MAX_OBSTACLES_PER_CELL was silently ignored and motions passed through them.
+#define GRID_CELL_SIZE ((W_MAX - W_MIN) / 16.0f)
 #define GRID_DIM_X ((int)((W_MAX - W_MIN) / GRID_CELL_SIZE) + 1)
 #define GRID_DIM_Y ((int)((W_MAX - W_MIN) / GRID_CELL_SIZE) + 1)
 #define GRID_DIM_Z ((int)((W_MAX - W_MIN) / GRID_CELL_SIZE) + 1)
 #define GRID_SIZE (GRID_DIM_X * GRID_DIM_Y * GRID_DIM_Z)
 
-// Maximum obstacles per cell (conservative estimate)
-#define MAX_OBSTACLES_PER_CELL 16
+// Maximum obstacles stored per cell. MUST be >= the most obstacles that can fall in a
+// single cell, or buildSpatialHashGrid silently drops the overflow and collision checks
+// miss them. 128 covers the current environments (house = 81 obstacles) even in the
+// worst case where every obstacle overlaps one cell; raise it for denser environments.
+#define MAX_OBSTACLES_PER_CELL 128
 
 /**
  * Spatial hash grid structure
