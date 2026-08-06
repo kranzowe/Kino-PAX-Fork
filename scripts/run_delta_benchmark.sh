@@ -101,7 +101,7 @@ write_config() {
 #define CONTROL_DIM 3
 #define SAMPLE_DIM (STATE_DIM + CONTROL_DIM + 1)
 #define W_DIM 3
-#define C_DIM 1
+#define C_DIM 0
 #define V_DIM 3
 #define W_MIN 0.0f
 #define W_MAX 1.0f

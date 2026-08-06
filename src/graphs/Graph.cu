@@ -70,7 +70,7 @@ __global__ void initializeRegions_kernel(float* minValueInRegion)
         }
 
     int aRegion = (tid / (W_R1_LENGTH * W_R1_LENGTH * W_R1_LENGTH)) % (C_R1_LENGTH * C_R1_LENGTH);
-    int aIndex[C_DIM];
+    int aIndex[(C_DIM > 0) ? C_DIM : 1];  // guard against zero-length array when C_DIM == 0
     temp = aRegion;
     for(int i = C_DIM - 1; i >= 0; --i)
         {
