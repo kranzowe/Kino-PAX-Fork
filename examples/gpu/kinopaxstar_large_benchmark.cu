@@ -1195,12 +1195,12 @@ int main(int argc, char* argv[])
             skipBaselines = true;
     }
 
-    const int NUM_KPAX_RUNS        = 5;
-    const int NUM_KINOPAXPLUS_RUNS = 5;   // drives the KinoPaxPlus runner
-    const int NUM_KINOPAXSTAR_RUNS = 5;   // drives the KinoPaxSTAR runner
-    const int NUM_KINOPAXSTARCOSTPRUNE_RUNS = 5;   // drives the KinoPaxSTARcostprune runner
-    const int NUM_KINOPAXSTARNOPRUNE_RUNS   = 5;   // drives the KinoPaxSTARNoPrune runner
-    const int NUM_KINOPAXSTARNOPRUNENOSPATIALHASH_RUNS = 5;   // drives the KinoPaxSTARNoPruneNoSpatialHash runner
+    const int NUM_KPAX_RUNS        = 50;
+    const int NUM_KINOPAXPLUS_RUNS = 50;   // drives the KinoPaxPlus runner
+    const int NUM_KINOPAXSTAR_RUNS = 50;   // drives the KinoPaxSTAR runner
+    const int NUM_KINOPAXSTARCOSTPRUNE_RUNS = 50;   // drives the KinoPaxSTARcostprune runner
+    const int NUM_KINOPAXSTARNOPRUNE_RUNS   = 50;   // drives the KinoPaxSTARNoPrune runner
+    const int NUM_KINOPAXSTARNOPRUNENOSPATIALHASH_RUNS = 50;   // drives the KinoPaxSTARNoPruneNoSpatialHash runner
     const int MAX_ITERATIONS       = 300;
     const float MAX_TIME_MS      = 10000.0f;  // 10 second timeout
 
