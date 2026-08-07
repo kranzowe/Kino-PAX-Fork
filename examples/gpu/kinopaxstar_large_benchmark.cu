@@ -110,8 +110,8 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
     else if(result.delta_label == "KinoPaxSTAR")
         filename << outputDir << "/" << result.environment << "_KinoPaxSTAR_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
-    else if(result.delta_label == "KinoPaxSTARcostprune")
-        filename << outputDir << "/" << result.environment << "_KinoPaxSTARcostprune_delta" << result.build_delta
+    else if(result.delta_label.rfind("KinoPaxSTARcostprune", 0) == 0)   // plain or cap-swept (KinoPaxSTARcostprune_capNN)
+        filename << outputDir << "/" << result.environment << "_" << result.delta_label << "_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
     else if(result.delta_label == "KinoPaxSTARNoPrune")
         filename << outputDir << "/" << result.environment << "_KinoPaxSTARNoPrune_delta" << result.build_delta
@@ -771,10 +771,15 @@ RunResult benchmarkKinoPaxSTARcostprune(
     float* d_obstacles,
     uint numObstacles,
     int maxIterations,
-    float maxTimeMs)
+    float maxTimeMs,
+    float acceptCap,
+    const std::string& label)
 {
+    // Override the planner's default 0.1 max Syclop acceptance for this run. resetPlanner
+    // (called below) does not touch h_acceptCap_, so setting it at entry holds for the run.
+    planner.h_acceptCap_ = acceptCap;
     RunResult result;
-    result.delta_label = "KinoPaxSTARcostprune";
+    result.delta_label = label;
     result.build_delta = deltaLabel;
     result.environment = environment;
     result.run_number = runNumber;
@@ -868,19 +873,31 @@ void runKinoPaxSTARcostpruneBenchmark(
     float maxTimeMs)
 {
     printf("\n========================================\n");
-    printf("KINOPAXSTARCOSTPRUNE: %s | Delta: %s | Regions: %d\n",
+    printf("KINOPAXSTARCOSTPRUNE CAP SWEEP: %s | Delta: %s | Regions: %d\n",
            environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
     printf("========================================\n");
 
+    // Sweep the max Syclop acceptance cap (a.k.a. max probability of acceptance).
+    // cap=0 -> exploration acceptance always fails (pure cost-greedy);
+    // cap=1 -> uncapped Syclop (fminf(vertexScore, 1) == vertexScore).
+    const float       caps[]      = {0.0f, 0.2f, 0.4f, 0.8f, 1.0f};
+    const char* const capLabels[] = {"KinoPaxSTARcostprune_cap0",  "KinoPaxSTARcostprune_cap20",
+                                     "KinoPaxSTARcostprune_cap40", "KinoPaxSTARcostprune_cap80",
+                                     "KinoPaxSTARcostprune_cap100"};
+    const int numCaps = sizeof(caps) / sizeof(caps[0]);
+
+    for(int c = 0; c < numCaps; c++)
     {
+        printf("  --- acceptCap = %.2f (%s) ---\n", caps[c], capLabels[c]);
         KinoPaxSTARcostprune planner;
         for(int run = 0; run < numRuns; run++)
         {
             RunResult result = benchmarkKinoPaxSTARcostprune(planner, deltaLabel, environment_name, run,
                                                  h_initial, h_goal, d_obstacles,
-                                                 numObstacles, maxIterations, maxTimeMs);
-            printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-                   run + 1, numRuns, result.total_time_seconds, result.total_iterations,
+                                                 numObstacles, maxIterations, maxTimeMs,
+                                                 caps[c], capLabels[c]);
+            printf("  cap=%.2f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                   caps[c], run + 1, numRuns, result.total_time_seconds, result.total_iterations,
                    result.final_tree_size, result.first_solution_iteration,
                    result.first_solution_cost, result.final_best_cost);
             writePerIterationCSV(result, outputDir);
@@ -1202,7 +1219,7 @@ int main(int argc, char* argv[])
     printf("Baselines:      %s (KPAX + PruneKPAX, %d runs each)\n", skipBaselines ? "NO" : "YES", NUM_KPAX_RUNS);
     printf("KinoPaxPlus:    %d runs\n", NUM_KINOPAXPLUS_RUNS);
     printf("KinoPaxSTAR:    %d runs\n", NUM_KINOPAXSTAR_RUNS);
-    printf("KinoPaxSTARcostprune: %d runs\n", NUM_KINOPAXSTARCOSTPRUNE_RUNS);
+    printf("KinoPaxSTARcostprune: cap sweep {0,0.2,0.4,0.8,1.0} x %d runs each\n", NUM_KINOPAXSTARCOSTPRUNE_RUNS);
     printf("KinoPaxSTARNoPrune: %d runs\n", NUM_KINOPAXSTARNOPRUNE_RUNS);
     printf("KinoPaxSTARNoPruneNoSpatialHash: %d runs\n", NUM_KINOPAXSTARNOPRUNENOSPATIALHASH_RUNS);
     printf("Max iterations: %d\n", MAX_ITERATIONS);
@@ -1246,7 +1263,7 @@ int main(int argc, char* argv[])
     runKinoPaxSTARBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
                             all_results, outputDir, deltaLabel, NUM_KINOPAXSTAR_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
 
-    // --- KinoPaxSTARcostprune delta benchmark (capped Syclop + cost-based pruning variant) ---
+    // --- KinoPaxSTARcostprune cap sweep (max Syclop acceptance {0,0.2,0.4,0.8,1.0}) ---
     runKinoPaxSTARcostpruneBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
                             all_results, outputDir, deltaLabel, NUM_KINOPAXSTARCOSTPRUNE_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
 

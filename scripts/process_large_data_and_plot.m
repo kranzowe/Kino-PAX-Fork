@@ -1,16 +1,19 @@
 %% Large-Delta Benchmark Visualization — all planners, single delta
 % Reads per-iteration CSVs produced by kinopaxstar_large_benchmark.cu
-% (run via run_large_benchmark.sh) and compares all seven planners at the
-% single Large delta (R1 = 27k regions). Single-delta simplification of
-% process_delta_data_and_plot.m: the per-delta tiled panels collapse to one
-% axes each, and the cross-delta grouped bars are re-keyed to planner-on-x-axis.
+% (run via run_large_benchmark.sh) and compares all planners at the single Large
+% delta (R1 = 27k regions). Single-delta simplification of
+% process_delta_data_and_plot.m: the per-delta tiled panels collapse to one axes
+% each, and the cross-delta grouped bars are re-keyed to planner-on-x-axis.
+%
+% KinoPaxSTARcostprune is swept over 5 max-acceptance caps (max probability of
+% acceptance): 0, 0.2, 0.4, 0.8, 1.0.
 %
 % Per-run CSVs (in dataDir):
 %   KinoPaxPlus:                     {env}_delta{label}_run{n}.csv
 %   KPAX:                            {env}_KPAX_delta{label}_run{n}.csv
 %   PruneKPAX:                       {env}_PruneKPAX_delta{label}_run{n}.csv
 %   KinoPaxSTAR:                     {env}_KinoPaxSTAR_delta{label}_run{n}.csv
-%   KinoPaxSTARcostprune:            {env}_KinoPaxSTARcostprune_delta{label}_run{n}.csv
+%   KinoPaxSTARcostprune (cap sweep):{env}_KinoPaxSTARcostprune_cap{0,20,40,80,100}_delta{label}_run{n}.csv
 %   KinoPaxSTARNoPrune:              {env}_KinoPaxSTARNoPrune_delta{label}_run{n}.csv
 %   KinoPaxSTARNoPruneNoSpatialHash: {env}_KinoPaxSTARNoPruneNoSpatialHash_delta{label}_run{n}.csv
 %
@@ -34,19 +37,32 @@ envTitles    = {'House'};
 deltas      = {'large'};
 deltaLabels = {'Large-\delta (27k)'};
 
-% Planners overlaid in every panel (color = planner). The two NoPrune variants
-% are adjacent so the spatial-hash on/off pair is easy to read.
-plannerNames  = {'KinoPaxPlus', 'KinoPaxSTAR', 'KinoPaxSTARcostprune', ...
+% Planners overlaid in every panel (color = planner). KinoPaxSTARcostprune is swept
+% over 5 max-acceptance caps (teal gradient, light=cap0 -> dark=cap1.0); the two
+% NoPrune variants are adjacent so the spatial-hash on/off pair is easy to read.
+% plannerNames  = CSV identity (filename token); plannerDisplay = short legend/x-tick label.
+plannerNames  = {'KinoPaxPlus', 'KinoPaxSTAR', ...
+                 'KinoPaxSTARcostprune_cap0', 'KinoPaxSTARcostprune_cap20', ...
+                 'KinoPaxSTARcostprune_cap40', 'KinoPaxSTARcostprune_cap80', ...
+                 'KinoPaxSTARcostprune_cap100', ...
                  'KinoPaxSTARNoPrune', 'KinoPaxSTARNoPruneNoSpatialHash', 'KPAX', 'PruneKPAX'};
+plannerDisplay = {'KinoPaxPlus', 'KinoPaxSTAR', ...
+                 'CostPrune cap0', 'CostPrune cap0.2', 'CostPrune cap0.4', ...
+                 'CostPrune cap0.8', 'CostPrune cap1.0', ...
+                 'STARNoPrune', 'STARNoPrune-NoSH', 'KPAX', 'PruneKPAX'};
 plannerColors = [0.20 0.40 0.80;    % KinoPaxPlus                     - blue
                  0.55 0.15 0.60;    % KinoPaxSTAR                     - purple
-                 0.10 0.60 0.55;    % KinoPaxSTARcostprune            - teal
+                 0.70 0.90 0.87;    % CostPrune cap0                  - teal (lightest)
+                 0.45 0.80 0.75;    % CostPrune cap0.2                - teal
+                 0.20 0.68 0.62;    % CostPrune cap0.4                - teal
+                 0.08 0.52 0.48;    % CostPrune cap0.8                - teal
+                 0.03 0.36 0.34;    % CostPrune cap1.0                - teal (darkest)
                  0.20 0.65 0.25;    % KinoPaxSTARNoPrune              - green
                  0.80 0.20 0.20;    % KinoPaxSTARNoPruneNoSpatialHash - red
                  0.10 0.10 0.10;    % KPAX                            - near-black
                  0.85 0.45 0.10];   % PruneKPAX                       - orange
-plannerStyles = {'-', '-', '-', '-', '-', '-', '-'};
-numRunsPer    = [50, 50, 50, 50, 50, 50, 50];   % max runs searched per planner (missing files skipped)
+plannerStyles = repmat({'-'}, 1, numel(plannerNames));
+numRunsPer    = 50 * ones(1, numel(plannerNames));   % max runs searched per planner (missing files skipped)
 
 MAX_FLOAT_THRESH = 1e30;   % best_cost sentinel (MAX_FLOAT / INFINITY) -> NaN
 numTimeSamples   = 500;
@@ -66,90 +82,97 @@ for ei = 1:numel(environments)
     R = cell(1, nPlanner);
     for pi = 1:nPlanner
         R{pi} = loadRuns(dataDir, env, plannerNames{pi}, deltas{di}, numRunsPer(pi));
-        fprintf('  %-32s delta=%-9s : %d runs\n', plannerNames{pi}, deltas{di}, numel(R{pi}));
+        fprintf('  %-33s delta=%-9s : %d runs\n', plannerNames{pi}, deltas{di}, numel(R{pi}));
     end
 
     %% ---------- FIGURE 1: Best Cost vs Iteration (single panel) ----------
     figNum = figNum + 1;
-    figure('Name', sprintf('%s - Cost vs Iteration', envTitle), 'Position', [40 40 820 620]);
+    figure('Name', sprintf('%s - Cost vs Iteration', envTitle), 'Position', [40 40 900 640]);
     hold on;
     for pi = 1:nPlanner
-        plotBandIter(R{pi}, 'best_cost', plannerColors(pi, :), plannerStyles{pi}, plannerNames{pi});
+        plotBandIter(R{pi}, 'best_cost', plannerColors(pi, :), plannerStyles{pi}, plannerDisplay{pi});
     end
     xlabel('Iteration'); ylabel('Path Cost (workspace distance)'); grid on;
-    legend('Location', 'best', 'FontSize', 8);
+    legend('Location', 'best', 'FontSize', 7);
     title(sprintf('Best Cost vs Iteration \x2014 %s, %s', envTitle, deltaLabels{di}), 'FontWeight', 'bold');
 
     %% ---------- FIGURE 2: Best Cost vs Time (fair axis, single panel) ----------
     figNum = figNum + 1;
-    figure('Name', sprintf('%s - Cost vs Time', envTitle), 'Position', [70 60 820 620]);
+    figure('Name', sprintf('%s - Cost vs Time', envTitle), 'Position', [70 60 900 640]);
     hold on;
     tmax = globalMaxTime(R);
     if tmax > 0
         ct = linspace(0, tmax, numTimeSamples);
         for pi = 1:nPlanner
-            plotBandTime(R{pi}, 'best_cost', ct, plannerColors(pi, :), plannerStyles{pi}, plannerNames{pi});
+            plotBandTime(R{pi}, 'best_cost', ct, plannerColors(pi, :), plannerStyles{pi}, plannerDisplay{pi});
         end
     end
     xlabel('Elapsed Time (ms)'); ylabel('Path Cost (workspace distance)'); grid on;
-    legend('Location', 'best', 'FontSize', 8);
+    legend('Location', 'best', 'FontSize', 7);
     title(sprintf('Best Cost vs Time \x2014 %s, %s', envTitle, deltaLabels{di}), 'FontWeight', 'bold');
 
     %% ---------- FIGURE 3: Tree Size vs Iteration (single panel) ----------
     figNum = figNum + 1;
-    figure('Name', sprintf('%s - Tree Size', envTitle), 'Position', [100 40 820 620]);
+    figure('Name', sprintf('%s - Tree Size', envTitle), 'Position', [100 40 900 640]);
     hold on;
     for pi = 1:nPlanner
-        plotBandIter(R{pi}, 'tree_size', plannerColors(pi, :), plannerStyles{pi}, plannerNames{pi});
+        plotBandIter(R{pi}, 'tree_size', plannerColors(pi, :), plannerStyles{pi}, plannerDisplay{pi});
     end
     xlabel('Iteration'); ylabel('Tree Size'); grid on;
-    legend('Location', 'best', 'FontSize', 8);
+    legend('Location', 'best', 'FontSize', 7);
     title(sprintf('Tree Size Growth vs Iteration \x2014 %s, %s', envTitle, deltaLabels{di}), 'FontWeight', 'bold');
 
     %% ---------- Aggregate summary metrics per planner (single delta) ----------
-    mFirstIter = NaN(1, nPlanner); eFirstIter = NaN(1, nPlanner);
-    mFinalCost = NaN(1, nPlanner); eFinalCost = NaN(1, nPlanner);
-    mTotalTime = NaN(1, nPlanner); eTotalTime = NaN(1, nPlanner);
-    mSuccess   = NaN(1, nPlanner);
+    mFirstIter    = NaN(1, nPlanner); eFirstIter    = NaN(1, nPlanner);
+    mFirstSolTime = NaN(1, nPlanner); eFirstSolTime = NaN(1, nPlanner);
+    mFinalCost    = NaN(1, nPlanner); eFinalCost    = NaN(1, nPlanner);
+    mTotalTime    = NaN(1, nPlanner); eTotalTime    = NaN(1, nPlanner);
+    mSuccess      = NaN(1, nPlanner);
     for pi = 1:nPlanner
         runs = R{pi};
-        fiVals = []; fcVals = []; ttVals = [];
+        fiVals = []; fstVals = []; fcVals = []; ttVals = [];
         nSol = 0; nTot = 0;
         for ri = 1:numel(runs)
             if isempty(runs{ri}), continue; end
             nTot = nTot + 1;
             fi = firstSolIter(runs{ri}, MAX_FLOAT_THRESH);
             if fi > 0, nSol = nSol + 1; fiVals(end + 1) = fi; end %#ok<AGROW>
+            ft = firstSolTime(runs{ri}, MAX_FLOAT_THRESH);
+            if ft >= 0, fstVals(end + 1) = ft; end %#ok<AGROW>
             fc = finalCost(runs{ri}, MAX_FLOAT_THRESH);
             if ~isnan(fc), fcVals(end + 1) = fc; end %#ok<AGROW>
             ttVals(end + 1) = runs{ri}.elapsed_time_ms(end) / 1000; %#ok<AGROW>
         end
-        if ~isempty(fiVals), mFirstIter(pi) = mean(fiVals); eFirstIter(pi) = std(fiVals); end
-        if ~isempty(fcVals), mFinalCost(pi) = mean(fcVals); eFinalCost(pi) = std(fcVals); end
-        if ~isempty(ttVals), mTotalTime(pi) = mean(ttVals); eTotalTime(pi) = std(ttVals); end
-        if nTot > 0,         mSuccess(pi)   = 100 * nSol / nTot; end
+        if ~isempty(fiVals),  mFirstIter(pi)    = mean(fiVals);  eFirstIter(pi)    = std(fiVals);  end
+        if ~isempty(fstVals), mFirstSolTime(pi) = mean(fstVals); eFirstSolTime(pi) = std(fstVals); end
+        if ~isempty(fcVals),  mFinalCost(pi)    = mean(fcVals);  eFinalCost(pi)    = std(fcVals);  end
+        if ~isempty(ttVals),  mTotalTime(pi)    = mean(ttVals);  eTotalTime(pi)    = std(ttVals);  end
+        if nTot > 0,          mSuccess(pi)      = 100 * nSol / nTot; end
     end
 
     %% ---------- FIGURE 4: Summary bars (one bar per planner) ----------
     figNum = figNum + 1;
-    figure('Name', sprintf('%s - Summary', envTitle), 'Position', [130 120 1500 460]);
+    figure('Name', sprintf('%s - Summary', envTitle), 'Position', [130 60 1500 860]);
 
-    subplot(1, 3, 1);
-    plannerBar(mFirstIter, eFirstIter, plannerNames, plannerColors, 'Iteration', 'First Solution Iteration');
+    subplot(2, 2, 1);
+    plannerBar(mFirstIter, eFirstIter, plannerDisplay, plannerColors, 'Iteration', 'First Solution Iteration');
 
-    subplot(1, 3, 2);
-    plannerBar(mFinalCost, eFinalCost, plannerNames, plannerColors, 'Path Cost (workspace distance)', 'Final Best Cost');
+    subplot(2, 2, 2);
+    plannerBar(mFirstSolTime, eFirstSolTime, plannerDisplay, plannerColors, 'Time (ms)', 'Avg Time to First Solution');
 
-    subplot(1, 3, 3);
-    plannerBar(mTotalTime, eTotalTime, plannerNames, plannerColors, 'Time (s)', 'Total Execution Time');
+    subplot(2, 2, 3);
+    plannerBar(mFinalCost, eFinalCost, plannerDisplay, plannerColors, 'Path Cost (workspace distance)', 'Final Best Cost');
+
+    subplot(2, 2, 4);
+    plannerBar(mTotalTime, eTotalTime, plannerDisplay, plannerColors, 'Time (s)', 'Total Execution Time');
 
     sgtitle(sprintf('Planner Comparison at %s \x2014 %s (mean \\pm std)', deltaLabels{di}, envTitle), ...
         'FontSize', 12, 'FontWeight', 'bold');
 
     %% ---------- FIGURE 5: Solution Success Rate (one bar per planner) ----------
     figNum = figNum + 1;
-    figure('Name', sprintf('%s - Success Rate', envTitle), 'Position', [160 160 900 480]);
-    plannerBar(mSuccess, [], plannerNames, plannerColors, 'Success Rate (%)', ...
+    figure('Name', sprintf('%s - Success Rate', envTitle), 'Position', [160 160 1000 520]);
+    plannerBar(mSuccess, [], plannerDisplay, plannerColors, 'Success Rate (%)', ...
         sprintf('Solution Success Rate \x2014 %s, %s', envTitle, deltaLabels{di}));
     ylim([0 110]);
 
@@ -172,14 +195,18 @@ function runs = loadRuns(dataDir, env, planner, delta, numRuns)
                 fn = sprintf('%s_PruneKPAX_delta%s_run%d.csv', env, delta, ri);
             case 'KinoPaxSTAR'
                 fn = sprintf('%s_KinoPaxSTAR_delta%s_run%d.csv', env, delta, ri);
-            case 'KinoPaxSTARcostprune'
-                fn = sprintf('%s_KinoPaxSTARcostprune_delta%s_run%d.csv', env, delta, ri);
             case 'KinoPaxSTARNoPrune'
                 fn = sprintf('%s_KinoPaxSTARNoPrune_delta%s_run%d.csv', env, delta, ri);
             case 'KinoPaxSTARNoPruneNoSpatialHash'
                 fn = sprintf('%s_KinoPaxSTARNoPruneNoSpatialHash_delta%s_run%d.csv', env, delta, ri);
             otherwise
-                error('unknown planner %s', planner);
+                % Cost-prune cap-sweep variants (KinoPaxSTARcostprune, KinoPaxSTARcostprune_capNN)
+                % use the planner name directly as the filename token.
+                if startsWith(planner, 'KinoPaxSTARcostprune')
+                    fn = sprintf('%s_%s_delta%s_run%d.csv', env, planner, delta, ri);
+                else
+                    error('unknown planner %s', planner);
+                end
         end
         fp = fullfile(dataDir, fn);
         if isfile(fp)
@@ -263,7 +290,7 @@ function drawBand(x, mu, sd, color, style, name)
     plot(xv, mv, style, 'Color', color, 'LineWidth', 1.8, 'DisplayName', name);
 end
 
-function plannerBar(mu, err, plannerNames, plannerColors, ylab, ttl)
+function plannerBar(mu, err, plannerLabels, plannerColors, ylab, ttl)
     % One colored bar per planner on the x-axis (single-delta replacement for
     % the cross-delta grouped bars). mu/err are 1 x nPlanner row vectors.
     hold on;
@@ -274,8 +301,8 @@ function plannerBar(mu, err, plannerNames, plannerColors, ylab, ttl)
     if ~isempty(err)
         errorbar(1:nP, mu, err, 'k.', 'LineWidth', 0.7, 'CapSize', 4);
     end
-    set(gca, 'XTick', 1:nP, 'XTickLabel', plannerNames, 'FontSize', 8);
-    xtickangle(25);
+    set(gca, 'XTick', 1:nP, 'XTickLabel', plannerLabels, 'FontSize', 7);
+    xtickangle(30);
     xlim([0.5, nP + 0.5]);
     ylabel(ylab); title(ttl); grid on;
 end
@@ -284,6 +311,13 @@ function it = firstSolIter(tbl, thresh)
     % Iteration at which this run first reached a finite (< thresh) best_cost; -1 if never.
     solIdx = find(tbl.best_cost < thresh, 1, 'first');
     if isempty(solIdx), it = -1; else, it = tbl.iteration(solIdx); end
+end
+
+function t = firstSolTime(tbl, thresh)
+    % Elapsed time (ms) at which this run first reached a finite (< thresh) best_cost;
+    % -1 if it never found a solution.
+    solIdx = find(tbl.best_cost < thresh, 1, 'first');
+    if isempty(solIdx), t = -1; else, t = tbl.elapsed_time_ms(solIdx); end
 end
 
 function c = finalCost(tbl, thresh)
