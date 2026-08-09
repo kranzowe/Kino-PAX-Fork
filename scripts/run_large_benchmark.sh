@@ -192,7 +192,13 @@ echo ""
 echo "=== RUNNING (delta=${DELTA_LABEL}, Env=${ENV_NAME}) ==="
 
 cd "$BUILD_DIR"
-./KinoPaxStarLargeBenchmark "$DELTA_LABEL" "$ENV_OBSTACLES" "$ENV_NAME"
+# --dump-viz writes run-0's full tree per variant (+ meta.csv) for the tree-growth /
+# R1-density visualization. On by default; disable with DUMP_VIZ=0 bash run_large_benchmark.sh
+VIZ_FLAG=""
+if [ "${DUMP_VIZ:-1}" != "0" ]; then
+    VIZ_FLAG="--dump-viz"
+fi
+./KinoPaxStarLargeBenchmark "$DELTA_LABEL" "$ENV_OBSTACLES" "$ENV_NAME" $VIZ_FLAG
 cd "$PROJECT_DIR"
 
 echo ""
@@ -200,4 +206,7 @@ echo "======================================================="
 echo "  LARGE-DELTA BENCHMARK COMPLETE"
 echo "======================================================="
 echo "Results in: $BUILD_DIR/Data/Benchmarks/KinoPaxStarLarge/"
+if [ "${DUMP_VIZ:-1}" != "0" ]; then
+    echo "Viz dumps:  $BUILD_DIR/Data/Benchmarks/KinoPaxStarLarge/viz/  (visualize with scripts/visualize_tree_growth.m)"
+fi
 echo "Config.h will be restored to original on exit."

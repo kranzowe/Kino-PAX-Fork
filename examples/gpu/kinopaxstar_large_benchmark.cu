@@ -18,6 +18,10 @@
 #include <thrust/count.h>
 #include <thrust/reduce.h>
 
+// --- Visualization dump (opt-in via --dump-viz); set in main(), read by the runners. ---
+static bool        g_dumpViz = false;
+static std::string g_vizDir;
+
 struct IterationData
 {
     int iteration;
@@ -87,6 +91,64 @@ float devicePathCost(float* d_treeSamples_ptr, int* d_treeSamplesParentIdxs_ptr,
     cudaMemcpy(h_parents.data(), d_treeSamplesParentIdxs_ptr,
                treeSize * sizeof(int), cudaMemcpyDeviceToHost);
     return computePathCost(h_treeSamples, h_parents, goalIdx);
+}
+
+// ========================================================================
+// VISUALIZATION DUMP (opt-in via --dump-viz)
+//
+// Dump one run's full tree to CSV for the spatial / tree-growth viz.
+// One row per node: idx,x,y,z,vx,vy,vz,parent,cost  (state columns only).
+// Node idx == insertion order for every variant (the tree only appends;
+// pruning tombstones nodes in place, no compaction), so MATLAB reconstructs
+// growth from idx + the existing per-iteration tree_size, and density per R1
+// region by binning x,y,z. Model 1 state layout: [x,y,z,vx,vy,vz,...].
+// ========================================================================
+void dumpTreeCSV(float* d_treeSamples_ptr, int* d_parents_ptr, float* d_costs_ptr,
+                 int treeSize, const std::string& path)
+{
+    std::vector<float> h_treeSamples((size_t)treeSize * SAMPLE_DIM);
+    std::vector<int>   h_parents(treeSize);
+    std::vector<float> h_costs(treeSize);
+    cudaMemcpy(h_treeSamples.data(), d_treeSamples_ptr,
+               (size_t)treeSize * SAMPLE_DIM * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_parents.data(), d_parents_ptr, treeSize * sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_costs.data(), d_costs_ptr, treeSize * sizeof(float), cudaMemcpyDeviceToHost);
+
+    std::ofstream file(path);
+    file << "idx,x,y,z,vx,vy,vz,parent,cost\n";
+    file << std::fixed << std::setprecision(6);
+    for(int i = 0; i < treeSize; i++)
+    {
+        const float* s = &h_treeSamples[(size_t)i * SAMPLE_DIM];
+        file << i;
+        for(int d = 0; d < 6; d++) file << "," << s[d];   // x,y,z,vx,vy,vz
+        file << "," << h_parents[i] << "," << h_costs[i] << "\n";
+    }
+    file.close();
+    printf("  [viz] tree dumped: %s (%d nodes)\n", path.c_str(), treeSize);
+}
+
+// Build the per-variant tree-dump path: {vizDir}/{env}_{token}_tree.csv
+std::string vizTreePath(const std::string& vizDir, const std::string& env, const std::string& token)
+{
+    return vizDir + "/" + env + "_" + token + "_tree.csv";
+}
+
+// Write a small numeric metadata row so the MATLAB script knows the R1 grid,
+// workspace/velocity bounds, and start/goal without re-parsing config.h.
+void writeVizMeta(const std::string& path, const float* h_initial, const float* h_goal)
+{
+    std::ofstream file(path);
+    file << "W_DIM,W_R1_LENGTH,V_R1_LENGTH,W_MIN,W_MAX,V_MIN,V_MAX,STATE_DIM,SAMPLE_DIM,"
+         << "start_x,start_y,start_z,goal_x,goal_y,goal_z\n";
+    file << std::fixed << std::setprecision(6)
+         << W_DIM << "," << W_R1_LENGTH << "," << V_R1_LENGTH << ","
+         << W_MIN << "," << W_MAX << "," << V_MIN << "," << V_MAX << ","
+         << STATE_DIM << "," << SAMPLE_DIM << ","
+         << h_initial[0] << "," << h_initial[1] << "," << h_initial[2] << ","
+         << h_goal[0] << "," << h_goal[1] << "," << h_goal[2] << "\n";
+    file.close();
+    printf("  [viz] meta written: %s\n", path.c_str());
 }
 
 // ========================================================================
@@ -627,6 +689,10 @@ void runKPAXBaseline(
                    result.final_tree_size, result.first_solution_iteration,
                    result.first_solution_cost, result.final_best_cost);
             writePerIterationCSV(result, outputDir);
+            if(g_dumpViz && run == 0)
+                dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
+                            planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
+                            vizTreePath(g_vizDir, environment_name, "KPAX"));
             all_results.push_back(result);
 
             if(run < numRuns - 1)
@@ -667,6 +733,10 @@ void runPruneKPAXBaseline(
                    result.final_tree_size, result.first_solution_iteration,
                    result.first_solution_cost, result.final_best_cost);
             writePerIterationCSV(result, outputDir);
+            if(g_dumpViz && run == 0)
+                dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
+                            planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
+                            vizTreePath(g_vizDir, environment_name, "PruneKPAX"));
             all_results.push_back(result);
 
             if(run < numRuns - 1)
@@ -707,6 +777,10 @@ void runKinoPaxPlusBenchmark(
                    run + 1, numRuns, result.total_time_seconds, result.total_iterations,
                    result.final_tree_size, result.first_solution_iteration, result.final_best_cost);
             writePerIterationCSV(result, outputDir);
+            if(g_dumpViz && run == 0)
+                dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
+                            planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
+                            vizTreePath(g_vizDir, environment_name, "KinoPaxPlus"));
             all_results.push_back(result);
 
             if(run < numRuns - 1)
@@ -748,6 +822,10 @@ void runKinoPaxSTARBenchmark(
                    result.final_tree_size, result.first_solution_iteration,
                    result.first_solution_cost, result.final_best_cost);
             writePerIterationCSV(result, outputDir);
+            if(g_dumpViz && run == 0)
+                dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
+                            planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
+                            vizTreePath(g_vizDir, environment_name, "KinoPaxSTAR"));
             all_results.push_back(result);
 
             if(run < numRuns - 1)
@@ -901,6 +979,10 @@ void runKinoPaxSTARcostpruneBenchmark(
                    result.final_tree_size, result.first_solution_iteration,
                    result.first_solution_cost, result.final_best_cost);
             writePerIterationCSV(result, outputDir);
+            if(g_dumpViz && run == 0)
+                dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
+                            planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
+                            vizTreePath(g_vizDir, environment_name, capLabels[c]));
             all_results.push_back(result);
 
             if(run < numRuns - 1)
@@ -1037,6 +1119,10 @@ void runKinoPaxSTARNoPruneBenchmark(
                    result.final_tree_size, result.first_solution_iteration,
                    result.first_solution_cost, result.final_best_cost);
             writePerIterationCSV(result, outputDir);
+            if(g_dumpViz && run == 0)
+                dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
+                            planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
+                            vizTreePath(g_vizDir, environment_name, "KinoPaxSTARNoPrune"));
             all_results.push_back(result);
 
             if(run < numRuns - 1)
@@ -1173,6 +1259,10 @@ void runKinoPaxSTARNoPruneNoSpatialHashBenchmark(
                    result.final_tree_size, result.first_solution_iteration,
                    result.first_solution_cost, result.final_best_cost);
             writePerIterationCSV(result, outputDir);
+            if(g_dumpViz && run == 0)
+                dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
+                            planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
+                            vizTreePath(g_vizDir, environment_name, "KinoPaxSTARNoPruneNoSpatialHash"));
             all_results.push_back(result);
 
             if(run < numRuns - 1)
@@ -1188,11 +1278,15 @@ int main(int argc, char* argv[])
     std::string envName       = (argc > 3) ? argv[3] : "trees";
 
     // Baselines (KPAX + PruneKPAX) run by default; pass --skip-baselines to omit them.
+    // --dump-viz additionally dumps run-0's full tree per variant for the spatial /
+    // tree-growth visualization (Data/Benchmarks/KinoPaxStarLarge/viz/).
     bool skipBaselines = false;
     for(int i = 4; i < argc; i++)
     {
         if(std::string(argv[i]) == "--skip-baselines")
             skipBaselines = true;
+        else if(std::string(argv[i]) == "--dump-viz")
+            g_dumpViz = true;
     }
 
     const int NUM_KPAX_RUNS        = 50;
@@ -1217,6 +1311,7 @@ int main(int argc, char* argv[])
     printf("Obstacle file:  %s\n", obstaclePath.c_str());
     printf("Environment:    %s\n", envName.c_str());
     printf("Baselines:      %s (KPAX + PruneKPAX, %d runs each)\n", skipBaselines ? "NO" : "YES", NUM_KPAX_RUNS);
+    printf("Dump viz:       %s\n", g_dumpViz ? "YES (run 0 per variant)" : "NO");
     printf("KinoPaxPlus:    %d runs\n", NUM_KINOPAXPLUS_RUNS);
     printf("KinoPaxSTAR:    %d runs\n", NUM_KINOPAXSTAR_RUNS);
     printf("KinoPaxSTARcostprune: cap sweep {0,0.2,0.4,0.8,1.0} x %d runs each\n", NUM_KINOPAXSTARCOSTPRUNE_RUNS);
@@ -1243,6 +1338,15 @@ int main(int argc, char* argv[])
     cudaMalloc(&d_obstacles, numObstacles * 2 * W_DIM * sizeof(float));
     cudaMemcpy(d_obstacles, obstacles.data(), numObstacles * 2 * W_DIM * sizeof(float), cudaMemcpyHostToDevice);
     printf("Loaded %d obstacles from %s\n", numObstacles, obstaclePath.c_str());
+
+    // --- Visualization dump setup (opt-in) ---
+    if(g_dumpViz)
+    {
+        g_vizDir = outputDir + "/viz";
+        std::filesystem::create_directories(g_vizDir);
+        writeVizMeta(g_vizDir + "/meta.csv", h_initial, h_goal);
+        printf("[viz] --dump-viz ON: run-0 tree per variant + meta -> %s\n", g_vizDir.c_str());
+    }
 
     std::vector<RunResult> all_results;
 
