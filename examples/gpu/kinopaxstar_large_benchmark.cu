@@ -15,6 +15,8 @@
 #include "planners/KinoPaxSTARcostprune.cuh"
 #include "planners/KinoPaxSTARNoPrune.cuh"
 #include "planners/KinoPaxSTARNoPruneNoSpatialHash.cuh"
+#include "planners/KinoPaxSTARnoseed.cuh"
+#include "planners/KinoPaxSTARsparsefill.cuh"
 #include <thrust/count.h>
 #include <thrust/reduce.h>
 
@@ -180,6 +182,12 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
                  << "_run" << result.run_number << ".csv";
     else if(result.delta_label == "KinoPaxSTARNoPruneNoSpatialHash")
         filename << outputDir << "/" << result.environment << "_KinoPaxSTARNoPruneNoSpatialHash_delta" << result.build_delta
+                 << "_run" << result.run_number << ".csv";
+    else if(result.delta_label == "KinoPaxSTARnoseed")
+        filename << outputDir << "/" << result.environment << "_KinoPaxSTARnoseed_delta" << result.build_delta
+                 << "_run" << result.run_number << ".csv";
+    else if(result.delta_label == "KinoPaxSTARsparsefill")
+        filename << outputDir << "/" << result.environment << "_KinoPaxSTARsparsefill_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
     else
         filename << outputDir << "/" << result.environment << "_delta" << result.delta_label
@@ -1271,6 +1279,284 @@ void runKinoPaxSTARNoPruneNoSpatialHashBenchmark(
     }
 }
 
+// ========================================================================
+// KinoPaxSTARnoseed benchmark + runner (sparse-only: new-sub-region seeding
+// removed -> acceptance = isBest || Syclop roll. Same instrumentation).
+// ========================================================================
+RunResult benchmarkKinoPaxSTARnoseed(
+    KinoPaxSTARnoseed& planner,
+    const std::string& deltaLabel,
+    const std::string& environment,
+    int runNumber,
+    float* h_initial,
+    float* h_goal,
+    float* d_obstacles,
+    uint numObstacles,
+    int maxIterations,
+    float maxTimeMs)
+{
+    RunResult result;
+    result.delta_label = "KinoPaxSTARnoseed";
+    result.build_delta = deltaLabel;
+    result.environment = environment;
+    result.run_number = runNumber;
+    result.first_solution_iteration = -1;
+    result.first_solution_cost = INFINITY;
+    result.final_best_cost = INFINITY;
+
+    cudaEvent_t iterStart, iterStop;
+    cudaEventCreate(&iterStart);
+    cudaEventCreate(&iterStop);
+    float plannerMs = 0.0f;
+    float iterMs    = 0.0f;
+
+    planner.resetPlanner(h_initial, h_goal);
+
+    int itr = 0;
+    while(itr < maxIterations)
+    {
+        itr++;
+        planner.h_itr_++;
+
+        cudaEventRecord(iterStart);
+        planner.propagateFrontier(d_obstacles, numObstacles);
+        planner.graph_.updateVertices();
+        int oldTreeSize = planner.h_treeSize_;   // nodes before this iter's additions
+        planner.updateFrontier();
+        cudaEventRecord(iterStop);
+        cudaEventSynchronize(iterStop);
+        cudaEventElapsedTime(&iterMs, iterStart, iterStop);
+        plannerMs += iterMs;
+
+        // h_minCost_ is the cumulative root-to-goal path length (KinoPaxPlus-style).
+        cudaMemcpy(&planner.h_minCost_, planner.d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
+        if(planner.h_minCost_ < MAX_FLOAT && result.first_solution_iteration == -1)
+        {
+            result.first_solution_iteration = itr;
+            result.first_solution_cost      = planner.h_minCost_;
+        }
+        if(planner.h_minCost_ < result.final_best_cost)
+            result.final_best_cost = planner.h_minCost_;
+
+        // --- Frontier diagnostics (outside the timed window; uses the KPAX Graph) ---
+        int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
+                                             planner.d_frontier_.begin() + oldTreeSize, true);
+        int inactiveR2 = (int)thrust::count(planner.graph_.d_activeSubVertices_.begin(),
+                                            planner.graph_.d_activeSubVertices_.end(), 0);
+        float r2CoveragePct = 100.0f * float(NUM_R2_REGIONS - inactiveR2) / float(NUM_R2_REGIONS);
+        float scoreSum  = thrust::reduce(planner.graph_.d_vertexScoreArray_.begin(),
+                                         planner.graph_.d_vertexScoreArray_.end(), 0.0f);
+        float meanScore = scoreSum / float(NUM_R1_REGIONS);
+
+        IterationData d;
+        d.iteration     = itr;
+        d.frontier_size = planner.h_frontierSize_;
+        d.tree_size     = planner.h_treeSize_;
+        d.elapsed_time_ms = plannerMs;
+        d.best_cost     = result.final_best_cost;
+        d.num_regions       = NUM_R1_REGIONS;
+        d.r2_coverage_pct   = r2CoveragePct;
+        d.mean_vertex_score = meanScore;
+        d.reactivated       = reactivated;
+        result.per_iteration.push_back(d);
+
+        if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
+        if(planner.h_propIterations_ == 0) break;
+
+        // Timeout check (planner-only time)
+        if(plannerMs >= maxTimeMs) break;
+    }
+
+    result.total_time_seconds = plannerMs / 1000.0;
+    result.final_tree_size    = planner.h_treeSize_;
+    result.total_iterations   = itr;
+
+    cudaEventDestroy(iterStart);
+    cudaEventDestroy(iterStop);
+    return result;
+}
+
+void runKinoPaxSTARnoseedBenchmark(
+    const std::string& environment_name,
+    float* h_initial,
+    float* h_goal,
+    float* d_obstacles,
+    uint numObstacles,
+    std::vector<RunResult>& all_results,
+    const std::string& outputDir,
+    const std::string& deltaLabel,
+    int numRuns,
+    int maxIterations,
+    float maxTimeMs)
+{
+    printf("\n========================================\n");
+    printf("KINOPAXSTARNOSEED: %s | Delta: %s | Regions: %d\n",
+           environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
+    printf("========================================\n");
+
+    {
+        KinoPaxSTARnoseed planner;
+        for(int run = 0; run < numRuns; run++)
+        {
+            RunResult result = benchmarkKinoPaxSTARnoseed(planner, deltaLabel, environment_name, run,
+                                                 h_initial, h_goal, d_obstacles,
+                                                 numObstacles, maxIterations, maxTimeMs);
+            printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                   run + 1, numRuns, result.total_time_seconds, result.total_iterations,
+                   result.final_tree_size, result.first_solution_iteration,
+                   result.first_solution_cost, result.final_best_cost);
+            writePerIterationCSV(result, outputDir);
+            if(g_dumpViz && run == 0)
+                dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
+                            planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
+                            vizTreePath(g_vizDir, environment_name, "KinoPaxSTARnoseed"));
+            all_results.push_back(result);
+
+            if(run < numRuns - 1)
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+    }
+}
+
+// ========================================================================
+// KinoPaxSTARsparsefill benchmark + runner (annealed: new-sub-region seeding
+// gated by pSeed = min(1, itr/rampIters) -> sparse skeleton early, fill late).
+// ========================================================================
+RunResult benchmarkKinoPaxSTARsparsefill(
+    KinoPaxSTARsparsefill& planner,
+    const std::string& deltaLabel,
+    const std::string& environment,
+    int runNumber,
+    float* h_initial,
+    float* h_goal,
+    float* d_obstacles,
+    uint numObstacles,
+    int maxIterations,
+    float maxTimeMs)
+{
+    RunResult result;
+    result.delta_label = "KinoPaxSTARsparsefill";
+    result.build_delta = deltaLabel;
+    result.environment = environment;
+    result.run_number = runNumber;
+    result.first_solution_iteration = -1;
+    result.first_solution_cost = INFINITY;
+    result.final_best_cost = INFINITY;
+
+    cudaEvent_t iterStart, iterStop;
+    cudaEventCreate(&iterStart);
+    cudaEventCreate(&iterStop);
+    float plannerMs = 0.0f;
+    float iterMs    = 0.0f;
+
+    planner.resetPlanner(h_initial, h_goal);
+
+    int itr = 0;
+    while(itr < maxIterations)
+    {
+        itr++;
+        planner.h_itr_++;
+
+        cudaEventRecord(iterStart);
+        planner.propagateFrontier(d_obstacles, numObstacles);
+        planner.graph_.updateVertices();
+        int oldTreeSize = planner.h_treeSize_;   // nodes before this iter's additions
+        planner.updateFrontier();
+        cudaEventRecord(iterStop);
+        cudaEventSynchronize(iterStop);
+        cudaEventElapsedTime(&iterMs, iterStart, iterStop);
+        plannerMs += iterMs;
+
+        // h_minCost_ is the cumulative root-to-goal path length (KinoPaxPlus-style).
+        cudaMemcpy(&planner.h_minCost_, planner.d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
+        if(planner.h_minCost_ < MAX_FLOAT && result.first_solution_iteration == -1)
+        {
+            result.first_solution_iteration = itr;
+            result.first_solution_cost      = planner.h_minCost_;
+        }
+        if(planner.h_minCost_ < result.final_best_cost)
+            result.final_best_cost = planner.h_minCost_;
+
+        // --- Frontier diagnostics (outside the timed window; uses the KPAX Graph) ---
+        int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
+                                             planner.d_frontier_.begin() + oldTreeSize, true);
+        int inactiveR2 = (int)thrust::count(planner.graph_.d_activeSubVertices_.begin(),
+                                            planner.graph_.d_activeSubVertices_.end(), 0);
+        float r2CoveragePct = 100.0f * float(NUM_R2_REGIONS - inactiveR2) / float(NUM_R2_REGIONS);
+        float scoreSum  = thrust::reduce(planner.graph_.d_vertexScoreArray_.begin(),
+                                         planner.graph_.d_vertexScoreArray_.end(), 0.0f);
+        float meanScore = scoreSum / float(NUM_R1_REGIONS);
+
+        IterationData d;
+        d.iteration     = itr;
+        d.frontier_size = planner.h_frontierSize_;
+        d.tree_size     = planner.h_treeSize_;
+        d.elapsed_time_ms = plannerMs;
+        d.best_cost     = result.final_best_cost;
+        d.num_regions       = NUM_R1_REGIONS;
+        d.r2_coverage_pct   = r2CoveragePct;
+        d.mean_vertex_score = meanScore;
+        d.reactivated       = reactivated;
+        result.per_iteration.push_back(d);
+
+        if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
+        if(planner.h_propIterations_ == 0) break;
+
+        // Timeout check (planner-only time)
+        if(plannerMs >= maxTimeMs) break;
+    }
+
+    result.total_time_seconds = plannerMs / 1000.0;
+    result.final_tree_size    = planner.h_treeSize_;
+    result.total_iterations   = itr;
+
+    cudaEventDestroy(iterStart);
+    cudaEventDestroy(iterStop);
+    return result;
+}
+
+void runKinoPaxSTARsparsefillBenchmark(
+    const std::string& environment_name,
+    float* h_initial,
+    float* h_goal,
+    float* d_obstacles,
+    uint numObstacles,
+    std::vector<RunResult>& all_results,
+    const std::string& outputDir,
+    const std::string& deltaLabel,
+    int numRuns,
+    int maxIterations,
+    float maxTimeMs)
+{
+    printf("\n========================================\n");
+    printf("KINOPAXSTARSPARSEFILL: %s | Delta: %s | Regions: %d\n",
+           environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
+    printf("========================================\n");
+
+    {
+        KinoPaxSTARsparsefill planner;
+        for(int run = 0; run < numRuns; run++)
+        {
+            RunResult result = benchmarkKinoPaxSTARsparsefill(planner, deltaLabel, environment_name, run,
+                                                 h_initial, h_goal, d_obstacles,
+                                                 numObstacles, maxIterations, maxTimeMs);
+            printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                   run + 1, numRuns, result.total_time_seconds, result.total_iterations,
+                   result.final_tree_size, result.first_solution_iteration,
+                   result.first_solution_cost, result.final_best_cost);
+            writePerIterationCSV(result, outputDir);
+            if(g_dumpViz && run == 0)
+                dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
+                            planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
+                            vizTreePath(g_vizDir, environment_name, "KinoPaxSTARsparsefill"));
+            all_results.push_back(result);
+
+            if(run < numRuns - 1)
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+    }
+}
+
 int main(int argc, char* argv[])
 {
     std::string deltaLabel    = (argc > 1) ? argv[1] : "unknown";
@@ -1289,12 +1575,14 @@ int main(int argc, char* argv[])
             g_dumpViz = true;
     }
 
-    const int NUM_KPAX_RUNS        = 50;
-    const int NUM_KINOPAXPLUS_RUNS = 50;   // drives the KinoPaxPlus runner
-    const int NUM_KINOPAXSTAR_RUNS = 50;   // drives the KinoPaxSTAR runner
-    const int NUM_KINOPAXSTARCOSTPRUNE_RUNS = 50;   // drives the KinoPaxSTARcostprune runner
-    const int NUM_KINOPAXSTARNOPRUNE_RUNS   = 50;   // drives the KinoPaxSTARNoPrune runner
-    const int NUM_KINOPAXSTARNOPRUNENOSPATIALHASH_RUNS = 50;   // drives the KinoPaxSTARNoPruneNoSpatialHash runner
+    const int NUM_KPAX_RUNS        = 5;
+    const int NUM_KINOPAXPLUS_RUNS = 5;   // drives the KinoPaxPlus runner
+    const int NUM_KINOPAXSTAR_RUNS = 5;   // drives the KinoPaxSTAR runner
+    const int NUM_KINOPAXSTARCOSTPRUNE_RUNS = 5;   // drives the KinoPaxSTARcostprune runner
+    const int NUM_KINOPAXSTARNOPRUNE_RUNS   = 5;   // drives the KinoPaxSTARNoPrune runner
+    const int NUM_KINOPAXSTARNOPRUNENOSPATIALHASH_RUNS = 5;   // drives the KinoPaxSTARNoPruneNoSpatialHash runner
+    const int NUM_KINOPAXSTARNOSEED_RUNS     = 5;   // drives the KinoPaxSTARnoseed runner
+    const int NUM_KINOPAXSTARSPARSEFILL_RUNS = 5;   // drives the KinoPaxSTARsparsefill runner
     const int MAX_ITERATIONS       = 300;
     const float MAX_TIME_MS      = 10000.0f;  // 10 second timeout
 
@@ -1317,6 +1605,8 @@ int main(int argc, char* argv[])
     printf("KinoPaxSTARcostprune: cap sweep {0,0.2,0.4,0.8,1.0} x %d runs each\n", NUM_KINOPAXSTARCOSTPRUNE_RUNS);
     printf("KinoPaxSTARNoPrune: %d runs\n", NUM_KINOPAXSTARNOPRUNE_RUNS);
     printf("KinoPaxSTARNoPruneNoSpatialHash: %d runs\n", NUM_KINOPAXSTARNOPRUNENOSPATIALHASH_RUNS);
+    printf("KinoPaxSTARnoseed: %d runs\n", NUM_KINOPAXSTARNOSEED_RUNS);
+    printf("KinoPaxSTARsparsefill: %d runs (pSeed ramp 0->1 over first 100 iters)\n", NUM_KINOPAXSTARSPARSEFILL_RUNS);
     printf("Max iterations: %d\n", MAX_ITERATIONS);
     printf("=======================================================\n");
 
@@ -1378,6 +1668,14 @@ int main(int argc, char* argv[])
     // --- KinoPaxSTARNoPruneNoSpatialHash delta benchmark (NoPrune combo, spatial hash removed) ---
     runKinoPaxSTARNoPruneNoSpatialHashBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
                             all_results, outputDir, deltaLabel, NUM_KINOPAXSTARNOPRUNENOSPATIALHASH_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
+
+    // --- KinoPaxSTARnoseed (sparse-only: new-sub-region seeding removed) ---
+    runKinoPaxSTARnoseedBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
+                            all_results, outputDir, deltaLabel, NUM_KINOPAXSTARNOSEED_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
+
+    // --- KinoPaxSTARsparsefill (annealed: sub-region seeding ramps 0->1 over iterations) ---
+    runKinoPaxSTARsparsefillBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
+                            all_results, outputDir, deltaLabel, NUM_KINOPAXSTARSPARSEFILL_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
 
     cudaFree(d_obstacles);
 

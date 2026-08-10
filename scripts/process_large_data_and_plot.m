@@ -38,18 +38,20 @@ deltas      = {'large'};
 deltaLabels = {'Large-\delta (27k)'};
 
 % Planners overlaid in every panel (color = planner). KinoPaxSTARcostprune is swept
-% over 5 max-acceptance caps (teal gradient, light=cap0 -> dark=cap1.0); the two
-% NoPrune variants are adjacent so the spatial-hash on/off pair is easy to read.
+% over 5 max-acceptance caps (teal gradient). The KinoPaxSTARNoPrune family is grouped:
+% NoPrune (full seed) / NoPruneNoSpatialHash / noseed (sparse-only) / sparsefill (annealed).
 % plannerNames  = CSV identity (filename token); plannerDisplay = short legend/x-tick label.
 plannerNames  = {'KinoPaxPlus', 'KinoPaxSTAR', ...
                  'KinoPaxSTARcostprune_cap0', 'KinoPaxSTARcostprune_cap20', ...
                  'KinoPaxSTARcostprune_cap40', 'KinoPaxSTARcostprune_cap80', ...
                  'KinoPaxSTARcostprune_cap100', ...
-                 'KinoPaxSTARNoPrune', 'KinoPaxSTARNoPruneNoSpatialHash', 'KPAX', 'PruneKPAX'};
+                 'KinoPaxSTARNoPrune', 'KinoPaxSTARNoPruneNoSpatialHash', ...
+                 'KinoPaxSTARnoseed', 'KinoPaxSTARsparsefill', 'KPAX', 'PruneKPAX'};
 plannerDisplay = {'KinoPaxPlus', 'KinoPaxSTAR', ...
                  'CostPrune cap0', 'CostPrune cap0.2', 'CostPrune cap0.4', ...
                  'CostPrune cap0.8', 'CostPrune cap1.0', ...
-                 'STARNoPrune', 'STARNoPrune-NoSH', 'KPAX', 'PruneKPAX'};
+                 'STARNoPrune', 'STARNoPrune-NoSH', ...
+                 'STARnoseed', 'STARsparsefill', 'KPAX', 'PruneKPAX'};
 plannerColors = [0.20 0.40 0.80;    % KinoPaxPlus                     - blue
                  0.55 0.15 0.60;    % KinoPaxSTAR                     - purple
                  0.70 0.90 0.87;    % CostPrune cap0                  - teal (lightest)
@@ -59,6 +61,8 @@ plannerColors = [0.20 0.40 0.80;    % KinoPaxPlus                     - blue
                  0.03 0.36 0.34;    % CostPrune cap1.0                - teal (darkest)
                  0.20 0.65 0.25;    % KinoPaxSTARNoPrune              - green
                  0.80 0.20 0.20;    % KinoPaxSTARNoPruneNoSpatialHash - red
+                 0.90 0.30 0.65;    % KinoPaxSTARnoseed               - magenta (sparse-only)
+                 0.10 0.75 0.85;    % KinoPaxSTARsparsefill           - cyan (annealed)
                  0.10 0.10 0.10;    % KPAX                            - near-black
                  0.85 0.45 0.10];   % PruneKPAX                       - orange
 plannerStyles = repmat({'-'}, 1, numel(plannerNames));
@@ -199,6 +203,10 @@ function runs = loadRuns(dataDir, env, planner, delta, numRuns)
                 fn = sprintf('%s_KinoPaxSTARNoPrune_delta%s_run%d.csv', env, delta, ri);
             case 'KinoPaxSTARNoPruneNoSpatialHash'
                 fn = sprintf('%s_KinoPaxSTARNoPruneNoSpatialHash_delta%s_run%d.csv', env, delta, ri);
+            case 'KinoPaxSTARnoseed'
+                fn = sprintf('%s_KinoPaxSTARnoseed_delta%s_run%d.csv', env, delta, ri);
+            case 'KinoPaxSTARsparsefill'
+                fn = sprintf('%s_KinoPaxSTARsparsefill_delta%s_run%d.csv', env, delta, ri);
             otherwise
                 % Cost-prune cap-sweep variants (KinoPaxSTARcostprune, KinoPaxSTARcostprune_capNN)
                 % use the planner name directly as the filename token.
