@@ -21,13 +21,12 @@ clear; clc; close all;
 
 %% ===================== Configuration =====================
 % Paths are resolved relative to this script by default (repo/scripts/..).
-scriptDir  = fileparts(mfilename('fullpath'));
-projectDir = fileparts(scriptDir);
+dataDir      = '';
+vizDir       = 'viz\';
+obstacleFile = 'obstacles.csv';
 
-% Folder holding the benchmark output. Override if you copied CSVs elsewhere.
-dataDir      = fullfile(projectDir, 'build', 'Data', 'Benchmarks', 'KinoPaxStarLarge');
-vizDir       = fullfile(dataDir, 'viz');
-obstacleFile = fullfile(projectDir, 'include', 'config', 'obstacles', 'house', 'obstacles.csv');
+env   = 'house';   % environment name used in the dumped filenames
+delta = 'large';   % build delta label used in the per-iteration filenames
 
 env   = 'house';   % environment name used in the dumped filenames
 delta = 'large';   % build delta label used in the per-iteration filenames
