@@ -30,8 +30,10 @@ PruneKPAX::PruneKPAX()
 
     h_activeBlockSize_ = 32;
 
-    // Initialize tunable pruning parameters with default values
-    h_maxRegression_ = 10.0f;       // Default: allow 10 units of regression
+    // Initialize tunable pruning parameters with default values. maxRegression auto-scales to
+    // the workspace: the old hardcoded 10.0 was the Model-3 (100-unit) value (== 0.1*(100-0)),
+    // which on Model 1's unit workspace is 10x the whole space and neuters the goal gate.
+    h_maxRegression_ = 0.1f * (W_MAX - W_MIN);   // 0.1 * workspace extent (matches KinoPaxSTAR)
     h_explorationBias_ = 0.3f;      // Default: 30% base exploration probability
     h_goalBias_ = 0.7f;             // Default: 70% goal-directed bias multiplier
 
