@@ -73,7 +73,7 @@ write_config() {
 /* 6D DOUBLE INTEGRATOR    */
 /***************************/
 #define MODEL 1
-#define COST_MODE 1  // path cost: 1 = control effort ((ax^2+ay^2+az^2)*dt), 0 = workspace distance
+#define COST_MODE 0  // path cost: 1 = control effort ((ax^2+ay^2+az^2)*dt), 0 = workspace distance
 #define MAX_TREE_SIZE 3000000
 #define MAX_FLOAT 1e38f
 #define MAX_SOL_SET_SIZE 500
