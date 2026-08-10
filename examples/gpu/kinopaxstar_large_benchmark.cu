@@ -859,11 +859,13 @@ RunResult benchmarkKinoPaxSTARcostprune(
     int maxIterations,
     float maxTimeMs,
     float acceptCap,
+    float costPruneExp,
     const std::string& label)
 {
-    // Override the planner's default 0.1 max Syclop acceptance for this run. resetPlanner
-    // (called below) does not touch h_acceptCap_, so setting it at entry holds for the run.
-    planner.h_acceptCap_ = acceptCap;
+    // Override the planner's defaults for this run. resetPlanner (called below) does not
+    // touch h_acceptCap_ / h_costPruneExp_, so setting them at entry holds for the run.
+    planner.h_acceptCap_    = acceptCap;
+    planner.h_costPruneExp_ = costPruneExp;
     RunResult result;
     result.delta_label = label;
     result.build_delta = deltaLabel;
@@ -963,27 +965,28 @@ void runKinoPaxSTARcostpruneBenchmark(
            environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
     printf("========================================\n");
 
-    // Sweep the max Syclop acceptance cap (a.k.a. max probability of acceptance).
-    // cap=0 -> exploration acceptance always fails (pure cost-greedy);
-    // cap=1 -> uncapped Syclop (fminf(vertexScore, 1) == vertexScore).
-    const float       caps[]      = {0.0f, 0.2f, 0.4f, 0.8f, 1.0f};
-    const char* const capLabels[] = {"KinoPaxSTARcostprune_cap0",  "KinoPaxSTARcostprune_cap20",
-                                     "KinoPaxSTARcostprune_cap40", "KinoPaxSTARcostprune_cap80",
-                                     "KinoPaxSTARcostprune_cap100"};
+    // Sweep KinoPaxSTARcostprune over (max Syclop acceptance cap, cost-prune exponent).
+    // cap=0 -> exploration acceptance always fails (pure cost-greedy); cap=1 -> uncapped.
+    // costPruneExp k in the cost gate p=(minCostsR1/cost)^k (default 1.0; lower = gentler).
+    const float       caps[]      = {0.0f, 0.4f, 1.0f, 0.0f, 0.0f};
+    const float       exps[]      = {1.0f, 1.0f, 1.0f, 0.5f, 0.75f};
+    const char* const capLabels[] = {"KinoPaxSTARcostprune_cap0",  "KinoPaxSTARcostprune_cap40",
+                                     "KinoPaxSTARcostprune_cap100", "KinoPaxSTARcostprune_cap0_exp50",
+                                     "KinoPaxSTARcostprune_cap0_exp75"};
     const int numCaps = sizeof(caps) / sizeof(caps[0]);
 
     for(int c = 0; c < numCaps; c++)
     {
-        printf("  --- acceptCap = %.2f (%s) ---\n", caps[c], capLabels[c]);
+        printf("  --- acceptCap = %.2f, costPruneExp = %.2f (%s) ---\n", caps[c], exps[c], capLabels[c]);
         KinoPaxSTARcostprune planner;
         for(int run = 0; run < numRuns; run++)
         {
             RunResult result = benchmarkKinoPaxSTARcostprune(planner, deltaLabel, environment_name, run,
                                                  h_initial, h_goal, d_obstacles,
                                                  numObstacles, maxIterations, maxTimeMs,
-                                                 caps[c], capLabels[c]);
-            printf("  cap=%.2f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-                   caps[c], run + 1, numRuns, result.total_time_seconds, result.total_iterations,
+                                                 caps[c], exps[c], capLabels[c]);
+            printf("  cap=%.2f exp=%.2f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                   caps[c], exps[c], run + 1, numRuns, result.total_time_seconds, result.total_iterations,
                    result.final_tree_size, result.first_solution_iteration,
                    result.first_solution_cost, result.final_best_cost);
             writePerIterationCSV(result, outputDir);
@@ -1602,7 +1605,7 @@ int main(int argc, char* argv[])
     printf("Dump viz:       %s\n", g_dumpViz ? "YES (run 0 per variant)" : "NO");
     printf("KinoPaxPlus:    %d runs\n", NUM_KINOPAXPLUS_RUNS);
     printf("KinoPaxSTAR:    %d runs\n", NUM_KINOPAXSTAR_RUNS);
-    printf("KinoPaxSTARcostprune: cap sweep {0,0.2,0.4,0.8,1.0} x %d runs each\n", NUM_KINOPAXSTARCOSTPRUNE_RUNS);
+    printf("KinoPaxSTARcostprune: sweep [cap0, cap0.4, cap1.0, cap0+exp0.5, cap0+exp0.75] x %d runs each\n", NUM_KINOPAXSTARCOSTPRUNE_RUNS);
     printf("KinoPaxSTARNoPrune: %d runs\n", NUM_KINOPAXSTARNOPRUNE_RUNS);
     printf("KinoPaxSTARNoPruneNoSpatialHash: %d runs\n", NUM_KINOPAXSTARNOPRUNENOSPATIALHASH_RUNS);
     printf("KinoPaxSTARnoseed: %d runs\n", NUM_KINOPAXSTARNOSEED_RUNS);
