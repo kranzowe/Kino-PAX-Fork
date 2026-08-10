@@ -5,6 +5,7 @@
 /***************************/
 
 // #define MODEL 1
+// #define COST_MODE 1  // path cost: 1 = control effort, 0 = workspace distance (see helper.cuh edgeCost)
 
 // #define MAX_TREE_SIZE 300000
 // #define MAX_ITER 300

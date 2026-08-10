@@ -150,3 +150,35 @@ __device__ __forceinline__ float distance(float* a, float* b)
             return -1;
         }
 }
+
+// --------------------------------------------------------------------------------------
+// Per-edge path cost from parent state x0 to child state x1, selected by COST_MODE (config.h).
+// Used at every cumulative-cost accumulation site (planner kernels + benchmark computePathCost),
+// so it is both host- and device-callable.
+//   COST_MODE 1 (default): pure control effort. The double-integrator child stores its control
+//     accel at x1[6..8] and the edge duration at x1[9], so edge cost = (ax^2+ay^2+az^2)*dt.
+//   COST_MODE 0: baseline workspace Euclidean distance (self-contained; host-callable).
+// An undefined MODEL evaluates to 0 in the #if, so the distance fallback is always safe.
+// --------------------------------------------------------------------------------------
+#ifndef COST_MODE
+#define COST_MODE 1
+#endif
+
+__host__ __device__ __forceinline__ float edgeCost(const float* x0, const float* x1)
+{
+#if (COST_MODE == 1) && (MODEL == 1)
+    // Pure control effort: integral of ||a||^2 over the edge (no distance term).
+    float ax = x1[6], ay = x1[7], az = x1[8], dt = x1[9];
+    (void)x0;
+    return (ax * ax + ay * ay + az * az) * dt;
+#else
+    // Baseline / non-Model-1 fallback: workspace Euclidean distance.
+    float s = 0.0f;
+    for(int d = 0; d < W_DIM; ++d)
+        {
+            float diff = x1[d] - x0[d];
+            s += diff * diff;
+        }
+    return sqrtf(s);
+#endif
+}

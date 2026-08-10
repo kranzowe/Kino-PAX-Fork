@@ -96,7 +96,7 @@ for ei = 1:numel(environments)
     for pi = 1:nPlanner
         plotBandIter(R{pi}, 'best_cost', plannerColors(pi, :), plannerStyles{pi}, plannerDisplay{pi});
     end
-    xlabel('Iteration'); ylabel('Path Cost (workspace distance)'); grid on;
+    xlabel('Iteration'); ylabel('Path Cost (control effort)'); grid on;
     legend('Location', 'best', 'FontSize', 7);
     title(sprintf('Best Cost vs Iteration \x2014 %s, %s', envTitle, deltaLabels{di}), 'FontWeight', 'bold');
 
@@ -111,7 +111,7 @@ for ei = 1:numel(environments)
             plotBandTime(R{pi}, 'best_cost', ct, plannerColors(pi, :), plannerStyles{pi}, plannerDisplay{pi});
         end
     end
-    xlabel('Elapsed Time (ms)'); ylabel('Path Cost (workspace distance)'); grid on;
+    xlabel('Elapsed Time (ms)'); ylabel('Path Cost (control effort)'); grid on;
     legend('Location', 'best', 'FontSize', 7);
     title(sprintf('Best Cost vs Time \x2014 %s, %s', envTitle, deltaLabels{di}), 'FontWeight', 'bold');
 
@@ -165,7 +165,7 @@ for ei = 1:numel(environments)
     plannerBar(mFirstSolTime, eFirstSolTime, plannerDisplay, plannerColors, 'Time (ms)', 'Avg Time to First Solution');
 
     subplot(2, 2, 3);
-    plannerBar(mFinalCost, eFinalCost, plannerDisplay, plannerColors, 'Path Cost (workspace distance)', 'Final Best Cost');
+    plannerBar(mFinalCost, eFinalCost, plannerDisplay, plannerColors, 'Path Cost (control effort)', 'Final Best Cost');
 
     subplot(2, 2, 4);
     plannerBar(mTotalTime, eTotalTime, plannerDisplay, plannerColors, 'Time (s)', 'Total Execution Time');

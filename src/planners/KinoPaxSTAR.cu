@@ -334,7 +334,7 @@ __global__ void KinoPaxSTAR_propagateFrontier_kernel1(bool* frontier, uint* acti
             atomicAdd(&validVertexCounter[x1Vertex], 1);
 
             // Cumulative cost from root
-            float cost = s_x0Cost + distance(s_x0, x1);
+            float cost = s_x0Cost + edgeCost(s_x0, x1);
 
             // Track 1: Best-in-region (KinoPaxPlus)
             if(minCostsR1[x1Vertex] > cost) atomicMinFloat(&minCostsR1[x1Vertex], cost);
@@ -396,7 +396,7 @@ __global__ void KinoPaxSTAR_propagateFrontier_kernel2(bool* frontier, uint* acti
         {
             atomicAdd(&validVertexCounter[x1Vertex], 1);
 
-            float cost = x0Cost + distance(x0, x1);
+            float cost = x0Cost + edgeCost(x0, x1);
 
             // Track 1: Best-in-region
             if(minCostsR1[x1Vertex] > cost) atomicMinFloat(&minCostsR1[x1Vertex], cost);

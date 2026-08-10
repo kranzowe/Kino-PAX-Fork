@@ -53,9 +53,9 @@ struct RunResult
 };
 
 // ========================================================================
-// Compute cumulative root-to-goal path cost by walking the parent chain.
-// Same metric KinoPaxPlus tracks via h_minCost_: sum of workspace distance
-// along path from root to goalIdx.
+// Compute cumulative root-to-goal path cost by walking the parent chain, summing edgeCost()
+// per edge (COST_MODE-selected; control effort by default). Same metric KinoPaxPlus/STAR
+// track via h_minCost_.
 // ========================================================================
 float computePathCost(
     const std::vector<float>& h_treeSamples,   // flat [treeSize * SAMPLE_DIM]
@@ -69,14 +69,10 @@ float computePathCost(
         int par = h_parents[cur];
         if(par < 0) break;  // reached root (parent of root is -1)
 
-        float dist = 0.0f;
-        for(int d = 0; d < W_DIM; d++)
-        {
-            float diff = h_treeSamples[cur * SAMPLE_DIM + d]
-                       - h_treeSamples[par * SAMPLE_DIM + d];
-            dist += diff * diff;
-        }
-        totalCost += std::sqrt(dist);
+        // Edge par->cur cost via the shared cost function (control effort under COST_MODE=1;
+        // the control that produced 'cur' is stored in cur's sample). Matches the kernels.
+        totalCost += edgeCost(&h_treeSamples[par * SAMPLE_DIM],
+                              &h_treeSamples[cur * SAMPLE_DIM]);
         cur = par;
     }
     return totalCost;

@@ -365,7 +365,7 @@ __global__ void KinoPaxPlus_propagateFrontier_kernel1(bool* frontier, uint* acti
     if(valid)
         {
             int x1R1   = KinoPaxPlus_getRegion(x1);
-            float cost = s_x0Cost + distance(s_x0, x1);  // TODO: Currently just distance.
+            float cost = s_x0Cost + edgeCost(s_x0, x1);  // per-edge cost via edgeCost() (COST_MODE)
             if(minCostsR1[x1R1] > cost) atomicMinFloat(&minCostsR1[x1R1], cost);
             if(cost <= minCostsR1[x1R1])
                 {
@@ -418,7 +418,7 @@ __global__ void KinoPaxPlus_propagateFrontier_kernel1V2(bool* frontier, uint* ac
     if(valid)
         {
             int x1R1   = KinoPaxPlus_getRegion(x1);
-            float cost = s_x0Cost + distance(s_x0, x1);  // TODO: Currently just distance.
+            float cost = s_x0Cost + edgeCost(s_x0, x1);  // per-edge cost via edgeCost() (COST_MODE)
             if(minCostsR1[x1R1] > cost) atomicMinFloat(&minCostsR1[x1R1], cost);
             if(cost <= minCostsR1[x1R1])
                 {
@@ -463,7 +463,7 @@ KinoPaxPlus_propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, 
     if(valid)
         {
             int x1R1   = KinoPaxPlus_getRegion(x1);
-            float cost = x0Cost + distance(x0, x1);  // TODO: Currently just distance.
+            float cost = x0Cost + edgeCost(x0, x1);  // per-edge cost via edgeCost() (COST_MODE)
             if(minCostsR1[x1R1] > cost) atomicMinFloat(&minCostsR1[x1R1], cost);
             if(cost <= minCostsR1[x1R1])
                 {
