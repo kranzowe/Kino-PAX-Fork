@@ -516,6 +516,10 @@ KinoPaxSTAR_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* acti
             treeSampleCosts[x1TreeIdx] = cost;
             treeXR1s[x1TreeIdx]        = xR1;
 
+            // Record birth iteration for EVERY inserted node (not only goal nodes), so
+            // tree-growth tooling can filter/animate the tree by iteration.
+            iterations[x1TreeIdx] = iteration;
+
             // Always add to frontier (passed dual filter + pruning)
             frontier[x1TreeIdx] = true;
 
@@ -534,9 +538,8 @@ KinoPaxSTAR_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* acti
             if(distance(x1, s_xGoal) < GOAL_THRESH && cost <= *minCost)
                 {
                     atomicMinFloat(minCost, cost);
-                    goalSet[x1TreeIdx]    = true;
-                    frontier[x1TreeIdx]   = false;
-                    iterations[x1TreeIdx] = iteration;
+                    goalSet[x1TreeIdx]  = true;
+                    frontier[x1TreeIdx] = false;
                 }
         }
 
