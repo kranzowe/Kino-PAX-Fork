@@ -33,14 +33,25 @@ times   = unique(sat.t, 'stable');
 nFrames = numel(times);
 thc     = linspace(0, 2*pi, 60);
 
-pad = 100;
-xl  = [min([sat.x; defs.x; flag(1)]) - pad, max([sat.x; defs.x; flag(1)]) + pad];
-yl  = [min([sat.y; defs.y; flag(2)]) - pad, max([sat.y; defs.y; flag(2)]) + pad];
+% Square, equal-aspect view. CW motion drifts far more along-track (y) than
+% radial (x), so framing to the raw data with equal aspect squishes x into a thin
+% strip. Instead center on the data and use one common half-span for both axes, so
+% the plot stays square (keep-out circles remain circular) and fills the window.
+allx = [sat.x; defs.x; flag(1)];
+ally = [sat.y; defs.y; flag(2)];
+pad  = 150;
+cx   = 0.5 * (min(allx) + max(allx));
+cy   = 0.5 * (min(ally) + max(ally));
+half = 0.5 * max(max(allx) - min(allx), max(ally) - min(ally)) + pad;
+xl   = [cx - half, cx + half];
+yl   = [cy - half, cy + half];
 
 %% ------------------------- figure -------------------------
 fig = figure('Color', 'w', 'Position', [100 100 820 820]);
 ax  = axes(fig); hold(ax, 'on'); box(ax, 'on'); grid(ax, 'on');
-axis(ax, 'equal'); xlim(ax, xl); ylim(ax, yl);
+xlim(ax, xl); ylim(ax, yl);
+daspect(ax, [1 1 1]);   % equal data units on both axes; square limits above keep the box square
+                        % and let it scale with the window (avoid axis-equal's limit fiddling)
 xlabel(ax, 'Radial  x  [m]'); ylabel(ax, 'In-track  y  [m]');
 title(ax, 'KinoPaxSTAR CostPrune \cdot satellite flag capture');
 

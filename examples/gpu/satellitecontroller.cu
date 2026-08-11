@@ -1,5 +1,5 @@
 // =============================================================================
-//  Satellite flag-capture demo for the KinoPaxSTARcostprune planner.
+//  Satellite flag-capture demo for the KinoPaxSTAR planner.
 //
 //  A 2D Clohessy-Wiltshire satellite (radial / in-track) starts at (1000, 1000) m
 //  and must capture a flag at the origin while avoiding 10 defender satellites that
@@ -32,7 +32,7 @@
 
 #include "config/config.h"
 #include "helper/helper.cuh"
-#include "planners/KinoPaxSTARcostprune.cuh"
+#include "planners/KinoPaxSTAR.cuh"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -130,11 +130,11 @@ int main(int argc, char** argv)
     costf << std::fixed << std::setprecision(6);
 
     // --- Planner (constructed once; plan() resets internally each cycle) ---
-    KinoPaxSTARcostprune planner;
+    // KinoPaxSTAR: KPAX exploration + KinoPaxPlus cost + goal-progress pruning. Its
+    // goal-progress tunables (h_maxRegression_/h_explorationBias_/h_goalBias_) default in
+    // the constructor; left as-is here.
+    KinoPaxSTAR planner;
     planner.initializeRandomSeeds((int)seed);
-    planner.h_acceptCap_      = 0.1f;   // CostPrune: cap Syclop exploration at 10%
-    planner.h_costPruneExp_   = 1.0f;
-    planner.h_costPruneFloor_ = 0.02f;
 
     float* d_obstacles = nullptr;
     cudaMalloc(&d_obstacles, (size_t)NUM_DEFENDERS * 2 * W_DIM * sizeof(float));
