@@ -91,7 +91,7 @@ __device__ bool propagateAndCheckDoubleIntRungeKuttaSpatialHash(float* x0, float
     float bbMin[W_DIM], bbMax[W_DIM];
     for(int i = 0; i < propagationDuration; i++)
         {
-            float x0State[W_DIM] = {x, y, z};
+            float x0State[3] = {x, y, z};  // sized [3] (max workspace dim) so this compiles when W_DIM<3; only [0..W_DIM) is used
 
             // --- State Propagation. 4th order Runge Kutta ---
             x += (vx + (vx + 2 * (vx + ax * STEP_SIZE / 2) + (vx + ax * STEP_SIZE))) * STEP_SIZE / 6;
@@ -108,7 +108,7 @@ __device__ bool propagateAndCheckDoubleIntRungeKuttaSpatialHash(float* x0, float
                     break;
                 }
 
-            float x1State[W_DIM] = {x, y, z};
+            float x1State[3] = {x, y, z};  // sized [3] (max workspace dim) so this compiles when W_DIM<3; only [0..W_DIM) is used
 
             // --- Workspace Limit Check ---
             if(x < 0 || x > W_SIZE || y < 0 || y > W_SIZE || z < 0 || z > W_SIZE)
@@ -163,7 +163,7 @@ __device__ bool propagateAndCheckDubinsAirplaneRungeKuttaSpatialHash(float* x0, 
 
     for(int i = 0; i < propagationDuration; i++)
         {
-            float x0State[W_DIM] = {x, y, z};
+            float x0State[3] = {x, y, z};  // sized [3] (max workspace dim) so this compiles when W_DIM<3; only [0..W_DIM) is used
 
             // --- State Propagation using 4th Order Runge-Kutta Method ---
             x +=
@@ -198,7 +198,7 @@ __device__ bool propagateAndCheckDubinsAirplaneRungeKuttaSpatialHash(float* x0, 
                     break;
                 }
 
-            float x1State[W_DIM] = {x, y, z};
+            float x1State[3] = {x, y, z};  // sized [3] (max workspace dim) so this compiles when W_DIM<3; only [0..W_DIM) is used
 
             // --- Workspace Limit Check ---
             if(x < 0 || x > W_SIZE || y < 0 || y > W_SIZE || z < 0 || z > W_SIZE)
@@ -265,7 +265,7 @@ __device__ bool propagateAndCheckQuadRungeKuttaSpatialHash(float* x0, float* x1,
 
     for(int i = 0; i < propagationDuration; i++)
         {
-            float x0State[W_DIM] = {h0[0], h0[1], h0[2]};
+            float x0State[3] = {h0[0], h0[1], h0[2]};  // sized [3]; dead code for W_DIM<3, only [0..W_DIM) is read
 
             ode(h1, h0, nullptr, Zc, Lc, Mc, Nc, 0);
             ode(h2, h0, h1, Zc, Lc, Mc, Nc, 1);
@@ -276,7 +276,7 @@ __device__ bool propagateAndCheckQuadRungeKuttaSpatialHash(float* x0, float* x1,
                     h0[j] += STEP_SIZE / 6.0f * (h1[j] + 2.0f * h2[j] + 2.0f * h3[j] + h4[j]);
                 }
 
-            float x1State[W_DIM] = {h0[0], h0[1], h0[2]};
+            float x1State[3] = {h0[0], h0[1], h0[2]};  // sized [3]; dead code for W_DIM<3, only [0..W_DIM) is read
 
             // --- Vehicle Dynamics Check ---
             if(h0[6] < V_MIN || h0[6] > V_MAX || h0[7] < V_MIN || h0[7] > V_MAX || h0[8] < V_MIN || h0[8] > V_MAX)
