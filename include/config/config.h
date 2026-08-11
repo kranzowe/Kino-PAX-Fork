@@ -263,8 +263,8 @@
 #define A_MAX DV_MAX
 
 // --- Safety weight: edgeCost = dv_r^2 + dv_i^2 + W_SAFETY * sum_substep sum_def (STEP_SIZE / dist_to_center) ---
-#define W_SAFETY 0.05f
-#define W_TIME 0.005f
+#define W_SAFETY 0.5f
+#define W_TIME 0.002f
 
 // --- Syclop region grid: W_DIM=2 spatial, V_DIM=2 velocity, no attitude ---
 #define W_R1_LENGTH 24
