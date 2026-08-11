@@ -137,6 +137,11 @@ void KinoPaxSTARcostprune::resetPlanner(float* h_initial, float* h_goal)
     h_frontierSize_ = 0;
     h_minCost_      = MAX_FLOAT;
     h_solSetSize_   = 0;
+    // Must be nonzero before iteration 1: the plan/benchmark loop breaks on
+    // h_propIterations_ == 0, and propagateFrontier only assigns it on the
+    // tree-nearly-full path. Without this init it holds indeterminate garbage
+    // (matches the fix already in KinoPaxSTARNoPruneNoSpatialHash::resetPlanner).
+    h_propIterations_ = 1;
 
     cudaMemcpy(d_treeSamples_ptr_, h_initial, SAMPLE_DIM * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_goalSample_ptr_, h_goal, SAMPLE_DIM * sizeof(float), cudaMemcpyHostToDevice);
