@@ -421,8 +421,10 @@ __device__ bool propagateAndCheckCW(float* x0, float* x1, curandState* seed, flo
 
             float x1State[W_DIM] = {x, y};
 
-            // --- Workspace limit check (signed, flag-centered) ---
-            if(x < W_MIN || x > W_MAX || y < W_MIN || y > W_MAX)
+            // --- Node-rejection box: reject any node that leaves the radial / in-track extent
+            // (NODE_RADIAL_LIMIT / NODE_INTRACK_LIMIT in config.h). Marks the motion invalid, the
+            // same effect as an obstacle collision, so the planner never accepts it. ---
+            if(fabsf(x) > NODE_RADIAL_LIMIT || fabsf(y) > NODE_INTRACK_LIMIT)
                 {
                     motionValid = false;
                     break;

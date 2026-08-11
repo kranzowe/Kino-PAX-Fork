@@ -44,9 +44,11 @@ namespace
 constexpr int   NUM_DEFENDERS   = 10;           // number of defender satellites
 constexpr float DEFENDER_DISK_R = 800.0f;       // initial spawn radius around the flag [m]
 constexpr float R_KEEPOUT       = 50.0f;        // hard keep-out half-width per defender [m] (100 m box)
-constexpr float DEFENDER_DV     = 0.10f;        // per-axis random DV bound, per cycle [m/s]
+constexpr float DEFENDER_WP_RMIN = 100.0f;      // defender waypoint annulus inner radius [m] (around flag)
+constexpr float DEFENDER_WP_RMAX = 1000.0f;     // defender waypoint annulus outer radius [m] (around flag)
 constexpr float DEFENDER_V0     = 0.05f;        // per-axis initial velocity bound [m/s]
 constexpr float SEGMENT_T       = 600.0f;       // fly + defender-update horizon per cycle [s] (10 min)
+constexpr float DEFENDER_TOF    = SEGMENT_T;    // defender time-of-flight to its waypoint [s] (tunable)
 constexpr float LOG_DT          = 20.0f;        // trajectory sampling resolution for the animation [s]
 constexpr int   MAX_CYCLES      = 40;           // stop after this many cycles (or on capture)
 constexpr float CAPTURE_R       = GOAL_THRESH;  // capture radius [m]
@@ -78,6 +80,35 @@ float dist2D(float ax, float ay, float bx, float by)
 {
     float dx = ax - bx, dy = ay - by;
     return std::sqrt(dx * dx + dy * dy);
+}
+
+// Impulsive delta-V to reach target position (tx,ty) at time tof from state s, by inverting the
+// CW position block:  v_req = Phi_rv(tof)^-1 * (r_target - Phi_rr(tof) * r0);  DV = v_req - v0.
+// Phi_rv is 2x2, so the inverse is closed-form (singular only near whole-orbit tof).
+void cwTargetingDV(const State& s, float tx, float ty, float tof, float& dvx, float& dvy)
+{
+    const float n  = MEAN_MOTION;
+    const float sn = std::sin(n * tof);
+    const float cs = std::cos(n * tof);
+    const float nt = n * tof;
+
+    // Phi_rr and Phi_rv 2x2 blocks of the CW state-transition matrix (rr01 = 0, rr11 = 1).
+    const float rr00 = 4.0f - 3.0f * cs, rr10 = 6.0f * (sn - nt);
+    const float rv00 = sn / n, rv01 = (2.0f / n) * (1.0f - cs);
+    const float rv10 = -(2.0f / n) * (1.0f - cs), rv11 = (1.0f / n) * (4.0f * sn - 3.0f * nt);
+
+    // b = r_target - Phi_rr * r0
+    const float bx = tx - (rr00 * s.x);
+    const float by = ty - (rr10 * s.x + s.y);
+
+    // v_req = Phi_rv^-1 * b
+    const float det = rv00 * rv11 - rv01 * rv10;
+    if(std::fabs(det) < 1e-9f) { dvx = 0.0f; dvy = 0.0f; return; }  // near-singular tof: skip the burn
+    const float vreqx = (rv11 * bx - rv01 * by) / det;
+    const float vreqy = (-rv10 * bx + rv00 * by) / det;
+
+    dvx = vreqx - s.vx;
+    dvy = vreqy - s.vy;
 }
 }  // namespace
 
@@ -240,13 +271,23 @@ int main(int argc, char** argv)
                 return cwCoast(edges[e].start, tau - edges[e].Tstart);
             };
 
-            // Defenders: one random DV impulse per cycle, then coast. defBase = post-impulse states.
+            // Defenders: each cycle re-target a random waypoint in the annulus
+            // [DEFENDER_WP_RMIN, DEFENDER_WP_RMAX] around the flag and burn (CW targeting) to
+            // arrive there in DEFENDER_TOF seconds, so they patrol near the flag instead of
+            // free-drifting away. defBase = post-burn states.
             std::vector<State> defBase(NUM_DEFENDERS);
             for(int i = 0; i < NUM_DEFENDERS; ++i)
                 {
+                    float wr  = std::sqrt(u01(rng) * (DEFENDER_WP_RMAX * DEFENDER_WP_RMAX - DEFENDER_WP_RMIN * DEFENDER_WP_RMIN)
+                                          + DEFENDER_WP_RMIN * DEFENDER_WP_RMIN);  // uniform over the annulus
+                    float wth = 2.0f * (float)M_PI * u01(rng);
+                    float wx  = flagx + wr * std::cos(wth);
+                    float wy  = flagy + wr * std::sin(wth);
+                    float dvx, dvy;
+                    cwTargetingDV(def[i], wx, wy, DEFENDER_TOF, dvx, dvy);
                     defBase[i]    = def[i];
-                    defBase[i].vx += DEFENDER_DV * u11(rng);
-                    defBase[i].vy += DEFENDER_DV * u11(rng);
+                    defBase[i].vx += dvx;
+                    defBase[i].vy += dvy;
                 }
 
             float minDefDist = 1e30f;

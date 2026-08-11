@@ -238,6 +238,13 @@
 #define W_MAX 3000.0f
 #define W_SIZE (W_MAX - W_MIN)
 
+// --- Hard node-rejection box [m]: propagateAndCheckCW rejects any node that leaves this
+// radial / in-track extent, marking the motion invalid (same effect as a collision). Kept
+// inside the region grid (W_MIN/W_MAX = +/-3000), so the reachable region is comfortably
+// covered by the Syclop bins (no edge-cell clamping). ---
+#define NODE_RADIAL_LIMIT 2000.0f     // +/- 2000 m radial
+#define NODE_INTRACK_LIMIT 2000.0f    // +/- 2000 m in-track
+
 // --- Attitude placeholders (unused; C_DIM = 0). Kept defined so shared macros compile. ---
 #define C_MIN -M_PI
 #define C_MAX M_PI
@@ -259,9 +266,9 @@
 #define W_SAFETY 0.05f
 
 // --- Syclop region grid: W_DIM=2 spatial, V_DIM=2 velocity, no attitude ---
-#define W_R1_LENGTH 12
+#define W_R1_LENGTH 24
 #define C_R1_LENGTH 1
-#define V_R1_LENGTH 4
+#define V_R1_LENGTH 8
 
 #define W_R2_LENGTH 2
 #define C_R2_LENGTH 1
