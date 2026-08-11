@@ -214,7 +214,7 @@
 
 #define MODEL 4
 
-#define MAX_TREE_SIZE 300000
+#define MAX_TREE_SIZE 3000000
 #define MAX_ITER 300
 #define MAX_ITER_REKINO 20000
 #define STEP_SIZE 15.0f              // collision/safety sub-step [s]; CW coast is exact via STM
@@ -234,8 +234,8 @@
 #define MEAN_MOTION 0.0011636f       // n = 2*pi / 5400 s  [rad/s]
 
 // --- Workspace (signed, flag-centered) [m] ---
-#define W_MIN -3000.0f
-#define W_MAX 3000.0f
+#define W_MIN -2000.0f
+#define W_MAX 2000.0f
 #define W_SIZE (W_MAX - W_MIN)
 
 // --- Hard node-rejection box [m]: propagateAndCheckCW rejects any node that leaves this

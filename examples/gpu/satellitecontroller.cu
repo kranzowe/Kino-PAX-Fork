@@ -41,13 +41,13 @@
 namespace
 {
 // ---- Scenario constants (tunable) ----
-constexpr int   NUM_DEFENDERS   = 10;           // number of defender satellites
+constexpr int   NUM_DEFENDERS   = 5;           // number of defender satellites
 constexpr float DEFENDER_DISK_R = 800.0f;       // initial spawn radius around the flag [m]
 constexpr float R_KEEPOUT       = 50.0f;        // hard keep-out half-width per defender [m] (100 m box)
-constexpr float DEFENDER_WP_RMIN = 100.0f;      // defender waypoint annulus inner radius [m] (around flag)
+constexpr float DEFENDER_WP_RMIN = 200.0f;      // defender waypoint annulus inner radius [m] (around flag)
 constexpr float DEFENDER_WP_RMAX = 1000.0f;     // defender waypoint annulus outer radius [m] (around flag)
 constexpr float DEFENDER_V0     = 0.05f;        // per-axis initial velocity bound [m/s]
-constexpr float SEGMENT_T       = 600.0f;       // fly + defender-update horizon per cycle [s] (10 min)
+constexpr float SEGMENT_T       = 1000.0f;       // fly + defender-update horizon per cycle [s] (10 min)
 constexpr float DEFENDER_TOF    = SEGMENT_T;    // defender time-of-flight to its waypoint [s] (tunable)
 constexpr float LOG_DT          = 20.0f;        // trajectory sampling resolution for the animation [s]
 constexpr int   MAX_CYCLES      = 40;           // stop after this many cycles (or on capture)
