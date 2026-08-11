@@ -55,7 +55,17 @@ __global__ void initializeRegions_kernel(float* minValueInRegion)
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
     if(tid >= NUM_R1_REGIONS) return;
 
+#if MODEL == 4
+    // 2D CW model (W_DIM=2, C_DIM=0, V_DIM=2): decompose tid consistently with getRegion(),
+    // which composes region = wRegion*(C_R1^C_DIM * V_R1^V_DIM) + aRegion*(V_R1^V_DIM) + vRegion.
+    int r1cSize = 1;
+    for(int cc = 0; cc < C_DIM; ++cc) r1cSize *= C_R1_LENGTH;
+    int r1vSize = 1;
+    for(int vv = 0; vv < V_DIM; ++vv) r1vSize *= V_R1_LENGTH;
+    int wRegion = tid / (r1cSize * r1vSize);
+#else
     int wRegion = tid % (W_R1_LENGTH * W_R1_LENGTH * W_R1_LENGTH);
+#endif
     int wIndex[W_DIM];
     int temp = wRegion;
     for(int i = W_DIM - 1; i >= 0; --i)
@@ -69,7 +79,11 @@ __global__ void initializeRegions_kernel(float* minValueInRegion)
             minValueInRegion[tid * STATE_DIM + i] = W_MIN + wIndex[i] * W_R1_SIZE;
         }
 
+#if MODEL == 4
+    int aRegion = (tid / r1vSize) % r1cSize;  // = 0 when C_DIM == 0
+#else
     int aRegion = (tid / (W_R1_LENGTH * W_R1_LENGTH * W_R1_LENGTH)) % (C_R1_LENGTH * C_R1_LENGTH);
+#endif
     int aIndex[(C_DIM > 0) ? C_DIM : 1];  // guard against zero-length array when C_DIM == 0
     temp = aRegion;
     for(int i = C_DIM - 1; i >= 0; --i)
@@ -82,7 +96,11 @@ __global__ void initializeRegions_kernel(float* minValueInRegion)
             minValueInRegion[tid * STATE_DIM + W_DIM + i] = C_MIN + aIndex[i] * C_R1_SIZE;
         }
 
+#if MODEL == 4
+    int vRegion = tid % r1vSize;
+#else
     int vRegion = (tid / (W_R1_LENGTH * W_R1_LENGTH * W_R1_LENGTH * C_R1_LENGTH * C_R1_LENGTH)) % V_R1_LENGTH;
+#endif
     int vIndex[V_DIM];
     temp = vRegion;
     for(int i = V_DIM - 1; i >= 0; --i)

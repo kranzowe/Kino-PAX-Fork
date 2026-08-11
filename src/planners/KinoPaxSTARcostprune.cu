@@ -240,7 +240,11 @@ float KinoPaxSTARcostprune::planOptimize(float* h_initial, float* h_goal, float*
 void KinoPaxSTARcostprune::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount)
 {
     // --- Build spatial hash grid for fast collision detection ---
+    // MODEL 4 (2D CW) bypasses the spatial hash: its build/query index obs[2]/bb[2], which is out
+    // of bounds for W_DIM=2. With only ~10 defenders, the W_DIM-generic brute-force path is used.
+#if MODEL != 4
     updateSpatialHashGrid(d_spatialHashGrid_, d_obstacles_ptr, h_obstaclesCount);
+#endif
     cudaMemcpy(&h_spatialHashGrid_, d_spatialHashGrid_, sizeof(SpatialHashGrid), cudaMemcpyDeviceToHost);
 
     // --- Find indices and size of frontier ---
@@ -327,7 +331,11 @@ __global__ void KinoPaxSTARcostprune_propagateFrontier_kernel1(bool* frontier, u
     float* x1                        = &unexploredSamples[tid * SAMPLE_DIM];
     unexploredSamplesParentIdxs[tid] = s_x0Idx;
     curandState randSeed             = randomSeeds[tid];
+#if MODEL == 4
+    bool valid                       = propagateAndCheck(s_x0, x1, &randSeed, obstacles, obstaclesCount);
+#else
     bool valid                       = propagateAndCheckSpatialHash(s_x0, x1, &randSeed, spatialHashGrid, obstacles, obstaclesCount);
+#endif
     int x1Vertex                     = getRegion(x1);
     int x1SubVertex                  = getSubRegion(x1, x1Vertex, minValueInRegion);
 
@@ -390,7 +398,11 @@ __global__ void KinoPaxSTARcostprune_propagateFrontier_kernel2(bool* frontier, u
     float* x1                        = &unexploredSamples[tid * SAMPLE_DIM];
     unexploredSamplesParentIdxs[tid] = x0Idx;
     curandState randSeed             = randomSeeds[tid];
+#if MODEL == 4
+    bool valid                       = propagateAndCheck(x0, x1, &randSeed, obstacles, obstaclesCount);
+#else
     bool valid                       = propagateAndCheckSpatialHash(x0, x1, &randSeed, spatialHashGrid, obstacles, obstaclesCount);
+#endif
     int x1Vertex                     = getRegion(x1);
     int x1SubVertex                  = getSubRegion(x1, x1Vertex, minValueInRegion);
 

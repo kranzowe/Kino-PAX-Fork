@@ -203,6 +203,90 @@
 // #define MASS 1.0f
 // #define MASS_INV 1.0f / MASS
 
+/*******************************************/
+/* 2D CLOHESSY-WILTSHIRE SATELLITE CONFIG   */
+/*  (MODEL 4) flag-capture demo driving     */
+/*  KinoPaxSTARcostprune. Units: meters, s. */
+/*  State  = [x_radial, y_intrack, vx, vy]  */
+/*  Control= [dv_radial, dv_intrack, safety]*/
+/*  Sample = [state | control | dt]         */
+/*******************************************/
+
+#define MODEL 4
+
+#define MAX_TREE_SIZE 300000
+#define MAX_ITER 300
+#define MAX_ITER_REKINO 20000
+#define STEP_SIZE 15.0f              // collision/safety sub-step [s]; CW coast is exact via STM
+#define MAX_PROPAGATION_DURATION 20  // max sub-steps per edge -> edge up to 300 s
+
+#define GOAL_THRESH 50.0f            // planner solution tolerance to the flag [m]
+
+#define STATE_DIM 4
+#define CONTROL_DIM 3                // dv_r, dv_i, safetyPenalty (slot 3 = precomputed safety integral)
+#define SAMPLE_DIM (STATE_DIM + CONTROL_DIM + 1)
+
+#define W_DIM 2
+#define C_DIM 0
+#define V_DIM 2
+
+// --- Orbital dynamics: LEO, ~90 min period ---
+#define MEAN_MOTION 0.0011636f       // n = 2*pi / 5400 s  [rad/s]
+
+// --- Workspace (signed, flag-centered) [m] ---
+#define W_MIN -3000.0f
+#define W_MAX 3000.0f
+#define W_SIZE (W_MAX - W_MIN)
+
+// --- Attitude placeholders (unused; C_DIM = 0). Kept defined so shared macros compile. ---
+#define C_MIN -M_PI
+#define C_MAX M_PI
+
+// --- CW relative velocity bounds [m/s] ---
+#define V_MIN -5.0f
+#define V_MAX 5.0f
+
+// --- Impulsive delta-V bound per edge, per axis [m/s] (the sampled control) ---
+// The min-Delta-V transfer from (1000,1000)->origin needs ~2 m/s of departure burn; the DV^2
+// cost favors splitting it across edges, so +/-1.0 per impulse composes it in a few burns.
+#define DV_MIN -1.0f
+#define DV_MAX 1.0f
+// Generic accel-bound aliases: referenced by the other models' propagators (still compiled).
+#define A_MIN DV_MIN
+#define A_MAX DV_MAX
+
+// --- Safety weight: edgeCost = dv_r^2 + dv_i^2 + W_SAFETY * sum_substep sum_def (STEP_SIZE / dist_to_center) ---
+#define W_SAFETY 0.05f
+
+// --- Syclop region grid: W_DIM=2 spatial, V_DIM=2 velocity, no attitude ---
+#define W_R1_LENGTH 12
+#define C_R1_LENGTH 1
+#define V_R1_LENGTH 4
+
+#define W_R2_LENGTH 2
+#define C_R2_LENGTH 1
+#define V_R2_LENGTH 2
+
+#define W_R1_SIZE ((W_MAX - W_MIN) / W_R1_LENGTH)
+#define C_R1_SIZE ((C_MAX - C_MIN) / C_R1_LENGTH)
+#define V_R1_SIZE ((V_MAX - V_MIN) / V_R1_LENGTH)
+
+#define W_R1_VOL (W_R1_SIZE * W_R1_SIZE)
+
+// R1 = W_R1^W_DIM * V_R1^V_DIM  (C_DIM = 0). R2 refines each R1 by W_R2^W_DIM * V_R2^V_DIM.
+#define NUM_R1_REGIONS (W_R1_LENGTH * W_R1_LENGTH * V_R1_LENGTH * V_R1_LENGTH)
+#define NUM_R2_PER_R1 (W_R2_LENGTH * W_R2_LENGTH * V_R2_LENGTH * V_R2_LENGTH)
+#define NUM_R2_REGIONS (NUM_R1_REGIONS * NUM_R2_PER_R1)
+#define NUM_R1_REGIONS_KERNEL1 1024
+#define NUM_PARTIAL_SUMS 1024
+
+#define EPSILON 1e-2f
+#define MAX_FLOAT 1e38f
+#define VERBOSE 0
+
+#define KINOPAXPLUS_PARENT_CHAIN_PRUNING 1
+
+#if 0  // ===== disabled MODEL 3 (nonlinear quad) core block: superseded by MODEL 4 above =====
 /***************************/
 /* NON LINEAR QUAD CONFIG  */
 /***************************/
@@ -268,6 +352,8 @@
 // Set to 1 to enable parent-chain validation in pruning (default behavior)
 // Set to 0 to only check the node itself, not its ancestors
 #define KINOPAXPLUS_PARENT_CHAIN_PRUNING 1
+
+#endif  // ===== end disabled MODEL 3 (nonlinear quad) core block =====
 
 // --- UNICYCLE MODEL: MODEL 0 ---
 #define UNI_MIN_STEERING -M_PI / 2

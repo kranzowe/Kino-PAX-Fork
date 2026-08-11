@@ -370,6 +370,103 @@ __device__ void ode(float* x0dot, float* x0, float* h, float Zc, float Lc, float
 }
 
 /***************************/
+/* 2D CLOHESSY-WILTSHIRE PROPAGATION FUNCTION */
+/***************************/
+// State x = [x_radial, y_intrack, vx, vy]. Control = one impulsive delta-V (dv_r, dv_i)
+// applied at the start of the edge, then a coast on the linear CW dynamics for the edge
+// duration. The CW state-transition matrix is exact, so STEP_SIZE only sets the
+// collision-check / safety-integral sampling resolution (not dynamics accuracy).
+// Child sample layout: x1 = [x, y, vx, vy, dv_r, dv_i, safetyPenalty, dt].
+__device__ bool propagateAndCheckCW(float* x0, float* x1, curandState* seed, float* obstacles, int obstaclesCount)
+{
+    const float n = MEAN_MOTION;
+
+    // --- Sample impulsive delta-V (radial, in-track) and the coast duration ---
+    float dv_r              = DV_MIN + curand_uniform(seed) * (DV_MAX - DV_MIN);
+    float dv_i              = DV_MIN + curand_uniform(seed) * (DV_MAX - DV_MIN);
+    int propagationDuration = 1 + (int)(curand_uniform(seed) * (MAX_PROPAGATION_DURATION));
+
+    // --- Apply the impulse once, at the start of the edge; then coast ---
+    float x  = x0[0];
+    float y  = x0[1];
+    float vx = x0[2] + dv_r;
+    float vy = x0[3] + dv_i;
+
+    // --- CW state-transition coefficients for one STEP_SIZE coast (constant, hoisted) ---
+    const float s   = sinf(n * STEP_SIZE);
+    const float c   = cosf(n * STEP_SIZE);
+    const float nDt = n * STEP_SIZE;
+
+    float safetyPenalty = 0.0f;
+    bool motionValid    = true;
+    float bbMin[W_DIM], bbMax[W_DIM];
+
+    for(int i = 0; i < propagationDuration; i++)
+        {
+            float x0State[W_DIM] = {x, y};
+
+            // --- Exact CW propagation over one STEP_SIZE (impulse already applied) ---
+            float xNew  = (4.0f - 3.0f * c) * x + (s / n) * vx + (2.0f / n) * (1.0f - c) * vy;
+            float yNew  = 6.0f * (s - nDt) * x + y - (2.0f / n) * (1.0f - c) * vx + (1.0f / n) * (4.0f * s - 3.0f * nDt) * vy;
+            float vxNew = 3.0f * n * s * x + c * vx + 2.0f * s * vy;
+            float vyNew = -6.0f * n * (1.0f - c) * x - 2.0f * s * vx + (4.0f * c - 3.0f) * vy;
+            x = xNew, y = yNew, vx = vxNew, vy = vyNew;
+
+            // --- Velocity (dynamics) validity ---
+            if(vx < V_MIN || vx > V_MAX || vy < V_MIN || vy > V_MAX)
+                {
+                    motionValid = false;
+                    break;
+                }
+
+            float x1State[W_DIM] = {x, y};
+
+            // --- Workspace limit check (signed, flag-centered) ---
+            if(x < W_MIN || x > W_MAX || y < W_MIN || y > W_MAX)
+                {
+                    motionValid = false;
+                    break;
+                }
+
+            // --- Obstacle collision check (hard keep-out box) ---
+            for(int d = 0; d < W_DIM; d++)
+                {
+                    if(x0State[d] > x1State[d])
+                        {
+                            bbMin[d] = x1State[d];
+                            bbMax[d] = x0State[d];
+                        }
+                    else
+                        {
+                            bbMin[d] = x0State[d];
+                            bbMax[d] = x1State[d];
+                        }
+                }
+
+            motionValid = motionValid && isMotionValid(x0State, x1State, bbMin, bbMax, obstacles, obstaclesCount);
+            if(!motionValid) break;
+
+            // --- Safety cost: integral of sum_defender (STEP_SIZE / dist_to_center) along the coast.
+            // Distance is to each obstacle-box CENTER (always >= keep-out radius, since the box itself
+            // is a hard no-go), so 1/dist stays bounded. ---
+            for(int o = 0; o < obstaclesCount; o++)
+                {
+                    float cx   = 0.5f * (obstacles[o * 2 * W_DIM + 0] + obstacles[o * 2 * W_DIM + W_DIM + 0]);
+                    float cy   = 0.5f * (obstacles[o * 2 * W_DIM + 1] + obstacles[o * 2 * W_DIM + W_DIM + 1]);
+                    float dx   = x - cx;
+                    float dy   = y - cy;
+                    float dist = sqrtf(dx * dx + dy * dy);
+                    if(dist < 1.0f) dist = 1.0f;  // guard (should not trigger: center sits inside the hard box)
+                    safetyPenalty += STEP_SIZE / dist;
+                }
+        }
+
+    x1[0] = x, x1[1] = y, x1[2] = vx, x1[3] = vy;
+    x1[4] = dv_r, x1[5] = dv_i, x1[6] = safetyPenalty, x1[7] = STEP_SIZE * propagationDuration;
+    return motionValid;
+}
+
+/***************************/
 /* GET PROPAGATION FUNCTION */
 /***************************/
 __device__ PropagateAndCheckFunc getPropagateAndCheckFunc()
@@ -384,6 +481,8 @@ __device__ PropagateAndCheckFunc getPropagateAndCheckFunc()
                 return propagateAndCheckDubinsAirplaneRungeKutta;
             case 3:
                 return propagateAndCheckQuadRungeKutta;
+            case 4:
+                return propagateAndCheckCW;
             default:
                 return nullptr;
         }

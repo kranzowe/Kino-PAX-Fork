@@ -171,6 +171,14 @@ __host__ __device__ __forceinline__ float edgeCost(const float* x0, const float*
     float ax = x1[6], ay = x1[7], az = x1[8], dt = x1[9];
     (void)x0;
     return (ax * ax + ay * ay + az * az) * dt;
+#elif (MODEL == 4)
+    // 2D Clohessy-Wiltshire satellite: impulsive delta-V effort + safety.
+    //   dv_r = x1[4], dv_i = x1[5]  (impulsive, so no dt factor)
+    //   x1[6] = safetyPenalty = integral of sum_defender (STEP_SIZE / dist_to_center) over the coast,
+    //           precomputed in propagateAndCheckCW where the obstacles are in scope.
+    float dv_r = x1[4], dv_i = x1[5], safety = x1[6];
+    (void)x0;
+    return dv_r * dv_r + dv_i * dv_i + W_SAFETY * safety;
 #else
     // Baseline / non-Model-1 fallback: workspace Euclidean distance.
     float s = 0.0f;
