@@ -176,9 +176,11 @@ __host__ __device__ __forceinline__ float edgeCost(const float* x0, const float*
     //   dv_r = x1[4], dv_i = x1[5]  (impulsive, so no dt factor)
     //   x1[6] = safetyPenalty = integral of sum_defender (STEP_SIZE / dist_to_center) over the coast,
     //           precomputed in propagateAndCheckCW where the obstacles are in scope.
-    float dv_r = x1[4], dv_i = x1[5], safety = x1[6];
+    float dv_r = x1[4], dv_i = x1[5], safety = x1[6], dt = x1[7];
     (void)x0;
-    return dv_r * dv_r + dv_i * dv_i + W_SAFETY * safety;
+    // W_TIME * dt penalizes total flight time (dt = this edge's duration, x1[7]). Using STEP_SIZE
+    // here would instead charge a flat amount per edge -> penalizes edge COUNT, not time.
+    return dv_r * dv_r + dv_i * dv_i + W_SAFETY * safety + W_TIME * dt;
 #else
     // Baseline / non-Model-1 fallback: workspace Euclidean distance.
     float s = 0.0f;

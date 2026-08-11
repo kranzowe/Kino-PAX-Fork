@@ -155,7 +155,7 @@ int main(int argc, char** argv)
     std::ofstream costf(OUT_DIR + "/costs.csv");
     satf << "cycle,t,x,y,vx,vy\n";
     deff << "cycle,t,id,x,y,vx,vy\n";
-    costf << "cycle,plan_cost,dv_total,min_dist_to_defender,captured\n";
+    costf << "cycle,plan_cost,dv_cost,safety_cost,time_cost,flight_time_s,dv_mps,min_dist_to_defender,captured\n";
     satf << std::fixed << std::setprecision(4);
     deff << std::fixed << std::setprecision(4);
     costf << std::fixed << std::setprecision(6);
@@ -237,7 +237,6 @@ int main(int argc, char** argv)
             };
             std::vector<Edge> edges;
             float totalT  = 0.0f;
-            float dvTotal = 0.0f;
             if(L >= 2)
                 {
                     State st = sat;  // root
@@ -247,7 +246,6 @@ int main(int argc, char** argv)
                             float dvr = r[4], dvi = r[5], dur = r[7];
                             st.vx += dvr;  // impulse at edge start
                             st.vy += dvi;
-                            dvTotal += std::sqrt(dvr * dvr + dvi * dvi);
                             edges.push_back({st, dur, totalT});
                             st = cwCoast(st, dur);  // coast to edge end
                             totalT += dur;
@@ -317,11 +315,31 @@ int main(int argc, char** argv)
             for(int i = 0; i < NUM_DEFENDERS; ++i) def[i] = cwCoast(defBase[i], horizon);
             globalT += horizon;
 
-            // 8) Per-cycle summary.
+            // 8) Cost breakdown over the FULL planned path, matching the device edgeCost accumulation:
+            //    total = sum(dv_r^2 + dv_i^2) + W_SAFETY*sum(safety) + W_TIME*sum(dt).
+            //    compTotal should reconcile with planner.h_minCost_ (a bug-check on the accounting;
+            //    small float differences from summation order are expected). The root node's
+            //    control/dt slots are zero, so it contributes nothing.
+            float dvCost = 0.0f, safetyCost = 0.0f, timeCost = 0.0f, flightTime = 0.0f, dvMag = 0.0f;
+            for(int k = 0; k < L; ++k)
+                {
+                    const float* r = &P[k * SAMPLE_DIM];
+                    dvCost     += r[4] * r[4] + r[5] * r[5];
+                    dvMag      += std::sqrt(r[4] * r[4] + r[5] * r[5]);
+                    safetyCost += W_SAFETY * r[6];
+                    timeCost   += W_TIME * r[7];
+                    flightTime += r[7];
+                }
+            float compTotal = dvCost + safetyCost + timeCost;
+
+            // 9) Per-cycle summary.
             float planCost = haveSol ? planner.h_minCost_ : -1.0f;
-            costf << cycle << "," << planCost << "," << dvTotal << "," << minDefDist << "," << (captured ? 1 : 0) << "\n";
-            std::cout << "[cycle " << cycle << "] plan_nodes=" << L << " cost=" << planCost << " dv=" << dvTotal
-                      << " minDefDist=" << minDefDist << " dist_to_flag=" << dist2D(sat.x, sat.y, flagx, flagy)
+            costf << cycle << "," << planCost << "," << dvCost << "," << safetyCost << "," << timeCost << "," << flightTime << ","
+                  << dvMag << "," << minDefDist << "," << (captured ? 1 : 0) << "\n";
+            std::cout << "[cycle " << cycle << "] plan_nodes=" << L << " cost=" << planCost << "  | dv_cost=" << dvCost
+                      << " safety_cost=" << safetyCost << " time_cost=" << timeCost << " (sum=" << compTotal << ")"
+                      << "  | dv=" << dvMag << " m/s  flight=" << flightTime << " s"
+                      << "  | minDefDist=" << minDefDist << " dist_to_flag=" << dist2D(sat.x, sat.y, flagx, flagy)
                       << (captured ? "  <-- CAPTURED" : "") << std::endl;
             if(captured) std::cout << "Flag captured at t = " << captureT << " s." << std::endl;
         }
