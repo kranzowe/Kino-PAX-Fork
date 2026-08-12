@@ -49,6 +49,8 @@ constexpr float DEFENDER_WP_RMAX = 1000.0f;     // defender waypoint annulus out
 constexpr float DEFENDER_V0     = 0.05f;        // per-axis initial velocity bound [m/s]
 constexpr float SEGMENT_T       = 120.0f;       // fly + defender-update horizon per cycle [s] (10 min)
 constexpr float DEFENDER_TOF    = 360.0f;    // defender time-of-flight to its waypoint [s] (tunable)
+constexpr float THRUST_NOISE    = 0.20f;        // execution thrust error: each planned DV component is
+                                                // perturbed by +/- this fraction at burn time (0.20 = 20%)
 constexpr float LOG_DT          = 20.0f;        // trajectory sampling resolution for the animation [s]
 constexpr int   MAX_CYCLES      = 40;           // stop after this many cycles (or on capture)
 constexpr float CAPTURE_R       = GOAL_THRESH;  // capture radius [m]
@@ -244,8 +246,14 @@ int main(int argc, char** argv)
                         {
                             const float* r = &P[k * SAMPLE_DIM];
                             float dvr = r[4], dvi = r[5], dur = r[7];
-                            st.vx += dvr;  // impulse at edge start
-                            st.vy += dvi;
+                            // Execution thrust noise: the DV actually applied differs from the planned DV
+                            // by up to +/-THRUST_NOISE per component. The planner planned from the clean
+                            // base model; only this flown trajectory is perturbed, so the next replan (from
+                            // the resulting off-nominal state) has to correct for the accumulated error.
+                            float dvr_exec = dvr * (1.0f + THRUST_NOISE * u11(rng));
+                            float dvi_exec = dvi * (1.0f + THRUST_NOISE * u11(rng));
+                            st.vx += dvr_exec;  // noisy impulse at edge start
+                            st.vy += dvi_exec;
                             edges.push_back({st, dur, totalT});
                             st = cwCoast(st, dur);  // coast to edge end
                             totalT += dur;
