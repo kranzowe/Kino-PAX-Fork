@@ -41,14 +41,14 @@
 namespace
 {
 // ---- Scenario constants (tunable) ----
-constexpr int   NUM_DEFENDERS   = 8;           // number of defender satellites
+constexpr int   NUM_DEFENDERS   = 7;           // number of defender satellites
 constexpr float DEFENDER_DISK_R = 800.0f;       // initial spawn radius around the flag [m]
 constexpr float R_KEEPOUT       = 25.0f;        // hard keep-out half-width per defender [m] (100 m box)
 constexpr float DEFENDER_WP_RMIN = 400.0f;      // defender waypoint annulus inner radius [m] (around flag)
-constexpr float DEFENDER_WP_RMAX = 1000.0f;     // defender waypoint annulus outer radius [m] (around flag)
+constexpr float DEFENDER_WP_RMAX = 1200.0f;     // defender waypoint annulus outer radius [m] (around flag)
 constexpr float DEFENDER_V0     = 0.05f;        // per-axis initial velocity bound [m/s]
-constexpr float SEGMENT_T       = 120.0f;       // fly + defender-update horizon per cycle [s] (10 min)
-constexpr float DEFENDER_TOF    = 360.0f;    // defender time-of-flight to its waypoint [s] (tunable)
+constexpr float SEGMENT_T       = 60.0f;       // fly + defender-update horizon per cycle [s] (10 min)
+constexpr float DEFENDER_TOF    = 720.0f;    // defender time-of-flight to its waypoint [s] (tunable)
 constexpr float DEFENDER_CHASE_PROB = 0.10f; // per defender, per cycle: probability of targeting the
                                              // satellite (chase) vs a random flag-vicinity waypoint
 constexpr float THRUST_NOISE    = 0.20f;        // execution thrust error: each planned DV component is
