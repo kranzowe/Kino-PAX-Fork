@@ -12,8 +12,7 @@
 clear; close all;
 
 %% ------------------------- config -------------------------
-thisDir     = fileparts(mfilename('fullpath'));
-dataDir     = fullfile(thisDir, '..', 'build', 'Data', 'SatellitePursuit');  % <-- EDIT if needed
+dataDir     = '';  % <-- EDIT if needed
 exportVideo = true;                                   % write a video of the animation
 videoFile   = fullfile(dataDir, 'satellite_pursuit.mp4');
 frameRate   = 20;
@@ -28,6 +27,13 @@ flag  = [meta.flag_x, meta.flag_y];
 Rkeep = meta.R_KEEPOUT;
 capR  = meta.GOAL_THRESH;
 nDef  = meta.num_defenders;
+
+% --- Display convention: x-axis = in-track (positive pointing LEFT, via XDir reverse below);
+% y-axis = radial. Swap the loaded columns once here so every plot call below is a plain
+% (x = in-track, y = radial) with no per-call swapping. Distances are swap-invariant. ---
+tmp = sat.x;  sat.x  = sat.y;  sat.y  = tmp;
+tmp = defs.x; defs.x = defs.y; defs.y = tmp;
+flag = flag([2 1]);
 
 times   = unique(sat.t, 'stable');
 nFrames = numel(times);
@@ -52,7 +58,8 @@ ax  = axes(fig); hold(ax, 'on'); box(ax, 'on'); grid(ax, 'on');
 xlim(ax, xl); ylim(ax, yl);
 daspect(ax, [1 1 1]);   % equal data units on both axes; square limits above keep the box square
                         % and let it scale with the window (avoid axis-equal's limit fiddling)
-xlabel(ax, 'Radial  x  [m]'); ylabel(ax, 'In-track  y  [m]');
+set(ax, 'XDir', 'reverse');   % in-track increases to the LEFT
+xlabel(ax, 'In-track  [m]  (+ left)'); ylabel(ax, 'Radial  [m]');
 title(ax, 'KinoPaxSTAR CostPrune \cdot satellite flag capture');
 
 satCol = [0.10 0.40 0.90];
@@ -64,7 +71,7 @@ plot(ax, flag(1) + capR*cos(thc), flag(2) + capR*sin(thc), ':', 'Color', [0.5 0.
 
 % handles updated per frame
 hSatTrail = plot(ax, nan, nan, '-',  'Color', satCol, 'LineWidth', 1.6);
-hPlan     = plot(ax, nan, nan, '--', 'Color', satCol, 'LineWidth', 1.0);   % ghost plan
+hPlan     = plot(ax, nan, nan, '*', 'Color', satCol, 'MarkerSize', 10.0);   % ghost plan
 hSat      = plot(ax, nan, nan, 'o',  'MarkerSize', 10, 'MarkerFaceColor', satCol, 'MarkerEdgeColor', 'k');
 hDef      = gobjects(nDef, 1); hDefKeep = gobjects(nDef, 1); hDefTrail = gobjects(nDef, 1);
 for d = 1:nDef
@@ -72,7 +79,7 @@ for d = 1:nDef
     hDefKeep(d)  = plot(ax, nan, nan, '-', 'Color', defCol);
     hDef(d)      = plot(ax, nan, nan, 'o', 'MarkerSize', 6, 'MarkerFaceColor', defCol, 'MarkerEdgeColor', 'k');
 end
-hTxt = text(ax, xl(1) + 20, yl(2) - 45, '', 'FontSize', 11, 'BackgroundColor', [1 1 1], 'EdgeColor', [0.8 0.8 0.8]);
+hTxt = text(ax, 0.02, 0.97, '', 'Units', 'normalized', 'VerticalAlignment', 'top', 'FontSize', 11, 'BackgroundColor', [1 1 1], 'EdgeColor', [0.8 0.8 0.8]);
 
 %% ------------------------- video --------------------------
 useGif = false; vw = [];
@@ -140,7 +147,7 @@ function P = getPlan(dataDir, cyc, cache)
     P = [];
     if isfile(fn)
         T = readtable(fn);
-        if height(T) > 0, P = [T.x, T.y]; end
+        if height(T) > 0, P = [T.y, T.x]; end   % [in-track, radial] to match the swapped display axes
     end
     cache(cyc) = P;
 end

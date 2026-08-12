@@ -151,10 +151,13 @@ void KinoPaxSTAR::resetPlanner(float* h_initial, float* h_goal)
 
 void KinoPaxSTAR::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
 {
-    cudaEvent_t start, stop;
+    cudaEvent_t start, stop, firstSol;
     float milliseconds = 0;
+    float firstSolMs   = -1.0f;
+    bool  foundFirst   = false;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
+    cudaEventCreate(&firstSol);
     cudaEventRecord(start);
 
     resetPlanner(h_initial, h_goal);
@@ -166,6 +169,14 @@ void KinoPaxSTAR::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, 
             graph_.updateVertices();
             updateFrontier();
 
+            // Time to first solution: record the instant minCost first becomes finite (a goal node
+            // was reached). Recorded on the stream; its elapsed time is read after the sync below.
+            if(!foundFirst && h_minCost_ < 0.5f * MAX_FLOAT)
+                {
+                    cudaEventRecord(firstSol);
+                    foundFirst = true;
+                }
+
             // Run to MAX_ITER / tree-full, continuing to improve minCost (no first-solution break).
             if(h_propIterations_ == 0) break;
             if(h_treeSize_ >= MAX_TREE_SIZE - 1) break;
@@ -175,11 +186,14 @@ void KinoPaxSTAR::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&milliseconds, start, stop);
+    if(foundFirst) cudaEventElapsedTime(&firstSolMs, start, firstSol);
     writeExecutionTimeToCSV(milliseconds / 1000.0);
     std::cout << "KinoPaxSTAR execution time: " << milliseconds / 1000.0 << " seconds. Iterations: " << h_itr_
-              << ". Tree Size: " << h_treeSize_ << ". Best Cost: " << h_minCost_ << std::endl;
+              << ". Tree Size: " << h_treeSize_ << ". Best Cost: " << h_minCost_
+              << ". Time to first solution: " << (foundFirst ? firstSolMs : -1.0f) << " ms" << std::endl;
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
+    cudaEventDestroy(firstSol);
 }
 
 void KinoPaxSTAR::planBench(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, int benchItr)

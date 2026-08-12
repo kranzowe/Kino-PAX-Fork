@@ -49,6 +49,8 @@ constexpr float DEFENDER_WP_RMAX = 1000.0f;     // defender waypoint annulus out
 constexpr float DEFENDER_V0     = 0.05f;        // per-axis initial velocity bound [m/s]
 constexpr float SEGMENT_T       = 120.0f;       // fly + defender-update horizon per cycle [s] (10 min)
 constexpr float DEFENDER_TOF    = 360.0f;    // defender time-of-flight to its waypoint [s] (tunable)
+constexpr float DEFENDER_CHASE_PROB = 0.10f; // per defender, per cycle: probability of targeting the
+                                             // satellite (chase) vs a random flag-vicinity waypoint
 constexpr float THRUST_NOISE    = 0.20f;        // execution thrust error: each planned DV component is
                                                 // perturbed by +/- this fraction at burn time (0.20 = 20%)
 constexpr float LOG_DT          = 20.0f;        // trajectory sampling resolution for the animation [s]
@@ -277,18 +279,29 @@ int main(int argc, char** argv)
                 return cwCoast(edges[e].start, tau - edges[e].Tstart);
             };
 
-            // Defenders: each cycle re-target a random waypoint in the annulus
-            // [DEFENDER_WP_RMIN, DEFENDER_WP_RMAX] around the flag and burn (CW targeting) to
-            // arrive there in DEFENDER_TOF seconds, so they patrol near the flag instead of
-            // free-drifting away. defBase = post-burn states.
+            // Defenders: each cycle re-target a waypoint and burn (CW targeting) to arrive there in
+            // DEFENDER_TOF seconds. With probability DEFENDER_CHASE_PROB a defender targets the
+            // satellite's current position (chase); otherwise a random waypoint in the annulus
+            // [DEFENDER_WP_RMIN, DEFENDER_WP_RMAX] around the flag (patrol). defBase = post-burn states.
             std::vector<State> defBase(NUM_DEFENDERS);
             for(int i = 0; i < NUM_DEFENDERS; ++i)
                 {
-                    float wr  = std::sqrt(u01(rng) * (DEFENDER_WP_RMAX * DEFENDER_WP_RMAX - DEFENDER_WP_RMIN * DEFENDER_WP_RMIN)
-                                          + DEFENDER_WP_RMIN * DEFENDER_WP_RMIN);  // uniform over the annulus
-                    float wth = 2.0f * (float)M_PI * u01(rng);
-                    float wx  = flagx + wr * std::cos(wth);
-                    float wy  = flagy + wr * std::sin(wth);
+                    float wx, wy;
+                    if(u01(rng) < DEFENDER_CHASE_PROB)
+                        {
+                            // Chase: aim at where the satellite is right now (start of this cycle).
+                            wx = sat.x;
+                            wy = sat.y;
+                        }
+                    else
+                        {
+                            // Patrol: random waypoint, uniform over the flag-centered annulus.
+                            float wr  = std::sqrt(u01(rng) * (DEFENDER_WP_RMAX * DEFENDER_WP_RMAX - DEFENDER_WP_RMIN * DEFENDER_WP_RMIN)
+                                                  + DEFENDER_WP_RMIN * DEFENDER_WP_RMIN);
+                            float wth = 2.0f * (float)M_PI * u01(rng);
+                            wx = flagx + wr * std::cos(wth);
+                            wy = flagy + wr * std::sin(wth);
+                        }
                     float dvx, dvy;
                     cwTargetingDV(def[i], wx, wy, DEFENDER_TOF, dvx, dvy);
                     defBase[i]    = def[i];

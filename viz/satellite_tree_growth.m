@@ -11,8 +11,7 @@
 clear; close all;
 
 %% ------------------------- config -------------------------
-thisDir     = fileparts(mfilename('fullpath'));
-dataDir     = fullfile(thisDir, '..', 'build', 'Data', 'SatelliteTree');  % <-- EDIT if needed
+dataDir     = '';  % <-- EDIT if needed
 numIters    = 10;      % show only the first N algorithm iterations
 exportVideo = true;
 videoFile   = fullfile(dataDir, 'tree_growth.mp4');
@@ -28,6 +27,15 @@ flag  = [meta.flag_x, meta.flag_y];
 start = [meta.start_x, meta.start_y];
 Rkeep = meta.R_KEEPOUT;
 capR  = meta.GOAL_THRESH;
+
+% --- Display convention: x-axis = in-track (positive pointing LEFT, via XDir reverse below);
+% y-axis = radial. Swap the loaded columns once here so every plot call below is a plain
+% (x = in-track, y = radial). Distances are swap-invariant. ---
+tmp = T.x;      T.x = T.y;           T.y = tmp;
+tmp = obs.xmin; obs.xmin = obs.ymin; obs.ymin = tmp;
+tmp = obs.xmax; obs.xmax = obs.ymax; obs.ymax = tmp;
+flag  = flag([2 1]);
+start = start([2 1]);
 
 % Edges child->parent, tagged with the child's birth iteration.
 hasP  = T.parent >= 0;
@@ -71,9 +79,10 @@ fig = figure('Color', 'w', 'Position', [100 100 860 860]);
 ax  = axes(fig); hold(ax, 'on'); box(ax, 'on'); grid(ax, 'on');
 xlim(ax, [cx-half, cx+half]); ylim(ax, [cy-half, cy+half]);
 daspect(ax, [1 1 1]);   % equal units; square limits keep the box square
+set(ax, 'XDir', 'reverse');   % in-track increases to the LEFT
 colormap(ax, parula); caxis(ax, [0 cmax]);
 cb = colorbar(ax); cb.Label.String = 'cost-to-come  (DV^2 + safety)';
-xlabel(ax, 'Radial  x  [m]'); ylabel(ax, 'In-track  y  [m]');
+xlabel(ax, 'In-track  [m]  (+ left)'); ylabel(ax, 'Radial  [m]');
 title(ax, sprintf('KinoPaxSTAR tree growth (first %d iterations)', numIters));
 
 % Static scene: obstacle keep-out boxes + circles, start, flag, capture ring.
@@ -91,7 +100,7 @@ plot(ax, flag(1) + capR*cos(thc), flag(2) + capR*sin(thc), ':', 'Color', [0.5 0.
 hEdges = plot(ax, nan, nan, '-', 'Color', [0.72 0.72 0.72], 'LineWidth', 0.4);
 hNodes = scatter(ax, nan, nan, 10, 'filled');
 hGoal  = plot(ax, nan, nan, '-', 'Color', [0.90 0.15 0.60], 'LineWidth', 2.6);   % goal-reaching paths
-hTxt   = text(ax, cx-half+40, cy+half-60, '', 'FontSize', 11, 'BackgroundColor', [1 1 1], 'EdgeColor', [0.8 0.8 0.8]);
+hTxt   = text(ax, 0.02, 0.97, '', 'Units', 'normalized', 'VerticalAlignment', 'top', 'FontSize', 11, 'BackgroundColor', [1 1 1], 'EdgeColor', [0.8 0.8 0.8]);
 
 %% ------------------------- video --------------------------
 useGif = false; vw = []; gifStarted = false;
