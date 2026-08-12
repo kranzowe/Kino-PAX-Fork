@@ -663,6 +663,7 @@ void KinoPaxSTAR::getControlPathToGoal()
     findInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_goalSet_ptr_, d_goalSetScanIdx_ptr_, d_goalSetIdxs_ptr_);
 
     if(h_solSetSize_ == 0) return;
+    printf("[getPath DEBUG] solSetSize=%u (goal nodes tying window)\n", h_solSetSize_);  // remove when done
 
     KinoPaxSTAR_getControlPathToGoal_kernel<<<iDivUp(h_solSetSize_, h_blockSize_), h_blockSize_>>>(
       d_controlPathsToGoal_ptr_, d_treeSamples_ptr_, d_treeSamplesParentIdxs_ptr_, d_goalSetIdxs_ptr_, h_solSetSize_,
@@ -696,6 +697,27 @@ __global__ void KinoPaxSTAR_getControlPathToGoal_kernel(float* controlPathsToGoa
     pathCosts[pathCostsIdx + 2] = iterations[goalIdx];
 
     if(cost != *minCost) return;
+
+    // --- DEBUG (getControlPathToGoal): recompute this path's cost from edgeCost along the parent
+    // chain and compare to the stored cost (== *minCost). If storedCost != recomputedFromEdges, the
+    // returned path's stored cost does not match its actual edges (the cost/path inconsistency).
+    // If more than one line prints, multiple goal nodes tie at the min -> reconstruction race.
+    // Remove this block once diagnosed. ---
+    {
+        float recompCost = 0.0f;
+        int   node = goalIdx, depth = 0;
+        while(node != -1 && depth < MAX_ITER)
+            {
+                int par = treeSamplesParentIdxs[node];
+                if(par != -1)
+                    recompCost += edgeCost(&treeSamples[par * SAMPLE_DIM], &treeSamples[node * SAMPLE_DIM]);
+                node = par;
+                depth++;
+            }
+        printf("[getPath DEBUG] goalIdx=%d storedCost=%.6f recomputedFromEdges=%.6f depth=%d\n",
+               goalIdx, cost, recompCost, depth);
+    }
+
     int i = 0;
     // controlPathsToGoal holds MAX_ITER nodes; guard so a maximal-depth path can't write
     // one node past the buffer.
