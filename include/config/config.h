@@ -269,7 +269,7 @@
 // --- Syclop region grid: W_DIM=2 spatial, V_DIM=2 velocity, no attitude ---
 #define W_R1_LENGTH 24
 #define C_R1_LENGTH 1
-#define V_R1_LENGTH 8
+#define V_R1_LENGTH 16
 
 #define W_R2_LENGTH 2
 #define C_R2_LENGTH 1
