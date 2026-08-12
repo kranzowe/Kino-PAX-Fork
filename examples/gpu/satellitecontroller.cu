@@ -41,7 +41,7 @@
 namespace
 {
 // ---- Scenario constants (tunable) ----
-constexpr int   NUM_DEFENDERS   = 7;           // number of defender satellites
+constexpr int   NUM_DEFENDERS   = 2;           // number of defender satellites
 constexpr float DEFENDER_DISK_R = 800.0f;       // initial spawn radius around the flag [m]
 constexpr float R_KEEPOUT       = 25.0f;        // hard keep-out half-width per defender [m] (100 m box)
 constexpr float DEFENDER_WP_RMIN = 400.0f;      // defender waypoint annulus inner radius [m] (around flag)

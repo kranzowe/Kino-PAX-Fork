@@ -214,13 +214,13 @@
 
 #define MODEL 4
 
-#define MAX_TREE_SIZE 3000000
+#define MAX_TREE_SIZE 300000
 #define MAX_ITER 300
 #define MAX_ITER_REKINO 20000
 #define STEP_SIZE 15.0f              // collision/safety sub-step [s]; CW coast is exact via STM
 #define MAX_PROPAGATION_DURATION 20  // max sub-steps per edge -> edge up to 300 s
 
-#define GOAL_THRESH 80.0f           // planner solution tolerance to the flag [m]
+#define GOAL_THRESH 40.0f           // planner solution tolerance to the flag [m]
 
 #define STATE_DIM 4
 #define CONTROL_DIM 3                // dv_r, dv_i, safetyPenalty (slot 3 = precomputed safety integral)
