@@ -4,8 +4,9 @@
 % here -- the GPU run produces the trajectories; this just renders them.
 %
 % Shows: flag at the origin (+ capture radius), the satellite with its flown trail, the
-% current cycle's planned "ghost" trajectory (dashed, updates on each replan), and the 10
-% defenders as markers with keep-out circles and fading trails. Optionally exports a video.
+% current cycle's smooth nominal plan (dashed) plus an example noisy open-loop fly-out of that
+% whole plan (faded), and the defenders as markers with keep-out circles and fading trails.
+% Curves update on each replan. Optionally exports a video.
 %
 % EDIT `dataDir` below to point at the copied output folder, then run.
 
@@ -71,7 +72,8 @@ plot(ax, flag(1) + capR*cos(thc), flag(2) + capR*sin(thc), ':', 'Color', [0.5 0.
 
 % handles updated per frame
 hSatTrail = plot(ax, nan, nan, '-',  'Color', satCol, 'LineWidth', 1.6);
-hPlan     = plot(ax, nan, nan, '*', 'Color', satCol, 'MarkerSize', 10.0);   % ghost plan
+hFlyout   = plot(ax, nan, nan, '-',  'Color', [0.55 0.70 0.95], 'LineWidth', 1.0);  % noisy open-loop fly-out of the whole plan
+hPlan     = plot(ax, nan, nan, '--', 'Color', satCol, 'LineWidth', 1.4);            % nominal planned trajectory (smooth ghost)
 hSat      = plot(ax, nan, nan, 'o',  'MarkerSize', 10, 'MarkerFaceColor', satCol, 'MarkerEdgeColor', 'k');
 hDef      = gobjects(nDef, 1); hDefKeep = gobjects(nDef, 1); hDefTrail = gobjects(nDef, 1);
 for d = 1:nDef
@@ -80,6 +82,8 @@ for d = 1:nDef
     hDef(d)      = plot(ax, nan, nan, 'o', 'MarkerSize', 6, 'MarkerFaceColor', defCol, 'MarkerEdgeColor', 'k');
 end
 hTxt = text(ax, 0.02, 0.97, '', 'Units', 'normalized', 'VerticalAlignment', 'top', 'FontSize', 11, 'BackgroundColor', [1 1 1], 'EdgeColor', [0.8 0.8 0.8]);
+legend([hSatTrail, hPlan, hFlyout], {'flown', 'planned (nominal)', 'fly-out (noisy)'}, ...
+       'Location', 'southoutside', 'Orientation', 'horizontal', 'AutoUpdate', 'off');
 
 %% ------------------------- video --------------------------
 useGif = false; vw = [];
@@ -92,7 +96,8 @@ if exportVideo
 end
 
 %% ------------------------- animate ------------------------
-planCache = containers.Map('KeyType', 'double', 'ValueType', 'any');
+planCache   = containers.Map('KeyType', 'double', 'ValueType', 'any');
+flyoutCache = containers.Map('KeyType', 'double', 'ValueType', 'any');
 for f = 1:nFrames
     t   = times(f);
     idx = find(sat.t == t, 1);
@@ -102,9 +107,12 @@ for f = 1:nFrames
     setTrail(hSatTrail, sat.x(upto), sat.y(upto), trailLen);
     set(hSat, 'XData', sat.x(idx), 'YData', sat.y(idx));
 
-    P = getPlan(dataDir, cyc, planCache);
+    P = getCurve(dataDir, cyc, planCache, 'plan');       % smooth nominal plan
     if isempty(P), set(hPlan, 'XData', nan, 'YData', nan);
     else,          set(hPlan, 'XData', P(:,1), 'YData', P(:,2)); end
+    F = getCurve(dataDir, cyc, flyoutCache, 'flyout');   % example noisy fly-out of the whole plan
+    if isempty(F), set(hFlyout, 'XData', nan, 'YData', nan);
+    else,          set(hFlyout, 'XData', F(:,1), 'YData', F(:,2)); end
 
     dnow = defs(defs.t == t, :);
     for d = 1:nDef
@@ -141,9 +149,9 @@ function setTrail(h, x, y, n)
     set(h, 'XData', x, 'YData', y);
 end
 
-function P = getPlan(dataDir, cyc, cache)
+function P = getCurve(dataDir, cyc, cache, prefix)
     if isKey(cache, cyc), P = cache(cyc); return; end
-    fn = fullfile(dataDir, 'plans', sprintf('plan_cycle%d.csv', cyc));
+    fn = fullfile(dataDir, 'plans', sprintf('%s_cycle%d.csv', prefix, cyc));
     P = [];
     if isfile(fn)
         T = readtable(fn);

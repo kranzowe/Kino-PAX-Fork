@@ -54,6 +54,7 @@ constexpr float DEFENDER_CHASE_PROB = 0.10f; // per defender, per cycle: probabi
 constexpr float THRUST_NOISE    = 0.20f;        // execution thrust error: each planned DV component is
                                                 // perturbed by +/- this fraction at burn time (0.20 = 20%)
 constexpr float LOG_DT          = 20.0f;        // trajectory sampling resolution for the animation [s]
+constexpr float SMOOTH_DT       = 10.0f;        // sub-sample step for the smooth plan / fly-out curves [s]
 constexpr int   MAX_CYCLES      = 40;           // stop after this many cycles (or on capture)
 constexpr float CAPTURE_R       = GOAL_THRESH;  // capture radius [m]
 const std::string OUT_DIR       = "Data/SatellitePursuit";
@@ -78,6 +79,39 @@ State cwCoast(const State& s0, float t)
     s.vx = 3.0f * n * sn * s0.x + cs * s0.vx + 2.0f * sn * s0.vy;
     s.vy = -6.0f * n * (1.0f - cs) * s0.x - 2.0f * sn * s0.vx + (4.0f * cs - 3.0f) * s0.vy;
     return s;
+}
+
+// Re-propagate the FULL plan (all edges root->goal) into a dense, smooth (x,y) trajectory,
+// sub-sampling each CW coast at SMOOTH_DT via cwCoast. If `noisy`, each planned DV component is
+// perturbed by +/-THRUST_NOISE (one example open-loop fly-out of the whole plan). `rng` is used
+// only when noisy; pass a stream separate from the main sim's so this never perturbs it.
+void writeSmoothPlan(const State& root, const float* P, int L, bool noisy, std::mt19937& rng,
+                     std::uniform_real_distribution<float>& u11, const std::string& fname)
+{
+    std::ofstream f(fname);
+    f << "x,y\n" << std::fixed << std::setprecision(4);
+    if(L < 2) return;                       // no plan (or root only): header only
+    State st = root;
+    f << st.x << "," << st.y << "\n";       // start point (the satellite's current state)
+    for(int k = L - 2; k >= 0; --k)         // edges root->goal (same order as the fly loop)
+        {
+            const float* r = &P[k * SAMPLE_DIM];
+            float dvr = r[4], dvi = r[5], dur = r[7];
+            if(noisy)
+                {
+                    dvr *= (1.0f + THRUST_NOISE * u11(rng));
+                    dvi *= (1.0f + THRUST_NOISE * u11(rng));
+                }
+            st.vx += dvr;                   // impulse at edge start
+            st.vy += dvi;
+            int   nsub = std::max(1, (int)std::ceil(dur / SMOOTH_DT));
+            float sub  = dur / (float)nsub;
+            for(int s = 0; s < nsub; ++s)   // sub-sample the coast for a smooth curve
+                {
+                    st = cwCoast(st, sub);
+                    f << st.x << "," << st.y << "\n";
+                }
+        }
 }
 
 float dist2D(float ax, float ay, float bx, float by)
@@ -128,6 +162,8 @@ int main(int argc, char** argv)
     std::mt19937 rng(seed);
     std::uniform_real_distribution<float> u11(-1.0f, 1.0f);
     std::uniform_real_distribution<float> u01(0.0f, 1.0f);
+    std::mt19937 flyoutRng(seed ^ 0x9E3779B9u);  // separate stream for the fly-out example noise,
+                                                 // so it never perturbs the main sim's RNG
 
     // --- Scenario setup ---
     const float flagx = 0.0f, flagy = 0.0f;
@@ -220,16 +256,12 @@ int main(int argc, char** argv)
                         }
                 }
 
-            // 4) Log the planned ghost path, forward order (root -> goal).
-            {
-                std::ofstream pf(OUT_DIR + "/plans/plan_cycle" + std::to_string(cycle) + ".csv");
-                pf << "x,y,vx,vy,dv_r,dv_i\n" << std::fixed << std::setprecision(4);
-                for(int k = L - 1; k >= 0; --k)
-                    {
-                        const float* r = &P[k * SAMPLE_DIM];
-                        pf << r[0] << "," << r[1] << "," << r[2] << "," << r[3] << "," << r[4] << "," << r[5] << "\n";
-                    }
-            }
+            // 4) Smooth ghost curves for this cycle's plan: nominal (planned DVs, no noise) and an
+            //    example open-loop fly-out of the WHOLE plan under thrust noise. Both start at the
+            //    satellite's current state. The fly-out draws from flyoutRng (a separate stream), so
+            //    generating it never perturbs the main sim's RNG.
+            writeSmoothPlan(sat, P, L, false, flyoutRng, u11, OUT_DIR + "/plans/plan_cycle" + std::to_string(cycle) + ".csv");
+            writeSmoothPlan(sat, P, L, true, flyoutRng, u11, OUT_DIR + "/plans/flyout_cycle" + std::to_string(cycle) + ".csv");
 
             // 5) Build the forward edge list (root -> goal). Path row k (k = 0..L-2) stores the
             //    DV impulse + duration of the edge that reached it from its parent (row k+1).
