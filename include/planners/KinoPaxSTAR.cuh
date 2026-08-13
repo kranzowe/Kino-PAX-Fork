@@ -56,6 +56,10 @@ public:
     uint *d_goalSetIdxs_ptr_, *d_goalSetScanIdx_ptr_;
     int *d_unexploredSamplesParentIdxs_ptr_, *d_treeXR1s_ptr_, *d_frontierNextXR1s_ptr_;
     int *d_bestNodeIdxPerR1_ptr_, *d_iterations_ptr_, *d_bestGoalIdx_ptr_;
+    // TEMPORARY DIAGNOSTIC (remove with the KINOPAXSTAR_DIAG blocks in KinoPaxSTAR.cu):
+    // [0]=chain-invariant violations, [1]=first violating node idx, [2]=goal nodes tied at
+    // minCost, [3]=goal nodes outside GOAL_THRESH.
+    int* d_diag_ptr_;
 
     // --- Spatial hash grid for collision detection ---
     SpatialHashGrid* d_spatialHashGrid_;
@@ -112,6 +116,19 @@ KinoPaxSTAR_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* acti
                                float* minCostsR1, int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet, bool* pruned,
                                int* iterations, int iteration);
+
+/***************************/
+/* TEMPORARY DIAGNOSTIC KERNELS */
+/***************************/
+// Tests the cost-accumulation invariant directly: for every tree node n with parent p,
+// treeSampleCosts[n] must equal treeSampleCosts[p] + edgeCost(p, n). Counts violations and
+// records the lowest violating index. Independent of path reconstruction.
+__global__ void KinoPaxSTAR_diagTreeInvariant_kernel(float* treeSamples, int* treeSamplesParentIdxs,
+                                                     float* treeSampleCosts, int treeSize, int* diag);
+
+// Counts goal nodes tied at *minCost and goal nodes lying outside GOAL_THRESH of the goal.
+__global__ void KinoPaxSTAR_diagGoalSet_kernel(uint* goalSetIdxs, int goalSetSize, float* treeSamples,
+                                               float* treeSampleCosts, float* xGoal, float* minCost, int* diag);
 
 /***************************/
 /* SELECT BEST GOAL KERNEL */

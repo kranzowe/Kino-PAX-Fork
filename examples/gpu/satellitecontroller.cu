@@ -353,6 +353,12 @@ int main(int argc, char** argv)
                 }
             float compTotal = dvCost + safetyCost + timeCost;
 
+            // TEMPORARY DIAGNOSTIC: row 0 of the returned buffer is the reconstructed goal node.
+            // The planner only admits a node to the goal set when it is within GOAL_THRESH of the
+            // flag, so plan_end_dist >= GOAL_THRESH proves the returned node is not the node whose
+            // cost was reported (i.e. tree corruption, not a cost-accounting slip).
+            float planEndDist = (L > 0) ? dist2D(P[0], P[1], flagx, flagy) : -1.0f;
+
             // 9) Per-cycle summary.
             float planCost = haveSol ? planner.h_minCost_ : -1.0f;
             costf << cycle << "," << planCost << "," << dvCost << "," << safetyCost << "," << timeCost << "," << flightTime << ","
@@ -361,6 +367,7 @@ int main(int argc, char** argv)
                       << " safety_cost=" << safetyCost << " time_cost=" << timeCost << " (sum=" << compTotal << ")"
                       << "  | dv=" << dvMag << " m/s  flight=" << flightTime << " s"
                       << "  | minDefDist=" << minDefDist << " dist_to_flag=" << dist2D(sat.x, sat.y, flagx, flagy)
+                      << "  | plan_end_dist=" << planEndDist << (planEndDist >= GOAL_THRESH ? " <-- NOT IN GOAL BALL" : "")
                       << (captured ? "  <-- CAPTURED" : "") << std::endl;
             if(captured) std::cout << "Flag captured at t = " << captureT << " s." << std::endl;
         }

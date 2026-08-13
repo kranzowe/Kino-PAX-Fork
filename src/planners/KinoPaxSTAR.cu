@@ -2,6 +2,12 @@
 #include "config/config.h"
 #include "statePropagator/statePropagatorSpatialHash.cuh"
 
+// TEMPORARY: set to 0 (or delete the guarded blocks) to strip the cost/path diagnostics.
+// Tracks down why the reported Best Cost can disagree with the returned trajectory's cost.
+#ifndef KINOPAXSTAR_DIAG
+#define KINOPAXSTAR_DIAG 1
+#endif
+
 KinoPaxSTAR::KinoPaxSTAR()
 {
     graph_ = Graph(W_SIZE);
@@ -59,6 +65,9 @@ KinoPaxSTAR::KinoPaxSTAR()
 
     cudaMalloc(&d_minCost_ptr_, sizeof(float));
     cudaMalloc(&d_bestGoalIdx_ptr_, sizeof(int));
+#if KINOPAXSTAR_DIAG
+    cudaMalloc(&d_diag_ptr_, 4 * sizeof(int));
+#endif
 
     // Spatial hash grid for fast collision detection
     d_spatialHashGrid_ = createSpatialHashGrid();
@@ -88,6 +97,9 @@ KinoPaxSTAR::~KinoPaxSTAR()
     destroySpatialHashGrid(d_spatialHashGrid_);
     delete[] h_controlPathsToGoal_;
     cudaFree(d_bestGoalIdx_ptr_);
+#if KINOPAXSTAR_DIAG
+    cudaFree(d_diag_ptr_);
+#endif
 }
 
 void KinoPaxSTAR::resetPlanner(float* h_initial, float* h_goal)
@@ -664,6 +676,48 @@ void KinoPaxSTAR::getControlPathToGoal()
     (d_goalSet_[MAX_TREE_SIZE - 1]) ? ++h_solSetSize_ : 0;
     findInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_goalSet_ptr_, d_goalSetScanIdx_ptr_, d_goalSetIdxs_ptr_);
 
+#if KINOPAXSTAR_DIAG
+    // --- TEMPORARY: whole-tree cost-accumulation invariant scan (independent of reconstruction) ---
+    int h_diag[4] = {0, MAX_TREE_SIZE, 0, 0};
+    cudaMemcpy(d_diag_ptr_, h_diag, 4 * sizeof(int), cudaMemcpyHostToDevice);
+    KinoPaxSTAR_diagTreeInvariant_kernel<<<iDivUp(h_treeSize_, h_blockSize_), h_blockSize_>>>(
+      d_treeSamples_ptr_, d_treeSamplesParentIdxs_ptr_, d_treeSampleCosts_ptr_, (int)h_treeSize_, d_diag_ptr_);
+    if(h_solSetSize_ > 0)
+        KinoPaxSTAR_diagGoalSet_kernel<<<iDivUp(h_solSetSize_, h_blockSize_), h_blockSize_>>>(
+          d_goalSetIdxs_ptr_, h_solSetSize_, d_treeSamples_ptr_, d_treeSampleCosts_ptr_, d_goalSample_ptr_,
+          d_minCost_ptr_, d_diag_ptr_);
+    cudaMemcpy(h_diag, d_diag_ptr_, 4 * sizeof(int), cudaMemcpyDeviceToHost);
+
+    printf("[DIAG] treeSize=%u solSetSize=%u badChainNodes=%d tiedAtMinCost=%d goalsOutsideThresh=%d\n",
+           h_treeSize_, h_solSetSize_, h_diag[0], h_diag[2], h_diag[3]);
+
+    // Detail on the first offending node: its birth iteration vs its parent's localizes when the
+    // mismatched (cost, parent) pair was written.
+    if(h_diag[0] > 0 && h_diag[1] >= 0 && h_diag[1] < (int)h_treeSize_)
+        {
+            int   n = h_diag[1], p = -1, itN = -1, itP = -1;
+            float storedN = 0.0f, costP = 0.0f;
+            float rowN[SAMPLE_DIM] = {0.0f}, rowP[SAMPLE_DIM] = {0.0f};
+            cudaMemcpy(&p, d_treeSamplesParentIdxs_ptr_ + n, sizeof(int), cudaMemcpyDeviceToHost);
+            cudaMemcpy(&storedN, d_treeSampleCosts_ptr_ + n, sizeof(float), cudaMemcpyDeviceToHost);
+            cudaMemcpy(&itN, d_iterations_ptr_ + n, sizeof(int), cudaMemcpyDeviceToHost);
+            cudaMemcpy(rowN, d_treeSamples_ptr_ + (size_t)n * SAMPLE_DIM, SAMPLE_DIM * sizeof(float),
+                       cudaMemcpyDeviceToHost);
+            if(p >= 0)
+                {
+                    cudaMemcpy(&costP, d_treeSampleCosts_ptr_ + p, sizeof(float), cudaMemcpyDeviceToHost);
+                    cudaMemcpy(&itP, d_iterations_ptr_ + p, sizeof(int), cudaMemcpyDeviceToHost);
+                    cudaMemcpy(rowP, d_treeSamples_ptr_ + (size_t)p * SAMPLE_DIM, SAMPLE_DIM * sizeof(float),
+                               cudaMemcpyDeviceToHost);
+                }
+            // edgeCost is __host__ __device__, so the expectation recomputes identically here.
+            float expected = (p >= 0) ? costP + edgeCost(rowP, rowN) : storedN;
+            printf("[DIAG]   firstBad node=%d (born itr %d) stored=%f expected=%f  parent=%d (born itr %d) "
+                   "parentCost=%f\n",
+                   n, itN, storedN, expected, p, itP, costP);
+        }
+#endif  // KINOPAXSTAR_DIAG
+
     if(h_solSetSize_ == 0) return;
 
     // Elect a SINGLE min-cost goal node before reconstructing. Several goal nodes can tie at
@@ -687,6 +741,48 @@ void KinoPaxSTAR::getControlPathToGoal()
                cudaMemcpyDeviceToHost);
     printf("Cost to Goal: %f\n", h_minCost_);
 }
+
+#if KINOPAXSTAR_DIAG
+/***************************/
+/* TEMPORARY DIAGNOSTIC KERNELS */
+/***************************/
+// Direct test of the cost-accumulation rule used by propagateFrontier/updateFrontier:
+// treeSampleCosts[n] must equal treeSampleCosts[parent] + edgeCost(parent, n). A violation means
+// the node's stored cost and its recorded parent came from different propagation results, so any
+// path reconstructed through it will re-sum to something other than its reported cost.
+__global__ void KinoPaxSTAR_diagTreeInvariant_kernel(float* treeSamples, int* treeSamplesParentIdxs,
+                                                     float* treeSampleCosts, int treeSize, int* diag)
+{
+    int n = blockIdx.x * blockDim.x + threadIdx.x;
+    if(n < 1 || n >= treeSize) return;  // node 0 is the root (cost 0, parent -1)
+
+    int p = treeSamplesParentIdxs[n];
+    if(p < 0 || p >= treeSize) return;  // malformed parent is counted by the goal-set probe instead
+
+    float expected = treeSampleCosts[p] + edgeCost(&treeSamples[p * SAMPLE_DIM], &treeSamples[n * SAMPLE_DIM]);
+    float stored   = treeSampleCosts[n];
+
+    // Relative tolerance: costs accumulate over long chains, so exact equality is too strict.
+    if(fabsf(stored - expected) > 1e-3f * fmaxf(1.0f, fabsf(expected)))
+        {
+            atomicAdd(&diag[0], 1);
+            atomicMin(&diag[1], n);
+        }
+}
+
+// Quantifies the goal set: how many nodes tie at *minCost (settles the reconstruction-tie
+// question numerically) and how many sit outside the goal ball they were admitted for.
+__global__ void KinoPaxSTAR_diagGoalSet_kernel(uint* goalSetIdxs, int goalSetSize, float* treeSamples,
+                                               float* treeSampleCosts, float* xGoal, float* minCost, int* diag)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if(tid >= MAX_TREE_SIZE || tid >= goalSetSize) return;
+
+    int goalIdx = goalSetIdxs[tid];
+    if(treeSampleCosts[goalIdx] == *minCost) atomicAdd(&diag[2], 1);
+    if(distance(&treeSamples[goalIdx * SAMPLE_DIM], xGoal) >= GOAL_THRESH) atomicAdd(&diag[3], 1);
+}
+#endif  // KINOPAXSTAR_DIAG
 
 /***************************/
 /* SELECT BEST GOAL KERNEL */
