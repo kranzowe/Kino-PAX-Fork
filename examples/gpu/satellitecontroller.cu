@@ -49,13 +49,13 @@ constexpr float DEFENDER_WP_RMAX = 800.0f;     // defender waypoint annulus oute
 constexpr float DEFENDER_V0     = 0.05f;        // per-axis initial velocity bound [m/s]
 constexpr float SEGMENT_T       = 10.0f;       // fly + defender-update horizon per cycle [s] (10 min)
 constexpr float DEFENDER_TOF    = 240.0f;    // defender time-of-flight to its waypoint [s] (tunable)
-constexpr float DEFENDER_CHASE_PROB = 0.20f; // per defender, per cycle: probability of targeting the
+constexpr float DEFENDER_CHASE_PROB = 0.05f; // per defender, per cycle: probability of targeting the
                                              // satellite (chase) vs a random flag-vicinity waypoint
 constexpr float THRUST_NOISE    = 0.3f;        // execution thrust error: each planned DV component is
                                                 // perturbed by +/- this fraction at burn time (0.20 = 20%)
 constexpr float LOG_DT          = 20.0f;        // trajectory sampling resolution for the animation [s]
 constexpr float SMOOTH_DT       = 10.0f;        // sub-sample step for the smooth plan / fly-out curves [s]
-constexpr int   MAX_CYCLES      = 40;           // stop after this many cycles (or on capture)
+constexpr int   MAX_CYCLES      = 80;           // stop after this many cycles (or on capture)
 constexpr float CAPTURE_R       = GOAL_THRESH;  // capture radius [m]
 const std::string OUT_DIR       = "Data/SatellitePursuit";
 
