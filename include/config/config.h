@@ -214,7 +214,7 @@
 
 #define MODEL 4
 
-#define MAX_TREE_SIZE 300000
+#define MAX_TREE_SIZE 1000000
 #define MAX_ITER 300
 #define MAX_ITER_REKINO 20000
 #define STEP_SIZE 15.0f              // collision/safety sub-step [s]; CW coast is exact via STM
