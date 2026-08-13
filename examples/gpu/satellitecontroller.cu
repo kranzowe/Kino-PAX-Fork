@@ -47,7 +47,7 @@ constexpr float R_KEEPOUT       = 60.0f;        // hard keep-out half-width per 
 constexpr float DEFENDER_WP_RMIN = 400.0f;      // defender waypoint annulus inner radius [m] (around flag)
 constexpr float DEFENDER_WP_RMAX = 800.0f;     // defender waypoint annulus outer radius [m] (around flag)
 constexpr float DEFENDER_V0     = 0.05f;        // per-axis initial velocity bound [m/s]
-constexpr float SEGMENT_T       = 60.0f;       // fly + defender-update horizon per cycle [s] (10 min)
+constexpr float SEGMENT_T       = 10.0f;       // fly + defender-update horizon per cycle [s] (10 min)
 constexpr float DEFENDER_TOF    = 240.0f;    // defender time-of-flight to its waypoint [s] (tunable)
 constexpr float DEFENDER_CHASE_PROB = 0.20f; // per defender, per cycle: probability of targeting the
                                              // satellite (chase) vs a random flag-vicinity waypoint
