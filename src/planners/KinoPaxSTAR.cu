@@ -283,6 +283,11 @@ void KinoPaxSTAR::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCoun
     findInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_frontier_ptr_, d_frontierScanIdx_ptr_, d_activeFrontierIdxs_ptr_);
 
     // --- Build frontier repeat vector ---
+    // Safety net: any position repeatInd does not write must not expose a stale index from an
+    // earlier iteration/cycle. Seeding with 0 (the root) makes a missed slot degrade to a
+    // redundant root expansion instead of fathering nodes from uninitialised tree slots. With a
+    // consistent repeat count this fill is a no-op, since [0, h_frontierRepeatSize_) is fully written.
+    thrust::fill(d_activeFrontierRepeatIdxs_.begin(), d_activeFrontierRepeatIdxs_.end(), 0);
     thrust::exclusive_scan(d_activeFrontierRepeatCount_.begin(), d_activeFrontierRepeatCount_.end(), d_frontierRepeatScanIdx_.begin(), 0,
                            thrust::plus<uint>());
     repeatInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_activeFrontierIdxs_ptr_, d_activeFrontierRepeatCount_ptr_,
@@ -568,6 +573,15 @@ KinoPaxSTAR_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* acti
                     atomicMinFloat(minCost, cost);
                     goalSet[x1TreeIdx]  = true;
                     frontier[x1TreeIdx] = false;
+                    // The repeat count MUST be cleared with the frontier flag. repeatInd expands
+                    // activeFrontierRepeatCount over the compacted frontier list, which findInd
+                    // builds from frontier==true only. A node left with count>0 but frontier==false
+                    // owns a slice of d_activeFrontierRepeatIdxs_ that no thread ever writes, yet
+                    // h_frontierRepeatSize_ still spans it -- so propagateFrontier reads whatever
+                    // stale tree indices that slice held (from a prior, much larger tree) and
+                    // expands from not-yet-created nodes whose cost still reads 0. That produced
+                    // phantom-parented, artificially cheap nodes that then won minCost.
+                    activeFrontierRepeatCount[x1TreeIdx] = 0;
                 }
         }
 
