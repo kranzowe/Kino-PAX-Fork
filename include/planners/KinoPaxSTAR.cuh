@@ -55,7 +55,7 @@ public:
       *d_frontierRepeatScanIdx_ptr_, *d_activeFrontierRepeatIdxs_ptr_;
     uint *d_goalSetIdxs_ptr_, *d_goalSetScanIdx_ptr_;
     int *d_unexploredSamplesParentIdxs_ptr_, *d_treeXR1s_ptr_, *d_frontierNextXR1s_ptr_;
-    int *d_bestNodeIdxPerR1_ptr_, *d_iterations_ptr_;
+    int *d_bestNodeIdxPerR1_ptr_, *d_iterations_ptr_, *d_bestGoalIdx_ptr_;
 
     // --- Spatial hash grid for collision detection ---
     SpatialHashGrid* d_spatialHashGrid_;
@@ -114,9 +114,16 @@ KinoPaxSTAR_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* acti
                                int* iterations, int iteration);
 
 /***************************/
+/* SELECT BEST GOAL KERNEL */
+/***************************/
+// Records the per-goal (idx, cost, iteration) debug row and elects the single min-cost goal
+// node (lowest tree index among ties) via atomicMin, so reconstruction has exactly one writer.
+__global__ void KinoPaxSTAR_selectBestGoal_kernel(uint* goalSetIdxs, int goalSetSize, float* treeSampleCosts,
+                                                  int* iterations, float* pathCosts, float* minCost, int* bestGoalIdx);
+
+/***************************/
 /* GET CONTROL PATH TO GOAL KERNEL */
 /***************************/
+// Single-threaded backtrack of the elected min-cost goal node down to the root.
 __global__ void KinoPaxSTAR_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSamples,
-                                                     int* treeSamplesParentIdxs, uint* goalSetIdxs, int goalSetSize,
-                                                     float* pathCosts, float* treeSampleCosts, int* iterations,
-                                                     float* minCost);
+                                                     int* treeSamplesParentIdxs, int* bestGoalIdx);

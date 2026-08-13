@@ -58,6 +58,7 @@ KinoPaxSTAR::KinoPaxSTAR()
     d_controlPathsToGoal_ptr_     = thrust::raw_pointer_cast(d_controlPathsToGoal_.data());
 
     cudaMalloc(&d_minCost_ptr_, sizeof(float));
+    cudaMalloc(&d_bestGoalIdx_ptr_, sizeof(int));
 
     // Spatial hash grid for fast collision detection
     d_spatialHashGrid_ = createSpatialHashGrid();
@@ -86,6 +87,7 @@ KinoPaxSTAR::~KinoPaxSTAR()
 {
     destroySpatialHashGrid(d_spatialHashGrid_);
     delete[] h_controlPathsToGoal_;
+    cudaFree(d_bestGoalIdx_ptr_);
 }
 
 void KinoPaxSTAR::resetPlanner(float* h_initial, float* h_goal)
@@ -664,9 +666,21 @@ void KinoPaxSTAR::getControlPathToGoal()
 
     if(h_solSetSize_ == 0) return;
 
-    KinoPaxSTAR_getControlPathToGoal_kernel<<<iDivUp(h_solSetSize_, h_blockSize_), h_blockSize_>>>(
-      d_controlPathsToGoal_ptr_, d_treeSamples_ptr_, d_treeSamplesParentIdxs_ptr_, d_goalSetIdxs_ptr_, h_solSetSize_,
-      d_pathCosts_ptr_, d_treeSampleCosts_ptr_, d_iterations_ptr_, d_minCost_ptr_);
+    // Elect a SINGLE min-cost goal node before reconstructing. Several goal nodes can tie at
+    // *minCost (common in the near-goal, quantized-dt regime); if each reconstructed into the
+    // shared controlPathsToGoal buffer, their backtracks would interleave into an incoherent
+    // path whose recomputed cost no longer matches *minCost. Reset the winner to a sentinel
+    // (> any valid index), let the tying nodes atomicMin for the lowest tree index
+    // (deterministic across runs), then reconstruct that one node single-threaded.
+    int sentinel = MAX_TREE_SIZE;
+    cudaMemcpy(d_bestGoalIdx_ptr_, &sentinel, sizeof(int), cudaMemcpyHostToDevice);
+
+    KinoPaxSTAR_selectBestGoal_kernel<<<iDivUp(h_solSetSize_, h_blockSize_), h_blockSize_>>>(
+      d_goalSetIdxs_ptr_, h_solSetSize_, d_treeSampleCosts_ptr_, d_iterations_ptr_, d_pathCosts_ptr_,
+      d_minCost_ptr_, d_bestGoalIdx_ptr_);
+
+    KinoPaxSTAR_getControlPathToGoal_kernel<<<1, 1>>>(
+      d_controlPathsToGoal_ptr_, d_treeSamples_ptr_, d_treeSamplesParentIdxs_ptr_, d_bestGoalIdx_ptr_);
 
     cudaMemcpy(&h_minCost_, d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpy(h_controlPathsToGoal_, d_controlPathsToGoal_ptr_, MAX_ITER * SAMPLE_DIM * sizeof(float),
@@ -675,27 +689,39 @@ void KinoPaxSTAR::getControlPathToGoal()
 }
 
 /***************************/
-/* GET CONTROL PATH TO GOAL KERNEL */
+/* SELECT BEST GOAL KERNEL */
 /***************************/
-// Every goal thread records (idx, cost, iteration); only the min-cost goal reconstructs its full path.
-__global__ void KinoPaxSTAR_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSamples,
-                                                     int* treeSamplesParentIdxs, uint* goalSetIdxs, int goalSetSize,
-                                                     float* pathCosts, float* treeSampleCosts, int* iterations,
-                                                     float* minCost)
+// Every goal thread records (idx, cost, iteration) for debugging and, if it ties the global
+// minimum cost, elects itself via atomicMin so the LOWEST tree index wins deterministically.
+__global__ void KinoPaxSTAR_selectBestGoal_kernel(uint* goalSetIdxs, int goalSetSize, float* treeSampleCosts,
+                                                  int* iterations, float* pathCosts, float* minCost, int* bestGoalIdx)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if(tid >= MAX_TREE_SIZE || tid >= goalSetSize) return;
 
-    int goalIdx = goalSetIdxs[tid];
-    int x0Idx   = goalIdx;
-    float cost  = treeSampleCosts[goalIdx];
+    int   goalIdx = goalSetIdxs[tid];
+    float cost    = treeSampleCosts[goalIdx];
 
     int pathCostsIdx            = 3 * tid;
     pathCosts[pathCostsIdx]     = goalIdx;
     pathCosts[pathCostsIdx + 1] = cost;
     pathCosts[pathCostsIdx + 2] = iterations[goalIdx];
 
-    if(cost != *minCost) return;
+    // Exact-equality tie-break: only nodes AT the global minimum contend; lowest index wins.
+    if(cost == *minCost) atomicMin(bestGoalIdx, goalIdx);
+}
+
+/***************************/
+/* GET CONTROL PATH TO GOAL KERNEL */
+/***************************/
+// Single-threaded: reconstruct exactly the elected min-cost goal node's path, goal -> root.
+__global__ void KinoPaxSTAR_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSamples,
+                                                     int* treeSamplesParentIdxs, int* bestGoalIdx)
+{
+    int x0Idx = *bestGoalIdx;
+    // Sentinel (== MAX_TREE_SIZE) means no goal node tied *minCost: leave the buffer zeroed.
+    if(x0Idx < 0 || x0Idx >= MAX_TREE_SIZE) return;
+
     int i = 0;
     // controlPathsToGoal holds MAX_ITER nodes; guard so a maximal-depth path can't write
     // one node past the buffer.
