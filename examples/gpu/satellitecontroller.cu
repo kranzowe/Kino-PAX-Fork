@@ -334,11 +334,12 @@ int main(int argc, char** argv)
                             wx = flagx + wr * std::cos(wth);
                             wy = flagy + wr * std::sin(wth);
                         }
-                    if(u01(rng) < 0.1)
-                    {
+                    
                     float dvx, dvy;
                     cwTargetingDV(def[i], wx, wy, DEFENDER_TOF, dvx, dvy);
                     defBase[i]    = def[i];
+                    if(u01(rng) < 0.1)
+                    {
                     defBase[i].vx += dvx;
                     defBase[i].vy += dvy;
                     }
