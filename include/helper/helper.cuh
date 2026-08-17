@@ -117,6 +117,37 @@ __device__ __forceinline__ float atomicMinFloat(float* addr, float value)
     return old;
 }
 
+__device__ __forceinline__ float atomicMaxFloat(float* addr, float value)
+{
+    float old;
+    old = (value >= 0) ? __int_as_float(atomicMax((int*)addr, __float_as_int(value)))
+                       : __uint_as_float(atomicMin((unsigned int*)addr, __float_as_uint(value)));
+
+    return old;
+}
+
+// Cost-prune keep-probability for a NON-best node, normalized per region so the exponent k
+// keeps its dynamic range (the raw min-ratio collapses when the region min approaches 0).
+//   norm 0: min-ratio (m/cost)^k          -- original; ill-conditioned as m -> 0
+//   norm 1: min-max  ((M-cost)/(M-m))^k   -- bounded [0,1]; M = region max cost
+//   norm 2: mean     min(1,(mean/cost)^k) -- mean = sum/cnt; robust to outliers
+// All modes return ~1 at cost==m, preserving the region-best exemption. Result floored by 'floor'.
+__device__ __forceinline__ float costKeepProb(int norm, float m, float M, float sum, int cnt,
+                                              float cost, float k, float floor)
+{
+    float p;
+    if(norm == 1)
+        p = (M > m) ? powf((M - cost) / (M - m), k) : 1.0f;
+    else if(norm == 2)
+        {
+            float mean = (cnt > 0) ? sum / (float)cnt : cost;
+            p          = fminf(1.0f, powf(mean / cost, k));
+        }
+    else
+        p = powf(m / cost, k);
+    return fmaxf(p, floor);
+}
+
 #define gpuErrchk(ans)                        \
     {                                         \
         gpuAssert((ans), __FILE__, __LINE__); \

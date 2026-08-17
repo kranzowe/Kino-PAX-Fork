@@ -129,12 +129,13 @@ for ei = 1:numel(environments)
     %% ---------- Aggregate summary metrics per planner (single delta) ----------
     mFirstIter    = NaN(1, nPlanner); eFirstIter    = NaN(1, nPlanner);
     mFirstSolTime = NaN(1, nPlanner); eFirstSolTime = NaN(1, nPlanner);
+    mFirstSolTree = NaN(1, nPlanner); eFirstSolTree = NaN(1, nPlanner);
     mFinalCost    = NaN(1, nPlanner); eFinalCost    = NaN(1, nPlanner);
     mTotalTime    = NaN(1, nPlanner); eTotalTime    = NaN(1, nPlanner);
     mSuccess      = NaN(1, nPlanner);
     for pi = 1:nPlanner
         runs = R{pi};
-        fiVals = []; fstVals = []; fcVals = []; ttVals = [];
+        fiVals = []; fstVals = []; ftsVals = []; fcVals = []; ttVals = [];
         nSol = 0; nTot = 0;
         for ri = 1:numel(runs)
             if isempty(runs{ri}), continue; end
@@ -143,12 +144,15 @@ for ei = 1:numel(environments)
             if fi > 0, nSol = nSol + 1; fiVals(end + 1) = fi; end %#ok<AGROW>
             ft = firstSolTime(runs{ri}, MAX_FLOAT_THRESH);
             if ft >= 0, fstVals(end + 1) = ft; end %#ok<AGROW>
+            fts = firstSolTreeSize(runs{ri}, MAX_FLOAT_THRESH);
+            if fts >= 0, ftsVals(end + 1) = fts; end %#ok<AGROW>
             fc = finalCost(runs{ri}, MAX_FLOAT_THRESH);
             if ~isnan(fc), fcVals(end + 1) = fc; end %#ok<AGROW>
             ttVals(end + 1) = runs{ri}.elapsed_time_ms(end) / 1000; %#ok<AGROW>
         end
         if ~isempty(fiVals),  mFirstIter(pi)    = mean(fiVals);  eFirstIter(pi)    = std(fiVals);  end
         if ~isempty(fstVals), mFirstSolTime(pi) = mean(fstVals); eFirstSolTime(pi) = std(fstVals); end
+        if ~isempty(ftsVals), mFirstSolTree(pi) = mean(ftsVals); eFirstSolTree(pi) = std(ftsVals); end
         if ~isempty(fcVals),  mFinalCost(pi)    = mean(fcVals);  eFinalCost(pi)    = std(fcVals);  end
         if ~isempty(ttVals),  mTotalTime(pi)    = mean(ttVals);  eTotalTime(pi)    = std(ttVals);  end
         if nTot > 0,          mSuccess(pi)      = 100 * nSol / nTot; end
@@ -158,16 +162,19 @@ for ei = 1:numel(environments)
     figNum = figNum + 1;
     figure('Name', sprintf('%s - Summary', envTitle), 'Position', [130 60 1500 860]);
 
-    subplot(2, 2, 1);
+    subplot(2, 3, 1);
     plannerBar(mFirstIter, eFirstIter, plannerDisplay, plannerColors, 'Iteration', 'First Solution Iteration');
 
-    subplot(2, 2, 2);
+    subplot(2, 3, 2);
     plannerBar(mFirstSolTime, eFirstSolTime, plannerDisplay, plannerColors, 'Time (ms)', 'Avg Time to First Solution');
 
-    subplot(2, 2, 3);
+    subplot(2, 3, 3);
+    plannerBar(mFirstSolTree, eFirstSolTree, plannerDisplay, plannerColors, 'Tree Size (nodes)', 'Avg Tree Size at First Solution');
+
+    subplot(2, 3, 4);
     plannerBar(mFinalCost, eFinalCost, plannerDisplay, plannerColors, 'Path Cost (control effort)', 'Final Best Cost');
 
-    subplot(2, 2, 4);
+    subplot(2, 3, 5);
     plannerBar(mTotalTime, eTotalTime, plannerDisplay, plannerColors, 'Time (s)', 'Total Execution Time');
 
     sgtitle(sprintf('Planner Comparison at %s \x2014 %s (mean \\pm std)', deltaLabels{di}, envTitle), ...
@@ -326,6 +333,13 @@ function t = firstSolTime(tbl, thresh)
     % -1 if it never found a solution.
     solIdx = find(tbl.best_cost < thresh, 1, 'first');
     if isempty(solIdx), t = -1; else, t = tbl.elapsed_time_ms(solIdx); end
+end
+
+function n = firstSolTreeSize(tbl, thresh)
+    % Tree size at the iteration this run first reached a finite (< thresh) best_cost;
+    % -1 if it never found a solution.
+    solIdx = find(tbl.best_cost < thresh, 1, 'first');
+    if isempty(solIdx), n = -1; else, n = tbl.tree_size(solIdx); end
 end
 
 function c = finalCost(tbl, thresh)

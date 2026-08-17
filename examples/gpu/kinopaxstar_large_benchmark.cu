@@ -46,6 +46,7 @@ struct RunResult
     double total_time_seconds;
     int first_solution_iteration;
     float first_solution_cost;
+    int first_solution_tree_size;   // tree size at the iteration the first solution was found
     float final_best_cost;
     int final_tree_size;
     int total_iterations;
@@ -224,7 +225,7 @@ void writeSummaryCSV(const std::vector<RunResult>& results, const std::string& o
 
     std::ofstream file(filename.str());
     file << "environment,delta_label,num_regions,run,total_time_s,first_sol_iteration,"
-         << "first_sol_cost,final_best_cost,final_tree_size,total_iterations\n";
+         << "first_sol_cost,first_sol_tree_size,final_best_cost,final_tree_size,total_iterations\n";
 
     for(const auto& r : results)
     {
@@ -236,6 +237,7 @@ void writeSummaryCSV(const std::vector<RunResult>& results, const std::string& o
              << std::fixed << std::setprecision(4) << r.total_time_seconds << ","
              << r.first_solution_iteration << ","
              << std::fixed << std::setprecision(6) << r.first_solution_cost << ","
+             << r.first_solution_tree_size << ","
              << std::fixed << std::setprecision(6) << r.final_best_cost << ","
              << r.final_tree_size << ","
              << r.total_iterations << "\n";
@@ -269,6 +271,7 @@ RunResult benchmarkKinoPaxPlus(
     result.run_number = runNumber;
     result.first_solution_iteration = -1;
     result.first_solution_cost = INFINITY;
+    result.first_solution_tree_size = -1;
     result.final_best_cost = INFINITY;
 
     // Per-iteration planner-only timing: only propagate+update is inside the timed
@@ -303,6 +306,7 @@ RunResult benchmarkKinoPaxPlus(
         {
             result.first_solution_iteration = itr;
             result.first_solution_cost      = planner.h_minCost_;
+            result.first_solution_tree_size = planner.h_treeSize_;
         }
         if(planner.h_minCost_ < result.final_best_cost)
             result.final_best_cost = planner.h_minCost_;
@@ -361,6 +365,7 @@ RunResult benchmarkKPAX(
     result.run_number = runNumber;
     result.first_solution_iteration = -1;
     result.first_solution_cost = INFINITY;
+    result.first_solution_tree_size = -1;
     result.final_best_cost = INFINITY;
 
     // Per-iteration planner-only timing (diagnostics + path-cost walks excluded).
@@ -406,6 +411,7 @@ RunResult benchmarkKPAX(
             {
                 result.first_solution_iteration = itr;
                 result.first_solution_cost      = pathCost;
+                result.first_solution_tree_size = planner.h_treeSize_;
             }
             if(pathCost < result.final_best_cost)
                 result.final_best_cost = pathCost;
@@ -477,6 +483,7 @@ RunResult benchmarkPruneKPAX(
     result.run_number = runNumber;
     result.first_solution_iteration = -1;
     result.first_solution_cost = INFINITY;
+    result.first_solution_tree_size = -1;
     result.final_best_cost = INFINITY;
 
     cudaEvent_t iterStart, iterStop;
@@ -521,6 +528,7 @@ RunResult benchmarkPruneKPAX(
             {
                 result.first_solution_iteration = itr;
                 result.first_solution_cost      = pathCost;
+                result.first_solution_tree_size = planner.h_treeSize_;
             }
             if(pathCost < result.final_best_cost)
                 result.final_best_cost = pathCost;
@@ -587,6 +595,7 @@ RunResult benchmarkKinoPaxSTAR(
     result.run_number = runNumber;
     result.first_solution_iteration = -1;
     result.first_solution_cost = INFINITY;
+    result.first_solution_tree_size = -1;
     result.final_best_cost = INFINITY;
 
     cudaEvent_t iterStart, iterStop;
@@ -619,6 +628,7 @@ RunResult benchmarkKinoPaxSTAR(
         {
             result.first_solution_iteration = itr;
             result.first_solution_cost      = planner.h_minCost_;
+            result.first_solution_tree_size = planner.h_treeSize_;
         }
         if(planner.h_minCost_ < result.final_best_cost)
             result.final_best_cost = planner.h_minCost_;
@@ -869,6 +879,7 @@ RunResult benchmarkKinoPaxSTARcostprune(
     result.run_number = runNumber;
     result.first_solution_iteration = -1;
     result.first_solution_cost = INFINITY;
+    result.first_solution_tree_size = -1;
     result.final_best_cost = INFINITY;
 
     cudaEvent_t iterStart, iterStop;
@@ -901,6 +912,7 @@ RunResult benchmarkKinoPaxSTARcostprune(
         {
             result.first_solution_iteration = itr;
             result.first_solution_cost      = planner.h_minCost_;
+            result.first_solution_tree_size = planner.h_treeSize_;
         }
         if(planner.h_minCost_ < result.final_best_cost)
             result.final_best_cost = planner.h_minCost_;
@@ -1022,6 +1034,7 @@ RunResult benchmarkKinoPaxSTARNoPrune(
     result.run_number = runNumber;
     result.first_solution_iteration = -1;
     result.first_solution_cost = INFINITY;
+    result.first_solution_tree_size = -1;
     result.final_best_cost = INFINITY;
 
     cudaEvent_t iterStart, iterStop;
@@ -1054,6 +1067,7 @@ RunResult benchmarkKinoPaxSTARNoPrune(
         {
             result.first_solution_iteration = itr;
             result.first_solution_cost      = planner.h_minCost_;
+            result.first_solution_tree_size = planner.h_treeSize_;
         }
         if(planner.h_minCost_ < result.final_best_cost)
             result.final_best_cost = planner.h_minCost_;
@@ -1162,6 +1176,7 @@ RunResult benchmarkKinoPaxSTARNoPruneNoSpatialHash(
     result.run_number = runNumber;
     result.first_solution_iteration = -1;
     result.first_solution_cost = INFINITY;
+    result.first_solution_tree_size = -1;
     result.final_best_cost = INFINITY;
 
     cudaEvent_t iterStart, iterStop;
@@ -1194,6 +1209,7 @@ RunResult benchmarkKinoPaxSTARNoPruneNoSpatialHash(
         {
             result.first_solution_iteration = itr;
             result.first_solution_cost      = planner.h_minCost_;
+            result.first_solution_tree_size = planner.h_treeSize_;
         }
         if(planner.h_minCost_ < result.final_best_cost)
             result.final_best_cost = planner.h_minCost_;
@@ -1301,6 +1317,7 @@ RunResult benchmarkKinoPaxSTARnoseed(
     result.run_number = runNumber;
     result.first_solution_iteration = -1;
     result.first_solution_cost = INFINITY;
+    result.first_solution_tree_size = -1;
     result.final_best_cost = INFINITY;
 
     cudaEvent_t iterStart, iterStop;
@@ -1333,6 +1350,7 @@ RunResult benchmarkKinoPaxSTARnoseed(
         {
             result.first_solution_iteration = itr;
             result.first_solution_cost      = planner.h_minCost_;
+            result.first_solution_tree_size = planner.h_treeSize_;
         }
         if(planner.h_minCost_ < result.final_best_cost)
             result.final_best_cost = planner.h_minCost_;
@@ -1440,6 +1458,7 @@ RunResult benchmarkKinoPaxSTARsparsefill(
     result.run_number = runNumber;
     result.first_solution_iteration = -1;
     result.first_solution_cost = INFINITY;
+    result.first_solution_tree_size = -1;
     result.final_best_cost = INFINITY;
 
     cudaEvent_t iterStart, iterStop;
@@ -1472,6 +1491,7 @@ RunResult benchmarkKinoPaxSTARsparsefill(
         {
             result.first_solution_iteration = itr;
             result.first_solution_cost      = planner.h_minCost_;
+            result.first_solution_tree_size = planner.h_treeSize_;
         }
         if(planner.h_minCost_ < result.final_best_cost)
             result.final_best_cost = planner.h_minCost_;
