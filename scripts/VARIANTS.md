@@ -74,8 +74,12 @@ the region min approaches 0. The benchmarks sweep `(h_acceptCap_, h_costPruneExp
 each point `cap{100*cap}` plus `_exp{100*exp}` — e.g. `KinoPaxSTARcostprune_cap33_exp50`. Two
 label conventions are in the data: `kinopaxstar_cost_benchmark.cu` swept a hand-picked 5-point
 list and omitted `_exp` at `exp == 1.0` (`..._cap40`, `..._cap0_exp75`), while the newer
-`kinopaxstar_cost_tuning_sweep.cu` runs the full `cap {0, 0.33, 0.66, 1.0} x exp {0.1, 0.5, 1.0}`
-grid and always spells the exponent out, so the two data sets never collide. The tuning sweep
+`kinopaxstar_cost_tuning_sweep.cu` runs the full
+`cap {0, 0.33, 0.66, 1.0} x exp {0.1, 0.5, 1.0} x floor {0, 0.1, 0.2}` grid and always spells
+every knob out (`..._cap33_exp50_floor10`), so the two data sets never collide. The floor is
+worth sweeping because `costKeepProb` ends in `fmaxf(p, floor)`: any non-zero floor grants every
+non-best node that much survival chance regardless of cost, so only `floor = 0` lets the gate
+approach region-best-only retention. The tuning sweep
 also varies the cost metric, which is a compile-time property of the binary (`COST_MODE` in
 `helper.cuh`) and therefore rides in the delta token instead: `large_effort` (control effort)
 vs `large_length` (workspace path length). Cost dominates node retention.

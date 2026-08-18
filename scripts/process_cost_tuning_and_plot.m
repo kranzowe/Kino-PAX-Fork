@@ -3,11 +3,12 @@
 % (run via run_cost_tuning_sweep.sh) and compares the full cost-prune tuning grid
 % at the single Large delta (R1 = 27k regions).
 %
-% Grid: acceptCap {0, 0.33, 0.66, 1.0} x costPruneExp {0.1, 0.5, 1.0}, run for both
-%   KinoPaxSTARcostprune          - R2 sub-region seeding ON  (the base variant)
-%   KinoPaxSTARcostprune_noseed   - R2 sub-region seeding OFF (pSeed = 0)
-% = 24 variants, plus KPAX and KinoPaxPlus as reference baselines. Each seeded /
-% noseed pair at the same (cap, exp) differs only by the R2 seeding free pass.
+% Grid: acceptCap {0, 0.33, 0.66, 1.0} x costPruneExp {0.1, 0.5, 1.0} x
+% costPruneFloor {0, 0.1, 0.2} on KinoPaxSTARcostprune = 36 variants, plus KPAX and
+% KinoPaxPlus as reference baselines. The floor matters because costKeepProb ends in
+% fmaxf(p, floor): a non-zero floor hands every non-best node that much survival
+% chance regardless of cost, so only the floor=0 column can approach region-best-only
+% retention.
 %
 % COST METRIC: swept by rebuilding, since COST_MODE is a compile-time #if inside
 % edgeCost (include/helper/helper.cuh). The metric therefore rides in the delta
@@ -18,14 +19,15 @@
 % Per-run CSVs (in dataDir):
 %   KinoPaxPlus:  {env}_delta{large_METRIC}_run{n}.csv
 %   KPAX:         {env}_KPAX_delta{large_METRIC}_run{n}.csv
-%   tuning grid:  {env}_KinoPaxSTARcostprune[_noseed]_cap{N}_exp{N}_delta{large_METRIC}_run{n}.csv
+%   tuning grid:  {env}_KinoPaxSTARcostprune_cap{N}_exp{N}_floor{N}_delta{large_METRIC}_run{n}.csv
 %
 % Per-iteration columns: iteration, frontier_size, tree_size, elapsed_time_ms, best_cost
 %
-% ENCODING: colour = acceptCap (teal ramp light->dark for seeded, magenta ramp for
-% noseed); line style = costPruneExp (':' 0.1, '--' 0.5, '-' 1.0). Baselines draw
-% solid and thick. With 26 series a static legend is unreadable, so every legend
-% here is CLICKABLE — click an entry to hide/show that series (see toggleSeries).
+% ENCODING: hue family = costPruneFloor (teal 0, amber 0.1, magenta 0.2), shade
+% within the family = acceptCap (light->dark), line style = costPruneExp (':' 0.1,
+% '--' 0.5, '-' 1.0). Baselines draw solid, thick, in near-black / blue. With 38
+% series a static legend is unreadable, so every legend here is CLICKABLE — click an
+% entry to hide/show that series (see toggleSeries).
 %
 % FAIR-COMPARISON NOTE: an "iteration" is a different unit of work per planner, so
 % cost-vs-TIME is the fair cross-planner axis. Error bands and error bars are
@@ -43,8 +45,8 @@ clear; clc; close all;
 %% --- Configuration ---
 dataDir = '';   % '' = current directory (run this from Data/Benchmarks/KinoPaxStarCostTuning)
 
-environments = {'house'};
-envTitles    = {'House'};
+environments = {'zigzag'};
+envTitles    = {'Zigzag Corridor'};
 
 % Cost metric axis — one build each, so one set of figures each.
 costTokens  = {'large_effort', 'large_length'};
@@ -53,27 +55,32 @@ costYLabels = {'Path Cost (control effort)', 'Path Cost (workspace path length)'
 
 deltaLabel = 'Large-\delta (27k)';
 
-% Tuning grid — must match SWEEP_CAPS / SWEEP_EXPS in kinopaxstar_cost_tuning_sweep.cu.
-% Values are the integer label tokens (100 x the float), as they appear in filenames.
-caps = [0 33 66 100];
-exps = [10 50 100];
+% Tuning grid — must match SWEEP_CAPS / SWEEP_EXPS / SWEEP_FLOORS in
+% kinopaxstar_cost_tuning_sweep.cu. Values are the integer label tokens (100 x the
+% float), exactly as they appear in the filenames.
+caps   = [0 33 66 100];
+exps   = [10 50 100];
+floors = [0 10 20];
 
-% Colour ramps light->dark over cap; line style over exp (index-aligned with `exps`).
+% One hue family per floor, shaded light->dark over cap; line style over exp
+% (index-aligned with `exps`).
 tealRamp  = [0.70 0.90 0.87;    % cap 0    - teal (lightest)
-             0.35 0.78 0.72;    % cap 0.33 - teal
-             0.12 0.52 0.48;    % cap 0.66 - teal
+             0.35 0.78 0.72;    % cap 0.33
+             0.12 0.52 0.48;    % cap 0.66
              0.03 0.30 0.28];   % cap 1.0  - teal (darkest)
+amberRamp = [0.98 0.85 0.55;    % cap 0    - amber (lightest)
+             0.92 0.68 0.20;    % cap 0.33
+             0.72 0.47 0.06;    % cap 0.66
+             0.44 0.28 0.02];   % cap 1.0  - amber (darkest)
 magRamp   = [0.97 0.75 0.92;    % cap 0    - magenta (lightest)
-             0.88 0.42 0.76;    % cap 0.33 - magenta
-             0.68 0.15 0.50;    % cap 0.66 - magenta
+             0.88 0.42 0.76;    % cap 0.33
+             0.68 0.15 0.50;    % cap 0.66
              0.38 0.03 0.28];   % cap 1.0  - magenta (darkest)
 expStyles = {':', '--', '-'};   % exp 0.1, 0.5, 1.0
 
-% --- Build the series arrays programmatically (24 grid points + 2 baselines) ---
-families    = {'', '_noseed'};
-famDisplay  = {'CP', 'NS'};       % CostPrune (seeded) / NoSeed
-famRamps    = {tealRamp, magRamp};
-famMarkers  = {'o', '^'};
+% --- Build the series arrays programmatically (36 grid points + 2 baselines) ---
+floorRamps   = {tealRamp, amberRamp, magRamp};
+floorMarkers = {'o', '^', 'd'};   % scatter marker per floor
 
 plannerNames   = {};
 plannerDisplay = {};
@@ -81,17 +88,17 @@ plannerColors  = [];
 plannerStyles  = {};
 plannerMarkers = {};
 plannerWidths  = [];
-for fi = 1:numel(families)
+for fl = 1:numel(floors)
     for ci = 1:numel(caps)
         for ei = 1:numel(exps)
-            plannerNames{end + 1}   = sprintf('KinoPaxSTARcostprune%s_cap%d_exp%d', ...
-                                              families{fi}, caps(ci), exps(ei)); %#ok<SAGROW>
-            plannerDisplay{end + 1} = sprintf('%s cap%g exp%g', ...
-                                              famDisplay{fi}, caps(ci) / 100, exps(ei) / 100); %#ok<SAGROW>
-            plannerColors(end + 1, :) = famRamps{fi}(ci, :); %#ok<SAGROW>
-            plannerStyles{end + 1}    = expStyles{ei};       %#ok<SAGROW>
-            plannerMarkers{end + 1}   = famMarkers{fi};      %#ok<SAGROW>
-            plannerWidths(end + 1)    = 1.4;                 %#ok<SAGROW>
+            plannerNames{end + 1}   = sprintf('KinoPaxSTARcostprune_cap%d_exp%d_floor%d', ...
+                                              caps(ci), exps(ei), floors(fl)); %#ok<SAGROW>
+            plannerDisplay{end + 1} = sprintf('f%g cap%g exp%g', floors(fl) / 100, ...
+                                              caps(ci) / 100, exps(ei) / 100); %#ok<SAGROW>
+            plannerColors(end + 1, :) = floorRamps{fl}(ci, :); %#ok<SAGROW>
+            plannerStyles{end + 1}    = expStyles{ei};         %#ok<SAGROW>
+            plannerMarkers{end + 1}   = floorMarkers{fl};      %#ok<SAGROW>
+            plannerWidths(end + 1)    = 1.4;                   %#ok<SAGROW>
         end
     end
 end
@@ -232,7 +239,8 @@ for ei = 1:numel(environments)
         grid on;
         clickableLegend();
         title(sprintf(['Tuning Tradeoff: Time to First Solution vs Final Cost \x2014 %s, %s\n' ...
-                       'lower-left is better (fast and cheap); \x25cb seeded, \x25b3 noseed, \x25a1 baseline'], ...
+                       'lower-left is better (fast and cheap); ' ...
+                       '\x25cb floor 0, \x25b3 floor 0.1, \x25c7 floor 0.2, \x25a1 baseline'], ...
                        envTitle, costTitle), 'FontWeight', 'bold');
     end   % cost metric loop
 end  % environment loop
@@ -251,9 +259,8 @@ function runs = loadRuns(dataDir, env, planner, delta, numRuns)
             case 'KPAX'
                 fn = sprintf('%s_KPAX_delta%s_run%d.csv', env, delta, ri);
             otherwise
-                % Tuning-grid variants, seeded and noseed alike
-                % (KinoPaxSTARcostprune[_noseed]_capNN_expNN) use the planner
-                % name directly as the filename token.
+                % Tuning-grid variants (KinoPaxSTARcostprune_capNN_expNN_floorNN)
+                % use the planner name directly as the filename token.
                 if startsWith(planner, 'KinoPaxSTARcostprune')
                     fn = sprintf('%s_%s_delta%s_run%d.csv', env, planner, delta, ri);
                 else
@@ -342,8 +349,8 @@ function plannerBar(mu, plannerLabels, plannerColors, ylab, ttl)
     for pi = 1:nP
         bar(pi, mu(pi), 0.7, 'FaceColor', plannerColors(pi, :), 'EdgeColor', 'none');
     end
-    set(gca, 'XTick', 1:nP, 'XTickLabel', plannerLabels, 'FontSize', 6);
-    xtickangle(45);
+    set(gca, 'XTick', 1:nP, 'XTickLabel', plannerLabels, 'FontSize', 5);
+    xtickangle(60);
     xlim([0.5, nP + 0.5]);
     ylabel(ylab); title(ttl); grid on;
 end
