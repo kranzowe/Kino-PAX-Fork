@@ -29,6 +29,7 @@ set(SOURCE_FILES
     src/planners/originalPlanner.cu
     src/planners/KinoPaxSTAR.cu
     src/planners/KinoPaxSTARcostprune.cu
+    src/planners/KinoPaxSTARcostprunenoseed.cu
     src/planners/KinoPaxSTARNoPrune.cu
     src/planners/KinoPaxSTARNoPruneNoSpatialHash.cu
     src/planners/KinoPaxSTARnoseed.cu
@@ -187,6 +188,17 @@ target_link_libraries(KinoPaxStarLargeBenchmark
     Python3::NumPy
 )
 
+add_executable(KinoPaxStarCostBenchmark examples/gpu/kinopaxstar_cost_benchmark.cu)
+target_link_libraries(KinoPaxStarCostBenchmark
+    PUBLIC KPAX_lib
+    ${CUDA_LIBRARIES}
+    ${Boost_LIBRARIES}
+    ${EIGEN3_LIBRARIES}
+    yaml-cpp
+    Python3::Python
+    Python3::NumPy
+)
+
 set_target_properties(KPAX_lib PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(main PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(benchMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
@@ -200,6 +212,7 @@ set_target_properties(JetsonSmokeTest PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(KinoPaxPlusDeltaBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(KinoPaxPlusSHBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(KinoPaxStarLargeBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(KinoPaxStarCostBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
 
 set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -diag-suppress=20012,20013,20014,20015 --expt-relaxed-constexpr --ptxas-options=-v")

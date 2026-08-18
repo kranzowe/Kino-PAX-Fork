@@ -1,29 +1,29 @@
-%% Large-Delta Benchmark Visualization — all planners, single delta
-% Reads per-iteration CSVs produced by kinopaxstar_large_benchmark.cu
-% (run via run_large_benchmark.sh) and compares all planners at the single Large
+%% Cost Benchmark Visualization — cost-prune planners, single delta
+% Reads per-iteration CSVs produced by kinopaxstar_cost_benchmark.cu
+% (run via run_cost_benchmark.sh) and compares all planners at the single Large
 % delta (R1 = 27k regions). Single-delta simplification of
 % process_delta_data_and_plot.m: the per-delta tiled panels collapse to one axes
 % each, and the cross-delta grouped bars are re-keyed to planner-on-x-axis.
 %
-% KinoPaxSTARcostprune is swept over 5 max-acceptance caps (max probability of
-% acceptance): 0, 0.2, 0.4, 0.8, 1.0.
+% Two matched cost-prune sweeps are plotted over the same (cap, exp) grid:
+%   KinoPaxSTARcostprune          - R2 sub-region seeding ON  (the base variant)
+%   KinoPaxSTARcostprune_noseed   - R2 sub-region seeding OFF (pSeed = 0)
+% so each seeded/noseed pair differs only by the R2 seeding free pass.
 %
 % Per-run CSVs (in dataDir):
-%   KinoPaxPlus:                     {env}_delta{label}_run{n}.csv
-%   KPAX:                            {env}_KPAX_delta{label}_run{n}.csv
-%   PruneKPAX:                       {env}_PruneKPAX_delta{label}_run{n}.csv
-%   KinoPaxSTAR:                     {env}_KinoPaxSTAR_delta{label}_run{n}.csv
-%   KinoPaxSTARcostprune (cap sweep):{env}_KinoPaxSTARcostprune_cap{0,20,40,80,100}_delta{label}_run{n}.csv
-%   KinoPaxSTARNoPrune:              {env}_KinoPaxSTARNoPrune_delta{label}_run{n}.csv
-%   KinoPaxSTARNoPruneNoSpatialHash: {env}_KinoPaxSTARNoPruneNoSpatialHash_delta{label}_run{n}.csv
+%   KinoPaxPlus:      {env}_delta{label}_run{n}.csv
+%   KPAX:             {env}_KPAX_delta{label}_run{n}.csv
+%   PruneKPAX:        {env}_PruneKPAX_delta{label}_run{n}.csv
+%   KinoPaxSTAR:      {env}_KinoPaxSTAR_delta{label}_run{n}.csv
+%   cost-prune sweeps:{env}_KinoPaxSTARcostprune[_noseed]_cap{0,40,100}[_exp{50,75}]_delta{label}_run{n}.csv
 %
 % Per-iteration columns: iteration, frontier_size, tree_size, elapsed_time_ms, best_cost
 %
 % FAIR-COMPARISON NOTE: an "iteration" is a different unit of work per planner
 % (frontier size x branching differ), so cost-vs-TIME is the fair cross-planner
-% axis; read cost-vs-iteration as within-planner. The KinoPaxSTARNoPrune vs
-% KinoPaxSTARNoPruneNoSpatialHash pair should track on cost (same search) and
-% differ mainly on the TIME axis (spatial-hash speedup).
+% axis; read cost-vs-iteration as within-planner. Each seeded/noseed pair at the
+% same (cap, exp) is the controlled comparison: the noseed run should show much
+% slower R2 coverage growth and a smaller tree per iteration.
 
 clear; clc; close all;
 
@@ -37,21 +37,24 @@ envTitles    = {'House'};
 deltas      = {'large'};
 deltaLabels = {'Large-\delta (27k)'};
 
-% Planners overlaid in every panel (color = planner). KinoPaxSTARcostprune sweep: 3 caps
-% at exp=1.0 (teal) + 2 cost-prune exponents at cap=0 (gold). The KinoPaxSTARNoPrune family is grouped:
-% NoPrune (full seed) / NoPruneNoSpatialHash / noseed (sparse-only) / sparsefill (annealed).
+% Planners overlaid in every panel (color = planner). Two matched cost-prune sweeps:
+% seeded (KinoPaxSTARcostprune, teal/gold) and noseed (KinoPaxSTARcostprune_noseed,
+% magenta/orange-red) over the same grid - 3 caps at exp=1.0 + 2 exponents at cap=0.
 % plannerNames  = CSV identity (filename token); plannerDisplay = short legend/x-tick label.
 plannerNames  = {'KinoPaxPlus', 'KinoPaxSTAR', ...
                  'KinoPaxSTARcostprune_cap0', 'KinoPaxSTARcostprune_cap40', ...
                  'KinoPaxSTARcostprune_cap100', 'KinoPaxSTARcostprune_cap0_exp50', ...
                  'KinoPaxSTARcostprune_cap0_exp75', ...
-                 'KinoPaxSTARNoPrune', 'KinoPaxSTARNoPruneNoSpatialHash', ...
-                 'KinoPaxSTARnoseed', 'KinoPaxSTARsparsefill', 'KPAX', 'PruneKPAX'};
+                 'KinoPaxSTARcostprune_noseed_cap0', 'KinoPaxSTARcostprune_noseed_cap40', ...
+                 'KinoPaxSTARcostprune_noseed_cap100', 'KinoPaxSTARcostprune_noseed_cap0_exp50', ...
+                 'KinoPaxSTARcostprune_noseed_cap0_exp75', ...
+                 'KPAX', 'PruneKPAX'};
 plannerDisplay = {'KinoPaxPlus', 'KinoPaxSTAR', ...
                  'CostPrune cap0', 'CostPrune cap0.4', 'CostPrune cap1.0', ...
                  'CostPrune cap0 exp0.5', 'CostPrune cap0 exp0.75', ...
-                 'STARNoPrune', 'STARNoPrune-NoSH', ...
-                 'STARnoseed', 'STARsparsefill', 'KPAX', 'PruneKPAX'};
+                 'NoSeed cap0', 'NoSeed cap0.4', 'NoSeed cap1.0', ...
+                 'NoSeed cap0 exp0.5', 'NoSeed cap0 exp0.75', ...
+                 'KPAX', 'PruneKPAX'};
 plannerColors = [0.20 0.40 0.80;    % KinoPaxPlus                     - blue
                  0.55 0.15 0.60;    % KinoPaxSTAR                     - purple
                  0.70 0.90 0.87;    % CostPrune cap0 (exp1.0)         - teal (light)
@@ -59,10 +62,11 @@ plannerColors = [0.20 0.40 0.80;    % KinoPaxPlus                     - blue
                  0.03 0.36 0.34;    % CostPrune cap1.0 (exp1.0)       - teal (dark)
                  0.85 0.65 0.13;    % CostPrune cap0 exp0.5           - goldenrod
                  0.55 0.35 0.05;    % CostPrune cap0 exp0.75          - dark gold
-                 0.20 0.65 0.25;    % KinoPaxSTARNoPrune              - green
-                 0.80 0.20 0.20;    % KinoPaxSTARNoPruneNoSpatialHash - red
-                 0.90 0.30 0.65;    % KinoPaxSTARnoseed               - magenta (sparse-only)
-                 0.10 0.75 0.85;    % KinoPaxSTARsparsefill           - cyan (annealed)
+                 0.96 0.72 0.90;    % NoSeed cap0 (exp1.0)            - magenta (light)
+                 0.85 0.25 0.65;    % NoSeed cap0.4 (exp1.0)          - magenta (mid)
+                 0.45 0.05 0.35;    % NoSeed cap1.0 (exp1.0)          - magenta (dark)
+                 0.95 0.45 0.25;    % NoSeed cap0 exp0.5              - orange-red
+                 0.60 0.18 0.05;    % NoSeed cap0 exp0.75             - dark orange-red
                  0.10 0.10 0.10;    % KPAX                            - near-black
                  0.85 0.45 0.10];   % PruneKPAX                       - orange
 plannerStyles = repmat({'-'}, 1, numel(plannerNames));
@@ -206,17 +210,10 @@ function runs = loadRuns(dataDir, env, planner, delta, numRuns)
                 fn = sprintf('%s_PruneKPAX_delta%s_run%d.csv', env, delta, ri);
             case 'KinoPaxSTAR'
                 fn = sprintf('%s_KinoPaxSTAR_delta%s_run%d.csv', env, delta, ri);
-            case 'KinoPaxSTARNoPrune'
-                fn = sprintf('%s_KinoPaxSTARNoPrune_delta%s_run%d.csv', env, delta, ri);
-            case 'KinoPaxSTARNoPruneNoSpatialHash'
-                fn = sprintf('%s_KinoPaxSTARNoPruneNoSpatialHash_delta%s_run%d.csv', env, delta, ri);
-            case 'KinoPaxSTARnoseed'
-                fn = sprintf('%s_KinoPaxSTARnoseed_delta%s_run%d.csv', env, delta, ri);
-            case 'KinoPaxSTARsparsefill'
-                fn = sprintf('%s_KinoPaxSTARsparsefill_delta%s_run%d.csv', env, delta, ri);
             otherwise
-                % Cost-prune cap-sweep variants (KinoPaxSTARcostprune, KinoPaxSTARcostprune_capNN)
-                % use the planner name directly as the filename token.
+                % Cost-prune sweep variants, seeded and noseed alike
+                % (KinoPaxSTARcostprune[_noseed]_capNN[_expNN]) use the planner
+                % name directly as the filename token.
                 if startsWith(planner, 'KinoPaxSTARcostprune')
                     fn = sprintf('%s_%s_delta%s_run%d.csv', env, planner, delta, ri);
                 else
