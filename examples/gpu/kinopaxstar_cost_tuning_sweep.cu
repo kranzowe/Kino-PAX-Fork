@@ -879,12 +879,12 @@ int main(int argc, char* argv[])
             g_dumpViz = true;
     }
 
-    const int NUM_KPAX_RUNS        = 5;
-    const int NUM_KINOPAXPLUS_RUNS = 5;   // drives the KinoPaxPlus runner
-    const int NUM_KINOPAXSTARCOSTPRUNE_RUNS = 5;   // drives the KinoPaxSTARcostprune grid
-    const int NUM_KINOPAXSTARCOSTPRUNENOSEED_RUNS = 5;   // drives the KinoPaxSTARcostprunenoseed grid
-    const int MAX_ITERATIONS       = 300;
-    const float MAX_TIME_MS      = 10000.0f;  // 10 second timeout
+    const int NUM_KPAX_RUNS        = 3;
+    const int NUM_KINOPAXPLUS_RUNS = 3;   // drives the KinoPaxPlus runner
+    const int NUM_KINOPAXSTARCOSTPRUNE_RUNS = 3;   // drives the KinoPaxSTARcostprune grid
+    const int NUM_KINOPAXSTARCOSTPRUNENOSEED_RUNS = 3;   // drives the KinoPaxSTARcostprunenoseed grid
+    const int MAX_ITERATIONS       = 200;
+    const float MAX_TIME_MS      = 6000.0f;  // 10 second timeout
 
     std::string outputDir = "Data/Benchmarks/KinoPaxStarCostTuning";
     std::filesystem::create_directories(outputDir);
