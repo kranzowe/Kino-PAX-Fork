@@ -133,6 +133,7 @@ void KinoPaxSTAR::resetPlanner(float* h_initial, float* h_goal)
     h_frontierSize_ = 0;
     h_minCost_      = MAX_FLOAT;
     h_solSetSize_   = 0;
+    h_propIterations_ = 1;   // guard: uninitialized-read UB, break-on-0 (layout-safe, behavior-preserving)
 
     cudaMemcpy(d_treeSamples_ptr_, h_initial, SAMPLE_DIM * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_goalSample_ptr_, h_goal, SAMPLE_DIM * sizeof(float), cudaMemcpyHostToDevice);
