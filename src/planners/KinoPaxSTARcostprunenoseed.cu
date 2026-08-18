@@ -90,7 +90,7 @@ KinoPaxSTARcostprunenoseed::KinoPaxSTARcostprunenoseed()
     h_acceptCap_      = 0.1f;
     h_costPruneExp_   = 1.0f;
     h_costPruneFloor_ = 0.02f;
-    h_costPruneNorm_  = 1;
+    h_costPruneNorm_  = 2;
     h_pSeed_          = 0.0f;
 
     h_activeBlockSize_ = 32;
