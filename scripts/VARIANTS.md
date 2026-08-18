@@ -71,8 +71,14 @@ per run: `h_acceptCap_` caps the Syclop exploration roll (`fminf(vertexScore, ca
 `h_costPruneNorm_` picks the normalization — 0 = min-ratio `(m/cost)^k`, 1 = min-max
 `((M-cost)/(M-m))^k` (default), 2 = mean `min(1,(mean/cost)^k)`; 1 and 2 keep `k` meaningful as
 the region min approaches 0. The benchmarks sweep `(h_acceptCap_, h_costPruneExp_)` and label
-each point `cap{100*cap}` plus `_exp{100*exp}` when the exponent is not 1.0 — e.g.
-`KinoPaxSTARcostprune_cap40`, `KinoPaxSTARcostprune_cap0_exp75`. Cost dominates node retention.
+each point `cap{100*cap}` plus `_exp{100*exp}` — e.g. `KinoPaxSTARcostprune_cap33_exp50`. Two
+label conventions are in the data: `kinopaxstar_cost_benchmark.cu` swept a hand-picked 5-point
+list and omitted `_exp` at `exp == 1.0` (`..._cap40`, `..._cap0_exp75`), while the newer
+`kinopaxstar_cost_tuning_sweep.cu` runs the full `cap {0, 0.33, 0.66, 1.0} x exp {0.1, 0.5, 1.0}`
+grid and always spells the exponent out, so the two data sets never collide. The tuning sweep
+also varies the cost metric, which is a compile-time property of the binary (`COST_MODE` in
+`helper.cuh`) and therefore rides in the delta token instead: `large_effort` (control effort)
+vs `large_length` (workspace path length). Cost dominates node retention.
 
 ### KinoPaxSTARnoseed
 KinoPaxSTARNoPrune with the R2 sub-region seeding free pass deleted: acceptance is the bare
