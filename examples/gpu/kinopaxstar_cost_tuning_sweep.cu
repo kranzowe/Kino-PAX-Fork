@@ -12,6 +12,7 @@
 #include "planners/KinoPaxPlus.cuh"
 #include "planners/KPAX.cuh"
 #include "planners/KinoPaxSTARcostprune.cuh"
+#include "planners/KinoPaxSTARancestor.cuh"
 #include <thrust/count.h>
 #include <thrust/reduce.h>
 
@@ -24,16 +25,26 @@ static std::string g_vizDir;
 //   costPruneExp   exponent k in the cost gate: lower = gentler pruning.
 //   costPruneFloor floor on the keep-probability. costKeepProb ends in fmaxf(p, floor), so a
 //                  non-zero floor gives EVERY non-best node that much survival chance no matter
-//                  how bad its cost. floor=0 is the only setting that lets the gate actually
-//                  approach "region-best only" retention.
+//                  how bad its cost. Swept down to the single 0.1 setting; the 0 and 0.2 columns
+//                  were dropped once they had been measured.
 // Labels are built as cap{100*cap}_exp{100*exp}_floor{100*floor}; every knob is always spelled
 // out, so these filenames never collide with the older cap-sweep benchmarks' data.
 static const float SWEEP_CAPS[]   = {0.0f, 0.33f, 0.66f, 1.0f};
 static const float SWEEP_EXPS[]   = {0.1f, 0.5f, 1.0f};
-static const float SWEEP_FLOORS[] = {0.0f, 0.1f, 0.2f};
+static const float SWEEP_FLOORS[] = {0.1f};
 static const int   NUM_SWEEP_CAPS   = sizeof(SWEEP_CAPS) / sizeof(SWEEP_CAPS[0]);
 static const int   NUM_SWEEP_EXPS   = sizeof(SWEEP_EXPS) / sizeof(SWEEP_EXPS[0]);
 static const int   NUM_SWEEP_FLOORS = sizeof(SWEEP_FLOORS) / sizeof(SWEEP_FLOORS[0]);
+
+// ---- KinoPaxSTARancestor modes (the ancestor-pruning port of KinoPaxSTAR) ----
+// 0 = off, which reproduces stock KinoPaxSTAR exactly and is the control arm.
+// 1 = node-only: prune a node beaten in its own region.
+// 2 = memoized ancestor chain: prune if any ancestor is beaten (one parent lookup).
+static const int         ANCESTOR_MODES[]  = {0, 1, 2};
+static const char* const ANCESTOR_LABELS[] = {"KinoPaxSTARancestor_off",
+                                              "KinoPaxSTARancestor_node",
+                                              "KinoPaxSTARancestor_chain"};
+static const int NUM_ANCESTOR_MODES = sizeof(ANCESTOR_MODES) / sizeof(ANCESTOR_MODES[0]);
 
 // "KinoPaxSTARcostprune_cap33_exp50_floor10"
 static std::string sweepLabel(float cap, float exp, float floor)
@@ -180,13 +191,15 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
     // don't overwrite each other:
     //   KPAX baseline: {env}_KPAX_delta{build}_run{n}.csv
     //   tuning grid:   {env}_KinoPaxSTARcostprune_cap{N}_exp{N}_floor{N}_delta{build}_run{n}.csv
+    //   ancestor:      {env}_KinoPaxSTARancestor_{off,node,chain}_delta{build}_run{n}.csv
     //   KinoPaxPlus:   {env}_delta{label}_run{n}.csv
     // The build label carries the cost metric (large_effort / large_length), which is a
     // compile-time property of the binary -- see COST_MODE in helper.cuh.
     if(result.delta_label == "KPAX")
         filename << outputDir << "/" << result.environment << "_KPAX_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
-    else if(result.delta_label.rfind("KinoPaxSTARcostprune", 0) == 0)
+    else if(result.delta_label.rfind("KinoPaxSTARcostprune", 0) == 0 ||
+            result.delta_label.rfind("KinoPaxSTARancestor", 0) == 0)
         filename << outputDir << "/" << result.environment << "_" << result.delta_label << "_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
     else
@@ -713,6 +726,161 @@ void runKinoPaxSTARcostpruneBenchmark(
 }
 
 
+// ========================================================================
+// KinoPaxSTARancestor benchmark + runner (KinoPaxSTAR plus KinoPaxPlus's ancestor
+// pruning; h_ancestorPrune_ selects off / node-only / memoized chain).
+// ========================================================================
+RunResult benchmarkKinoPaxSTARancestor(
+    KinoPaxSTARancestor& planner,
+    const std::string& deltaLabel,
+    const std::string& environment,
+    int runNumber,
+    float* h_initial,
+    float* h_goal,
+    float* d_obstacles,
+    uint numObstacles,
+    int maxIterations,
+    float maxTimeMs,
+    int ancestorPrune,
+    const std::string& label)
+{
+    // Override the planner's default for this run. resetPlanner (called below) does not touch
+    // h_ancestorPrune_, so setting it at entry holds for the run. h_ancestorTol_ and
+    // h_dormancyThreshold_ stay at their ctor defaults (0.0 and 5), i.e. KinoPaxPlus's
+    // strict test and its hardcoded dormancy window.
+    planner.h_ancestorPrune_ = ancestorPrune;
+    RunResult result;
+    result.delta_label = label;
+    result.build_delta = deltaLabel;
+    result.environment = environment;
+    result.run_number = runNumber;
+    result.first_solution_iteration = -1;
+    result.first_solution_cost = INFINITY;
+    result.first_solution_tree_size = -1;
+    result.final_best_cost = INFINITY;
+
+    cudaEvent_t iterStart, iterStop;
+    cudaEventCreate(&iterStart);
+    cudaEventCreate(&iterStop);
+    float plannerMs = 0.0f;
+    float iterMs    = 0.0f;
+
+    planner.resetPlanner(h_initial, h_goal);
+
+    int itr = 0;
+    while(itr < maxIterations)
+    {
+        itr++;
+        planner.h_itr_++;
+
+        cudaEventRecord(iterStart);
+        planner.propagateFrontier(d_obstacles, numObstacles);
+        planner.graph_.updateVertices();
+        int oldTreeSize = planner.h_treeSize_;   // nodes before this iter's additions
+        planner.updateFrontier();
+        cudaEventRecord(iterStop);
+        cudaEventSynchronize(iterStop);
+        cudaEventElapsedTime(&iterMs, iterStart, iterStop);
+        plannerMs += iterMs;
+
+        // h_minCost_ is the cumulative root-to-goal path length (KinoPaxPlus-style).
+        cudaMemcpy(&planner.h_minCost_, planner.d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
+        if(planner.h_minCost_ < MAX_FLOAT && result.first_solution_iteration == -1)
+        {
+            result.first_solution_iteration = itr;
+            result.first_solution_cost      = planner.h_minCost_;
+            result.first_solution_tree_size = planner.h_treeSize_;
+        }
+        if(planner.h_minCost_ < result.final_best_cost)
+            result.final_best_cost = planner.h_minCost_;
+
+        // --- Frontier diagnostics (outside the timed window; KinoPaxSTARancestor uses the KPAX Graph) ---
+        int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
+                                             planner.d_frontier_.begin() + oldTreeSize, true);
+        int inactiveR2 = (int)thrust::count(planner.graph_.d_activeSubVertices_.begin(),
+                                            planner.graph_.d_activeSubVertices_.end(), 0);
+        float r2CoveragePct = 100.0f * float(NUM_R2_REGIONS - inactiveR2) / float(NUM_R2_REGIONS);
+        float scoreSum  = thrust::reduce(planner.graph_.d_vertexScoreArray_.begin(),
+                                         planner.graph_.d_vertexScoreArray_.end(), 0.0f);
+        float meanScore = scoreSum / float(NUM_R1_REGIONS);
+
+        IterationData d;
+        d.iteration     = itr;
+        d.frontier_size = planner.h_frontierSize_;
+        d.tree_size     = planner.h_treeSize_;
+        d.elapsed_time_ms = plannerMs;
+        d.best_cost     = result.final_best_cost;
+        d.num_regions       = NUM_R1_REGIONS;
+        d.r2_coverage_pct   = r2CoveragePct;
+        d.mean_vertex_score = meanScore;
+        d.reactivated       = reactivated;
+        result.per_iteration.push_back(d);
+
+        if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
+        if(planner.h_propIterations_ == 0) break;
+
+        // Timeout check (planner-only time)
+        if(plannerMs >= maxTimeMs) break;
+    }
+
+    result.total_time_seconds = plannerMs / 1000.0;
+    result.final_tree_size    = planner.h_treeSize_;
+    result.total_iterations   = itr;
+
+    cudaEventDestroy(iterStart);
+    cudaEventDestroy(iterStop);
+    return result;
+}
+
+void runKinoPaxSTARancestorBenchmark(
+    const std::string& environment_name,
+    float* h_initial,
+    float* h_goal,
+    float* d_obstacles,
+    uint numObstacles,
+    std::vector<RunResult>& all_results,
+    const std::string& outputDir,
+    const std::string& deltaLabel,
+    int numRuns,
+    int maxIterations,
+    float maxTimeMs)
+{
+    printf("\n========================================\n");
+    printf("KINOPAXSTARANCESTOR MODES: %s | Delta: %s | Regions: %d\n",
+           environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
+    printf("========================================\n");
+
+    // All three ancestor-pruning modes; fresh planner instance per mode.
+    for(int m = 0; m < NUM_ANCESTOR_MODES; m++)
+    {
+        const int         mode  = ANCESTOR_MODES[m];
+        const std::string label = ANCESTOR_LABELS[m];
+
+        printf("  --- ancestorPrune = %d (%s) ---\n", mode, label.c_str());
+        KinoPaxSTARancestor planner;
+        for(int run = 0; run < numRuns; run++)
+        {
+            RunResult result = benchmarkKinoPaxSTARancestor(planner, deltaLabel, environment_name, run,
+                                                 h_initial, h_goal, d_obstacles,
+                                                 numObstacles, maxIterations, maxTimeMs,
+                                                 mode, label);
+            printf("  mode=%d Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                   mode, run + 1, numRuns, result.total_time_seconds, result.total_iterations,
+                   result.final_tree_size, result.first_solution_iteration,
+                   result.first_solution_cost, result.final_best_cost);
+            writePerIterationCSV(result, outputDir);
+            if(g_dumpViz && run == 0)
+                dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
+                            planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
+                            vizTreePath(g_vizDir, environment_name, label));
+            all_results.push_back(result);
+
+            if(run < numRuns - 1)
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+    }
+}
+
 int main(int argc, char* argv[])
 {
     std::string deltaLabel    = (argc > 1) ? argv[1] : "unknown";
@@ -734,6 +902,7 @@ int main(int argc, char* argv[])
     const int NUM_KPAX_RUNS        = 3;
     const int NUM_KINOPAXPLUS_RUNS = 3;   // drives the KinoPaxPlus runner
     const int NUM_KINOPAXSTARCOSTPRUNE_RUNS = 3;   // drives the KinoPaxSTARcostprune grid
+    const int NUM_KINOPAXSTARANCESTOR_RUNS  = 3;   // drives the KinoPaxSTARancestor modes
     const int MAX_ITERATIONS       = 200;
     const float MAX_TIME_MS      = 6000.0f;  // 10 second timeout
 
@@ -758,6 +927,9 @@ int main(int argc, char* argv[])
            NUM_SWEEP_CAPS * NUM_SWEEP_EXPS * NUM_SWEEP_FLOORS);
     printf("KinoPaxSTARcostprune: grid x %d runs each = %d runs\n", NUM_KINOPAXSTARCOSTPRUNE_RUNS,
            NUM_SWEEP_CAPS * NUM_SWEEP_EXPS * NUM_SWEEP_FLOORS * NUM_KINOPAXSTARCOSTPRUNE_RUNS);
+    printf("KinoPaxSTARancestor:  %d modes (off/node/chain) x %d runs each = %d runs\n",
+           NUM_ANCESTOR_MODES, NUM_KINOPAXSTARANCESTOR_RUNS,
+           NUM_ANCESTOR_MODES * NUM_KINOPAXSTARANCESTOR_RUNS);
     printf("Max iterations: %d\n", MAX_ITERATIONS);
     printf("=======================================================\n");
 
@@ -805,6 +977,10 @@ int main(int argc, char* argv[])
     // --- KinoPaxSTARcostprune tuning grid (R2 sub-region seeding on, as in the base variant) ---
     runKinoPaxSTARcostpruneBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
                             all_results, outputDir, deltaLabel, NUM_KINOPAXSTARCOSTPRUNE_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
+
+    // --- KinoPaxSTARancestor: all three ancestor-pruning modes ---
+    runKinoPaxSTARancestorBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
+                            all_results, outputDir, deltaLabel, NUM_KINOPAXSTARANCESTOR_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
 
     cudaFree(d_obstacles);
 

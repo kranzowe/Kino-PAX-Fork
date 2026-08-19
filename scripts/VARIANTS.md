@@ -93,7 +93,8 @@ each point `cap{100*cap}` plus `_exp{100*exp}` — e.g. `KinoPaxSTARcostprune_ca
 label conventions are in the data: `kinopaxstar_cost_benchmark.cu` swept a hand-picked 5-point
 list and omitted `_exp` at `exp == 1.0` (`..._cap40`, `..._cap0_exp75`), while the newer
 `kinopaxstar_cost_tuning_sweep.cu` runs the full
-`cap {0, 0.33, 0.66, 1.0} x exp {0.1, 0.5, 1.0} x floor {0, 0.1, 0.2}` grid and always spells
+`cap {0, 0.33, 0.66, 1.0} x exp {0.1, 0.5, 1.0} x floor {0.1}` grid (the 0 and 0.2 floor
+columns were dropped once measured) and always spells
 every knob out (`..._cap33_exp50_floor10`), so the two data sets never collide. The floor is
 worth sweeping because `costKeepProb` ends in `fmaxf(p, floor)`: any non-zero floor grants every
 non-best node that much survival chance regardless of cost, so only `floor = 0` lets the gate
