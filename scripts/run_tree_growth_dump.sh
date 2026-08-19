@@ -5,8 +5,8 @@
 # Builds and runs TreeGrowthDump, which dumps the planner's full tree after each
 # of the first 8 iterations for four configurations on the zigzag corridor:
 #
-#   ancestor_off  KinoPaxSTARancestor, h_ancestorPrune_ = 0  (== stock KinoPaxSTAR)
-#   ancestor_on   KinoPaxSTARancestor, h_ancestorPrune_ = 2  (memoized ancestor chain)
+#   ancestor_off  KinoPaxSTARNoPruneAncestor, h_ancestorPrune_ = 0  (== stock NoPrune)
+#   ancestor_on   KinoPaxSTARNoPruneAncestor, h_ancestorPrune_ = 2  (memoized ancestor chain)
 #   KPAX          pure explorer reference
 #   KinoPaxPlus   pure optimizer reference (source of the original ancestor pruning)
 #

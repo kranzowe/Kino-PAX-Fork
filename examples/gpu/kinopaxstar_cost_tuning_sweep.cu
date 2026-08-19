@@ -12,7 +12,7 @@
 #include "planners/KinoPaxPlus.cuh"
 #include "planners/KPAX.cuh"
 #include "planners/KinoPaxSTARcostprune.cuh"
-#include "planners/KinoPaxSTARancestor.cuh"
+#include "planners/KinoPaxSTARNoPruneAncestor.cuh"
 #include <thrust/count.h>
 #include <thrust/reduce.h>
 
@@ -36,15 +36,30 @@ static const int   NUM_SWEEP_CAPS   = sizeof(SWEEP_CAPS) / sizeof(SWEEP_CAPS[0])
 static const int   NUM_SWEEP_EXPS   = sizeof(SWEEP_EXPS) / sizeof(SWEEP_EXPS[0]);
 static const int   NUM_SWEEP_FLOORS = sizeof(SWEEP_FLOORS) / sizeof(SWEEP_FLOORS[0]);
 
-// ---- KinoPaxSTARancestor modes (the ancestor-pruning port of KinoPaxSTAR) ----
-// 0 = off, which reproduces stock KinoPaxSTAR exactly and is the control arm.
+// ---- KinoPaxSTARNoPruneAncestor modes (ancestor pruning on the NoPrune base) ----
+// Based on KinoPaxSTARNoPrune, not KinoPaxSTAR: NoPrune reactivates with the plain KPAX rule
+// `vertexScores + fAccept` (ADDITIVE), so it keeps KPAX-equivalent exploration in cluttered
+// maps. That isolates ancestor pruning as the only variable.
+// 0 = off, which reproduces stock KinoPaxSTARNoPrune exactly and is the control arm.
 // 1 = node-only: prune a node beaten in its own region.
 // 2 = memoized ancestor chain: prune if any ancestor is beaten (one parent lookup).
 static const int         ANCESTOR_MODES[]  = {0, 1, 2};
-static const char* const ANCESTOR_LABELS[] = {"KinoPaxSTARancestor_off",
-                                              "KinoPaxSTARancestor_node",
-                                              "KinoPaxSTARancestor_chain"};
+static const char* const ANCESTOR_LABELS[] = {"KinoPaxSTARNoPruneAncestor_off",
+                                              "KinoPaxSTARNoPruneAncestor_node",
+                                              "KinoPaxSTARNoPruneAncestor_chain"};
 static const int NUM_ANCESTOR_MODES = sizeof(ANCESTOR_MODES) / sizeof(ANCESTOR_MODES[0]);
+
+// ---- Union-blend cost-prune probes ----
+// h_reactivationBlend_ = 1 swaps `costProb * syclop` for `fmaxf(costProb, syclop)`, restoring the
+// additive fAccept floor that KPAX has and the product form destroys. It MUST be paired with
+// costPruneFloor = 0: costKeepProb ends in fmaxf(p, floor), so under the union a non-zero floor
+// becomes a blanket reactivation probability for every dormant node in the tree.
+static const float       UNION_CAPS[]   = {0.0f, 1.0f};
+static const char* const UNION_LABELS[] = {"KinoPaxSTARcostprune_union_cap0_exp50_floor0",
+                                           "KinoPaxSTARcostprune_union_cap100_exp50_floor0"};
+static const float UNION_EXP   = 0.5f;
+static const float UNION_FLOOR = 0.0f;   // required: see above
+static const int   NUM_UNION_POINTS = sizeof(UNION_CAPS) / sizeof(UNION_CAPS[0]);
 
 // "KinoPaxSTARcostprune_cap33_exp50_floor10"
 static std::string sweepLabel(float cap, float exp, float floor)
@@ -191,7 +206,8 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
     // don't overwrite each other:
     //   KPAX baseline: {env}_KPAX_delta{build}_run{n}.csv
     //   tuning grid:   {env}_KinoPaxSTARcostprune_cap{N}_exp{N}_floor{N}_delta{build}_run{n}.csv
-    //   ancestor:      {env}_KinoPaxSTARancestor_{off,node,chain}_delta{build}_run{n}.csv
+    //   ancestor:      {env}_KinoPaxSTARNoPruneAncestor_{off,node,chain}_delta{build}_run{n}.csv
+    //   union probes:  {env}_KinoPaxSTARcostprune_union_cap{N}_exp50_floor0_delta{build}_run{n}.csv
     //   KinoPaxPlus:   {env}_delta{label}_run{n}.csv
     // The build label carries the cost metric (large_effort / large_length), which is a
     // compile-time property of the binary -- see COST_MODE in helper.cuh.
@@ -199,7 +215,7 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
         filename << outputDir << "/" << result.environment << "_KPAX_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
     else if(result.delta_label.rfind("KinoPaxSTARcostprune", 0) == 0 ||
-            result.delta_label.rfind("KinoPaxSTARancestor", 0) == 0)
+            result.delta_label.rfind("KinoPaxSTARNoPruneAncestor", 0) == 0)
         filename << outputDir << "/" << result.environment << "_" << result.delta_label << "_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
     else
@@ -580,14 +596,15 @@ RunResult benchmarkKinoPaxSTARcostprune(
     float acceptCap,
     float costPruneExp,
     float costPruneFloor,
+    int reactivationBlend,
     const std::string& label)
 {
     // Override the planner's defaults for this run. resetPlanner (called below) does not
-    // touch h_acceptCap_ / h_costPruneExp_ / h_costPruneFloor_, so setting them at entry
-    // holds for the run.
-    planner.h_acceptCap_      = acceptCap;
-    planner.h_costPruneExp_   = costPruneExp;
-    planner.h_costPruneFloor_ = costPruneFloor;
+    // touch these, so setting them at entry holds for the run.
+    planner.h_acceptCap_         = acceptCap;
+    planner.h_costPruneExp_      = costPruneExp;
+    planner.h_costPruneFloor_    = costPruneFloor;
+    planner.h_reactivationBlend_ = reactivationBlend;
     RunResult result;
     result.delta_label = label;
     result.build_delta = deltaLabel;
@@ -707,7 +724,7 @@ void runKinoPaxSTARcostpruneBenchmark(
             RunResult result = benchmarkKinoPaxSTARcostprune(planner, deltaLabel, environment_name, run,
                                                  h_initial, h_goal, d_obstacles,
                                                  numObstacles, maxIterations, maxTimeMs,
-                                                 cap, exp, floor, label);
+                                                 cap, exp, floor, 0, label);
             printf("  cap=%.2f exp=%.2f floor=%.2f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
                    cap, exp, floor, run + 1, numRuns, result.total_time_seconds, result.total_iterations,
                    result.final_tree_size, result.first_solution_iteration,
@@ -723,15 +740,42 @@ void runKinoPaxSTARcostpruneBenchmark(
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
     }
+
+    // --- Union-blend probes: fmaxf(costProb, syclop) with floor 0 (see UNION_* above) ---
+    for(int u = 0; u < NUM_UNION_POINTS; u++)
+    {
+        const float       cap   = UNION_CAPS[u];
+        const std::string label = UNION_LABELS[u];
+
+        printf("  --- UNION blend: acceptCap = %.2f, exp = %.2f, floor = %.2f (%s) ---\n",
+               cap, UNION_EXP, UNION_FLOOR, label.c_str());
+        KinoPaxSTARcostprune planner;
+        for(int run = 0; run < numRuns; run++)
+        {
+            RunResult result = benchmarkKinoPaxSTARcostprune(planner, deltaLabel, environment_name, run,
+                                                 h_initial, h_goal, d_obstacles,
+                                                 numObstacles, maxIterations, maxTimeMs,
+                                                 cap, UNION_EXP, UNION_FLOOR, 1, label);
+            printf("  union cap=%.2f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                   cap, run + 1, numRuns, result.total_time_seconds, result.total_iterations,
+                   result.final_tree_size, result.first_solution_iteration,
+                   result.first_solution_cost, result.final_best_cost);
+            writePerIterationCSV(result, outputDir);
+            all_results.push_back(result);
+
+            if(run < numRuns - 1)
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+    }
 }
 
 
 // ========================================================================
-// KinoPaxSTARancestor benchmark + runner (KinoPaxSTAR plus KinoPaxPlus's ancestor
-// pruning; h_ancestorPrune_ selects off / node-only / memoized chain).
+// KinoPaxSTARNoPruneAncestor benchmark + runner (KinoPaxSTARNoPrune plus KinoPaxPlus's
+// ancestor pruning; h_ancestorPrune_ selects off / node-only / memoized chain).
 // ========================================================================
-RunResult benchmarkKinoPaxSTARancestor(
-    KinoPaxSTARancestor& planner,
+RunResult benchmarkKinoPaxSTARNoPruneAncestor(
+    KinoPaxSTARNoPruneAncestor& planner,
     const std::string& deltaLabel,
     const std::string& environment,
     int runNumber,
@@ -794,7 +838,7 @@ RunResult benchmarkKinoPaxSTARancestor(
         if(planner.h_minCost_ < result.final_best_cost)
             result.final_best_cost = planner.h_minCost_;
 
-        // --- Frontier diagnostics (outside the timed window; KinoPaxSTARancestor uses the KPAX Graph) ---
+        // --- Frontier diagnostics (outside the timed window; KinoPaxSTARNoPruneAncestor uses the KPAX Graph) ---
         int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
                                              planner.d_frontier_.begin() + oldTreeSize, true);
         int inactiveR2 = (int)thrust::count(planner.graph_.d_activeSubVertices_.begin(),
@@ -832,7 +876,7 @@ RunResult benchmarkKinoPaxSTARancestor(
     return result;
 }
 
-void runKinoPaxSTARancestorBenchmark(
+void runKinoPaxSTARNoPruneAncestorBenchmark(
     const std::string& environment_name,
     float* h_initial,
     float* h_goal,
@@ -846,7 +890,7 @@ void runKinoPaxSTARancestorBenchmark(
     float maxTimeMs)
 {
     printf("\n========================================\n");
-    printf("KINOPAXSTARANCESTOR MODES: %s | Delta: %s | Regions: %d\n",
+    printf("KINOPAXSTARNOPRUNEANCESTOR MODES: %s | Delta: %s | Regions: %d\n",
            environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
     printf("========================================\n");
 
@@ -857,10 +901,10 @@ void runKinoPaxSTARancestorBenchmark(
         const std::string label = ANCESTOR_LABELS[m];
 
         printf("  --- ancestorPrune = %d (%s) ---\n", mode, label.c_str());
-        KinoPaxSTARancestor planner;
+        KinoPaxSTARNoPruneAncestor planner;
         for(int run = 0; run < numRuns; run++)
         {
-            RunResult result = benchmarkKinoPaxSTARancestor(planner, deltaLabel, environment_name, run,
+            RunResult result = benchmarkKinoPaxSTARNoPruneAncestor(planner, deltaLabel, environment_name, run,
                                                  h_initial, h_goal, d_obstacles,
                                                  numObstacles, maxIterations, maxTimeMs,
                                                  mode, label);
@@ -902,7 +946,7 @@ int main(int argc, char* argv[])
     const int NUM_KPAX_RUNS        = 3;
     const int NUM_KINOPAXPLUS_RUNS = 3;   // drives the KinoPaxPlus runner
     const int NUM_KINOPAXSTARCOSTPRUNE_RUNS = 3;   // drives the KinoPaxSTARcostprune grid
-    const int NUM_KINOPAXSTARANCESTOR_RUNS  = 3;   // drives the KinoPaxSTARancestor modes
+    const int NUM_KINOPAXSTARNOPRUNEANCESTOR_RUNS  = 3;   // drives the KinoPaxSTARNoPruneAncestor modes
     const int MAX_ITERATIONS       = 200;
     const float MAX_TIME_MS      = 6000.0f;  // 10 second timeout
 
@@ -927,9 +971,11 @@ int main(int argc, char* argv[])
            NUM_SWEEP_CAPS * NUM_SWEEP_EXPS * NUM_SWEEP_FLOORS);
     printf("KinoPaxSTARcostprune: grid x %d runs each = %d runs\n", NUM_KINOPAXSTARCOSTPRUNE_RUNS,
            NUM_SWEEP_CAPS * NUM_SWEEP_EXPS * NUM_SWEEP_FLOORS * NUM_KINOPAXSTARCOSTPRUNE_RUNS);
-    printf("KinoPaxSTARancestor:  %d modes (off/node/chain) x %d runs each = %d runs\n",
-           NUM_ANCESTOR_MODES, NUM_KINOPAXSTARANCESTOR_RUNS,
-           NUM_ANCESTOR_MODES * NUM_KINOPAXSTARANCESTOR_RUNS);
+    printf("  + union blend: %d probes (fmaxf(costProb,syclop), floor 0) x %d runs\n",
+           NUM_UNION_POINTS, NUM_KINOPAXSTARCOSTPRUNE_RUNS);
+    printf("KinoPaxSTARNoPruneAncestor:  %d modes (off/node/chain) x %d runs each = %d runs\n",
+           NUM_ANCESTOR_MODES, NUM_KINOPAXSTARNOPRUNEANCESTOR_RUNS,
+           NUM_ANCESTOR_MODES * NUM_KINOPAXSTARNOPRUNEANCESTOR_RUNS);
     printf("Max iterations: %d\n", MAX_ITERATIONS);
     printf("=======================================================\n");
 
@@ -978,9 +1024,9 @@ int main(int argc, char* argv[])
     runKinoPaxSTARcostpruneBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
                             all_results, outputDir, deltaLabel, NUM_KINOPAXSTARCOSTPRUNE_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
 
-    // --- KinoPaxSTARancestor: all three ancestor-pruning modes ---
-    runKinoPaxSTARancestorBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
-                            all_results, outputDir, deltaLabel, NUM_KINOPAXSTARANCESTOR_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
+    // --- KinoPaxSTARNoPruneAncestor: all three ancestor-pruning modes ---
+    runKinoPaxSTARNoPruneAncestorBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
+                            all_results, outputDir, deltaLabel, NUM_KINOPAXSTARNOPRUNEANCESTOR_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
 
     cudaFree(d_obstacles);
 

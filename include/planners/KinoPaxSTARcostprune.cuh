@@ -28,6 +28,11 @@ public:
     float h_minCost_;
     float h_acceptCap_, h_costPruneExp_, h_costPruneFloor_;  // cost-prune variant tunables (set in ctor)
     int   h_costPruneNorm_;   // gate normalization: 0=min-ratio, 1=min-max, 2=mean (set in ctor)
+    // How the cost gate and the Syclop score combine at REACTIVATION (set in ctor, not reset):
+    //   0 = product  costProb * syclop      -- intersection: cost-promising AND explore-promising
+    //   1 = union    fmaxf(costProb, syclop) -- cost-promising OR explore-promising
+    // Use 1 with h_costPruneFloor_ = 0; see the reactivation branch in the .cu for why.
+    int   h_reactivationBlend_;
     float* h_controlPathsToGoal_;
 
     // --- device fields (KPAX exploration) ---
@@ -113,6 +118,7 @@ KinoPaxSTARcostprune_updateFrontier_kernel(bool* frontier, bool* frontierNext, u
                                uint* activeFrontierRepeatCount, int* validVertexCounter, curandState* randomSeeds,
                                float* vertexScores, float fAccept,
                                float acceptCap, float costPruneExp, float costPruneFloor, int costPruneNorm,
+                               int reactivationBlend,
                                float* minCostsR1, float* maxCostsR1, float* sumCostsR1, int* cntCostsR1,
                                int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet, bool* pruned,

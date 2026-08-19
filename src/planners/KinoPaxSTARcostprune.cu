@@ -82,6 +82,8 @@ KinoPaxSTARcostprune::KinoPaxSTARcostprune()
     h_costPruneExp_   = 1.0f;
     h_costPruneFloor_ = 0.02f;
     h_costPruneNorm_  = 2;
+    // Reactivation blend: 0 = product (original), 1 = fmaxf union. See the reactivation branch.
+    h_reactivationBlend_ = 0;
 
     h_activeBlockSize_ = 32;
 
@@ -497,6 +499,7 @@ KinoPaxSTARcostprune_updateFrontier_kernel(bool* frontier, bool* frontierNext, u
                                uint* activeFrontierRepeatCount, int* validVertexCounter, curandState* randomSeeds,
                                float* vertexScores, float fAccept,
                                float acceptCap, float costPruneExp, float costPruneFloor, int costPruneNorm,
+                               int reactivationBlend,
                                float* minCostsR1, float* maxCostsR1, float* sumCostsR1, int* cntCostsR1,
                                int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet, bool* pruned,
@@ -586,8 +589,27 @@ KinoPaxSTARcostprune_updateFrontier_kernel(bool* frontier, bool* frontierNext, u
                     float costProb = costKeepProb(costPruneNorm, m, maxCostsR1[xR1], sumCostsR1[xR1],
                                                   cntCostsR1[xR1], c, costPruneExp, costPruneFloor);
 
-                    float syclop           = fminf(vertexScores[xR1], acceptCap) + fAccept;
-                    float reactivationProb = costProb * syclop;
+                    float syclop = fminf(vertexScores[xR1], acceptCap) + fAccept;
+
+                    // PRODUCT (blend 0): cost-promising AND exploration-promising. This is the
+                    // original, and it is what makes this planner lose to KPAX in cluttered maps:
+                    // Graph.cu:249 drives vertexScores toward 0 quartically in low-valid-fraction
+                    // cells (exactly the ones holding a narrow passage), so syclop collapses to
+                    // fAccept -- and multiplying by costProb <= 1 removes even that. KPAX's rule is
+                    // additive (`score + fAccept`), so its fAccept floor survives the collapse.
+                    //
+                    // UNION (blend 1): cost-promising OR exploration-promising. fmaxf(costProb,
+                    // syclop) >= syclop >= fAccept, restoring the floor. It also matches the rule
+                    // the propagate kernels already use for admission (`isBest || accepted`).
+                    //
+                    // WARNING: run blend 1 with h_costPruneFloor_ = 0. costKeepProb ends in
+                    // fmaxf(p, floor); under the product a floor merely limits suppression, but
+                    // under the union it becomes a blanket reactivation probability for EVERY
+                    // dormant node in the tree. At floor 0.1 on a 1M-node tree that is ~100k
+                    // forced reactivations per iteration, which inflates h_frontierRepeatSize_
+                    // and collapses h_propIterations_ from 32 toward 1 -- worse than the disease.
+                    float reactivationProb = (reactivationBlend == 1) ? fmaxf(costProb, syclop)
+                                                                      : costProb * syclop;
 
                     curandState seed = randomSeeds[treeIdx];
                     if(curand_uniform(&seed) < reactivationProb)
@@ -638,6 +660,7 @@ void KinoPaxSTARcostprune::updateFrontier()
       d_treeSampleCosts_ptr_, d_activeFrontierRepeatCount_ptr_, graph_.d_validCounterArray_ptr_, d_randomSeeds_ptr_,
       graph_.d_vertexScoreArray_ptr_, h_fAccept_,
       h_acceptCap_, h_costPruneExp_, h_costPruneFloor_, h_costPruneNorm_,
+      h_reactivationBlend_,
       d_minCostsR1_ptr_, d_maxCostsR1_ptr_, d_sumCostsR1_ptr_, d_cntCostsR1_ptr_,
       d_treeXR1s_ptr_, d_frontierNextXR1s_ptr_, d_bestNodeIdxPerR1_ptr_,
       d_minCost_ptr_, d_unexploredSampleCosts_ptr_, d_goalSet_ptr_, d_pruned_ptr_,

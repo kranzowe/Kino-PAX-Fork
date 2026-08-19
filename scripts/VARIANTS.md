@@ -57,23 +57,28 @@ newly propagated non-best nodes on greedy-toward-goal progress before insertion,
 dormant-node reactivation blends goal-progress PoA with the Syclop score. Region-best
 nodes are exempt from pruning.
 
-### KinoPaxSTARancestor  *(new)*
-KinoPaxSTAR plus KinoPaxPlus's ancestor (dormancy) pruning — the one mechanism the whole STAR
+### KinoPaxSTARNoPruneAncestor  *(new)*
+KinoPaxSTARNoPrune plus KinoPaxPlus's ancestor (dormancy) pruning — the one mechanism the STAR
 line was missing. Every other STAR variant filters only at insertion time, so a node admitted
-early that looks terrible later is unreachable by any admission-gate setting; KinoPaxPlus
-additionally re-examines the tree each iteration and tombstones nodes whose path from the root
-passes through a region where a cheaper route has since been found. `d_pruned_` was already
-declared, reset and read across the STAR family but never written — this variant supplies the
-missing producer. Three runtime knobs, set in the ctor and untouched by `resetPlanner`:
-`h_ancestorPrune_` (0 = off, so the class reproduces KinoPaxSTAR exactly; 1 = node-only;
-2 = ancestor chain), `h_dormancyThreshold_` (default 5, KinoPaxPlus's hardcoded window), and
-`h_ancestorTol_` (default 0 = KinoPaxPlus's strict `cost > minCostsR1[r]`; raise it to spare
-the deliberately-retained suboptimal nodes that KinoPaxSTAR admits and KinoPaxPlus never would).
-Mode 2 does **not** walk the ancestor chain: `bad(a)` is monotone because `minCostsR1` only ever
-decreases and node costs are written once at insertion, so one sticky `ancestorBad[]` flag plus a
-single parent lookup reproduces the chain result at O(1) instead of O(depth) per node. Also
-reorders the region-best frontier guarantee ahead of the `pruned[]` check, which stock
-KinoPaxSTAR gets away with only because nothing writes `pruned[]`.
+early that looks terrible later is unreachable by any admission-gate setting; KinoPaxPlus also
+re-examines the tree each iteration and tombstones nodes whose path from the root passes through
+a region where a cheaper route has since been found. `d_pruned_` was already declared, reset and
+read across the STAR family but never written — this variant supplies the missing producer.
+**The NoPrune base is deliberate.** KinoPaxSTARNoPrune reactivates with the plain KPAX rule
+`vertexScores[xR1] + fAccept`, which is *additive*: when a region's Syclop score collapses — and
+`Graph.cu:249` collapses it quartically in low-valid-fraction cells, i.e. exactly the cells holding
+a narrow passage — the `fAccept` term survives. KinoPaxSTAR and KinoPaxSTARcostprune both multiply
+that term away, which is why they trail KPAX on time-to-first-solution in cluttered maps. Building
+on NoPrune keeps exploration KPAX-equivalent (and the per-iteration overhead too: one scan in
+`updateFrontier`, not three), so ancestor pruning is the only variable.
+Three runtime knobs, set in the ctor and untouched by `resetPlanner`: `h_ancestorPrune_`
+(0 = off, so the class reproduces KinoPaxSTARNoPrune exactly; 1 = node-only; 2 = ancestor chain),
+`h_dormancyThreshold_` (default 5, KinoPaxPlus's hardcoded window), and `h_ancestorTol_`
+(default 0 = KinoPaxPlus's strict `cost > minCostsR1[r]`). Mode 2 does **not** walk the chain:
+`bad(a)` is monotone because `minCostsR1` only decreases and node costs are written once at
+insertion, so one sticky `ancestorBad[]` flag plus a single parent lookup reproduces the chain
+result at O(1) instead of O(depth). Also reorders the region-best frontier guarantee ahead of the
+`pruned[]` check, which stock NoPrune gets away with only because nothing writes `pruned[]`.
 
 ### KinoPaxSTARcostprune
 Cost-first pruning variant: KinoPaxSTAR with the goal-progress gate replaced by a cost gate.
@@ -102,6 +107,12 @@ approach region-best-only retention. The tuning sweep
 also varies the cost metric, which is a compile-time property of the binary (`COST_MODE` in
 `helper.cuh`) and therefore rides in the delta token instead: `large_effort` (control effort)
 vs `large_length` (workspace path length). Cost dominates node retention.
+`h_reactivationBlend_` switches the reactivation blend: 0 = `costProb * syclop` (the original
+intersection), 1 = `fmaxf(costProb, syclop)` (union — cost-promising OR exploration-promising,
+matching the rule the propagate kernels already use for admission). Mode 1 restores the additive
+`fAccept` floor and **must be paired with `h_costPruneFloor_ = 0`**: `costKeepProb` ends in
+`fmaxf(p, floor)`, so under the union a non-zero floor becomes a blanket reactivation probability
+for every dormant node in the tree.
 
 ### KinoPaxSTARnoseed
 KinoPaxSTARNoPrune with the R2 sub-region seeding free pass deleted: acceptance is the bare
@@ -134,7 +145,7 @@ benefit depends on seeding still supplying coverage underneath it.
 | KinoPaxSTARNoPrune | ✔ | 1 | ✔ | — | ✔ |
 | KinoPaxSTARNoPruneNoSpatialHash | ✔ | 1 | ✔ | — | — |
 | KinoPaxSTAR | ✔ | 1 | ✔ | goal-progress | ✔ |
-| KinoPaxSTARancestor | ✔ | 1 | ✔ | goal-progress + ancestor | ✔ |
+| KinoPaxSTARNoPruneAncestor | ✔ | 1 | ✔ | ancestor | ✔ |
 | KinoPaxSTARcostprune | capped (`h_acceptCap_`) | 1 | ✔ | cost | ✔ |
 | KinoPaxSTARnoseed | ✔ | 0 | ✔ | — | ✔ |
 | KinoPaxSTARsparsefill | ✔ | ramp 0→1 | ✔ | — | ✔ |

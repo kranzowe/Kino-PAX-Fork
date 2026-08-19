@@ -1,19 +1,20 @@
-// KinoPaxSTARancestor -- KinoPaxSTAR plus KinoPaxPlus's ancestor (dormancy) pruning.
+// KinoPaxSTARNoPruneAncestor -- KinoPaxSTARNoPrune plus KinoPaxPlus's ancestor (dormancy) pruning.
 //
-// KinoPaxSTAR only ever filters at insertion time: a node admitted early that looks terrible
-// later is unreachable by any admission-gate setting. KinoPaxPlus additionally does RETROACTIVE
-// removal -- KinoPaxPlus_pruningTree_kernel (KinoPaxPlus.cu:525-575) re-examines every tree node
-// each iteration and tombstones the ones whose path from the root passes through a region where
-// a cheaper route has since been found. This variant ports that pass.
+// Base choice matters: KinoPaxSTARNoPrune reactivates dormant nodes with the plain KPAX rule,
+// `vertexScores[xR1] + fAccept` -- ADDITIVE, so the fAccept term survives when a region's Syclop
+// score collapses (which it does quartically in narrow passages, see Graph.cu:249). KinoPaxSTAR
+// and KinoPaxSTARcostprune both multiply that term away, which is why they lose to KPAX on
+// time-to-first-solution in cluttered environments. Building on NoPrune isolates ancestor pruning
+// as the only variable: KPAX-equivalent exploration, KPAX-equivalent per-iteration overhead
+// (one scan in updateFrontier, not three), plus retroactive removal.
 //
-// Everything else is stock KinoPaxSTAR. With h_ancestorPrune_ = 0 (the default) the pruning
-// kernel is not even launched, so this class reproduces KinoPaxSTAR exactly -- that is the
-// control arm.
-#include "planners/KinoPaxSTARancestor.cuh"
+// With h_ancestorPrune_ = 0 (the default) the pruning kernel is not even launched, so this class
+// reproduces KinoPaxSTARNoPrune exactly -- that is the control arm.
+#include "planners/KinoPaxSTARNoPruneAncestor.cuh"
 #include "config/config.h"
 #include "statePropagator/statePropagatorSpatialHash.cuh"
 
-KinoPaxSTARancestor::KinoPaxSTARancestor()
+KinoPaxSTARNoPruneAncestor::KinoPaxSTARNoPruneAncestor()
 {
     graph_ = Graph(W_SIZE);
 
@@ -80,12 +81,6 @@ KinoPaxSTARancestor::KinoPaxSTARancestor()
     // Host buffer for the best (min-cost) reconstructed trajectory
     h_controlPathsToGoal_ = new float[MAX_ITER * SAMPLE_DIM];
 
-    // PruneKPAX goal-progress gate tunables. maxRegression auto-scales to the workspace
-    // (PruneKPAX's Model-3 default of 10 == 0.1*(100-0)); tune per environment as needed.
-    h_maxRegression_   = 0.1f * (W_MAX - W_MIN);
-    h_explorationBias_ = 0.3f;
-    h_goalBias_        = 0.7f;
-
     // Ancestor-pruning defaults. OFF, and faithful to KinoPaxPlus when switched on:
     // tol = 0 gives KinoPaxPlus's strict `cost > minCostsR1[r]`, threshold 5 is its hardcoded
     // dormancy window. resetPlanner deliberately leaves these alone so a runner can override
@@ -98,20 +93,20 @@ KinoPaxSTARancestor::KinoPaxSTARancestor()
 
     if(VERBOSE)
         {
-            printf("/* Planner Type: KinoPaxSTARancestor (Hybrid) */\n");
+            printf("/* Planner Type: KinoPaxSTARNoPruneAncestor (Hybrid) */\n");
             printf("/* Number of R1 Vertices: %d */\n", NUM_R1_REGIONS);
             printf("/* Number of R2 Vertices: %d */\n", NUM_R2_REGIONS);
             printf("/***************************/\n");
         }
 }
 
-KinoPaxSTARancestor::~KinoPaxSTARancestor()
+KinoPaxSTARNoPruneAncestor::~KinoPaxSTARNoPruneAncestor()
 {
     destroySpatialHashGrid(d_spatialHashGrid_);
     delete[] h_controlPathsToGoal_;
 }
 
-void KinoPaxSTARancestor::resetPlanner(float* h_initial, float* h_goal)
+void KinoPaxSTARNoPruneAncestor::resetPlanner(float* h_initial, float* h_goal)
 {
     // KPAX exploration state
     thrust::fill(d_frontier_.begin(), d_frontier_.end(), false);
@@ -170,7 +165,7 @@ void KinoPaxSTARancestor::resetPlanner(float* h_initial, float* h_goal)
       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()));
 }
 
-void KinoPaxSTARancestor::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
+void KinoPaxSTARNoPruneAncestor::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
 {
     cudaEvent_t start, stop;
     float milliseconds = 0;
@@ -197,13 +192,13 @@ void KinoPaxSTARancestor::plan(float* h_initial, float* h_goal, float* d_obstacl
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&milliseconds, start, stop);
     writeExecutionTimeToCSV(milliseconds / 1000.0);
-    std::cout << "KinoPaxSTARancestor execution time: " << milliseconds / 1000.0 << " seconds. Iterations: " << h_itr_
+    std::cout << "KinoPaxSTARNoPruneAncestor execution time: " << milliseconds / 1000.0 << " seconds. Iterations: " << h_itr_
               << ". Tree Size: " << h_treeSize_ << ". Best Cost: " << h_minCost_ << std::endl;
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
 }
 
-void KinoPaxSTARancestor::planBench(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, int benchItr)
+void KinoPaxSTARNoPruneAncestor::planBench(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, int benchItr)
 {
     double t_start = std::clock();
     resetPlanner(h_initial, h_goal);
@@ -222,11 +217,11 @@ void KinoPaxSTARancestor::planBench(float* h_initial, float* h_goal, float* d_ob
     getControlPathToGoal();
 
     double executionTime = (std::clock() - t_start) / (double)CLOCKS_PER_SEC;
-    std::cout << "KinoPaxSTARancestor execution time: " << executionTime << " seconds. Iterations: " << h_itr_
+    std::cout << "KinoPaxSTARNoPruneAncestor execution time: " << executionTime << " seconds. Iterations: " << h_itr_
               << ". Tree Size: " << h_treeSize_ << ". Best Cost: " << h_minCost_ << std::endl;
 }
 
-float KinoPaxSTARancestor::planOptimize(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
+float KinoPaxSTARNoPruneAncestor::planOptimize(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
 {
     cudaEvent_t start, stop;
     float milliseconds = 0;
@@ -252,14 +247,14 @@ float KinoPaxSTARancestor::planOptimize(float* h_initial, float* h_goal, float* 
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&milliseconds, start, stop);
     writeExecutionTimeToCSV(milliseconds / 1000.0);
-    std::cout << "KinoPaxSTARancestor execution time: " << milliseconds / 1000.0 << " seconds. Iterations: " << h_itr_
+    std::cout << "KinoPaxSTARNoPruneAncestor execution time: " << milliseconds / 1000.0 << " seconds. Iterations: " << h_itr_
               << ". Tree Size: " << h_treeSize_ << ". Best Cost: " << h_minCost_ << std::endl;
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
     return h_minCost_;
 }
 
-void KinoPaxSTARancestor::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount)
+void KinoPaxSTARNoPruneAncestor::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount)
 {
     // --- Build spatial hash grid for fast collision detection ---
     updateSpatialHashGrid(d_spatialHashGrid_, d_obstacles_ptr, h_obstaclesCount);
@@ -300,7 +295,7 @@ void KinoPaxSTARancestor::propagateFrontier(float* d_obstacles_ptr, uint h_obsta
                     thrust::fill(d_frontierNext_.begin(), d_frontierNext_.end(), false);
                 }
 
-            KinoPaxSTARancestor_propagateFrontier_kernel2<<<iDivUp(h_propIterations_ * h_frontierRepeatSize_, h_activeBlockSize_), h_activeBlockSize_>>>(
+            KinoPaxSTARNoPruneAncestor_propagateFrontier_kernel2<<<iDivUp(h_propIterations_ * h_frontierRepeatSize_, h_activeBlockSize_), h_activeBlockSize_>>>(
               d_frontier_ptr_, d_activeFrontierRepeatIdxs_ptr_, d_treeSamples_ptr_, d_unexploredSamples_ptr_, h_frontierRepeatSize_,
               d_randomSeeds_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_obstacles_ptr, h_obstaclesCount, graph_.d_activeSubVertices_ptr_,
               graph_.d_vertexScoreArray_ptr_, d_frontierNext_ptr_, graph_.d_counterArray_ptr_, graph_.d_validCounterArray_ptr_,
@@ -309,7 +304,7 @@ void KinoPaxSTARancestor::propagateFrontier(float* d_obstacles_ptr, uint h_obsta
         }
     else
         {
-            KinoPaxSTARancestor_propagateFrontier_kernel1<<<iDivUp(h_frontierRepeatSize_ * h_activeBlockSize_, h_activeBlockSize_), h_activeBlockSize_>>>(
+            KinoPaxSTARNoPruneAncestor_propagateFrontier_kernel1<<<iDivUp(h_frontierRepeatSize_ * h_activeBlockSize_, h_activeBlockSize_), h_activeBlockSize_>>>(
               d_frontier_ptr_, d_activeFrontierRepeatIdxs_ptr_, d_treeSamples_ptr_, d_unexploredSamples_ptr_, h_frontierRepeatSize_,
               d_randomSeeds_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_obstacles_ptr, h_obstaclesCount, graph_.d_activeSubVertices_ptr_,
               graph_.d_vertexScoreArray_ptr_, d_frontierNext_ptr_, graph_.d_counterArray_ptr_, graph_.d_validCounterArray_ptr_,
@@ -322,7 +317,7 @@ void KinoPaxSTARancestor::propagateFrontier(float* d_obstacles_ptr, uint h_obsta
 /* PROPAGATE FRONTIER KERNEL 1 */
 /***************************/
 // One Block Per Frontier Sample — dual acceptance: best-in-region OR vertex score
-__global__ void KinoPaxSTARancestor_propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
+__global__ void KinoPaxSTARNoPruneAncestor_propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
                                                    float* unexploredSamples, uint frontierSize, curandState* randomSeeds,
                                                    int* unexploredSamplesParentIdxs, float* obstacles, int obstaclesCount,
                                                    int* activeSubVertices, float* vertexScores, bool* frontierNext,
@@ -392,7 +387,7 @@ __global__ void KinoPaxSTARancestor_propagateFrontier_kernel1(bool* frontier, ui
 /* PROPAGATE FRONTIER KERNEL 2 */
 /***************************/
 // Iterations mode — dual acceptance: best-in-region OR vertex score
-__global__ void KinoPaxSTARancestor_propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
+__global__ void KinoPaxSTARNoPruneAncestor_propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
                                                    float* unexploredSamples, uint frontierSize, curandState* randomSeeds,
                                                    int* unexploredSamplesParentIdxs, float* obstacles, int obstaclesCount,
                                                    int* activeSubVertices, float* vertexScores, bool* frontierNext,
@@ -485,7 +480,7 @@ __global__ void KinoPaxSTARancestor_propagateFrontier_kernel2(bool* frontier, ui
 // iteration rather than instantly. Because the flags are sticky and this kernel re-runs every
 // iteration, that only ever DELAYS a prune -- it never prunes anything the chain version would
 // not, and the two agree in steady state.
-__global__ void KinoPaxSTARancestor_pruningTree_kernel(int treeSize, int* treeSamplesParentIdxs,
+__global__ void KinoPaxSTARNoPruneAncestor_pruningTree_kernel(int treeSize, int* treeSamplesParentIdxs,
                                                   float* treeSampleCosts, float* minCostsR1, int* treeXR1s,
                                                   bool* pruned, bool* ancestorBad, uint* inactiveIterations,
                                                   int ancestorPrune, int dormancyThreshold, float ancestorTol)
@@ -527,56 +522,15 @@ __global__ void KinoPaxSTARancestor_pruningTree_kernel(int treeSize, int* treeSa
 }
 
 /***************************/
-/* GOAL-PROGRESS PRUNING KERNEL */
-/***************************/
-// Min-cost (best-in-region) candidates are exempt and always kept. Non-best candidates
-// pass PruneKPAX's greedy-toward-goal probabilistic gate before insertion.
-__global__ void KinoPaxSTARancestor_goalProgressPrune_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
-                                                  float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
-                                                  float* unexploredSamples, int* unexploredSamplesParentIdxs,
-                                                  float* treeSamples, float* xGoal, bool* frontierNext,
-                                                  curandState* randomSeeds, float maxRegression, float explorationBias,
-                                                  float goalBias)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if(tid >= frontierNextSize) return;
-
-    int idx    = activeFrontierNextIdxs[tid];
-    float cost = unexploredSampleCosts[idx];
-    int xR1    = frontierNextXR1s[idx];
-
-    // --- Min-cost candidates are exempt: always inserted (every region best stays in the frontier). ---
-    if(cost <= minCostsR1[xR1]) return;
-
-    // --- Non-best candidates: greedy-toward-goal probabilistic gate (xGoal read from global). ---
-    float* x1              = &unexploredSamples[idx * SAMPLE_DIM];
-    int x0Idx              = unexploredSamplesParentIdxs[idx];
-    float distToGoal       = distance(x1, xGoal);
-    float parentDistToGoal = distance(&treeSamples[x0Idx * SAMPLE_DIM], xGoal);
-    float progressToGoal   = parentDistToGoal - distToGoal;  // positive = moved toward goal
-
-    float normalizedProgress    = (progressToGoal + maxRegression) / (2.0f * maxRegression);
-    normalizedProgress          = fminf(fmaxf(normalizedProgress, 0.0f), 1.0f);
-    float acceptanceProbability = fminf(explorationBias + goalBias * normalizedProgress, 1.0f);
-
-    curandState seed = randomSeeds[idx];
-    bool accept      = curand_uniform(&seed) < acceptanceProbability;
-    randomSeeds[idx] = seed;
-
-    if(!accept) frontierNext[idx] = false;
-}
-
-/***************************/
 /* FRONTIER UPDATE KERNEL */
 /***************************/
 // Hybrid: adds new frontier nodes to tree, re-activates best-per-region + probabilistic others
 __global__ void
-KinoPaxSTARancestor_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs, uint frontierNextSize,
+KinoPaxSTARNoPruneAncestor_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs, uint frontierNextSize,
                                float* xGoal, int treeSize, float* unexploredSamples, float* treeSamples,
                                int* unexploredSamplesParentIdxs, int* treeSamplesParentIdxs, float* treeSampleCosts,
                                uint* activeFrontierRepeatCount, int* validVertexCounter, curandState* randomSeeds,
                                float* vertexScores, float fAccept,
-                               float maxRegression, float explorationBias, float goalBias,
                                float* minCostsR1, int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet, bool* pruned,
                                int* iterations, int iteration)
@@ -648,7 +602,7 @@ KinoPaxSTARancestor_updateFrontier_kernel(bool* frontier, bool* frontierNext, ui
             int xR1 = treeXR1s[treeIdx];
 
             // GUARANTEE: Best node per region is ALWAYS in the frontier.
-            // This is checked BEFORE pruned[] (stock KinoPaxSTAR tests pruned[] first, which is
+            // Checked BEFORE pruned[] (stock KinoPaxSTARNoPrune tests pruned[] first, which is
             // harmless there only because nothing ever writes it). Ancestor pruning does write
             // it, and a region-best node must not lose its guaranteed slot to a stale tombstone.
             if(treeIdx == bestNodeIdxPerR1[xR1])
@@ -660,27 +614,11 @@ KinoPaxSTARancestor_updateFrontier_kernel(bool* frontier, bool* frontierNext, ui
 
             if(pruned[treeIdx]) return;
 
-            // REACTIVATION: Non-best nodes re-enter via PruneKPAX goal-progress
-            // probability of acceptance, blended with the Syclop exploration score.
+            // REACTIVATION: Non-best nodes re-enter via the plain KPAX Syclop roll.
             if(frontier[treeIdx] == 0)
                 {
-                    float* xNode            = &treeSamples[treeIdx * SAMPLE_DIM];
-                    int    parentIdx        = treeSamplesParentIdxs[treeIdx];
-                    float  distToGoal       = distance(xNode, s_xGoal);
-                    float  parentDistToGoal = (parentIdx >= 0)
-                                                ? distance(&treeSamples[parentIdx * SAMPLE_DIM], s_xGoal)
-                                                : distToGoal;  // root: no progress
-                    float  progressToGoal   = parentDistToGoal - distToGoal;
-
-                    float normalizedProgress    = (progressToGoal + maxRegression) / (2.0f * maxRegression);
-                    normalizedProgress          = fminf(fmaxf(normalizedProgress, 0.0f), 1.0f);
-                    float acceptanceProbability = fminf(explorationBias + goalBias * normalizedProgress, 1.0f);
-
-                    // Blend goal-progress PoA with the Syclop exploration weighting
-                    float reactivationProb = acceptanceProbability * (vertexScores[xR1] + fAccept);
-
                     curandState seed = randomSeeds[treeIdx];
-                    if(curand_uniform(&seed) < reactivationProb)
+                    if(curand_uniform(&seed) <= vertexScores[xR1] + fAccept)
                         {
                             frontier[treeIdx]                  = true;
                             activeFrontierRepeatCount[treeIdx] = 1;
@@ -690,32 +628,20 @@ KinoPaxSTARancestor_updateFrontier_kernel(bool* frontier, bool* frontierNext, ui
         }
 }
 
-void KinoPaxSTARancestor::updateFrontier()
+void KinoPaxSTARNoPruneAncestor::updateFrontier()
 {
     // --- Ancestor pruning: retroactively tombstone nodes whose root path went stale ---
     // Launched first, on the pre-insertion tree, so it sees the minCostsR1 that propagateFrontier
     // just lowered. Skipped entirely when off, so the control arm carries no overhead.
     if(h_ancestorPrune_ != 0 && h_treeSize_ > 0)
         {
-            KinoPaxSTARancestor_pruningTree_kernel<<<iDivUp(h_treeSize_, h_blockSize_), h_blockSize_>>>(
+            KinoPaxSTARNoPruneAncestor_pruningTree_kernel<<<iDivUp(h_treeSize_, h_blockSize_), h_blockSize_>>>(
               h_treeSize_, d_treeSamplesParentIdxs_ptr_, d_treeSampleCosts_ptr_, d_minCostsR1_ptr_,
               d_treeXR1s_ptr_, d_pruned_ptr_, d_ancestorBad_ptr_, d_treeInactiveIterations_ptr_,
               h_ancestorPrune_, h_dormancyThreshold_, h_ancestorTol_);
         }
 
     // --- Find indices and size of the next frontier ---
-    thrust::exclusive_scan(d_frontierNext_.begin(), d_frontierNext_.end(), d_frontierScanIdx_.begin(), 0, thrust::plus<uint>());
-    h_frontierNextSize_ = d_frontierScanIdx_[MAX_TREE_SIZE - 1];
-    findInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_frontierNext_ptr_, d_frontierScanIdx_ptr_, d_activeFrontierIdxs_ptr_);
-
-    // --- Goal-progress admission gate: min-cost candidates exempt; non-best pass the greedy-goal roll ---
-    KinoPaxSTARancestor_goalProgressPrune_kernel<<<iDivUp(h_frontierNextSize_, h_blockSize_), h_blockSize_>>>(
-      d_activeFrontierIdxs_ptr_, h_frontierNextSize_, d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_,
-      d_unexploredSampleCosts_ptr_, d_unexploredSamples_ptr_, d_unexploredSamplesParentIdxs_ptr_,
-      d_treeSamples_ptr_, d_goalSample_ptr_, d_frontierNext_ptr_, d_randomSeeds_ptr_,
-      h_maxRegression_, h_explorationBias_, h_goalBias_);
-
-    // --- Re-scan after pruning ---
     thrust::exclusive_scan(d_frontierNext_.begin(), d_frontierNext_.end(), d_frontierScanIdx_.begin(), 0, thrust::plus<uint>());
     h_frontierNextSize_ = d_frontierScanIdx_[MAX_TREE_SIZE - 1];
     findInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_frontierNext_ptr_, d_frontierScanIdx_ptr_, d_activeFrontierIdxs_ptr_);
@@ -733,12 +659,11 @@ void KinoPaxSTARancestor::updateFrontier()
 
     // --- Update Frontier ---
     thrust::fill(d_activeFrontierRepeatCount_.begin(), d_activeFrontierRepeatCount_.end(), 0);
-    KinoPaxSTARancestor_updateFrontier_kernel<<<iDivUp(h_frontierNextSize_ + h_treeSize_, h_blockSize_), h_blockSize_>>>(
+    KinoPaxSTARNoPruneAncestor_updateFrontier_kernel<<<iDivUp(h_frontierNextSize_ + h_treeSize_, h_blockSize_), h_blockSize_>>>(
       d_frontier_ptr_, d_frontierNext_ptr_, d_activeFrontierIdxs_ptr_, h_frontierNextSize_, d_goalSample_ptr_, h_treeSize_,
       d_unexploredSamples_ptr_, d_treeSamples_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_treeSamplesParentIdxs_ptr_,
       d_treeSampleCosts_ptr_, d_activeFrontierRepeatCount_ptr_, graph_.d_validCounterArray_ptr_, d_randomSeeds_ptr_,
       graph_.d_vertexScoreArray_ptr_, h_fAccept_,
-      h_maxRegression_, h_explorationBias_, h_goalBias_,
       d_minCostsR1_ptr_, d_treeXR1s_ptr_, d_frontierNextXR1s_ptr_, d_bestNodeIdxPerR1_ptr_,
       d_minCost_ptr_, d_unexploredSampleCosts_ptr_, d_goalSet_ptr_, d_pruned_ptr_,
       d_iterations_ptr_, h_itr_);
@@ -753,7 +678,7 @@ void KinoPaxSTARancestor::updateFrontier()
 /***************************/
 /* GET CONTROL PATH TO GOAL */
 /***************************/
-void KinoPaxSTARancestor::getControlPathToGoal()
+void KinoPaxSTARNoPruneAncestor::getControlPathToGoal()
 {
     thrust::exclusive_scan(d_goalSet_.begin(), d_goalSet_.end(), d_goalSetScanIdx_.begin(), 0, thrust::plus<uint>());
     h_solSetSize_ = d_goalSetScanIdx_[MAX_TREE_SIZE - 1];
@@ -762,7 +687,7 @@ void KinoPaxSTARancestor::getControlPathToGoal()
 
     if(h_solSetSize_ == 0) return;
 
-    KinoPaxSTARancestor_getControlPathToGoal_kernel<<<iDivUp(h_solSetSize_, h_blockSize_), h_blockSize_>>>(
+    KinoPaxSTARNoPruneAncestor_getControlPathToGoal_kernel<<<iDivUp(h_solSetSize_, h_blockSize_), h_blockSize_>>>(
       d_controlPathsToGoal_ptr_, d_treeSamples_ptr_, d_treeSamplesParentIdxs_ptr_, d_goalSetIdxs_ptr_, h_solSetSize_,
       d_pathCosts_ptr_, d_treeSampleCosts_ptr_, d_iterations_ptr_, d_minCost_ptr_);
 
@@ -776,7 +701,7 @@ void KinoPaxSTARancestor::getControlPathToGoal()
 /* GET CONTROL PATH TO GOAL KERNEL */
 /***************************/
 // Every goal thread records (idx, cost, iteration); only the min-cost goal reconstructs its full path.
-__global__ void KinoPaxSTARancestor_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSamples,
+__global__ void KinoPaxSTARNoPruneAncestor_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSamples,
                                                      int* treeSamplesParentIdxs, uint* goalSetIdxs, int goalSetSize,
                                                      float* pathCosts, float* treeSampleCosts, int* iterations,
                                                      float* minCost)
@@ -806,7 +731,7 @@ __global__ void KinoPaxSTARancestor_getControlPathToGoal_kernel(float* controlPa
         }
 }
 
-void KinoPaxSTARancestor::writeExecutionTimeToCSV(double time)
+void KinoPaxSTARNoPruneAncestor::writeExecutionTimeToCSV(double time)
 {
     std::ostringstream filename;
     std::filesystem::create_directories("Data");

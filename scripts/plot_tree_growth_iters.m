@@ -3,8 +3,8 @@
 % (run via scripts/run_tree_growth_dump.sh) on the zigzag corridor.
 %
 % Rows are planner configurations, columns are iterations 1..8:
-%   ancestor_off  KinoPaxSTARancestor, h_ancestorPrune_ = 0  (== stock KinoPaxSTAR)
-%   ancestor_on   KinoPaxSTARancestor, h_ancestorPrune_ = 2  (memoized ancestor chain)
+%   ancestor_off  KinoPaxSTARNoPruneAncestor, h_ancestorPrune_ = 0  (== stock NoPrune)
+%   ancestor_on   KinoPaxSTARNoPruneAncestor, h_ancestorPrune_ = 2  (memoized ancestor chain)
 %   KPAX          pure explorer reference
 %   KinoPaxPlus   pure optimizer reference (source of the original ancestor pruning)
 %
@@ -38,7 +38,7 @@ obstacleCandidates = { ...
     'obstacles.csv'};
 
 tokens       = {'ancestor_off', 'ancestor_on', 'KPAX', 'KinoPaxPlus'};
-tokenLabels  = {'STAR (prune off)', 'STAR (ancestor prune)', 'KPAX', 'KinoPaxPlus'};
+tokenLabels  = {'NoPrune (anc off)', 'NoPrune (anc chain)', 'KPAX', 'KinoPaxPlus'};
 numIters     = 8;
 
 NODE_FRACTION  = 0.10;    % fraction of nodes drawn per tile

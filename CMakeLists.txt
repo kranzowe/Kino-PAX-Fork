@@ -28,7 +28,7 @@ set(SOURCE_FILES
     src/planners/originalKPAX.cu
     src/planners/originalPlanner.cu
     src/planners/KinoPaxSTAR.cu
-    src/planners/KinoPaxSTARancestor.cu
+    src/planners/KinoPaxSTARNoPruneAncestor.cu
     src/planners/KinoPaxSTARcostprune.cu
     src/planners/KinoPaxSTARcostprunenoseed.cu
     src/planners/KinoPaxSTARNoPrune.cu

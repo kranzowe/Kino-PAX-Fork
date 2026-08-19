@@ -11,12 +11,14 @@
 #   costPruneFloor: 0.1
 #   planner       : KinoPaxSTARcostprune
 #
-# plus KinoPaxSTARancestor in all three ancestor-pruning modes (off / node-only /
-# memoized chain) -- KinoPaxSTAR with KinoPaxPlus's retroactive pruning.
+# plus 2 union-blend probes (fmaxf(costProb, syclop) with floor 0, which restores the
+# additive fAccept floor the product form destroys), plus KinoPaxSTARNoPruneAncestor in
+# all three ancestor-pruning modes (off / node-only / memoized chain). The ancestor
+# variant is built on KinoPaxSTARNoPrune, whose reactivation is KPAX's additive rule, so
+# ancestor pruning is the only variable against a KPAX-equivalent explorer.
 #
-# = 12 cost-prune points x 3 runs + 3 ancestor modes x 3 runs = 45 runs per cost
-# metric, plus KPAX and KinoPaxPlus baselines (3 runs each) = 51 per metric,
-# 102 total.
+# = (12 grid + 2 union + 3 ancestor) x 3 runs = 51 runs per cost metric, plus KPAX and
+# KinoPaxPlus baselines (3 runs each) = 57 per metric, 114 total.
 #
 # COST_MODE is a compile-time #if inside edgeCost (include/helper/helper.cuh), so
 # the cost metric cannot vary within one binary. This script therefore borrows
@@ -201,7 +203,8 @@ echo "  Environment: ${ENV_NAME}"
 echo "  Delta: ${DELTA_LABEL} | W_R1=${DELTA_W_R1} C_R1=${DELTA_C_R1} V_R1=${DELTA_V_R1} | Regions=${REGIONS}"
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
 echo "  Grid: cap {0, 0.33, 0.66, 1.0} x exp {0.1, 0.5, 1.0} x floor {0.1} = 12 points"
-echo "  Planners:  KinoPaxSTARcostprune (grid), KinoPaxSTARancestor (off/node/chain)"
+echo "  Planners:  KinoPaxSTARcostprune (12-pt grid + 2 union probes),"
+echo "             KinoPaxSTARNoPruneAncestor (off/node/chain)"
 echo "  Baselines: KPAX, KinoPaxPlus"
 echo "======================================================="
 
