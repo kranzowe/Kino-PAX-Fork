@@ -57,6 +57,24 @@ newly propagated non-best nodes on greedy-toward-goal progress before insertion,
 dormant-node reactivation blends goal-progress PoA with the Syclop score. Region-best
 nodes are exempt from pruning.
 
+### KinoPaxSTARancestor  *(new)*
+KinoPaxSTAR plus KinoPaxPlus's ancestor (dormancy) pruning — the one mechanism the whole STAR
+line was missing. Every other STAR variant filters only at insertion time, so a node admitted
+early that looks terrible later is unreachable by any admission-gate setting; KinoPaxPlus
+additionally re-examines the tree each iteration and tombstones nodes whose path from the root
+passes through a region where a cheaper route has since been found. `d_pruned_` was already
+declared, reset and read across the STAR family but never written — this variant supplies the
+missing producer. Three runtime knobs, set in the ctor and untouched by `resetPlanner`:
+`h_ancestorPrune_` (0 = off, so the class reproduces KinoPaxSTAR exactly; 1 = node-only;
+2 = ancestor chain), `h_dormancyThreshold_` (default 5, KinoPaxPlus's hardcoded window), and
+`h_ancestorTol_` (default 0 = KinoPaxPlus's strict `cost > minCostsR1[r]`; raise it to spare
+the deliberately-retained suboptimal nodes that KinoPaxSTAR admits and KinoPaxPlus never would).
+Mode 2 does **not** walk the ancestor chain: `bad(a)` is monotone because `minCostsR1` only ever
+decreases and node costs are written once at insertion, so one sticky `ancestorBad[]` flag plus a
+single parent lookup reproduces the chain result at O(1) instead of O(depth) per node. Also
+reorders the region-best frontier guarantee ahead of the `pruned[]` check, which stock
+KinoPaxSTAR gets away with only because nothing writes `pruned[]`.
+
 ### KinoPaxSTARcostprune
 Cost-first pruning variant: KinoPaxSTAR with the goal-progress gate replaced by a cost gate.
 Both propagate kernels accumulate per-region cost statistics (`minCostsR1` / `maxCostsR1` /
@@ -115,6 +133,7 @@ benefit depends on seeding still supplying coverage underneath it.
 | KinoPaxSTARNoPrune | ✔ | 1 | ✔ | — | ✔ |
 | KinoPaxSTARNoPruneNoSpatialHash | ✔ | 1 | ✔ | — | — |
 | KinoPaxSTAR | ✔ | 1 | ✔ | goal-progress | ✔ |
+| KinoPaxSTARancestor | ✔ | 1 | ✔ | goal-progress + ancestor | ✔ |
 | KinoPaxSTARcostprune | capped (`h_acceptCap_`) | 1 | ✔ | cost | ✔ |
 | KinoPaxSTARnoseed | ✔ | 0 | ✔ | — | ✔ |
 | KinoPaxSTARsparsefill | ✔ | ramp 0→1 | ✔ | — | ✔ |

@@ -28,6 +28,7 @@ set(SOURCE_FILES
     src/planners/originalKPAX.cu
     src/planners/originalPlanner.cu
     src/planners/KinoPaxSTAR.cu
+    src/planners/KinoPaxSTARancestor.cu
     src/planners/KinoPaxSTARcostprune.cu
     src/planners/KinoPaxSTARcostprunenoseed.cu
     src/planners/KinoPaxSTARNoPrune.cu
@@ -210,6 +211,17 @@ target_link_libraries(KinoPaxStarCostTuningSweep
     Python3::NumPy
 )
 
+add_executable(TreeGrowthDump examples/gpu/tree_growth_dump.cu)
+target_link_libraries(TreeGrowthDump
+    PUBLIC KPAX_lib
+    ${CUDA_LIBRARIES}
+    ${Boost_LIBRARIES}
+    ${EIGEN3_LIBRARIES}
+    yaml-cpp
+    Python3::Python
+    Python3::NumPy
+)
+
 set_target_properties(KPAX_lib PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(main PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(benchMain PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
@@ -225,6 +237,7 @@ set_target_properties(KinoPaxPlusSHBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATI
 set_target_properties(KinoPaxStarLargeBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(KinoPaxStarCostBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(KinoPaxStarCostTuningSweep PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(TreeGrowthDump PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
 
 set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -diag-suppress=20012,20013,20014,20015 --expt-relaxed-constexpr --ptxas-options=-v")
