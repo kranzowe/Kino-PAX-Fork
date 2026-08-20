@@ -39,7 +39,14 @@ pruning" pass, on in this benchmark). Optimizes cost but explores weakly, so cos
 high in cluttered maps.
 
 ## STAR hybrids (KPAX exploration + KinoPaxPlus cost)
-### KinoPaxSTARNoPrune
+### KinoPaxSTARNoGoalBias  *(renamed from KinoPaxSTARNoPrune)*
+The old name was ambiguous: "prune" was being used for two unrelated mechanisms — the
+goal-biased admission gate (`_goalProgressPrune_kernel`, really an extra acceptance criterion)
+and KinoPaxPlus's retroactive cost pruning. `NoPrune` meant the former. Goal-bias logic lives
+**only** in `KinoPaxSTAR`; every other STAR variant has none, and the rename makes that legible.
+The CSV label string `"KinoPaxSTARNoPrune"` is retained in the older large/delta benchmarks so
+their historical data still loads.
+
 Simplest fusion. Each iteration it (a) always keeps each region's lowest-cost node in the
 frontier (KinoPaxPlus) and (b) also admits Syclop-accepted explorer nodes (KPAX) —
 dual acceptance = `isBest OR acceptedByExploration`. Tracks `h_minCost_`; reactivates
@@ -85,36 +92,30 @@ Note `h_fAccept_` is computed *before* the gate in this variant (the gate needs 
 Carries the same toggleable ancestor pruning as `KinoPaxSTARNoPruneAncestor` via
 `h_ancestorPrune_` / `h_dormancyThreshold_` / `h_ancestorTol_`.
 
-### KinoPaxSTARNoPruneAncestor  *(new)*
-KinoPaxSTARNoPrune plus KinoPaxPlus's ancestor (dormancy) pruning — the one mechanism the STAR
-line was missing. Every other STAR variant filters only at insertion time, so a node admitted
-early that looks terrible later is unreachable by any admission-gate setting; KinoPaxPlus also
-re-examines the tree each iteration and tombstones nodes whose path from the root passes through
-a region where a cheaper route has since been found. `d_pruned_` was already declared, reset and
-read across the STAR family but never written — this variant supplies the missing producer.
-**The NoPrune base is deliberate.** KinoPaxSTARNoPrune reactivates with the plain KPAX rule
-`vertexScores[xR1] + fAccept`, which is *additive*: when a region's Syclop score collapses — and
-`Graph.cu:249` collapses it quartically in low-valid-fraction cells, i.e. exactly the cells holding
-a narrow passage — the `fAccept` term survives. KinoPaxSTAR and KinoPaxSTARcostprune both multiply
-that term away, which is why they trail KPAX on time-to-first-solution in cluttered maps. Building
-on NoPrune keeps exploration KPAX-equivalent (and the per-iteration overhead too: one scan in
-`updateFrontier`, not three), so ancestor pruning is the only variable.
-Three runtime knobs, set in the ctor and untouched by `resetPlanner`: `h_ancestorPrune_`
-(0 = off, so the class reproduces KinoPaxSTARNoPrune exactly; 1 = node-only; 2 = ancestor chain),
-**Mode 1 is KinoPaxPlus's `#else` escape hatch, not its default** — `KINOPAXPLUS_PARENT_CHAIN_PRUNING`
-is 1 in the checked-in `config.h:270`, so mode 2 is the published semantics. Empirically the two
-measure the same, which the kernel structure predicts: for any node that is not its region's
-cheapest, the chain's first step tests the node itself and prunes immediately, so 1 and 2 differ
-ONLY on region-best nodes with a bad ancestor — exactly the population the `bestNodeIdxPerR1`
-guarantee and the dormancy/amnesty branches already protect. Note also that the benchmark scripts'
-`config.h` heredoc omits the macro entirely, so `#if` sees an undefined name and KinoPaxPlus itself
-runs the node-only branch in every benchmarked comparison.
-`h_dormancyThreshold_` (default 5, KinoPaxPlus's hardcoded window), and `h_ancestorTol_`
-(default 0 = KinoPaxPlus's strict `cost > minCostsR1[r]`). Mode 2 does **not** walk the chain:
-`bad(a)` is monotone because `minCostsR1` only decreases and node costs are written once at
-insertion, so one sticky `ancestorBad[]` flag plus a single parent lookup reproduces the chain
-result at O(1) instead of O(depth). Also reorders the region-best frontier guarantee ahead of the
-`pruned[]` check, which stock NoPrune gets away with only because nothing writes `pruned[]`.
+### KinoPaxSTARTrue  *(new)*
+`KinoPaxSTARNoGoalBias` plus **cost-guarded** retroactive pruning. A node is pruned when it was
+admitted *because* it was its region's minimum and no longer is; nodes the Syclop exploration roll
+admitted are never touched. `h_ancestorPrune_` selects the rule: 0 = off (reproduces
+`KinoPaxSTARNoGoalBias` exactly), 1 = stale-best, 2 = stale-best plus the memoized ancestor chain
+over the same population. `h_dormancyThreshold_` (5) and `h_ancestorTol_` (0) match KinoPaxPlus.
+
+**Why the guard exists.** Its predecessor, `KinoPaxSTARNoPruneAncestor`, applied
+`cost > minCostsR1[r]` to *every* tree node. Syclop-admitted nodes are non-minimum by
+construction — they were admitted despite failing the `isBest` test — so all of them were
+tombstoned on the first pruning pass, and since Part B returns early on `pruned[]` they never
+reactivated. The only escape, the dormancy branch, rehabilitates a node only once it has *become*
+region-best, which an explorer never does. The entire exploration population froze. The rule is
+faithful to KinoPaxPlus; the population was wrong — KinoPaxPlus's tree is almost entirely
+min-cost nodes because `pruningFrontier_kernel` hard-rejects `cost > minCostsR1` at insertion, so
+the same rule removes almost nothing there. That variant is retired.
+
+The admission reason is recorded at propagate time as `isBest && !acceptedByExploration` and
+carried into the tree alongside `treeXR1s`; both flags are already computed before the acceptance
+`if`, so the recording touches no RNG state and mode 0 is bit-identical to the base class.
+
+### KinoPaxSTARTrueWeightedCost  *(new)*
+`KinoPaxSTARWeightedCost` plus the same cost-guarded pruning and the same three modes. The
+weighted-sum acceptance and `costProbExp` are unchanged; benchmarks run it at w = 0.9, k = 1.
 
 ### KinoPaxSTARcostprune
 Cost-first pruning variant: KinoPaxSTAR with the goal-progress gate replaced by a cost gate.
@@ -178,10 +179,11 @@ benefit depends on seeding still supplying coverage underneath it.
 | KPAX | Syclop | 1 | — | — | — |
 | PruneKPAX | ✔ | 1 | goal-dir | goal-progress | ✔ |
 | KinoPaxPlus | weak | n/a | ✔ | dormancy/cost | — |
-| KinoPaxSTARNoPrune | ✔ | 1 | ✔ | — | ✔ |
+| KinoPaxSTARNoGoalBias | ✔ | 1 | ✔ | — | ✔ |
 | KinoPaxSTARNoPruneNoSpatialHash | ✔ | 1 | ✔ | — | — |
 | KinoPaxSTAR | ✔ | 1 | ✔ | goal-progress | ✔ |
-| KinoPaxSTARNoPruneAncestor | ✔ | 1 | ✔ | ancestor | ✔ |
+| KinoPaxSTARTrue | ✔ | 1 | ✔ | cost-guarded | ✔ |
+| KinoPaxSTARTrueWeightedCost | weighted (`h_costWeight_`) | 1 | ✔ | cost-guarded | ✔ |
 | KinoPaxSTARcostprune | capped (`h_acceptCap_`) | 1 | ✔ | cost | ✔ |
 | KinoPaxSTARWeightedCost | weighted (`h_costWeight_`) | 1 | ✔ | cost + optional ancestor | ✔ |
 | KinoPaxSTARnoseed | ✔ | 0 | ✔ | — | ✔ |

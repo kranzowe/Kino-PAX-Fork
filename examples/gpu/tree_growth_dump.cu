@@ -4,8 +4,8 @@
 // Dumps the planner's full tree after each of the first N iterations (default 8)
 // for four configurations, so the early growth can be compared side by side:
 //
-//   ancestor_off  KinoPaxSTARNoPruneAncestor, h_ancestorPrune_ = 0  (== stock NoPrune)
-//   ancestor_on   KinoPaxSTARNoPruneAncestor, h_ancestorPrune_ = 2  (memoized ancestor chain)
+//   ancestor_off  KinoPaxSTARTrue, h_ancestorPrune_ = 0  (== stock NoGoalBias)
+//   ancestor_on   KinoPaxSTARTrue, h_ancestorPrune_ = 2  (guarded ancestor chain)
 //   KPAX          pure explorer, reference for coverage
 //   KinoPaxPlus   pure optimizer, reference for what ancestor pruning is meant to look like
 //
@@ -28,7 +28,7 @@
 #include <cmath>
 #include "planners/KPAX.cuh"
 #include "planners/KinoPaxPlus.cuh"
-#include "planners/KinoPaxSTARNoPruneAncestor.cuh"
+#include "planners/KinoPaxSTARTrue.cuh"
 
 // ========================================================================
 // Dump one tree snapshot to CSV.
@@ -199,9 +199,9 @@ int main(int argc, char* argv[])
 
     writeVizMeta(vizDir + "/meta.csv", h_initial, h_goal);
 
-    // --- ancestor pruning OFF (identical to stock KinoPaxSTARNoPrune) ---
+    // --- ancestor pruning OFF (identical to stock KinoPaxSTARNoGoalBias) ---
     {
-        KinoPaxSTARNoPruneAncestor planner;
+        KinoPaxSTARTrue planner;
         planner.h_ancestorPrune_ = 0;
         runAndDump(planner, "ancestor_off", envName, vizDir, h_initial, h_goal,
                    d_obstacles, numObstacles, NUM_ITERS);
@@ -209,7 +209,7 @@ int main(int argc, char* argv[])
 
     // --- ancestor pruning ON (memoized chain) ---
     {
-        KinoPaxSTARNoPruneAncestor planner;
+        KinoPaxSTARTrue planner;
         planner.h_ancestorPrune_ = 2;
         runAndDump(planner, "ancestor_on", envName, vizDir, h_initial, h_goal,
                    d_obstacles, numObstacles, NUM_ITERS);

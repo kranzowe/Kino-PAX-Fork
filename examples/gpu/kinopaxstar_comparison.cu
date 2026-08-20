@@ -11,7 +11,10 @@
 #include <cstdio>
 #include "planners/KinoPaxPlus.cuh"
 #include "planners/KPAX.cuh"
+#include "planners/KinoPaxSTARNoGoalBias.cuh"
+#include "planners/KinoPaxSTARTrue.cuh"
 #include "planners/KinoPaxSTARWeightedCost.cuh"
+#include "planners/KinoPaxSTARTrueWeightedCost.cuh"
 #include <thrust/count.h>
 #include <thrust/reduce.h>
 
@@ -19,33 +22,18 @@
 static bool        g_dumpViz = false;
 static std::string g_vizDir;
 
-// ---- KinoPaxSTARWeightedCost grid ----
-// P_combined = min(1, w*(vertexScore + fAccept) + (1-w)*costProbExp(k) + P_floor).
-// w = 1 reproduces KPAX's acceptance, w = 0 is pure cost-greedy -- so the w axis brackets the
-// exploration/cost tradeoff with one knob. k is the decay rate of costProbExp.
-//
-// Ancestor pruning is fixed at mode 1 (node-only): modes 1 and 2 measured the same, which the
-// kernel structure predicts -- for any node that is NOT its region's cheapest, the chain's first
-// step tests the node itself and prunes immediately, so 1 and 2 differ ONLY on region-best nodes
-// with a bad ancestor, and those are exactly the nodes the bestNodeIdxPerR1 guarantee and the
-// dormancy/amnesty branches already protect.
-//
-// Mode 1 is KinoPaxPlus's `#else` branch (KINOPAXPLUS_PARENT_CHAIN_PRUNING 0), NOT its default;
-// mode 2 is its default full-chain semantics. See the note in run_cost_tuning_sweep.sh about
-// which one KinoPaxPlus itself actually runs under the benchmark's rewritten config.
-static const float WEIGHTS[]       = {0.0f, 0.2f, 0.4f, 0.6f, 0.8f, 1.0f};
-static const float WEIGHTED_EXPS[] = {0.5f, 1.0f, 2.0f, 4.0f};
-static const int   NUM_WEIGHTS       = sizeof(WEIGHTS) / sizeof(WEIGHTS[0]);
-static const int   NUM_WEIGHTED_EXPS = sizeof(WEIGHTED_EXPS) / sizeof(WEIGHTED_EXPS[0]);
+// ---- Fixed weighted-cost operating point for the comparison ----
+static const float CMP_W = 0.9f;   // weight on the Syclop probability
+static const float CMP_K = 1.0f;   // decay rate of P_cost
 
-// "KinoPaxSTARWeightedCost_w50_k100"
-static std::string weightedLabel(float w, float k)
-{
-    char buf[96];
-    snprintf(buf, sizeof(buf), "KinoPaxSTARWeightedCost_w%d_k%d",
-             (int)lroundf(100.0f * w), (int)lroundf(100.0f * k));
-    return std::string(buf);
-}
+// ---- Cost-pruning modes for the "True" variants ----
+// 1 = stale-best: a node admitted BECAUSE it was its region's minimum, and no longer is.
+// 2 = 1, plus the memoized ancestor chain over the same population.
+// Both are GUARDED to cost-admitted nodes, so Syclop-admitted explorers are never touched --
+// that guard is the difference from the retired KinoPaxSTARNoPruneAncestor, which applied the
+// same test to every node and froze the entire exploration population on the first pass.
+static const int CMP_PRUNE_STALEBEST = 1;
+static const int CMP_PRUNE_CHAIN     = 2;
 
 struct IterationData
 {
@@ -182,14 +170,14 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
     // Baselines include the build's delta label so runs at different discretizations
     // don't overwrite each other:
     //   KPAX baseline: {env}_KPAX_delta{build}_run{n}.csv
-    //   weighted grid: {env}_KinoPaxSTARWeightedCost_w{N}_k{N}_anc{N}_delta{build}_run{n}.csv
+    //   STAR variants: {env}_{planner label}_delta{build}_run{n}.csv
     //   KinoPaxPlus:   {env}_delta{label}_run{n}.csv
     // The build label carries the cost metric (large_effort / large_length), which is a
     // compile-time property of the binary -- see COST_MODE in helper.cuh.
     if(result.delta_label == "KPAX")
         filename << outputDir << "/" << result.environment << "_KPAX_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
-    else if(result.delta_label.rfind("KinoPaxSTARWeightedCost", 0) == 0)
+    else if(result.delta_label.rfind("KinoPaxSTAR", 0) == 0)
         filename << outputDir << "/" << result.environment << "_" << result.delta_label << "_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
     else
@@ -227,7 +215,7 @@ void writeSummaryCSV(const std::vector<RunResult>& results, const std::string& o
     timestamp << std::put_time(std::localtime(&time), "%Y%m%d_%H%M%S");
 
     std::ostringstream filename;
-    filename << outputDir << "/cost_tuning_sweep_" << timestamp.str() << "_summary.csv";
+    filename << outputDir << "/comparison_" << timestamp.str() << "_summary.csv";
 
     std::ofstream file(filename.str());
     file << "environment,delta_label,num_regions,run,total_time_s,first_sol_iteration,"
@@ -552,10 +540,209 @@ void runKinoPaxPlusBenchmark(
     }
 }
 
-// ========================================================================
-// KinoPaxSTARWeightedCost benchmark + runner (weighted-sum acceptance:
-// min(1, w*P_syclop + (1-w)*P_cost + P_floor), with a toggleable ancestor prune).
-// ========================================================================
+RunResult benchmarkKinoPaxSTARNoGoalBias(
+    KinoPaxSTARNoGoalBias& planner,
+    const std::string& deltaLabel,
+    const std::string& environment,
+    int runNumber,
+    float* h_initial,
+    float* h_goal,
+    float* d_obstacles,
+    uint numObstacles,
+    int maxIterations,
+    float maxTimeMs,
+    const std::string& label)
+{
+    // Override the planner's default for this run. resetPlanner (called below) does not touch
+    // h_ancestorPrune_, so setting it at entry holds for the run. h_ancestorTol_ and
+    // h_dormancyThreshold_ stay at their ctor defaults (0.0 and 5), i.e. KinoPaxPlus's
+    // strict test and its hardcoded dormancy window.
+    planner.h_ancestorPrune_ = ancestorPrune;
+    RunResult result;
+    result.delta_label = label;
+    result.build_delta = deltaLabel;
+    result.environment = environment;
+    result.run_number = runNumber;
+    result.first_solution_iteration = -1;
+    result.first_solution_cost = INFINITY;
+    result.first_solution_tree_size = -1;
+    result.final_best_cost = INFINITY;
+
+    cudaEvent_t iterStart, iterStop;
+    cudaEventCreate(&iterStart);
+    cudaEventCreate(&iterStop);
+    float plannerMs = 0.0f;
+    float iterMs    = 0.0f;
+
+    planner.resetPlanner(h_initial, h_goal);
+
+    int itr = 0;
+    while(itr < maxIterations)
+    {
+        itr++;
+        planner.h_itr_++;
+
+        cudaEventRecord(iterStart);
+        planner.propagateFrontier(d_obstacles, numObstacles);
+        planner.graph_.updateVertices();
+        int oldTreeSize = planner.h_treeSize_;   // nodes before this iter's additions
+        planner.updateFrontier();
+        cudaEventRecord(iterStop);
+        cudaEventSynchronize(iterStop);
+        cudaEventElapsedTime(&iterMs, iterStart, iterStop);
+        plannerMs += iterMs;
+
+        // h_minCost_ is the cumulative root-to-goal path length (KinoPaxPlus-style).
+        cudaMemcpy(&planner.h_minCost_, planner.d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
+        if(planner.h_minCost_ < MAX_FLOAT && result.first_solution_iteration == -1)
+        {
+            result.first_solution_iteration = itr;
+            result.first_solution_cost      = planner.h_minCost_;
+            result.first_solution_tree_size = planner.h_treeSize_;
+        }
+        if(planner.h_minCost_ < result.final_best_cost)
+            result.final_best_cost = planner.h_minCost_;
+
+        // --- Frontier diagnostics (outside the timed window; KinoPaxSTARNoGoalBias uses the KPAX Graph) ---
+        int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
+                                             planner.d_frontier_.begin() + oldTreeSize, true);
+        int inactiveR2 = (int)thrust::count(planner.graph_.d_activeSubVertices_.begin(),
+                                            planner.graph_.d_activeSubVertices_.end(), 0);
+        float r2CoveragePct = 100.0f * float(NUM_R2_REGIONS - inactiveR2) / float(NUM_R2_REGIONS);
+        float scoreSum  = thrust::reduce(planner.graph_.d_vertexScoreArray_.begin(),
+                                         planner.graph_.d_vertexScoreArray_.end(), 0.0f);
+        float meanScore = scoreSum / float(NUM_R1_REGIONS);
+
+        IterationData d;
+        d.iteration     = itr;
+        d.frontier_size = planner.h_frontierSize_;
+        d.tree_size     = planner.h_treeSize_;
+        d.elapsed_time_ms = plannerMs;
+        d.best_cost     = result.final_best_cost;
+        d.num_regions       = NUM_R1_REGIONS;
+        d.r2_coverage_pct   = r2CoveragePct;
+        d.mean_vertex_score = meanScore;
+        d.reactivated       = reactivated;
+        result.per_iteration.push_back(d);
+
+        if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
+        if(planner.h_propIterations_ == 0) break;
+
+        // Timeout check (planner-only time)
+        if(plannerMs >= maxTimeMs) break;
+    }
+
+    result.total_time_seconds = plannerMs / 1000.0;
+    result.final_tree_size    = planner.h_treeSize_;
+    result.total_iterations   = itr;
+
+    cudaEventDestroy(iterStart);
+    cudaEventDestroy(iterStop);
+    return result;
+}
+
+RunResult benchmarkKinoPaxSTARTrue(
+    KinoPaxSTARTrue& planner,
+    const std::string& deltaLabel,
+    const std::string& environment,
+    int runNumber,
+    float* h_initial,
+    float* h_goal,
+    float* d_obstacles,
+    uint numObstacles,
+    int maxIterations,
+    float maxTimeMs,
+    int ancestorPrune,
+    const std::string& label)
+{
+    // Override the planner's default for this run. resetPlanner (called below) does not touch
+    // h_ancestorPrune_, so setting it at entry holds for the run. h_ancestorTol_ and
+    // h_dormancyThreshold_ stay at their ctor defaults (0.0 and 5), i.e. KinoPaxPlus's
+    // strict test and its hardcoded dormancy window.
+    planner.h_ancestorPrune_ = ancestorPrune;
+    RunResult result;
+    result.delta_label = label;
+    result.build_delta = deltaLabel;
+    result.environment = environment;
+    result.run_number = runNumber;
+    result.first_solution_iteration = -1;
+    result.first_solution_cost = INFINITY;
+    result.first_solution_tree_size = -1;
+    result.final_best_cost = INFINITY;
+
+    cudaEvent_t iterStart, iterStop;
+    cudaEventCreate(&iterStart);
+    cudaEventCreate(&iterStop);
+    float plannerMs = 0.0f;
+    float iterMs    = 0.0f;
+
+    planner.resetPlanner(h_initial, h_goal);
+
+    int itr = 0;
+    while(itr < maxIterations)
+    {
+        itr++;
+        planner.h_itr_++;
+
+        cudaEventRecord(iterStart);
+        planner.propagateFrontier(d_obstacles, numObstacles);
+        planner.graph_.updateVertices();
+        int oldTreeSize = planner.h_treeSize_;   // nodes before this iter's additions
+        planner.updateFrontier();
+        cudaEventRecord(iterStop);
+        cudaEventSynchronize(iterStop);
+        cudaEventElapsedTime(&iterMs, iterStart, iterStop);
+        plannerMs += iterMs;
+
+        // h_minCost_ is the cumulative root-to-goal path length (KinoPaxPlus-style).
+        cudaMemcpy(&planner.h_minCost_, planner.d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
+        if(planner.h_minCost_ < MAX_FLOAT && result.first_solution_iteration == -1)
+        {
+            result.first_solution_iteration = itr;
+            result.first_solution_cost      = planner.h_minCost_;
+            result.first_solution_tree_size = planner.h_treeSize_;
+        }
+        if(planner.h_minCost_ < result.final_best_cost)
+            result.final_best_cost = planner.h_minCost_;
+
+        // --- Frontier diagnostics (outside the timed window; KinoPaxSTARTrue uses the KPAX Graph) ---
+        int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
+                                             planner.d_frontier_.begin() + oldTreeSize, true);
+        int inactiveR2 = (int)thrust::count(planner.graph_.d_activeSubVertices_.begin(),
+                                            planner.graph_.d_activeSubVertices_.end(), 0);
+        float r2CoveragePct = 100.0f * float(NUM_R2_REGIONS - inactiveR2) / float(NUM_R2_REGIONS);
+        float scoreSum  = thrust::reduce(planner.graph_.d_vertexScoreArray_.begin(),
+                                         planner.graph_.d_vertexScoreArray_.end(), 0.0f);
+        float meanScore = scoreSum / float(NUM_R1_REGIONS);
+
+        IterationData d;
+        d.iteration     = itr;
+        d.frontier_size = planner.h_frontierSize_;
+        d.tree_size     = planner.h_treeSize_;
+        d.elapsed_time_ms = plannerMs;
+        d.best_cost     = result.final_best_cost;
+        d.num_regions       = NUM_R1_REGIONS;
+        d.r2_coverage_pct   = r2CoveragePct;
+        d.mean_vertex_score = meanScore;
+        d.reactivated       = reactivated;
+        result.per_iteration.push_back(d);
+
+        if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
+        if(planner.h_propIterations_ == 0) break;
+
+        // Timeout check (planner-only time)
+        if(plannerMs >= maxTimeMs) break;
+    }
+
+    result.total_time_seconds = plannerMs / 1000.0;
+    result.final_tree_size    = planner.h_treeSize_;
+    result.total_iterations   = itr;
+
+    cudaEventDestroy(iterStart);
+    cudaEventDestroy(iterStop);
+    return result;
+}
+
 RunResult benchmarkKinoPaxSTARWeightedCost(
     KinoPaxSTARWeightedCost& planner,
     const std::string& deltaLabel,
@@ -659,7 +846,115 @@ RunResult benchmarkKinoPaxSTARWeightedCost(
     return result;
 }
 
-void runKinoPaxSTARWeightedCostBenchmark(
+RunResult benchmarkKinoPaxSTARTrueWeightedCost(
+    KinoPaxSTARTrueWeightedCost& planner,
+    const std::string& deltaLabel,
+    const std::string& environment,
+    int runNumber,
+    float* h_initial,
+    float* h_goal,
+    float* d_obstacles,
+    uint numObstacles,
+    int maxIterations,
+    float maxTimeMs,
+    float costWeight,
+    float costPruneExp,
+    int ancestorPrune,
+    const std::string& label)
+{
+    // Override the planner's defaults for this run. resetPlanner (called below) does not
+    // touch these, so setting them at entry holds for the run. h_probFloor_, h_ancestorTol_ and
+    // h_dormancyThreshold_ stay at their ctor defaults (EPSILON, 0.0, 5).
+    planner.h_costWeight_     = costWeight;
+    planner.h_costPruneExp_   = costPruneExp;
+    planner.h_ancestorPrune_  = ancestorPrune;
+    RunResult result;
+    result.delta_label = label;
+    result.build_delta = deltaLabel;
+    result.environment = environment;
+    result.run_number = runNumber;
+    result.first_solution_iteration = -1;
+    result.first_solution_cost = INFINITY;
+    result.first_solution_tree_size = -1;
+    result.final_best_cost = INFINITY;
+
+    cudaEvent_t iterStart, iterStop;
+    cudaEventCreate(&iterStart);
+    cudaEventCreate(&iterStop);
+    float plannerMs = 0.0f;
+    float iterMs    = 0.0f;
+
+    planner.resetPlanner(h_initial, h_goal);
+
+    int itr = 0;
+    while(itr < maxIterations)
+    {
+        itr++;
+        planner.h_itr_++;
+
+        cudaEventRecord(iterStart);
+        planner.propagateFrontier(d_obstacles, numObstacles);
+        planner.graph_.updateVertices();
+        int oldTreeSize = planner.h_treeSize_;   // nodes before this iter's additions
+        planner.updateFrontier();
+        cudaEventRecord(iterStop);
+        cudaEventSynchronize(iterStop);
+        cudaEventElapsedTime(&iterMs, iterStart, iterStop);
+        plannerMs += iterMs;
+
+        // h_minCost_ is the cumulative root-to-goal path length (KinoPaxPlus-style).
+        cudaMemcpy(&planner.h_minCost_, planner.d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
+        if(planner.h_minCost_ < MAX_FLOAT && result.first_solution_iteration == -1)
+        {
+            result.first_solution_iteration = itr;
+            result.first_solution_cost      = planner.h_minCost_;
+            result.first_solution_tree_size = planner.h_treeSize_;
+        }
+        if(planner.h_minCost_ < result.final_best_cost)
+            result.final_best_cost = planner.h_minCost_;
+
+        // --- Frontier diagnostics (outside the timed window; KinoPaxSTARTrueWeightedCost uses the KPAX Graph) ---
+        int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
+                                             planner.d_frontier_.begin() + oldTreeSize, true);
+        int inactiveR2 = (int)thrust::count(planner.graph_.d_activeSubVertices_.begin(),
+                                            planner.graph_.d_activeSubVertices_.end(), 0);
+        float r2CoveragePct = 100.0f * float(NUM_R2_REGIONS - inactiveR2) / float(NUM_R2_REGIONS);
+        float scoreSum  = thrust::reduce(planner.graph_.d_vertexScoreArray_.begin(),
+                                         planner.graph_.d_vertexScoreArray_.end(), 0.0f);
+        float meanScore = scoreSum / float(NUM_R1_REGIONS);
+
+        IterationData d;
+        d.iteration     = itr;
+        d.frontier_size = planner.h_frontierSize_;
+        d.tree_size     = planner.h_treeSize_;
+        d.elapsed_time_ms = plannerMs;
+        d.best_cost     = result.final_best_cost;
+        d.num_regions       = NUM_R1_REGIONS;
+        d.r2_coverage_pct   = r2CoveragePct;
+        d.mean_vertex_score = meanScore;
+        d.reactivated       = reactivated;
+        result.per_iteration.push_back(d);
+
+        if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
+        if(planner.h_propIterations_ == 0) break;
+
+        // Timeout check (planner-only time)
+        if(plannerMs >= maxTimeMs) break;
+    }
+
+    result.total_time_seconds = plannerMs / 1000.0;
+    result.final_tree_size    = planner.h_treeSize_;
+    result.total_iterations   = itr;
+
+    cudaEventDestroy(iterStart);
+    cudaEventDestroy(iterStop);
+    return result;
+}
+
+// ========================================================================
+// Comparison runner: every planner at a fixed configuration, no sweeps.
+// ========================================================================
+void runComparison(
     const std::string& environment_name,
     float* h_initial,
     float* h_goal,
@@ -672,42 +967,75 @@ void runKinoPaxSTARWeightedCostBenchmark(
     int maxIterations,
     float maxTimeMs)
 {
-    printf("\n========================================\n");
-    printf("KINOPAXSTARWEIGHTEDCOST GRID: %s | Delta: %s | Regions: %d\n",
-           environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
-    printf("========================================\n");
-
-    // Full factorial over WEIGHTS x WEIGHTED_EXPS; fresh planner per grid point.
-    for(int wi = 0; wi < NUM_WEIGHTS; wi++)
-    for(int ei = 0; ei < NUM_WEIGHTED_EXPS; ei++)
-    {
-        const float       w     = WEIGHTS[wi];
-        const float       k     = WEIGHTED_EXPS[ei];
-        const std::string label = weightedLabel(w, k);
-
-        printf("  --- w = %.2f, k = %.2f (%s) ---\n", w, k, label.c_str());
-        KinoPaxSTARWeightedCost planner;
-        for(int run = 0; run < numRuns; run++)
-        {
-            RunResult result = benchmarkKinoPaxSTARWeightedCost(planner, deltaLabel, environment_name, run,
-                                                 h_initial, h_goal, d_obstacles,
-                                                 numObstacles, maxIterations, maxTimeMs,
-                                                 w, k, label);
-            printf("  w=%.2f k=%.2f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-                   w, k, run + 1, numRuns, result.total_time_seconds, result.total_iterations,
-                   result.final_tree_size, result.first_solution_iteration,
-                   result.first_solution_cost, result.final_best_cost);
-            writePerIterationCSV(result, outputDir);
-            if(g_dumpViz && run == 0)
-                dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
-                            planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
-                            vizTreePath(g_vizDir, environment_name, label));
-            all_results.push_back(result);
-
-            if(run < numRuns - 1)
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        }
+#define CMP_RUN_LOOP(BODY)                                                                       \
+    for(int run = 0; run < numRuns; run++)                                                       \
+    {                                                                                            \
+        BODY;                                                                                    \
+        printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",     \
+               run + 1, numRuns, result.total_time_seconds, result.total_iterations,             \
+               result.final_tree_size, result.first_solution_iteration,                          \
+               result.first_solution_cost, result.final_best_cost);                              \
+        writePerIterationCSV(result, outputDir);                                                 \
+        all_results.push_back(result);                                                           \
+        if(run < numRuns - 1) std::this_thread::sleep_for(std::chrono::milliseconds(500));       \
     }
+
+    // --- 3. KinoPaxSTARNoGoalBias: no cost pruning ---
+    printf("\n--- KinoPaxSTARNoGoalBias ---\n");
+    {
+        KinoPaxSTARNoGoalBias planner;
+        CMP_RUN_LOOP(RunResult result = benchmarkKinoPaxSTARNoGoalBias(
+            planner, deltaLabel, environment_name, run, h_initial, h_goal, d_obstacles,
+            numObstacles, maxIterations, maxTimeMs, "KinoPaxSTARNoGoalBias"))
+    }
+
+    // --- 4. KinoPaxSTARTrue: guarded stale-best pruning ---
+    printf("\n--- KinoPaxSTARTrue ---\n");
+    {
+        KinoPaxSTARTrue planner;
+        CMP_RUN_LOOP(RunResult result = benchmarkKinoPaxSTARTrue(
+            planner, deltaLabel, environment_name, run, h_initial, h_goal, d_obstacles,
+            numObstacles, maxIterations, maxTimeMs, CMP_PRUNE_STALEBEST, "KinoPaxSTARTrue"))
+    }
+
+    // --- 5. KinoPaxSTARTrueAnc: guarded stale-best + ancestor chain ---
+    printf("\n--- KinoPaxSTARTrueAnc ---\n");
+    {
+        KinoPaxSTARTrue planner;
+        CMP_RUN_LOOP(RunResult result = benchmarkKinoPaxSTARTrue(
+            planner, deltaLabel, environment_name, run, h_initial, h_goal, d_obstacles,
+            numObstacles, maxIterations, maxTimeMs, CMP_PRUNE_CHAIN, "KinoPaxSTARTrueAnc"))
+    }
+
+    // --- 6. KinoPaxSTARWeightedCost: weighted acceptance, no cost pruning ---
+    printf("\n--- KinoPaxSTARWeightedCost (w=%.2f k=%.2f) ---\n", CMP_W, CMP_K);
+    {
+        KinoPaxSTARWeightedCost planner;
+        CMP_RUN_LOOP(RunResult result = benchmarkKinoPaxSTARWeightedCost(
+            planner, deltaLabel, environment_name, run, h_initial, h_goal, d_obstacles,
+            numObstacles, maxIterations, maxTimeMs, CMP_W, CMP_K, "KinoPaxSTARWeightedCost"))
+    }
+
+    // --- 7. KinoPaxSTARTrueWeightedCost: weighted + guarded stale-best ---
+    printf("\n--- KinoPaxSTARTrueWeightedCost ---\n");
+    {
+        KinoPaxSTARTrueWeightedCost planner;
+        CMP_RUN_LOOP(RunResult result = benchmarkKinoPaxSTARTrueWeightedCost(
+            planner, deltaLabel, environment_name, run, h_initial, h_goal, d_obstacles,
+            numObstacles, maxIterations, maxTimeMs, CMP_W, CMP_K, CMP_PRUNE_STALEBEST,
+            "KinoPaxSTARTrueWeightedCost"))
+    }
+
+    // --- 8. KinoPaxSTARTrueWeightedCostAnc: weighted + guarded chain ---
+    printf("\n--- KinoPaxSTARTrueWeightedCostAnc ---\n");
+    {
+        KinoPaxSTARTrueWeightedCost planner;
+        CMP_RUN_LOOP(RunResult result = benchmarkKinoPaxSTARTrueWeightedCost(
+            planner, deltaLabel, environment_name, run, h_initial, h_goal, d_obstacles,
+            numObstacles, maxIterations, maxTimeMs, CMP_W, CMP_K, CMP_PRUNE_CHAIN,
+            "KinoPaxSTARTrueWeightedCostAnc"))
+    }
+#undef CMP_RUN_LOOP
 }
 
 int main(int argc, char* argv[])
@@ -718,7 +1046,7 @@ int main(int argc, char* argv[])
 
     // The KPAX baseline runs by default; pass --skip-baselines to omit it.
     // --dump-viz additionally dumps run-0's full tree per variant for the spatial /
-    // tree-growth visualization (Data/Benchmarks/KinoPaxStarCostTuning/viz/).
+    // tree-growth visualization (Data/Benchmarks/KinoPaxStarComparison/<env>/viz/).
     bool skipBaselines = false;
     for(int i = 4; i < argc; i++)
     {
@@ -730,16 +1058,16 @@ int main(int argc, char* argv[])
 
     const int NUM_KPAX_RUNS        = 10;
     const int NUM_KINOPAXPLUS_RUNS = 10;   // drives the KinoPaxPlus runner
-    const int NUM_KINOPAXSTARWEIGHTED_RUNS  = 10;   // drives the KinoPaxSTARWeightedCost grid
+    const int NUM_STAR_RUNS        = 10;   // drives every STAR variant in the comparison
     const int MAX_ITERATIONS       = 500;
     const float MAX_TIME_MS      = 10000.0f;  // 10 second timeout
 
     // Per-environment subfolder so house and zigzag can be plotted independently.
-    std::string outputDir = "Data/Benchmarks/KinoPaxStarCostTuning/" + envName;
+    std::string outputDir = "Data/Benchmarks/KinoPaxStarComparison/" + envName;
     std::filesystem::create_directories(outputDir);
 
     printf("=======================================================\n");
-    printf("    KINOPAXSTAR COST TUNING SWEEP\n");
+    printf("    KINOPAXSTAR ALGORITHM COMPARISON\n");
     printf("=======================================================\n");
     printf("Delta label:    %s\n", deltaLabel.c_str());
     printf("NUM_R1_REGIONS: %d\n", NUM_R1_REGIONS);
@@ -751,10 +1079,9 @@ int main(int argc, char* argv[])
     printf("Cost metric:    %s (COST_MODE=%d)\n", (COST_MODE == 1) ? "control effort" : "workspace path length", COST_MODE);
     printf("Dump viz:       %s\n", g_dumpViz ? "YES (run 0 per variant)" : "NO");
     printf("KinoPaxPlus:    %d runs\n", NUM_KINOPAXPLUS_RUNS);
-    printf("WeightedCost:   w x k = %d x %d = %d points x %d runs = %d runs\n",
-           NUM_WEIGHTS, NUM_WEIGHTED_EXPS, NUM_WEIGHTS * NUM_WEIGHTED_EXPS,
-           NUM_KINOPAXSTARWEIGHTED_RUNS,
-           NUM_WEIGHTS * NUM_WEIGHTED_EXPS * NUM_KINOPAXSTARWEIGHTED_RUNS);
+    printf("STAR variants:  NoGoalBias, True, TrueAnc, WeightedCost, TrueWeightedCost, TrueWeightedCostAnc\n");
+    printf("Weighted point: w = %.2f, k = %.2f\n", CMP_W, CMP_K);
+    printf("Runs each:      %d\n", NUM_STAR_RUNS);
     printf("Max iterations: %d\n", MAX_ITERATIONS);
     printf("=======================================================\n");
 
@@ -799,9 +1126,9 @@ int main(int argc, char* argv[])
     runKinoPaxPlusBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
                             all_results, outputDir, deltaLabel, NUM_KINOPAXPLUS_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
 
-    // --- KinoPaxSTARWeightedCost: w x k x ancestor grid ---
-    runKinoPaxSTARWeightedCostBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
-                            all_results, outputDir, deltaLabel, NUM_KINOPAXSTARWEIGHTED_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
+    // --- All six STAR variants at fixed configurations ---
+    runComparison(envName, h_initial, h_goal, d_obstacles, numObstacles,
+                  all_results, outputDir, deltaLabel, NUM_STAR_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
 
     cudaFree(d_obstacles);
 

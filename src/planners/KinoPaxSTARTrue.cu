@@ -1,28 +1,18 @@
-// KinoPaxSTARWeightedCost -- KinoPaxSTARcostprune with a WEIGHTED-SUM acceptance rule.
+// KinoPaxSTARTrue -- KinoPaxSTARNoGoalBias plus COST-GUARDED retroactive pruning.
 //
-// costprune combines the two acceptance probabilities multiplicatively (costProb * syclop). That
-// collapses to zero in exactly the cells that hold a narrow passage: Graph.cu:249 drives the
-// Syclop score down quartically where the valid-sample fraction is low, and multiplying by
-// costProb <= 1 destroys even the additive fAccept term that KPAX relies on to keep resampling
-// there. This variant replaces the product with
+// Prunes a node that was admitted BECAUSE it was its region's cheapest, once it is no longer the
+// cheapest. Nodes the Syclop exploration roll admitted are never touched -- that guard is the
+// whole difference from the earlier KinoPaxSTARNoPruneAncestor, which applied the same test to
+// every node in the tree and consequently froze the entire exploration population on the first
+// pruning pass (Part B returns early on pruned[], and the dormancy branch only rehabilitates
+// nodes that have become region-best, which an explorer never does).
 //
-//     P_combined = min(1, w*P_syclop + (1-w)*P_cost + P_floor)
-//
-// applied at BOTH acceptance points (the insertion gate and the reactivation branch), where
-// P_syclop = vertexScores[xR1] + fAccept is the full KPAX rule and P_floor is fixed. One knob:
-// w = 1 reproduces KPAX's acceptance, w = 0 is pure cost-greedy.
-//
-// P_cost is costProbExp (helper.cuh), not costKeepProb: exp(-k*(cost-m)/(mean-m)) is exactly 1 at
-// the region min AND has a real gradient across the whole range, where min(1,(mean/cost)^k) is
-// pinned at 1 for every cost at or below the mean. It carries no floor -- P_floor is added once,
-// here, in weightedAccept().
-//
-// Carries NO retroactive pruning: see KinoPaxSTARTrueWeightedCost for the cost-guarded version.
-#include "planners/KinoPaxSTARWeightedCost.cuh"
+// No goal-bias acceptance anywhere in this file -- that lives only in KinoPaxSTAR.
+#include "planners/KinoPaxSTARTrue.cuh"
 #include "config/config.h"
 #include "statePropagator/statePropagatorSpatialHash.cuh"
 
-KinoPaxSTARWeightedCost::KinoPaxSTARWeightedCost()
+KinoPaxSTARTrue::KinoPaxSTARTrue()
 {
     graph_ = Graph(W_SIZE);
 
@@ -40,9 +30,6 @@ KinoPaxSTARWeightedCost::KinoPaxSTARWeightedCost()
 
     // KinoPaxPlus optimization vectors
     d_minCostsR1_             = thrust::device_vector<float>(NUM_R1_REGIONS);
-    d_maxCostsR1_             = thrust::device_vector<float>(NUM_R1_REGIONS);
-    d_sumCostsR1_             = thrust::device_vector<float>(NUM_R1_REGIONS);
-    d_cntCostsR1_             = thrust::device_vector<int>(NUM_R1_REGIONS);
     d_bestNodeIdxPerR1_       = thrust::device_vector<int>(NUM_R1_REGIONS);
     d_treeXR1s_               = thrust::device_vector<int>(MAX_TREE_SIZE);
     d_frontierNextXR1s_       = thrust::device_vector<int>(MAX_TREE_SIZE);
@@ -51,6 +38,10 @@ KinoPaxSTARWeightedCost::KinoPaxSTARWeightedCost()
     d_goalSetIdxs_            = thrust::device_vector<uint>(MAX_TREE_SIZE);
     d_goalSetScanIdx_         = thrust::device_vector<uint>(MAX_TREE_SIZE);
     d_pruned_                 = thrust::device_vector<bool>(MAX_TREE_SIZE);
+    d_frontierNextAdmitBest_  = thrust::device_vector<bool>(MAX_TREE_SIZE);
+    d_treeAdmitBest_          = thrust::device_vector<bool>(MAX_TREE_SIZE);
+    d_treeInactiveIterations_ = thrust::device_vector<uint>(MAX_TREE_SIZE);
+    d_ancestorBad_            = thrust::device_vector<bool>(MAX_TREE_SIZE);
     d_iterations_             = thrust::device_vector<int>(MAX_TREE_SIZE);
     d_pathCosts_              = thrust::device_vector<float>(MAX_TREE_SIZE * 3);
     d_controlPathsToGoal_     = thrust::device_vector<float>(MAX_ITER * SAMPLE_DIM);
@@ -68,9 +59,6 @@ KinoPaxSTARWeightedCost::KinoPaxSTARWeightedCost()
     d_activeFrontierRepeatCount_ptr_   = thrust::raw_pointer_cast(d_activeFrontierRepeatCount_.data());
 
     d_minCostsR1_ptr_             = thrust::raw_pointer_cast(d_minCostsR1_.data());
-    d_maxCostsR1_ptr_             = thrust::raw_pointer_cast(d_maxCostsR1_.data());
-    d_sumCostsR1_ptr_             = thrust::raw_pointer_cast(d_sumCostsR1_.data());
-    d_cntCostsR1_ptr_             = thrust::raw_pointer_cast(d_cntCostsR1_.data());
     d_bestNodeIdxPerR1_ptr_       = thrust::raw_pointer_cast(d_bestNodeIdxPerR1_.data());
     d_treeXR1s_ptr_               = thrust::raw_pointer_cast(d_treeXR1s_.data());
     d_frontierNextXR1s_ptr_       = thrust::raw_pointer_cast(d_frontierNextXR1s_.data());
@@ -79,6 +67,10 @@ KinoPaxSTARWeightedCost::KinoPaxSTARWeightedCost()
     d_goalSetIdxs_ptr_            = thrust::raw_pointer_cast(d_goalSetIdxs_.data());
     d_goalSetScanIdx_ptr_         = thrust::raw_pointer_cast(d_goalSetScanIdx_.data());
     d_pruned_ptr_                 = thrust::raw_pointer_cast(d_pruned_.data());
+    d_frontierNextAdmitBest_ptr_  = thrust::raw_pointer_cast(d_frontierNextAdmitBest_.data());
+    d_treeAdmitBest_ptr_          = thrust::raw_pointer_cast(d_treeAdmitBest_.data());
+    d_treeInactiveIterations_ptr_ = thrust::raw_pointer_cast(d_treeInactiveIterations_.data());
+    d_ancestorBad_ptr_            = thrust::raw_pointer_cast(d_ancestorBad_.data());
     d_iterations_ptr_             = thrust::raw_pointer_cast(d_iterations_.data());
     d_pathCosts_ptr_              = thrust::raw_pointer_cast(d_pathCosts_.data());
     d_controlPathsToGoal_ptr_     = thrust::raw_pointer_cast(d_controlPathsToGoal_.data());
@@ -91,32 +83,29 @@ KinoPaxSTARWeightedCost::KinoPaxSTARWeightedCost()
     // Host buffer for the best (min-cost) reconstructed trajectory
     h_controlPathsToGoal_ = new float[MAX_ITER * SAMPLE_DIM];
 
-    // WeightedCost tunables. P_floor defaults to EPSILON, matching the additive floor already
-    // baked into the Syclop score itself (Graph.cu: vertexScores = EPSILON + score/total).
-    h_costWeight_   = 0.5f;
-    h_costPruneExp_ = 1.0f;
-    h_probFloor_    = EPSILON;
-    // Only governs the propagate-time dual-track acceptance; w replaces it everywhere else.
-    h_acceptCap_    = 0.1f;
+    // Cost pruning: OFF by default, so the fresh class reproduces KinoPaxSTARNoGoalBias exactly.
+    h_ancestorPrune_     = 0;
+    h_dormancyThreshold_ = 5;
+    h_ancestorTol_       = 0.0f;
 
     h_activeBlockSize_ = 32;
 
     if(VERBOSE)
         {
-            printf("/* Planner Type: KinoPaxSTARWeightedCost (Hybrid) */\n");
+            printf("/* Planner Type: KinoPaxSTARTrue (Hybrid) */\n");
             printf("/* Number of R1 Vertices: %d */\n", NUM_R1_REGIONS);
             printf("/* Number of R2 Vertices: %d */\n", NUM_R2_REGIONS);
             printf("/***************************/\n");
         }
 }
 
-KinoPaxSTARWeightedCost::~KinoPaxSTARWeightedCost()
+KinoPaxSTARTrue::~KinoPaxSTARTrue()
 {
     destroySpatialHashGrid(d_spatialHashGrid_);
     delete[] h_controlPathsToGoal_;
 }
 
-void KinoPaxSTARWeightedCost::resetPlanner(float* h_initial, float* h_goal)
+void KinoPaxSTARTrue::resetPlanner(float* h_initial, float* h_goal)
 {
     // KPAX exploration state
     thrust::fill(d_frontier_.begin(), d_frontier_.end(), false);
@@ -144,15 +133,16 @@ void KinoPaxSTARWeightedCost::resetPlanner(float* h_initial, float* h_goal)
 
     // KinoPaxPlus optimization state
     thrust::fill(d_minCostsR1_.begin(), d_minCostsR1_.end(), MAX_FLOAT);
-    thrust::fill(d_maxCostsR1_.begin(), d_maxCostsR1_.end(), 0.0f);
-    thrust::fill(d_sumCostsR1_.begin(), d_sumCostsR1_.end(), 0.0f);
-    thrust::fill(d_cntCostsR1_.begin(), d_cntCostsR1_.end(), 0);
     thrust::fill(d_bestNodeIdxPerR1_.begin(), d_bestNodeIdxPerR1_.end(), -1);
     thrust::fill(d_treeXR1s_.begin(), d_treeXR1s_.end(), 0);
     thrust::fill(d_frontierNextXR1s_.begin(), d_frontierNextXR1s_.end(), 0);
     thrust::fill(d_unexploredSampleCosts_.begin(), d_unexploredSampleCosts_.end(), 0.0f);
     thrust::fill(d_goalSet_.begin(), d_goalSet_.end(), false);
     thrust::fill(d_pruned_.begin(), d_pruned_.end(), false);
+    thrust::fill(d_frontierNextAdmitBest_.begin(), d_frontierNextAdmitBest_.end(), false);
+    thrust::fill(d_treeAdmitBest_.begin(), d_treeAdmitBest_.end(), false);
+    thrust::fill(d_treeInactiveIterations_.begin(), d_treeInactiveIterations_.end(), 0);
+    thrust::fill(d_ancestorBad_.begin(), d_ancestorBad_.end(), false);
     thrust::fill(d_iterations_.begin(), d_iterations_.end(), 0);
     thrust::fill(d_pathCosts_.begin(), d_pathCosts_.end(), 0.0f);
     thrust::fill(d_controlPathsToGoal_.begin(), d_controlPathsToGoal_.end(), 0.0f);
@@ -164,11 +154,7 @@ void KinoPaxSTARWeightedCost::resetPlanner(float* h_initial, float* h_goal)
     h_frontierSize_ = 0;
     h_minCost_      = MAX_FLOAT;
     h_solSetSize_   = 0;
-    // Must be nonzero before iteration 1: the plan/benchmark loop breaks on
-    // h_propIterations_ == 0, and propagateFrontier only assigns it on the tree-full path.
-    // Adding the cost-stat members shifted the object layout and flipped this uninitialized
-    // value to 0 (the sibling STAR planners survive only by lucky layout).
-    h_propIterations_ = 1;
+    h_propIterations_ = 1;   // guard: uninitialized-read UB, break-on-0 (layout-safe, behavior-preserving)
 
     cudaMemcpy(d_treeSamples_ptr_, h_initial, SAMPLE_DIM * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_goalSample_ptr_, h_goal, SAMPLE_DIM * sizeof(float), cudaMemcpyHostToDevice);
@@ -180,7 +166,7 @@ void KinoPaxSTARWeightedCost::resetPlanner(float* h_initial, float* h_goal)
       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()));
 }
 
-void KinoPaxSTARWeightedCost::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
+void KinoPaxSTARTrue::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
 {
     cudaEvent_t start, stop;
     float milliseconds = 0;
@@ -207,13 +193,13 @@ void KinoPaxSTARWeightedCost::plan(float* h_initial, float* h_goal, float* d_obs
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&milliseconds, start, stop);
     writeExecutionTimeToCSV(milliseconds / 1000.0);
-    std::cout << "KinoPaxSTARWeightedCost execution time: " << milliseconds / 1000.0 << " seconds. Iterations: " << h_itr_
+    std::cout << "KinoPaxSTARTrue execution time: " << milliseconds / 1000.0 << " seconds. Iterations: " << h_itr_
               << ". Tree Size: " << h_treeSize_ << ". Best Cost: " << h_minCost_ << std::endl;
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
 }
 
-void KinoPaxSTARWeightedCost::planBench(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, int benchItr)
+void KinoPaxSTARTrue::planBench(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, int benchItr)
 {
     double t_start = std::clock();
     resetPlanner(h_initial, h_goal);
@@ -232,11 +218,11 @@ void KinoPaxSTARWeightedCost::planBench(float* h_initial, float* h_goal, float* 
     getControlPathToGoal();
 
     double executionTime = (std::clock() - t_start) / (double)CLOCKS_PER_SEC;
-    std::cout << "KinoPaxSTARWeightedCost execution time: " << executionTime << " seconds. Iterations: " << h_itr_
+    std::cout << "KinoPaxSTARTrue execution time: " << executionTime << " seconds. Iterations: " << h_itr_
               << ". Tree Size: " << h_treeSize_ << ". Best Cost: " << h_minCost_ << std::endl;
 }
 
-float KinoPaxSTARWeightedCost::planOptimize(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
+float KinoPaxSTARTrue::planOptimize(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount)
 {
     cudaEvent_t start, stop;
     float milliseconds = 0;
@@ -262,14 +248,14 @@ float KinoPaxSTARWeightedCost::planOptimize(float* h_initial, float* h_goal, flo
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&milliseconds, start, stop);
     writeExecutionTimeToCSV(milliseconds / 1000.0);
-    std::cout << "KinoPaxSTARWeightedCost execution time: " << milliseconds / 1000.0 << " seconds. Iterations: " << h_itr_
+    std::cout << "KinoPaxSTARTrue execution time: " << milliseconds / 1000.0 << " seconds. Iterations: " << h_itr_
               << ". Tree Size: " << h_treeSize_ << ". Best Cost: " << h_minCost_ << std::endl;
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
     return h_minCost_;
 }
 
-void KinoPaxSTARWeightedCost::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount)
+void KinoPaxSTARTrue::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount)
 {
     // --- Build spatial hash grid for fast collision detection ---
     updateSpatialHashGrid(d_spatialHashGrid_, d_obstacles_ptr, h_obstaclesCount);
@@ -310,21 +296,21 @@ void KinoPaxSTARWeightedCost::propagateFrontier(float* d_obstacles_ptr, uint h_o
                     thrust::fill(d_frontierNext_.begin(), d_frontierNext_.end(), false);
                 }
 
-            KinoPaxSTARWeightedCost_propagateFrontier_kernel2<<<iDivUp(h_propIterations_ * h_frontierRepeatSize_, h_activeBlockSize_), h_activeBlockSize_>>>(
+            KinoPaxSTARTrue_propagateFrontier_kernel2<<<iDivUp(h_propIterations_ * h_frontierRepeatSize_, h_activeBlockSize_), h_activeBlockSize_>>>(
               d_frontier_ptr_, d_activeFrontierRepeatIdxs_ptr_, d_treeSamples_ptr_, d_unexploredSamples_ptr_, h_frontierRepeatSize_,
               d_randomSeeds_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_obstacles_ptr, h_obstaclesCount, graph_.d_activeSubVertices_ptr_,
               graph_.d_vertexScoreArray_ptr_, d_frontierNext_ptr_, graph_.d_counterArray_ptr_, graph_.d_validCounterArray_ptr_,
               h_propIterations_, graph_.d_minValueInRegion_ptr_,
-              d_treeSampleCosts_ptr_, d_minCostsR1_ptr_, d_maxCostsR1_ptr_, d_sumCostsR1_ptr_, d_cntCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_unexploredSampleCosts_ptr_, h_acceptCap_, h_spatialHashGrid_);
+              d_treeSampleCosts_ptr_, d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_frontierNextAdmitBest_ptr_, d_unexploredSampleCosts_ptr_, h_spatialHashGrid_);
         }
     else
         {
-            KinoPaxSTARWeightedCost_propagateFrontier_kernel1<<<iDivUp(h_frontierRepeatSize_ * h_activeBlockSize_, h_activeBlockSize_), h_activeBlockSize_>>>(
+            KinoPaxSTARTrue_propagateFrontier_kernel1<<<iDivUp(h_frontierRepeatSize_ * h_activeBlockSize_, h_activeBlockSize_), h_activeBlockSize_>>>(
               d_frontier_ptr_, d_activeFrontierRepeatIdxs_ptr_, d_treeSamples_ptr_, d_unexploredSamples_ptr_, h_frontierRepeatSize_,
               d_randomSeeds_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_obstacles_ptr, h_obstaclesCount, graph_.d_activeSubVertices_ptr_,
               graph_.d_vertexScoreArray_ptr_, d_frontierNext_ptr_, graph_.d_counterArray_ptr_, graph_.d_validCounterArray_ptr_,
               graph_.d_minValueInRegion_ptr_,
-              d_treeSampleCosts_ptr_, d_minCostsR1_ptr_, d_maxCostsR1_ptr_, d_sumCostsR1_ptr_, d_cntCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_unexploredSampleCosts_ptr_, h_acceptCap_, h_spatialHashGrid_);
+              d_treeSampleCosts_ptr_, d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_frontierNextAdmitBest_ptr_, d_unexploredSampleCosts_ptr_, h_spatialHashGrid_);
         }
 }
 
@@ -332,14 +318,14 @@ void KinoPaxSTARWeightedCost::propagateFrontier(float* d_obstacles_ptr, uint h_o
 /* PROPAGATE FRONTIER KERNEL 1 */
 /***************************/
 // One Block Per Frontier Sample — dual acceptance: best-in-region OR vertex score
-__global__ void KinoPaxSTARWeightedCost_propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
+__global__ void KinoPaxSTARTrue_propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
                                                    float* unexploredSamples, uint frontierSize, curandState* randomSeeds,
                                                    int* unexploredSamplesParentIdxs, float* obstacles, int obstaclesCount,
                                                    int* activeSubVertices, float* vertexScores, bool* frontierNext,
                                                    int* vertexCounter, int* validVertexCounter, float* minValueInRegion,
-                                                   float* treeSampleCosts, float* minCostsR1, float* maxCostsR1, float* sumCostsR1, int* cntCostsR1,
-                                                   int* frontierNextXR1s,
-                                                   float* unexploredSampleCosts, float acceptCap, SpatialHashGrid spatialHashGrid)
+                                                   float* treeSampleCosts, float* minCostsR1, int* frontierNextXR1s,
+                                                   bool* frontierNextAdmitBest,
+                                                   float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid)
 {
     if(blockIdx.x >= frontierSize) return;
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -380,13 +366,10 @@ __global__ void KinoPaxSTARWeightedCost_propagateFrontier_kernel1(bool* frontier
 
             // Track 1: Best-in-region (KinoPaxPlus)
             if(minCostsR1[x1Vertex] > cost) atomicMinFloat(&minCostsR1[x1Vertex], cost);
-            atomicMaxFloat(&maxCostsR1[x1Vertex], cost);
-            atomicAdd(&sumCostsR1[x1Vertex], cost);
-            atomicAdd(&cntCostsR1[x1Vertex], 1);
             bool isBest = (cost <= minCostsR1[x1Vertex]);
 
             // Track 2: Exploration (KPAX vertex score OR new sub-region)
-            bool acceptedByExploration = (curand_uniform(&randSeed) < fminf(vertexScores[x1Vertex], acceptCap))
+            bool acceptedByExploration = (curand_uniform(&randSeed) < vertexScores[x1Vertex])
                                        || (!activeSubVertices[x1SubVertex]);
 
             if(isBest || acceptedByExploration)
@@ -394,6 +377,10 @@ __global__ void KinoPaxSTARWeightedCost_propagateFrontier_kernel1(bool* frontier
                     unexploredSampleCosts[tid] = cost;
                     frontierNextXR1s[tid]      = x1Vertex;
                     frontierNext[tid]          = true;
+                    // Admitted ONLY because it was the region minimum? A node the Syclop roll
+                    // would have taken anyway is an explorer and must stay immune to cost pruning.
+                    // Both flags are computed above regardless, so this touches no RNG state.
+                    frontierNextAdmitBest[tid] = isBest && !acceptedByExploration;
                 }
 
             if(activeSubVertices[x1SubVertex] == 0) atomicExch(&activeSubVertices[x1SubVertex], 1);
@@ -406,15 +393,15 @@ __global__ void KinoPaxSTARWeightedCost_propagateFrontier_kernel1(bool* frontier
 /* PROPAGATE FRONTIER KERNEL 2 */
 /***************************/
 // Iterations mode — dual acceptance: best-in-region OR vertex score
-__global__ void KinoPaxSTARWeightedCost_propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
+__global__ void KinoPaxSTARTrue_propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
                                                    float* unexploredSamples, uint frontierSize, curandState* randomSeeds,
                                                    int* unexploredSamplesParentIdxs, float* obstacles, int obstaclesCount,
                                                    int* activeSubVertices, float* vertexScores, bool* frontierNext,
                                                    int* vertexCounter, int* validVertexCounter, int iterations,
                                                    float* minValueInRegion,
-                                                   float* treeSampleCosts, float* minCostsR1, float* maxCostsR1, float* sumCostsR1, int* cntCostsR1,
-                                                   int* frontierNextXR1s,
-                                                   float* unexploredSampleCosts, float acceptCap, SpatialHashGrid spatialHashGrid)
+                                                   float* treeSampleCosts, float* minCostsR1, int* frontierNextXR1s,
+                                                   bool* frontierNextAdmitBest,
+                                                   float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid)
 {
     int tid       = blockIdx.x * blockDim.x + threadIdx.x;
     if(tid >= MAX_TREE_SIZE) return;
@@ -446,13 +433,10 @@ __global__ void KinoPaxSTARWeightedCost_propagateFrontier_kernel2(bool* frontier
 
             // Track 1: Best-in-region
             if(minCostsR1[x1Vertex] > cost) atomicMinFloat(&minCostsR1[x1Vertex], cost);
-            atomicMaxFloat(&maxCostsR1[x1Vertex], cost);
-            atomicAdd(&sumCostsR1[x1Vertex], cost);
-            atomicAdd(&cntCostsR1[x1Vertex], 1);
             bool isBest = (cost <= minCostsR1[x1Vertex]);
 
             // Track 2: Exploration
-            bool acceptedByExploration = (curand_uniform(&randSeed) < fminf(vertexScores[x1Vertex], acceptCap))
+            bool acceptedByExploration = (curand_uniform(&randSeed) < vertexScores[x1Vertex])
                                        || (activeSubVertices[x1SubVertex] == 0);
 
             if(isBest || acceptedByExploration)
@@ -460,6 +444,10 @@ __global__ void KinoPaxSTARWeightedCost_propagateFrontier_kernel2(bool* frontier
                     unexploredSampleCosts[tid] = cost;
                     frontierNextXR1s[tid]      = x1Vertex;
                     frontierNext[tid]          = true;
+                    // Admitted ONLY because it was the region minimum? A node the Syclop roll
+                    // would have taken anyway is an explorer and must stay immune to cost pruning.
+                    // Both flags are computed above regardless, so this touches no RNG state.
+                    frontierNextAdmitBest[tid] = isBest && !acceptedByExploration;
                 }
 
             if(activeSubVertices[x1SubVertex] == 0) atomicExch(&activeSubVertices[x1SubVertex], 1);
@@ -469,42 +457,73 @@ __global__ void KinoPaxSTARWeightedCost_propagateFrontier_kernel2(bool* frontier
 }
 
 /***************************/
-/* COST-BASED PRUNING KERNEL */
+/* COST PRUNING KERNEL (guarded to cost-admitted nodes) */
 /***************************/
-// Min-cost (best-in-region) candidates are exempt and always kept. Non-best candidates are
-// retained with the weighted-sum probability
-//     min(1, w*(vertexScore + fAccept) + (1-w)*costProbExp(...) + P_floor)
-__global__ void KinoPaxSTARWeightedCost_costPrune_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
-                                                  float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
-                                                  int* frontierNextXR1s, float* unexploredSampleCosts,
-                                                  bool* frontierNext, curandState* randomSeeds,
-                                                  float* vertexScores, float fAccept,
-                                                  float costWeight, float costPruneExp, float probFloor)
+// One thread per tree node, re-run every iteration.
+//
+// The FIRST line is the fix: a node the Syclop exploration roll admitted is never touched. The
+// predecessor (KinoPaxSTARNoPruneAncestor) omitted this guard, and because Syclop-admitted nodes
+// are non-minimum by construction, every one of them was tombstoned on the first pass -- and
+// Part B returns early on pruned[], so they never reactivated. Exploration died instantly.
+//
+// After the guard the branches follow KinoPaxPlus's pruningTree_kernel:
+//   A. dormancy / un-prune -- a pruned node that is (or becomes) its region's cheapest accrues
+//      credit; past dormancyThreshold iterations of that it is resurrected. The only un-prune.
+//   B. amnesty             -- once that credit is banked the node is immune while region-best.
+//   C. the prune test.
+// Falling through C does NOT clear pruned[]: pruning is instantaneous, rehabilitation takes
+// dormancyThreshold+1 iterations. That asymmetry is KinoPaxPlus's, preserved.
+//
+// Mode 2's chain uses one parent lookup rather than an O(depth) walk. bad(a) is MONOTONE --
+// minCostsR1 only decreases and a node's cost/region are written once at insertion -- so
+// ancestorBad(i) = bad(i) || ancestorBad(parent(i)) is evaluated by a single sticky flag. A
+// child's index always exceeds its parent's, so the recurrence is well-founded on index order.
+// Within one launch a thread may read a parent flag before the parent updates it, which only
+// ever DELAYS a prune; the flags are sticky and the kernel re-runs every iteration.
+__global__ void KinoPaxSTARTrue_pruningTree_kernel(int treeSize, int* treeSamplesParentIdxs,
+                                                  float* treeSampleCosts, float* minCostsR1, int* treeXR1s,
+                                                  bool* admitBest, bool* pruned, bool* ancestorBad,
+                                                  uint* inactiveIterations,
+                                                  int ancestorPrune, int dormancyThreshold, float ancestorTol)
 {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if(tid >= frontierNextSize) return;
+    int treeIdx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(treeIdx >= treeSize) return;
 
-    int idx    = activeFrontierNextIdxs[tid];
-    float cost = unexploredSampleCosts[idx];
-    int xR1    = frontierNextXR1s[idx];
-    float m    = minCostsR1[xR1];
+    // --- THE GUARD: cost pruning only ever touches cost-admitted nodes. ---
+    if(!admitBest[treeIdx]) return;
 
-    // --- Min-cost candidates are exempt: always inserted (every region best stays in the frontier).
-    // This early return is LOAD-BEARING under the weighted sum and must not be folded into the
-    // formula: at cost == m, P_cost == 1 but P_combined == min(1, w*P_syclop + (1-w) + floor),
-    // which is below 1 whenever P_syclop < 1 -- so a region best could be rejected. ---
-    if(cost <= m) return;
+    float nodeCost = treeSampleCosts[treeIdx];
+    int   nodeR1   = treeXR1s[treeIdx];
+    bool  isBest   = (nodeCost <= minCostsR1[nodeR1]);
 
-    // --- Non-best candidates: weighted sum of the Syclop and cost probabilities. ---
-    float pCost   = costProbExp(m, sumCostsR1[xR1], cntCostsR1[xR1], cost, costPruneExp);
-    float pSyclop = vertexScores[xR1] + fAccept;
-    float acceptanceProbability = weightedAccept(costWeight, pSyclop, pCost, probFloor);
+    // --- A: dormancy accumulation and un-prune ---
+    if(pruned[treeIdx] && isBest)
+        {
+            inactiveIterations[treeIdx]++;
+            if(inactiveIterations[treeIdx] > dormancyThreshold) pruned[treeIdx] = false;
+            return;
+        }
 
-    curandState seed = randomSeeds[idx];
-    bool accept      = curand_uniform(&seed) < acceptanceProbability;
-    randomSeeds[idx] = seed;
+    // --- B: permanent amnesty while region-best ---
+    if(inactiveIterations[treeIdx] > dormancyThreshold && isBest) return;
 
-    if(!accept) frontierNext[idx] = false;
+    // --- C: prune test ---
+    bool selfBad = (nodeCost > minCostsR1[nodeR1] * (1.0f + ancestorTol));
+
+    if(ancestorPrune == 1)
+        {
+            // Stale-best: admitted as the region minimum, no longer the region minimum.
+            if(selfBad) pruned[treeIdx] = true;
+            return;
+        }
+
+    // Mode 2: stale-best OR any ancestor stale, memoized.
+    if(!ancestorBad[treeIdx])
+        {
+            int parent = treeSamplesParentIdxs[treeIdx];
+            ancestorBad[treeIdx] = selfBad || (parent >= 0 && ancestorBad[parent]);
+        }
+    if(ancestorBad[treeIdx]) pruned[treeIdx] = true;
 }
 
 /***************************/
@@ -512,14 +531,13 @@ __global__ void KinoPaxSTARWeightedCost_costPrune_kernel(uint* activeFrontierNex
 /***************************/
 // Hybrid: adds new frontier nodes to tree, re-activates best-per-region + probabilistic others
 __global__ void
-KinoPaxSTARWeightedCost_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs, uint frontierNextSize,
+KinoPaxSTARTrue_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs, uint frontierNextSize,
                                float* xGoal, int treeSize, float* unexploredSamples, float* treeSamples,
                                int* unexploredSamplesParentIdxs, int* treeSamplesParentIdxs, float* treeSampleCosts,
                                uint* activeFrontierRepeatCount, int* validVertexCounter, curandState* randomSeeds,
                                float* vertexScores, float fAccept,
-                               float acceptCap, float costWeight, float costPruneExp, float probFloor,
-                               float* minCostsR1, float* maxCostsR1, float* sumCostsR1, int* cntCostsR1,
-                               int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
+                               float* minCostsR1, int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
+                               bool* frontierNextAdmitBest, bool* treeAdmitBest,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet, bool* pruned,
                                int* iterations, int iteration)
 {
@@ -547,6 +565,7 @@ KinoPaxSTARWeightedCost_updateFrontier_kernel(bool* frontier, bool* frontierNext
                 treeSamples[x1TreeIdx * SAMPLE_DIM + i] = x1[i];
             treeSampleCosts[x1TreeIdx] = cost;
             treeXR1s[x1TreeIdx]        = xR1;
+            treeAdmitBest[x1TreeIdx]   = frontierNextAdmitBest[x1UnexploredIdx];
 
             // Always add to frontier (passed dual filter + pruning)
             frontier[x1TreeIdx] = true;
@@ -591,7 +610,8 @@ KinoPaxSTARWeightedCost_updateFrontier_kernel(bool* frontier, bool* frontierNext
 
             // GUARANTEE: Best node per region is ALWAYS in the frontier.
             // Checked BEFORE pruned[] so a region best cannot lose its guaranteed slot to a
-            // stale ancestor-pruning tombstone.
+            // stale tombstone (stock NoGoalBias tests pruned[] first, which is harmless only
+            // because nothing there ever writes it).
             if(treeIdx == bestNodeIdxPerR1[xR1])
                 {
                     frontier[treeIdx]                  = true;
@@ -601,18 +621,11 @@ KinoPaxSTARWeightedCost_updateFrontier_kernel(bool* frontier, bool* frontierNext
 
             if(pruned[treeIdx]) return;
 
-            // REACTIVATION: weighted sum of the Syclop and cost probabilities -- the same rule
-            // the insertion gate uses. At w = 1 this is min(1, vertexScore + fAccept + P_floor),
-            // i.e. KPAX's rule, which is the control arm for the exploration-speed question.
+            // REACTIVATION: Non-best nodes re-enter via the plain KPAX Syclop roll.
             if(frontier[treeIdx] == 0)
                 {
-                    float pCost   = costProbExp(minCostsR1[xR1], sumCostsR1[xR1], cntCostsR1[xR1],
-                                                treeSampleCosts[treeIdx], costPruneExp);
-                    float pSyclop = vertexScores[xR1] + fAccept;
-                    float reactivationProb = weightedAccept(costWeight, pSyclop, pCost, probFloor);
-
                     curandState seed = randomSeeds[treeIdx];
-                    if(curand_uniform(&seed) < reactivationProb)
+                    if(curand_uniform(&seed) <= vertexScores[xR1] + fAccept)
                         {
                             frontier[treeIdx]                  = true;
                             activeFrontierRepeatCount[treeIdx] = 1;
@@ -622,31 +635,21 @@ KinoPaxSTARWeightedCost_updateFrontier_kernel(bool* frontier, bool* frontierNext
         }
 }
 
-void KinoPaxSTARWeightedCost::updateFrontier()
+void KinoPaxSTARTrue::updateFrontier()
 {
+    // --- Cost pruning: retroactively tombstone cost-admitted nodes that went stale ---
+    // Runs on the pre-insertion tree so it sees the minCostsR1 propagateFrontier just lowered.
+    // Skipped entirely when off, so the control arm carries no overhead.
+    if(h_ancestorPrune_ != 0 && h_treeSize_ > 0)
+        {
+            KinoPaxSTARTrue_pruningTree_kernel<<<iDivUp(h_treeSize_, h_blockSize_), h_blockSize_>>>(
+              h_treeSize_, d_treeSamplesParentIdxs_ptr_, d_treeSampleCosts_ptr_, d_minCostsR1_ptr_,
+              d_treeXR1s_ptr_, d_treeAdmitBest_ptr_, d_pruned_ptr_, d_ancestorBad_ptr_,
+              d_treeInactiveIterations_ptr_,
+              h_ancestorPrune_, h_dormancyThreshold_, h_ancestorTol_);
+        }
+
     // --- Find indices and size of the next frontier ---
-    thrust::exclusive_scan(d_frontierNext_.begin(), d_frontierNext_.end(), d_frontierScanIdx_.begin(), 0, thrust::plus<uint>());
-    h_frontierNextSize_ = d_frontierScanIdx_[MAX_TREE_SIZE - 1];
-    findInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_frontierNext_ptr_, d_frontierScanIdx_ptr_, d_activeFrontierIdxs_ptr_);
-
-    // --- Compute fAccept (KPAX re-activation boost) ---
-    // Moved AHEAD of the admission gate: the weighted-sum rule needs P_syclop = vertexScore +
-    // fAccept at both acceptance points, and the gate is the first of them. Consequence: treeAddSize
-    // is based on the PRE-gate frontierNextSize rather than the post-gate one, so fAccept comes out
-    // marginally smaller than in KinoPaxSTARcostprune. Using one value for the whole iteration is
-    // also more consistent than computing it between the two uses.
-    float treeAddSize = 1 - (float(h_treeSize_ + h_frontierNextSize_) / (MAX_TREE_SIZE));
-    h_fAccept_        = (h_itr_ * EPSILON) * pow(treeAddSize, 5);
-
-    // --- Admission gate: min-cost candidates exempt; non-best kept via the weighted sum ---
-    KinoPaxSTARWeightedCost_costPrune_kernel<<<iDivUp(h_frontierNextSize_, h_blockSize_), h_blockSize_>>>(
-      d_activeFrontierIdxs_ptr_, h_frontierNextSize_, d_minCostsR1_ptr_, d_sumCostsR1_ptr_, d_cntCostsR1_ptr_,
-      d_frontierNextXR1s_ptr_,
-      d_unexploredSampleCosts_ptr_, d_frontierNext_ptr_, d_randomSeeds_ptr_,
-      graph_.d_vertexScoreArray_ptr_, h_fAccept_,
-      h_costWeight_, h_costPruneExp_, h_probFloor_);
-
-    // --- Re-scan after pruning ---
     thrust::exclusive_scan(d_frontierNext_.begin(), d_frontierNext_.end(), d_frontierScanIdx_.begin(), 0, thrust::plus<uint>());
     h_frontierNextSize_ = d_frontierScanIdx_[MAX_TREE_SIZE - 1];
     findInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_frontierNext_ptr_, d_frontierScanIdx_ptr_, d_activeFrontierIdxs_ptr_);
@@ -658,16 +661,19 @@ void KinoPaxSTARWeightedCost::updateFrontier()
             return;
         }
 
-    // --- Update Frontier (fAccept already computed above, before the gate) ---
+    // --- Compute fAccept (KPAX re-activation boost) ---
+    float treeAddSize = 1 - (float(h_treeSize_ + h_frontierNextSize_) / (MAX_TREE_SIZE));
+    h_fAccept_        = (h_itr_ * EPSILON) * pow(treeAddSize, 5);
+
+    // --- Update Frontier ---
     thrust::fill(d_activeFrontierRepeatCount_.begin(), d_activeFrontierRepeatCount_.end(), 0);
-    KinoPaxSTARWeightedCost_updateFrontier_kernel<<<iDivUp(h_frontierNextSize_ + h_treeSize_, h_blockSize_), h_blockSize_>>>(
+    KinoPaxSTARTrue_updateFrontier_kernel<<<iDivUp(h_frontierNextSize_ + h_treeSize_, h_blockSize_), h_blockSize_>>>(
       d_frontier_ptr_, d_frontierNext_ptr_, d_activeFrontierIdxs_ptr_, h_frontierNextSize_, d_goalSample_ptr_, h_treeSize_,
       d_unexploredSamples_ptr_, d_treeSamples_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_treeSamplesParentIdxs_ptr_,
       d_treeSampleCosts_ptr_, d_activeFrontierRepeatCount_ptr_, graph_.d_validCounterArray_ptr_, d_randomSeeds_ptr_,
       graph_.d_vertexScoreArray_ptr_, h_fAccept_,
-      h_acceptCap_, h_costWeight_, h_costPruneExp_, h_probFloor_,
-      d_minCostsR1_ptr_, d_maxCostsR1_ptr_, d_sumCostsR1_ptr_, d_cntCostsR1_ptr_,
-      d_treeXR1s_ptr_, d_frontierNextXR1s_ptr_, d_bestNodeIdxPerR1_ptr_,
+      d_minCostsR1_ptr_, d_treeXR1s_ptr_, d_frontierNextXR1s_ptr_, d_bestNodeIdxPerR1_ptr_,
+      d_frontierNextAdmitBest_ptr_, d_treeAdmitBest_ptr_,
       d_minCost_ptr_, d_unexploredSampleCosts_ptr_, d_goalSet_ptr_, d_pruned_ptr_,
       d_iterations_ptr_, h_itr_);
 
@@ -681,7 +687,7 @@ void KinoPaxSTARWeightedCost::updateFrontier()
 /***************************/
 /* GET CONTROL PATH TO GOAL */
 /***************************/
-void KinoPaxSTARWeightedCost::getControlPathToGoal()
+void KinoPaxSTARTrue::getControlPathToGoal()
 {
     thrust::exclusive_scan(d_goalSet_.begin(), d_goalSet_.end(), d_goalSetScanIdx_.begin(), 0, thrust::plus<uint>());
     h_solSetSize_ = d_goalSetScanIdx_[MAX_TREE_SIZE - 1];
@@ -690,7 +696,7 @@ void KinoPaxSTARWeightedCost::getControlPathToGoal()
 
     if(h_solSetSize_ == 0) return;
 
-    KinoPaxSTARWeightedCost_getControlPathToGoal_kernel<<<iDivUp(h_solSetSize_, h_blockSize_), h_blockSize_>>>(
+    KinoPaxSTARTrue_getControlPathToGoal_kernel<<<iDivUp(h_solSetSize_, h_blockSize_), h_blockSize_>>>(
       d_controlPathsToGoal_ptr_, d_treeSamples_ptr_, d_treeSamplesParentIdxs_ptr_, d_goalSetIdxs_ptr_, h_solSetSize_,
       d_pathCosts_ptr_, d_treeSampleCosts_ptr_, d_iterations_ptr_, d_minCost_ptr_);
 
@@ -704,7 +710,7 @@ void KinoPaxSTARWeightedCost::getControlPathToGoal()
 /* GET CONTROL PATH TO GOAL KERNEL */
 /***************************/
 // Every goal thread records (idx, cost, iteration); only the min-cost goal reconstructs its full path.
-__global__ void KinoPaxSTARWeightedCost_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSamples,
+__global__ void KinoPaxSTARTrue_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSamples,
                                                      int* treeSamplesParentIdxs, uint* goalSetIdxs, int goalSetSize,
                                                      float* pathCosts, float* treeSampleCosts, int* iterations,
                                                      float* minCost)
@@ -734,7 +740,7 @@ __global__ void KinoPaxSTARWeightedCost_getControlPathToGoal_kernel(float* contr
         }
 }
 
-void KinoPaxSTARWeightedCost::writeExecutionTimeToCSV(double time)
+void KinoPaxSTARTrue::writeExecutionTimeToCSV(double time)
 {
     std::ostringstream filename;
     std::filesystem::create_directories("Data");

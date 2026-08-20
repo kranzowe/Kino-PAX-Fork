@@ -4,8 +4,11 @@
 % at the single Large delta (R1 = 27k regions).
 %
 % Grid: KinoPaxSTARWeightedCost over w {0, 0.2, 0.4, 0.6, 0.8, 1.0} x k {0.5, 1, 2, 4} at
-% ancestor mode 1 (node-only) = 24 variants, plus KinoPaxSTARNoPruneAncestor (memoized chain)
-% as the single reference STAR variant, plus KPAX and KinoPaxPlus baselines. 27 series.
+% = 24 variants, plus KPAX and KinoPaxPlus baselines. 26 series.
+%
+% KinoPaxSTARWeightedCost carries NO cost pruning. Algorithm-vs-algorithm comparison (including
+% the pruned "True" variants) now lives in the separate comparison benchmark; this file is purely
+% the w x k tuning surface.
 %
 % ONE ENVIRONMENT PER RUN. The benchmark writes each environment to its own subfolder
 % (Data/Benchmarks/KinoPaxStarCostTuning/<env>/), so cd into the one you want and set envName
@@ -19,12 +22,6 @@
 % exp(-k*(cost-m)/(mean-m)): exactly 1 at the region min AND with a real gradient across the whole
 % range, unlike min(1,(mean/cost)^k), which is pinned at 1 for every cost at or below the mean.
 %
-% KinoPaxSTARNoPruneAncestor is KinoPaxSTARNoPrune plus KinoPaxPlus's retroactive ancestor
-% pruning -- the simplest honest fusion of the two parents: KPAX's acceptance rule and KPAX's
-% additive reactivation, KinoPaxPlus's per-region min-cost tracking and best-per-region frontier
-% guarantee, and KinoPaxPlus's ancestor pruning. It is the single reference the weighted grid is
-% measured against.
-%
 % COST METRIC: swept by rebuilding, since COST_MODE is a compile-time #if inside
 % edgeCost (include/helper/helper.cuh). The metric therefore rides in the delta
 % token of every filename: large_effort (control effort) vs large_length (workspace
@@ -34,16 +31,14 @@
 % Per-run CSVs (in dataDir):
 %   KinoPaxPlus:  {env}_delta{large_METRIC}_run{n}.csv
 %   KPAX:         {env}_KPAX_delta{large_METRIC}_run{n}.csv
-%   ancestor:     {env}_KinoPaxSTARNoPruneAncestor_chain_delta{large_METRIC}_run{n}.csv
 %   weighted:     {env}_KinoPaxSTARWeightedCost_w{N}_k{N}_anc{N}_delta{large_METRIC}_run{n}.csv
 %
 % Per-iteration columns: iteration, frontier_size, tree_size, elapsed_time_ms, best_cost
 %
-% ENCODING: with the ancestor axis fixed the weighted grid is two dimensions -- colour = w
-% (steel-blue ramp, light->dark as w goes 0->1) and line style = k (':' 0.5, '-.' 1.0, '--' 2.0,
-% '-' 4.0). The NoPruneAncestor reference is thick dark red, and the baselines are near-black
-% (KPAX) and DASHED blue (KinoPaxPlus, dashed so it does not read as part of the steel-blue
-% ramp). Every legend here is CLICKABLE — click an entry to hide/show that series.
+% ENCODING: colour = w (steel-blue ramp, light->dark as w goes 0->1), line style = k (':' 0.5,
+% '-.' 1.0, '--' 2.0, '-' 4.0). Baselines are near-black (KPAX) and DASHED blue (KinoPaxPlus,
+% dashed so it does not read as part of the steel-blue ramp). Every legend here is CLICKABLE —
+% click an entry to hide/show that series.
 %
 % FAIR-COMPARISON NOTE: an "iteration" is a different unit of work per planner, so
 % cost-vs-TIME is the fair cross-planner axis. Error bands and error bars are
@@ -78,8 +73,6 @@ deltaLabel = 'Large-\delta (27k)';
 % w and k), exactly as they appear in the filenames.
 weights   = [0 20 40 60 80 100];
 wExps     = [50 100 200 400];
-wAnc      = 1;             % node-only; modes 1 and 2 measured the same, see the .cu comment
-
 % Colour = w (light->dark), line style = k. The ancestor axis is fixed, so no hue family split.
 steelRamp  = [0.78 0.87 0.95;    % w 0    - steel blue (lightest)
               0.56 0.72 0.88;    % w 0.2
@@ -89,12 +82,7 @@ steelRamp  = [0.78 0.87 0.95;    % w 0    - steel blue (lightest)
               0.03 0.15 0.31];   % w 1.0  - steel blue (darkest)
 wExpStyles = {':', '-.', '--', '-'};   % k 0.5, 1.0, 2.0, 4.0
 
-% The single reference STAR variant: NoPrune + ancestor chain pruning.
-ancestorNames  = {'KinoPaxSTARNoPruneAncestor_chain'};
-ancestorLabels = {'NoPrune+AncChain'};
-ancestorColors = [0.60 0.12 0.08];   % dark red
-
-% --- Build the series arrays (24 weighted + 1 ancestor + 2 baselines) ---
+% --- Build the series arrays (24 weighted + 2 baselines) ---
 plannerNames   = {};
 plannerDisplay = {};
 plannerColors  = [];
@@ -103,8 +91,8 @@ plannerMarkers = {};
 plannerWidths  = [];
 for wi = 1:numel(weights)
     for ei = 1:numel(wExps)
-        plannerNames{end + 1}   = sprintf('KinoPaxSTARWeightedCost_w%d_k%d_anc%d', ...
-                                          weights(wi), wExps(ei), wAnc); %#ok<SAGROW>
+        plannerNames{end + 1}   = sprintf('KinoPaxSTARWeightedCost_w%d_k%d', ...
+                                          weights(wi), wExps(ei)); %#ok<SAGROW>
         plannerDisplay{end + 1} = sprintf('W w%g k%g', weights(wi) / 100, ...
                                           wExps(ei) / 100); %#ok<SAGROW>
         plannerColors(end + 1, :) = steelRamp(wi, :);   %#ok<SAGROW>
@@ -112,14 +100,6 @@ for wi = 1:numel(weights)
         plannerMarkers{end + 1}   = 'o';                %#ok<SAGROW>
         plannerWidths(end + 1)    = 1.4;                %#ok<SAGROW>
     end
-end
-for ai = 1:numel(ancestorNames)
-    plannerNames{end + 1}   = ancestorNames{ai};    %#ok<SAGROW>
-    plannerDisplay{end + 1} = ancestorLabels{ai};   %#ok<SAGROW>
-    plannerColors(end + 1, :) = ancestorColors(ai, :);  %#ok<SAGROW>
-    plannerStyles{end + 1}    = '-';                    %#ok<SAGROW>
-    plannerMarkers{end + 1}   = '^';                    %#ok<SAGROW>
-    plannerWidths(end + 1)    = 2.5;                    %#ok<SAGROW>
 end
 % Reference baselines, drawn thick so they read as anchors
 plannerNames   = [plannerNames,   {'KPAX', 'KinoPaxPlus'}];
@@ -259,7 +239,7 @@ for ei = 1:numel(environments)
         clickableLegend();
         title(sprintf(['Tuning Tradeoff: Time to First Solution vs Final Cost \x2014 %s, %s\n' ...
                        'lower-left is better (fast and cheap); ' ...
-                       '\x25cb weighted grid, \x25b3 NoPrune+AncChain, \x25a1 baseline'], ...
+                       '\x25cb weighted grid, \x25a1 baseline'], ...
                        envTitle, costTitle), 'FontWeight', 'bold');
     end   % cost metric loop
 end  % environment loop
@@ -278,10 +258,8 @@ function runs = loadRuns(dataDir, env, planner, delta, numRuns)
             case 'KPAX'
                 fn = sprintf('%s_KPAX_delta%s_run%d.csv', env, delta, ri);
             otherwise
-                % The WeightedCost grid and the NoPruneAncestor reference both use the
-                % planner name directly as the filename token.
-                if startsWith(planner, 'KinoPaxSTARNoPruneAncestor') || ...
-                   startsWith(planner, 'KinoPaxSTARWeightedCost')
+                % The WeightedCost grid uses the planner name directly as the filename token.
+                if startsWith(planner, 'KinoPaxSTARWeightedCost')
                     fn = sprintf('%s_%s_delta%s_run%d.csv', env, planner, delta, ri);
                 else
                     error('unknown planner %s', planner);

@@ -13,7 +13,7 @@
 #include "planners/PruneKPAX.cuh"
 #include "planners/KinoPaxSTAR.cuh"
 #include "planners/KinoPaxSTARcostprune.cuh"
-#include "planners/KinoPaxSTARNoPrune.cuh"
+#include "planners/KinoPaxSTARNoGoalBias.cuh"
 #include "planners/KinoPaxSTARNoPruneNoSpatialHash.cuh"
 #include "planners/KinoPaxSTARnoseed.cuh"
 #include "planners/KinoPaxSTARsparsefill.cuh"
@@ -175,7 +175,7 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
         filename << outputDir << "/" << result.environment << "_" << result.delta_label << "_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
     else if(result.delta_label == "KinoPaxSTARNoPrune")
-        filename << outputDir << "/" << result.environment << "_KinoPaxSTARNoPrune_delta" << result.build_delta
+        filename << outputDir << "/" << result.environment << "_KinoPaxSTARNoGoalBias_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
     else if(result.delta_label == "KinoPaxSTARNoPruneNoSpatialHash")
         filename << outputDir << "/" << result.environment << "_KinoPaxSTARNoPruneNoSpatialHash_delta" << result.build_delta
@@ -1011,12 +1011,12 @@ void runKinoPaxSTARcostpruneBenchmark(
 }
 
 // ========================================================================
-// KinoPaxSTARNoPrune benchmark + runner (simplest KPAX + KinoPaxPlus combo:
+// KinoPaxSTARNoGoalBias benchmark + runner (simplest KPAX + KinoPaxPlus combo:
 // Syclop acceptance + per-region min-cost always in the frontier, no pruning;
 // cost tracked via h_minCost_, same instrumentation as KinoPaxSTAR).
 // ========================================================================
-RunResult benchmarkKinoPaxSTARNoPrune(
-    KinoPaxSTARNoPrune& planner,
+RunResult benchmarkKinoPaxSTARNoGoalBias(
+    KinoPaxSTARNoGoalBias& planner,
     const std::string& deltaLabel,
     const std::string& environment,
     int runNumber,
@@ -1072,7 +1072,7 @@ RunResult benchmarkKinoPaxSTARNoPrune(
         if(planner.h_minCost_ < result.final_best_cost)
             result.final_best_cost = planner.h_minCost_;
 
-        // --- Frontier diagnostics (outside the timed window; KinoPaxSTARNoPrune uses the KPAX Graph) ---
+        // --- Frontier diagnostics (outside the timed window; KinoPaxSTARNoGoalBias uses the KPAX Graph) ---
         int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
                                              planner.d_frontier_.begin() + oldTreeSize, true);
         int inactiveR2 = (int)thrust::count(planner.graph_.d_activeSubVertices_.begin(),
@@ -1110,7 +1110,7 @@ RunResult benchmarkKinoPaxSTARNoPrune(
     return result;
 }
 
-void runKinoPaxSTARNoPruneBenchmark(
+void runKinoPaxSTARNoGoalBiasBenchmark(
     const std::string& environment_name,
     float* h_initial,
     float* h_goal,
@@ -1129,10 +1129,10 @@ void runKinoPaxSTARNoPruneBenchmark(
     printf("========================================\n");
 
     {
-        KinoPaxSTARNoPrune planner;
+        KinoPaxSTARNoGoalBias planner;
         for(int run = 0; run < numRuns; run++)
         {
-            RunResult result = benchmarkKinoPaxSTARNoPrune(planner, deltaLabel, environment_name, run,
+            RunResult result = benchmarkKinoPaxSTARNoGoalBias(planner, deltaLabel, environment_name, run,
                                                  h_initial, h_goal, d_obstacles,
                                                  numObstacles, maxIterations, maxTimeMs);
             printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
@@ -1153,9 +1153,9 @@ void runKinoPaxSTARNoPruneBenchmark(
 }
 
 // ========================================================================
-// KinoPaxSTARNoPruneNoSpatialHash benchmark + runner (KinoPaxSTARNoPrune with the
+// KinoPaxSTARNoPruneNoSpatialHash benchmark + runner (KinoPaxSTARNoGoalBias with the
 // spatial-hash collision grid removed; identical search, direct propagateAndCheck
-// collision path. Same instrumentation as KinoPaxSTARNoPrune).
+// collision path. Same instrumentation as KinoPaxSTARNoGoalBias).
 // ========================================================================
 RunResult benchmarkKinoPaxSTARNoPruneNoSpatialHash(
     KinoPaxSTARNoPruneNoSpatialHash& planner,
@@ -1598,7 +1598,7 @@ int main(int argc, char* argv[])
     const int NUM_KINOPAXPLUS_RUNS = 5;   // drives the KinoPaxPlus runner
     const int NUM_KINOPAXSTAR_RUNS = 5;   // drives the KinoPaxSTAR runner
     const int NUM_KINOPAXSTARCOSTPRUNE_RUNS = 5;   // drives the KinoPaxSTARcostprune runner
-    const int NUM_KINOPAXSTARNOPRUNE_RUNS   = 5;   // drives the KinoPaxSTARNoPrune runner
+    const int NUM_KINOPAXSTARNOPRUNE_RUNS   = 5;   // drives the KinoPaxSTARNoGoalBias runner
     const int NUM_KINOPAXSTARNOPRUNENOSPATIALHASH_RUNS = 5;   // drives the KinoPaxSTARNoPruneNoSpatialHash runner
     const int NUM_KINOPAXSTARNOSEED_RUNS     = 5;   // drives the KinoPaxSTARnoseed runner
     const int NUM_KINOPAXSTARSPARSEFILL_RUNS = 5;   // drives the KinoPaxSTARsparsefill runner
@@ -1622,7 +1622,7 @@ int main(int argc, char* argv[])
     printf("KinoPaxPlus:    %d runs\n", NUM_KINOPAXPLUS_RUNS);
     printf("KinoPaxSTAR:    %d runs\n", NUM_KINOPAXSTAR_RUNS);
     printf("KinoPaxSTARcostprune: sweep [cap0, cap0.4, cap1.0, cap0+exp0.5, cap0+exp0.75] x %d runs each\n", NUM_KINOPAXSTARCOSTPRUNE_RUNS);
-    printf("KinoPaxSTARNoPrune: %d runs\n", NUM_KINOPAXSTARNOPRUNE_RUNS);
+    printf("KinoPaxSTARNoGoalBias: %d runs\n", NUM_KINOPAXSTARNOPRUNE_RUNS);
     printf("KinoPaxSTARNoPruneNoSpatialHash: %d runs\n", NUM_KINOPAXSTARNOPRUNENOSPATIALHASH_RUNS);
     printf("KinoPaxSTARnoseed: %d runs\n", NUM_KINOPAXSTARNOSEED_RUNS);
     printf("KinoPaxSTARsparsefill: %d runs (pSeed ramp 0->1 over first 100 iters)\n", NUM_KINOPAXSTARSPARSEFILL_RUNS);
@@ -1680,8 +1680,8 @@ int main(int argc, char* argv[])
     runKinoPaxSTARcostpruneBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
                             all_results, outputDir, deltaLabel, NUM_KINOPAXSTARCOSTPRUNE_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
 
-    // --- KinoPaxSTARNoPrune delta benchmark (simplest KPAX + KinoPaxPlus combo; no pruning) ---
-    runKinoPaxSTARNoPruneBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
+    // --- KinoPaxSTARNoGoalBias delta benchmark (simplest KPAX + KinoPaxPlus combo; no pruning) ---
+    runKinoPaxSTARNoGoalBiasBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
                             all_results, outputDir, deltaLabel, NUM_KINOPAXSTARNOPRUNE_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
 
     // --- KinoPaxSTARNoPruneNoSpatialHash delta benchmark (NoPrune combo, spatial hash removed) ---
