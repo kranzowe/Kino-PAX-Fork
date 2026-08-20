@@ -24,11 +24,16 @@ static std::string g_vizDir;
 // ---- KinoPaxSTARWeightedCost grid ----
 // P_combined = min(1, w*(vertexScore + fAccept) + (1-w)*costProbExp(k) + P_floor).
 // w = 1 reproduces KPAX's acceptance, w = 0 is pure cost-greedy -- so the w axis brackets the
-// exploration/cost tradeoff with one knob. k is the decay rate of costProbExp. The ancestor axis
-// is off vs. the memoized chain; node-only (mode 1) is skipped here since it is a strict subset.
+// exploration/cost tradeoff with one knob. k is the decay rate of costProbExp.
+//
+// The ancestor axis is now node-only (1) vs. the memoized chain (2) -- mode 0 (off) was dropped
+// once the grid confirmed pruning helps, so this pass is a head-to-head between the two pruning
+// rules rather than a prune/no-prune test. Note that leaves the weighted grid without an
+// ancestor-off control of its own; KinoPaxSTARNoPruneAncestor_off is the nearest reference, but
+// it sits on the NoPrune base, not this one.
 static const float WEIGHTS[]       = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
 static const float WEIGHTED_EXPS[] = {0.5f, 1.0f, 2.0f};
-static const int   WEIGHTED_ANC[]  = {0, 2};
+static const int   WEIGHTED_ANC[]  = {1, 2};
 static const int   NUM_WEIGHTS       = sizeof(WEIGHTS) / sizeof(WEIGHTS[0]);
 static const int   NUM_WEIGHTED_EXPS = sizeof(WEIGHTED_EXPS) / sizeof(WEIGHTED_EXPS[0]);
 static const int   NUM_WEIGHTED_ANC  = sizeof(WEIGHTED_ANC) / sizeof(WEIGHTED_ANC[0]);

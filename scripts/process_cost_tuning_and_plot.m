@@ -4,7 +4,7 @@
 % at the single Large delta (R1 = 27k regions).
 %
 % Grid: KinoPaxSTARWeightedCost over w {0, 0.25, 0.5, 0.75, 1.0} x k {0.5, 1, 2} x ancestor
-% {off, chain} = 30 variants, plus 2 cost-prune union-blend reference probes, plus
+% {node-only, chain} = 30 variants, plus 2 cost-prune union-blend reference probes, plus
 % KinoPaxSTARNoPruneAncestor in all three ancestor-pruning modes, plus KPAX and KinoPaxPlus
 % as reference baselines. 37 series.
 %
@@ -44,7 +44,7 @@
 % Per-iteration columns: iteration, frontier_size, tree_size, elapsed_time_ms, best_cost
 %
 % ENCODING: the WeightedCost grid needs three dimensions, so hue family = ancestor mode
-% (steel-blue for anc0, purple for anc2), shade within family = w (light->dark as w goes 0->1),
+% (steel-blue for anc1 = node-only, purple for anc2 = memoized chain), shade = w (light->dark),
 % and line style = k (':' 0.5, '--' 1.0, '-' 2.0). The three NoPruneAncestor modes are an
 % orange->dark-red ramp and the two union probes are a green pair, both drawn thick. Baselines
 % are near-black (KPAX) and DASHED blue (KinoPaxPlus, dashed so it does not read as part of the
@@ -82,9 +82,9 @@ deltaLabel = 'Large-\delta (27k)';
 % w and k), exactly as they appear in the filenames.
 weights   = [0 25 50 75 100];
 wExps     = [50 100 200];
-wAnc      = [0 2];
+wAnc      = [1 2];         % 1 = node-only, 2 = memoized chain (mode 0/off dropped)
 
-% Hue family = ancestor mode, shade = w (light->dark), line style = k.
+% Hue family = ancestor mode (steel = node-only, purple = chain), shade = w, line style = k.
 steelRamp  = [0.72 0.83 0.93;    % w 0    - steel blue (lightest)
               0.48 0.66 0.85;    % w 0.25
               0.26 0.48 0.72;    % w 0.5

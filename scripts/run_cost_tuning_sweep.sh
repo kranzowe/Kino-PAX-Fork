@@ -8,7 +8,7 @@
 #   cost metric   : workspace path length (COST_MODE 0), control effort (COST_MODE 1)
 #   w             : 0, 0.25, 0.5, 0.75, 1.0   (weight on the Syclop probability)
 #   k             : 0.5, 1.0, 2.0              (decay rate of P_cost)
-#   ancestorPrune : off, memoized chain
+#   ancestorPrune : node-only, memoized chain
 #   planner       : KinoPaxSTARWeightedCost
 #
 # WeightedCost accepts with P = min(1, w*P_syclop + (1-w)*P_cost + P_floor) at both the
@@ -203,7 +203,7 @@ echo "  Model: 1 (6D Double Integrator)"
 echo "  Environment: ${ENV_NAME}"
 echo "  Delta: ${DELTA_LABEL} | W_R1=${DELTA_W_R1} C_R1=${DELTA_C_R1} V_R1=${DELTA_V_R1} | Regions=${REGIONS}"
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  Grid: w {0, 0.25, 0.5, 0.75, 1.0} x k {0.5, 1, 2} x anc {off, chain} = 30 points"
+echo "  Grid: w {0, 0.25, 0.5, 0.75, 1.0} x k {0.5, 1, 2} x anc {node, chain} = 30 points"
 echo "  Planners:  KinoPaxSTARWeightedCost (30-pt grid),"
 echo "             KinoPaxSTARcostprune (2 union reference probes),"
 echo "             KinoPaxSTARNoPruneAncestor (off/node/chain)"
