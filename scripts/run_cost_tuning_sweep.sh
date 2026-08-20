@@ -6,20 +6,30 @@
 # zigzag-corridor environment:
 #
 #   cost metric   : workspace path length (COST_MODE 0), control effort (COST_MODE 1)
-#   w             : 0, 0.25, 0.5, 0.75, 1.0   (weight on the Syclop probability)
-#   k             : 0.5, 1.0, 2.0              (decay rate of P_cost)
-#   ancestorPrune : node-only, memoized chain
+#   w             : 0, 0.2, 0.4, 0.6, 0.8, 1.0   (weight on the Syclop probability)
+#   k             : 0.5, 1.0, 2.0, 4.0            (decay rate of P_cost)
+#   ancestorPrune : node-only (mode 1)
 #   planner       : KinoPaxSTARWeightedCost
 #
 # WeightedCost accepts with P = min(1, w*P_syclop + (1-w)*P_cost + P_floor) at both the
 # insertion gate and reactivation, where P_syclop = vertexScore + fAccept is the full KPAX
 # rule. w = 1 reproduces KPAX's acceptance, w = 0 is pure cost-greedy.
 #
-# plus 2 cost-prune union-blend reference probes, plus KinoPaxSTARNoPruneAncestor in all
-# three ancestor-pruning modes (off / node-only / memoized chain).
+# plus KinoPaxSTARNoPruneAncestor (memoized chain) as the single reference STAR variant --
+# NoPrune + ancestor pruning is the simplest honest fusion of KPAX and KinoPaxPlus.
 #
-# = (30 weighted + 2 union + 3 ancestor) x 3 runs = 105 runs per cost metric, plus KPAX and
-# KinoPaxPlus baselines (3 runs each) = 111 per metric, 222 total.
+# Runs on BOTH environments (house and zigzag), each written to its own subfolder under
+# Data/Benchmarks/KinoPaxStarCostTuning/<env>/ so they can be plotted independently.
+#
+# = (24 weighted + 1 ancestor) x 10 runs = 250 runs, plus KPAX and KinoPaxPlus baselines
+# (10 each) = 270 runs per (environment, cost metric); 4 such passes = 1080 runs total.
+# At the 10 s per-run cap that is ~45 min per pass, ~3 h worst case overall.
+#
+# NOTE: this script's config.h heredoc does NOT define KINOPAXPLUS_PARENT_CHAIN_PRUNING, so
+# `#if KINOPAXPLUS_PARENT_CHAIN_PRUNING` in KinoPaxPlus.cu sees an undefined macro and takes
+# the 0 branch -- the KinoPaxPlus baseline runs NODE-ONLY pruning here, not the full chain its
+# checked-in config.h (line 270) selects. Add `#define KINOPAXPLUS_PARENT_CHAIN_PRUNING 1` to
+# the heredoc below if you want the baseline to use chain pruning.
 #
 # COST_MODE is a compile-time #if inside edgeCost (include/helper/helper.cuh), so
 # the cost metric cannot vary within one binary. This script therefore borrows
@@ -55,9 +65,10 @@ DELTA_V_R1=3
 COST_LABELS=("length" "effort")
 COST_MODES=(0 1)
 
-# Single environment (obstacles already in [0,1]^3 for Model 1)
-ENV_NAME="zigzag"
-ENV_OBSTACLES="../include/config/obstacles/zigzag/obstacles.csv"
+# Environments (obstacles already in [0,1]^3 for Model 1). Each gets its own output subfolder.
+ENV_NAMES=("house" "zigzag")
+ENV_OBSTACLES=("../include/config/obstacles/house/obstacles.csv"
+               "../include/config/obstacles/zigzag/obstacles.csv")
 
 # --- Parse arguments ---
 SKIP_BUILD=false
@@ -200,13 +211,13 @@ echo ""
 echo "======================================================="
 echo "  KinoPaxSTAR Cost Tuning Sweep"
 echo "  Model: 1 (6D Double Integrator)"
-echo "  Environment: ${ENV_NAME}"
+echo "  Environments: ${ENV_NAMES[*]}  (separate output subfolders)"
 echo "  Delta: ${DELTA_LABEL} | W_R1=${DELTA_W_R1} C_R1=${DELTA_C_R1} V_R1=${DELTA_V_R1} | Regions=${REGIONS}"
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  Grid: w {0, 0.25, 0.5, 0.75, 1.0} x k {0.5, 1, 2} x anc {node, chain} = 30 points"
-echo "  Planners:  KinoPaxSTARWeightedCost (30-pt grid),"
-echo "             KinoPaxSTARcostprune (2 union reference probes),"
-echo "             KinoPaxSTARNoPruneAncestor (off/node/chain)"
+echo "  Grid: w {0, 0.2, 0.4, 0.6, 0.8, 1.0} x k {0.5, 1, 2, 4} x anc {node-only} = 24 points"
+echo "  Planners:  KinoPaxSTARWeightedCost (24-pt grid),"
+echo "             KinoPaxSTARNoPruneAncestor (chain, reference STAR variant)"
+echo "  Baselines: KPAX, KinoPaxPlus"
 echo "  Baselines: KPAX, KinoPaxPlus"
 echo "======================================================="
 
@@ -250,7 +261,7 @@ fi
 # RUN — one pass per cost metric, using the cached binaries
 # =============================================================================
 # --dump-viz writes run-0's full tree per variant (+ meta.csv) for the tree-growth /
-# R1-density visualization. OFF by default here: 35 variants x 2 builds would dump 70 full
+# R1-density visualization. OFF by default here: 25 variants x 2 builds x 2 envs would dump 100 full
 # trees of up to MAX_TREE_SIZE nodes each. Enable with DUMP_VIZ=1 bash run_cost_tuning_sweep.sh
 VIZ_FLAG=""
 if [ "${DUMP_VIZ:-0}" != "0" ]; then
@@ -259,11 +270,15 @@ fi
 
 cd "$BUILD_DIR"
 for CL in "${COST_LABELS[@]}"; do
-    echo ""
-    echo "=== RUNNING (delta=${DELTA_LABEL}, cost=${CL}, Env=${ENV_NAME}) ==="
-    # argv[1] carries both the discretization and the cost metric, so it lands in every
-    # output filename as _delta${DELTA_LABEL}_${CL}
-    "./KinoPaxStarCostTuningSweep_${CL}" "${DELTA_LABEL}_${CL}" "$ENV_OBSTACLES" "$ENV_NAME" $VIZ_FLAG
+    for i in "${!ENV_NAMES[@]}"; do
+        EN="${ENV_NAMES[$i]}"
+        EO="${ENV_OBSTACLES[$i]}"
+        echo ""
+        echo "=== RUNNING (delta=${DELTA_LABEL}, cost=${CL}, Env=${EN}) ==="
+        # argv[1] carries the discretization and the cost metric, so it lands in every output
+        # filename as _delta${DELTA_LABEL}_${CL}; argv[3] selects the per-environment subfolder.
+        "./KinoPaxStarCostTuningSweep_${CL}" "${DELTA_LABEL}_${CL}" "$EO" "$EN" $VIZ_FLAG
+    done
 done
 cd "$PROJECT_DIR"
 
@@ -271,7 +286,11 @@ echo ""
 echo "======================================================="
 echo "  COST TUNING SWEEP COMPLETE"
 echo "======================================================="
-echo "Results in: $BUILD_DIR/Data/Benchmarks/KinoPaxStarCostTuning/"
+for EN in "${ENV_NAMES[@]}"; do
+    echo "Results in: $BUILD_DIR/Data/Benchmarks/KinoPaxStarCostTuning/${EN}/"
+done
+echo "Plot each environment separately: cd into its folder, set envName at the top of"
+echo "scripts/process_cost_tuning_and_plot.m to match, then run it by name."
 echo "Plot with:  scripts/process_cost_tuning_and_plot.m (run it from that directory)"
 if [ "${DUMP_VIZ:-0}" != "0" ]; then
     echo "Viz dumps:  $BUILD_DIR/Data/Benchmarks/KinoPaxStarCostTuning/viz/  (visualize with scripts/visualize_tree_growth.m)"

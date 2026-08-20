@@ -101,6 +101,14 @@ on NoPrune keeps exploration KPAX-equivalent (and the per-iteration overhead too
 `updateFrontier`, not three), so ancestor pruning is the only variable.
 Three runtime knobs, set in the ctor and untouched by `resetPlanner`: `h_ancestorPrune_`
 (0 = off, so the class reproduces KinoPaxSTARNoPrune exactly; 1 = node-only; 2 = ancestor chain),
+**Mode 1 is KinoPaxPlus's `#else` escape hatch, not its default** — `KINOPAXPLUS_PARENT_CHAIN_PRUNING`
+is 1 in the checked-in `config.h:270`, so mode 2 is the published semantics. Empirically the two
+measure the same, which the kernel structure predicts: for any node that is not its region's
+cheapest, the chain's first step tests the node itself and prunes immediately, so 1 and 2 differ
+ONLY on region-best nodes with a bad ancestor — exactly the population the `bestNodeIdxPerR1`
+guarantee and the dormancy/amnesty branches already protect. Note also that the benchmark scripts'
+`config.h` heredoc omits the macro entirely, so `#if` sees an undefined name and KinoPaxPlus itself
+runs the node-only branch in every benchmarked comparison.
 `h_dormancyThreshold_` (default 5, KinoPaxPlus's hardcoded window), and `h_ancestorTol_`
 (default 0 = KinoPaxPlus's strict `cost > minCostsR1[r]`). Mode 2 does **not** walk the chain:
 `bad(a)` is monotone because `minCostsR1` only decreases and node costs are written once at
