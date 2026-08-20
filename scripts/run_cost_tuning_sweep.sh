@@ -6,19 +6,20 @@
 # zigzag-corridor environment:
 #
 #   cost metric   : workspace path length (COST_MODE 0), control effort (COST_MODE 1)
-#   acceptCap     : 0, 0.33, 0.66, 1.0
-#   costPruneExp  : 0.1, 0.5, 1.0
-#   costPruneFloor: 0.1
-#   planner       : KinoPaxSTARcostprune
+#   w             : 0, 0.25, 0.5, 0.75, 1.0   (weight on the Syclop probability)
+#   k             : 0.5, 1.0, 2.0              (decay rate of P_cost)
+#   ancestorPrune : off, memoized chain
+#   planner       : KinoPaxSTARWeightedCost
 #
-# plus 2 union-blend probes (fmaxf(costProb, syclop) with floor 0, which restores the
-# additive fAccept floor the product form destroys), plus KinoPaxSTARNoPruneAncestor in
-# all three ancestor-pruning modes (off / node-only / memoized chain). The ancestor
-# variant is built on KinoPaxSTARNoPrune, whose reactivation is KPAX's additive rule, so
-# ancestor pruning is the only variable against a KPAX-equivalent explorer.
+# WeightedCost accepts with P = min(1, w*P_syclop + (1-w)*P_cost + P_floor) at both the
+# insertion gate and reactivation, where P_syclop = vertexScore + fAccept is the full KPAX
+# rule. w = 1 reproduces KPAX's acceptance, w = 0 is pure cost-greedy.
 #
-# = (12 grid + 2 union + 3 ancestor) x 3 runs = 51 runs per cost metric, plus KPAX and
-# KinoPaxPlus baselines (3 runs each) = 57 per metric, 114 total.
+# plus 2 cost-prune union-blend reference probes, plus KinoPaxSTARNoPruneAncestor in all
+# three ancestor-pruning modes (off / node-only / memoized chain).
+#
+# = (30 weighted + 2 union + 3 ancestor) x 3 runs = 105 runs per cost metric, plus KPAX and
+# KinoPaxPlus baselines (3 runs each) = 111 per metric, 222 total.
 #
 # COST_MODE is a compile-time #if inside edgeCost (include/helper/helper.cuh), so
 # the cost metric cannot vary within one binary. This script therefore borrows
@@ -202,8 +203,9 @@ echo "  Model: 1 (6D Double Integrator)"
 echo "  Environment: ${ENV_NAME}"
 echo "  Delta: ${DELTA_LABEL} | W_R1=${DELTA_W_R1} C_R1=${DELTA_C_R1} V_R1=${DELTA_V_R1} | Regions=${REGIONS}"
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  Grid: cap {0, 0.33, 0.66, 1.0} x exp {0.1, 0.5, 1.0} x floor {0.1} = 12 points"
-echo "  Planners:  KinoPaxSTARcostprune (12-pt grid + 2 union probes),"
+echo "  Grid: w {0, 0.25, 0.5, 0.75, 1.0} x k {0.5, 1, 2} x anc {off, chain} = 30 points"
+echo "  Planners:  KinoPaxSTARWeightedCost (30-pt grid),"
+echo "             KinoPaxSTARcostprune (2 union reference probes),"
 echo "             KinoPaxSTARNoPruneAncestor (off/node/chain)"
 echo "  Baselines: KPAX, KinoPaxPlus"
 echo "======================================================="
@@ -248,7 +250,7 @@ fi
 # RUN — one pass per cost metric, using the cached binaries
 # =============================================================================
 # --dump-viz writes run-0's full tree per variant (+ meta.csv) for the tree-growth /
-# R1-density visualization. OFF by default here: 15 variants x 2 builds would dump 30 full
+# R1-density visualization. OFF by default here: 35 variants x 2 builds would dump 70 full
 # trees of up to MAX_TREE_SIZE nodes each. Enable with DUMP_VIZ=1 bash run_cost_tuning_sweep.sh
 VIZ_FLAG=""
 if [ "${DUMP_VIZ:-0}" != "0" ]; then

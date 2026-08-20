@@ -3,10 +3,18 @@
 % (run via run_cost_tuning_sweep.sh) and compares the full cost-prune tuning grid
 % at the single Large delta (R1 = 27k regions).
 %
-% Grid: acceptCap {0, 0.33, 0.66, 1.0} x costPruneExp {0.1, 0.5, 1.0} at the single
-% retained costPruneFloor of 0.1 on KinoPaxSTARcostprune = 12 variants, plus 2 union-blend
-% probes, plus KinoPaxSTARNoPruneAncestor in all three ancestor-pruning modes, plus KPAX
-% and KinoPaxPlus as reference baselines. 19 series.
+% Grid: KinoPaxSTARWeightedCost over w {0, 0.25, 0.5, 0.75, 1.0} x k {0.5, 1, 2} x ancestor
+% {off, chain} = 30 variants, plus 2 cost-prune union-blend reference probes, plus
+% KinoPaxSTARNoPruneAncestor in all three ancestor-pruning modes, plus KPAX and KinoPaxPlus
+% as reference baselines. 37 series.
+%
+% WeightedCost replaces costprune's MULTIPLICATIVE blend (costProb * syclop) with a weighted sum
+%   P_combined = min(1, w*P_syclop + (1-w)*P_cost + P_floor)
+% applied at both acceptance points, where P_syclop = vertexScore + fAccept is the full KPAX rule
+% and P_floor is fixed at EPSILON. w = 1 reproduces KPAX's acceptance, w = 0 is pure cost-greedy,
+% so the w axis brackets the exploration/cost tradeoff with one knob. P_cost is
+% exp(-k*(cost-m)/(mean-m)): exactly 1 at the region min AND with a real gradient across the whole
+% range, unlike min(1,(mean/cost)^k), which is pinned at 1 for every cost at or below the mean.
 %
 % KinoPaxSTARNoPruneAncestor is KinoPaxSTARNoPrune with KinoPaxPlus's retroactive ancestor
 % pruning. The NoPrune base matters: it reactivates with the plain KPAX rule
@@ -29,17 +37,19 @@
 % Per-run CSVs (in dataDir):
 %   KinoPaxPlus:  {env}_delta{large_METRIC}_run{n}.csv
 %   KPAX:         {env}_KPAX_delta{large_METRIC}_run{n}.csv
-%   tuning grid:  {env}_KinoPaxSTARcostprune_cap{N}_exp{N}_floor{N}_delta{large_METRIC}_run{n}.csv
 %   ancestor:     {env}_KinoPaxSTARNoPruneAncestor_{off,node,chain}_delta{large_METRIC}_run{n}.csv
 %   union probes: {env}_KinoPaxSTARcostprune_union_cap{N}_exp50_floor0_delta{large_METRIC}_run{n}.csv
+%   weighted:     {env}_KinoPaxSTARWeightedCost_w{N}_k{N}_anc{N}_delta{large_METRIC}_run{n}.csv
 %
 % Per-iteration columns: iteration, frontier_size, tree_size, elapsed_time_ms, best_cost
 %
-% ENCODING: the cost-prune grid is a teal ramp shaded by acceptCap (light->dark) with
-% line style by costPruneExp (':' 0.1, '--' 0.5, '-' 1.0). The three ancestor modes are
-% an orange->dark-red ramp and the two union probes are a green pair, both drawn thick.
-% Baselines draw solid and thick in near-black (KPAX) and blue (KinoPaxPlus). Every legend
-% here is CLICKABLE — click an entry to hide/show that series (see toggleSeries).
+% ENCODING: the WeightedCost grid needs three dimensions, so hue family = ancestor mode
+% (steel-blue for anc0, purple for anc2), shade within family = w (light->dark as w goes 0->1),
+% and line style = k (':' 0.5, '--' 1.0, '-' 2.0). The three NoPruneAncestor modes are an
+% orange->dark-red ramp and the two union probes are a green pair, both drawn thick. Baselines
+% are near-black (KPAX) and DASHED blue (KinoPaxPlus, dashed so it does not read as part of the
+% steel-blue weighted family). Every legend here is CLICKABLE — click an entry to hide/show that
+% series (see toggleSeries).
 %
 % FAIR-COMPARISON NOTE: an "iteration" is a different unit of work per planner, so
 % cost-vs-TIME is the fair cross-planner axis. Error bands and error bars are
@@ -67,55 +77,61 @@ costYLabels = {'Path Cost (control effort)', 'Path Cost (workspace path length)'
 
 deltaLabel = 'Large-\delta (27k)';
 
-% Tuning grid — must match SWEEP_CAPS / SWEEP_EXPS / SWEEP_FLOORS and ANCESTOR_LABELS
-% in kinopaxstar_cost_tuning_sweep.cu. Values are the integer label tokens (100 x the
-% float), exactly as they appear in the filenames.
-caps   = [0 33 66 100];
-exps   = [10 50 100];
-floors = 10;              % the 0 and 0.2 floor columns were dropped after measuring
+% WeightedCost grid — must match WEIGHTS / WEIGHTED_EXPS / WEIGHTED_ANC in
+% kinopaxstar_cost_tuning_sweep.cu. Values are the integer label tokens (100 x the float for
+% w and k), exactly as they appear in the filenames.
+weights   = [0 25 50 75 100];
+wExps     = [50 100 200];
+wAnc      = [0 2];
 
-% Cost-prune grid: teal shaded light->dark over cap, line style over exp
-% (index-aligned with `exps`).
-tealRamp  = [0.70 0.90 0.87;    % cap 0    - teal (lightest)
-             0.35 0.78 0.72;    % cap 0.33
-             0.12 0.52 0.48;    % cap 0.66
-             0.03 0.30 0.28];   % cap 1.0  - teal (darkest)
-expStyles = {':', '--', '-'};   % exp 0.1, 0.5, 1.0
+% Hue family = ancestor mode, shade = w (light->dark), line style = k.
+steelRamp  = [0.72 0.83 0.93;    % w 0    - steel blue (lightest)
+              0.48 0.66 0.85;    % w 0.25
+              0.26 0.48 0.72;    % w 0.5
+              0.13 0.32 0.55;    % w 0.75
+              0.04 0.17 0.34];   % w 1.0  - steel blue (darkest)
+purpleRamp = [0.85 0.76 0.93;    % w 0    - purple (lightest)
+              0.68 0.52 0.84;    % w 0.25
+              0.51 0.31 0.71;    % w 0.5
+              0.36 0.16 0.54;    % w 0.75
+              0.21 0.05 0.35];   % w 1.0  - purple (darkest)
+wExpStyles = {':', '--', '-'};   % k 0.5, 1.0, 2.0
+ancRamps   = {steelRamp, purpleRamp};
+ancMarkers = {'o', 'p'};
 
-% Ancestor-pruning modes: their own orange->dark-red ramp so the triple reads as one
-% family and never gets confused with the cost-prune grid.
+% NoPruneAncestor modes: their own orange->dark-red ramp.
 ancestorTokens = {'off', 'node', 'chain'};
 ancestorLabels = {'Anc off (=NoPrune)', 'Anc node-only', 'Anc chain'};
 ancestorRamp   = [0.98 0.72 0.35;    % off   - light orange
                   0.90 0.42 0.10;    % node  - orange
                   0.60 0.12 0.08];   % chain - dark red
 
-% Union-blend probes: fmaxf(costProb, syclop) with floor 0. Green so they never read as
-% part of the teal product grid they are meant to be compared against.
+% Union-blend probes: fmaxf(costProb, syclop) with floor 0, kept as the reference the
+% weighted sum is meant to beat. Green so they never read as part of another family.
 unionNames  = {'KinoPaxSTARcostprune_union_cap0_exp50_floor0', ...
                'KinoPaxSTARcostprune_union_cap100_exp50_floor0'};
 unionLabels = {'Union cap0', 'Union cap1'};
 unionRamp   = [0.55 0.85 0.45;    % cap 0   - light green
                0.13 0.52 0.20];   % cap 1.0 - dark green
 
-% --- Build the series arrays (12 grid + 2 union + 3 ancestor + 2 baselines) ---
+% --- Build the series arrays (30 weighted + 2 union + 3 ancestor + 2 baselines) ---
 plannerNames   = {};
 plannerDisplay = {};
 plannerColors  = [];
 plannerStyles  = {};
 plannerMarkers = {};
 plannerWidths  = [];
-for fl = 1:numel(floors)
-    for ci = 1:numel(caps)
-        for ei = 1:numel(exps)
-            plannerNames{end + 1}   = sprintf('KinoPaxSTARcostprune_cap%d_exp%d_floor%d', ...
-                                              caps(ci), exps(ei), floors(fl)); %#ok<SAGROW>
-            plannerDisplay{end + 1} = sprintf('CP cap%g exp%g', ...
-                                              caps(ci) / 100, exps(ei) / 100); %#ok<SAGROW>
-            plannerColors(end + 1, :) = tealRamp(ci, :);  %#ok<SAGROW>
-            plannerStyles{end + 1}    = expStyles{ei};    %#ok<SAGROW>
-            plannerMarkers{end + 1}   = 'o';              %#ok<SAGROW>
-            plannerWidths(end + 1)    = 1.4;              %#ok<SAGROW>
+for ai = 1:numel(wAnc)
+    for wi = 1:numel(weights)
+        for ei = 1:numel(wExps)
+            plannerNames{end + 1}   = sprintf('KinoPaxSTARWeightedCost_w%d_k%d_anc%d', ...
+                                              weights(wi), wExps(ei), wAnc(ai)); %#ok<SAGROW>
+            plannerDisplay{end + 1} = sprintf('W w%g k%g a%d', weights(wi) / 100, ...
+                                              wExps(ei) / 100, wAnc(ai)); %#ok<SAGROW>
+            plannerColors(end + 1, :) = ancRamps{ai}(wi, :);   %#ok<SAGROW>
+            plannerStyles{end + 1}    = wExpStyles{ei};        %#ok<SAGROW>
+            plannerMarkers{end + 1}   = ancMarkers{ai};        %#ok<SAGROW>
+            plannerWidths(end + 1)    = 1.4;                   %#ok<SAGROW>
         end
     end
 end
@@ -139,7 +155,7 @@ end
 plannerNames   = [plannerNames,   {'KPAX', 'KinoPaxPlus'}];
 plannerDisplay = [plannerDisplay, {'KPAX', 'KinoPaxPlus'}];
 plannerColors  = [plannerColors;  0.10 0.10 0.10;  0.20 0.40 0.80];
-plannerStyles  = [plannerStyles,  {'-', '-'}];
+plannerStyles  = [plannerStyles,  {'-', '--'}];   % KinoPaxPlus dashed: steel-blue is taken
 plannerMarkers = [plannerMarkers, {'s', 's'}];
 plannerWidths  = [plannerWidths,  2.5, 2.5];
 
@@ -273,7 +289,7 @@ for ei = 1:numel(environments)
         clickableLegend();
         title(sprintf(['Tuning Tradeoff: Time to First Solution vs Final Cost \x2014 %s, %s\n' ...
                        'lower-left is better (fast and cheap); ' ...
-                       '\x25cb cost-prune grid, \x25bd union probes, \x25b3 ancestor modes, \x25a1 baseline'], ...
+                       '\x25cb weighted anc0, \x2606 weighted anc2, \x25bd union, \x25b3 NoPruneAnc, \x25a1 baseline'], ...
                        envTitle, costTitle), 'FontWeight', 'bold');
     end   % cost metric loop
 end  % environment loop
@@ -292,12 +308,11 @@ function runs = loadRuns(dataDir, env, planner, delta, numRuns)
             case 'KPAX'
                 fn = sprintf('%s_KPAX_delta%s_run%d.csv', env, delta, ri);
             otherwise
-                % Tuning-grid variants (KinoPaxSTARcostprune_capNN_expNN_floorNN), the
-                % union probes, and the ancestor modes
-                % (KinoPaxSTARNoPruneAncestor_off|node|chain) all use the planner name
-                % directly as the filename token.
+                % The WeightedCost grid, the union probes and the NoPruneAncestor modes
+                % all use the planner name directly as the filename token.
                 if startsWith(planner, 'KinoPaxSTARcostprune') || ...
-                   startsWith(planner, 'KinoPaxSTARNoPruneAncestor')
+                   startsWith(planner, 'KinoPaxSTARNoPruneAncestor') || ...
+                   startsWith(planner, 'KinoPaxSTARWeightedCost')
                     fn = sprintf('%s_%s_delta%s_run%d.csv', env, planner, delta, ri);
                 else
                     error('unknown planner %s', planner);
@@ -385,8 +400,8 @@ function plannerBar(mu, plannerLabels, plannerColors, ylab, ttl)
     for pi = 1:nP
         bar(pi, mu(pi), 0.7, 'FaceColor', plannerColors(pi, :), 'EdgeColor', 'none');
     end
-    set(gca, 'XTick', 1:nP, 'XTickLabel', plannerLabels, 'FontSize', 7);
-    xtickangle(45);
+    set(gca, 'XTick', 1:nP, 'XTickLabel', plannerLabels, 'FontSize', 5);
+    xtickangle(60);
     xlim([0.5, nP + 0.5]);
     ylabel(ylab); title(ttl); grid on;
 end

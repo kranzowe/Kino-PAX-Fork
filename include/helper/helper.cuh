@@ -148,6 +148,37 @@ __device__ __forceinline__ float costKeepProb(int norm, float m, float M, float 
     return fmaxf(p, floor);
 }
 
+// Cost keep-probability for the weighted-sum variants (KinoPaxSTARWeightedCost).
+//
+// Exactly 1.0 at the region min, then a smooth decay in the NORMALIZED EXCESS
+// (cost - m) / (mean - m). Contrast with costKeepProb's norm 2, min(1,(mean/cost)^k), which is
+// also 1 at the min but stays pinned at 1 for EVERY cost at or below the mean -- so the whole
+// lower half of a region gets no gradient -- and never reaches 0 (0.33 at 6x the min). Here,
+// with k = 1: 1.00 at the min, 0.61 at 1.5x, 0.37 at the mean, 0.05 at 4x, 0.007 at 6x.
+//
+// Deliberately has NO floor: the weighted-sum form adds P_floor exactly once, in
+// weightedAccept(). Dimensionless, so it behaves identically under either COST_MODE, and it
+// needs only min/sum/cnt -- no outlier-sensitive running max.
+__device__ __forceinline__ float costProbExp(float m, float sum, int cnt, float cost, float k)
+{
+    if(cnt <= 0) return 1.0f;   // no samples yet: no evidence, so do not penalize
+    float mean = sum / (float)cnt;
+    float d    = mean - m;
+    if(d <= 0.0f) return 1.0f;  // degenerate region: every node equally good
+    // The clamp guards a transient cost < m: minCostsR1 is lowered by atomicMinFloat during
+    // propagation, so a thread can read a cost below the min it was compared against.
+    return fminf(1.0f, __expf(-k * (cost - m) / d));
+}
+
+// Weighted-sum acceptance: P = min(1, w*P_syclop + (1-w)*P_cost + P_floor).
+// w = 1 recovers the KPAX rule (P_syclop = vertexScore + fAccept) plus the floor; w = 0 is pure
+// cost-greedy. Replaces the multiplicative `costProb * syclop` blend, which collapses to zero in
+// exactly the low-score cells that hold a narrow passage (see Graph.cu's quartic freeVol term).
+__device__ __forceinline__ float weightedAccept(float w, float pSyclop, float pCost, float pFloor)
+{
+    return fminf(1.0f, w * pSyclop + (1.0f - w) * pCost + pFloor);
+}
+
 #define gpuErrchk(ans)                        \
     {                                         \
         gpuAssert((ans), __FILE__, __LINE__); \

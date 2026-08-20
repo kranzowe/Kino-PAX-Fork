@@ -57,6 +57,34 @@ newly propagated non-best nodes on greedy-toward-goal progress before insertion,
 dormant-node reactivation blends goal-progress PoA with the Syclop score. Region-best
 nodes are exempt from pruning.
 
+### KinoPaxSTARWeightedCost  *(new)*
+KinoPaxSTARcostprune with a **weighted-sum** acceptance rule instead of a multiplicative one.
+costprune combines the two probabilities as `costProb * syclop`, which collapses to zero in
+exactly the cells that hold a narrow passage: `Graph.cu:249` drives the Syclop score down
+quartically where the valid-sample fraction is low, and multiplying by `costProb <= 1` destroys
+even the additive `fAccept` term KPAX relies on to keep resampling there. This variant uses
+
+    P_combined = min(1, w*P_syclop + (1-w)*P_cost + P_floor)
+
+at **both** acceptance points — the insertion gate `_costPrune_kernel` and the Part-B reactivation
+branch — with `P_syclop = vertexScores[xR1] + fAccept` (the full KPAX rule) and `P_floor` fixed at
+`EPSILON`, matching the floor already baked into the Syclop score itself. One knob: `h_costWeight_`
+(w) = 1 reproduces KPAX's acceptance, 0 is pure cost-greedy. `h_acceptCap_` survives but governs
+only the propagate-time dual-track acceptance, not either weighted decision.
+
+`P_cost` is `costProbExp` (`helper.cuh`), **not** `costKeepProb`: `exp(-k*(cost-m)/(mean-m))` is
+exactly 1 at the region min *and* has a real gradient across the whole range, where
+`min(1,(mean/cost)^k)` is pinned at 1 for every cost at or below the mean (so half of each region
+gets no discrimination) and never reaches 0. It carries no floor of its own — `P_floor` is added
+once, in `weightedAccept`. `h_costPruneExp_` (k) stays the sharpness knob. The `cost <= m` early
+return in the gate is load-bearing here: at the region min `P_cost = 1` but `P_combined` is still
+below 1 whenever `P_syclop < 1`, so without the exemption a region best could be rejected.
+
+Note `h_fAccept_` is computed *before* the gate in this variant (the gate needs it), so
+`treeAddSize` reflects the pre-gate frontier size — marginally smaller `fAccept` than costprune's.
+Carries the same toggleable ancestor pruning as `KinoPaxSTARNoPruneAncestor` via
+`h_ancestorPrune_` / `h_dormancyThreshold_` / `h_ancestorTol_`.
+
 ### KinoPaxSTARNoPruneAncestor  *(new)*
 KinoPaxSTARNoPrune plus KinoPaxPlus's ancestor (dormancy) pruning — the one mechanism the STAR
 line was missing. Every other STAR variant filters only at insertion time, so a node admitted
@@ -147,6 +175,7 @@ benefit depends on seeding still supplying coverage underneath it.
 | KinoPaxSTAR | ✔ | 1 | ✔ | goal-progress | ✔ |
 | KinoPaxSTARNoPruneAncestor | ✔ | 1 | ✔ | ancestor | ✔ |
 | KinoPaxSTARcostprune | capped (`h_acceptCap_`) | 1 | ✔ | cost | ✔ |
+| KinoPaxSTARWeightedCost | weighted (`h_costWeight_`) | 1 | ✔ | cost + optional ancestor | ✔ |
 | KinoPaxSTARnoseed | ✔ | 0 | ✔ | — | ✔ |
 | KinoPaxSTARsparsefill | ✔ | ramp 0→1 | ✔ | — | ✔ |
 | KinoPaxSTARcostprunenoseed | capped (`h_acceptCap_`) | 0 (`h_pSeed_`) | ✔ | cost | ✔ |
