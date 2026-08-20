@@ -553,11 +553,8 @@ RunResult benchmarkKinoPaxSTARNoGoalBias(
     float maxTimeMs,
     const std::string& label)
 {
-    // Override the planner's default for this run. resetPlanner (called below) does not touch
-    // h_ancestorPrune_, so setting it at entry holds for the run. h_ancestorTol_ and
-    // h_dormancyThreshold_ stay at their ctor defaults (0.0 and 5), i.e. KinoPaxPlus's
-    // strict test and its hardcoded dormancy window.
-    planner.h_ancestorPrune_ = ancestorPrune;
+    // KinoPaxSTARNoGoalBias has no cost pruning at all -- nothing to override here. It is the
+    // no-pruning arm the "True" variants are measured against.
     RunResult result;
     result.delta_label = label;
     result.build_delta = deltaLabel;
