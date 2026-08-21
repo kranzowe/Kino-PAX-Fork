@@ -916,12 +916,12 @@ int main(int argc, char* argv[])
             onlyKinoPaxPlus = true;
     }
 
-    const int NUM_KPAX_RUNS        = 10;
-    const int NUM_KINOPAXPLUS_RUNS = 10;   // drives the KinoPaxPlus runner
-    const int NUM_CLEANCOST_RUNS   = 5;    // drives the KinoPaxSTARCleanCost w x k x cap grid
-    const int NUM_TRUESTAR_RUNS    = 5;    // drives the KinoPaxSTARTrue cap sweep
-    const int MAX_ITERATIONS       = 500;
-    const float MAX_TIME_MS      = 10000.0f;  // 10 second timeout
+    const int NUM_KPAX_RUNS        = 5;
+    const int NUM_KINOPAXPLUS_RUNS = 5;   // drives the KinoPaxPlus runner
+    const int NUM_CLEANCOST_RUNS   = 3;    // drives the KinoPaxSTARCleanCost w x k x cap grid
+    const int NUM_TRUESTAR_RUNS    = 3;    // drives the KinoPaxSTARTrue cap sweep
+    const int MAX_ITERATIONS       = 400;
+    const float MAX_TIME_MS      = 8000.0f;  // 10 second timeout
 
     // Per-environment subfolder so house and zigzag can be plotted independently.
     std::string outputDir = "Data/Benchmarks/KinoPaxStarCostTuning/" + envName;
