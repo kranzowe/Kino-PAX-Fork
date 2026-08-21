@@ -13,6 +13,7 @@
 #include "planners/KPAX.cuh"
 #include "planners/KinoPaxSTARCleanCost.cuh"
 #include "planners/KinoPaxSTARTrue.cuh"
+#include "planners/KPAXCap.cuh"
 #include <thrust/count.h>
 #include <thrust/reduce.h>
 
@@ -36,9 +37,9 @@ static std::string g_vizDir;
 //   k   decay rate of P_cost (costProbExp).
 //   cap flat multiplier on the final probability, applied identically at the accept kernel and at
 //       Part-B reactivation.
-static const float WEIGHTS[] = {0.2f, 0.5f, 0.8f, 1.0f};
-static const float WEIGHTED_EXPS[] = {0.5f, 1.0f, 2.0f};
-static const float CAPS[] = {0.25f, 0.5f, 1.0f};
+static const float WEIGHTS[] = {0.8f, 0.85f, 0.9f, 0.95f, 1.0f};
+static const float WEIGHTED_EXPS[] = {1.0f, 2.0f, 4.0f};
+static const float CAPS[] = {0.1f, 0.2f, 0.3f, 0.4f};
 static const int NUM_WEIGHTS = sizeof(WEIGHTS) / sizeof(WEIGHTS[0]);
 static const int NUM_WEIGHTED_EXPS = sizeof(WEIGHTED_EXPS) / sizeof(WEIGHTED_EXPS[0]);
 static const int NUM_CAPS = sizeof(CAPS) / sizeof(CAPS[0]);
@@ -48,9 +49,19 @@ static const int NUM_CAPS = sizeof(CAPS) / sizeof(CAPS[0]);
 // acceptance points (fAccept stays unscaled, so reactivation is throttled rather than switched
 // off). Pruning is fixed at the guarded stale-best rule; the memoized ancestor-chain mode was
 // removed, since the guard truncated the chain at the first explorer ancestor.
-static const float TRUE_CAPS[] = {0.1f, 0.25f, 0.5f, 1.0f};
+static const float TRUE_CAPS[] = {0.25f, 0.5f};
 static const int NUM_TRUE_CAPS = sizeof(TRUE_CAPS) / sizeof(TRUE_CAPS[0]);
 static const int TRUE_PRUNE_STALEBEST = 1;
+
+// ---- KPAXCap cap sweep ----
+// Stock KPAX with the SAME cap multiplier, which makes it the control arm for the cap itself.
+// CleanCost at w = 1 is not KPAX: it applies the cap AND decides after graph_.updateVertices(),
+// so it reads vertexScores already penalised for the batch being judged (computeVertexScores_kernel
+// divides by 1 + counterArray^2, cumulative over the run). KPAXCap applies only the cap, still
+// inside propagate on pre-jump scores -- so KPAX / KPAXCap / CleanCost-at-w=1 separates the cap's
+// effect from the kernel boundary's. Matched to TRUE_CAPS so the two cap sweeps line up.
+static const float KPAXCAP_CAPS[] = {0.25f, 0.5f};
+static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0]);
 
 // "KinoPaxSTARCleanCost_w50_k100_cap25"
 static std::string cleanLabel(float w, float k, float cap)
@@ -66,6 +77,14 @@ static std::string trueLabel(float cap)
 {
     char buf[96];
     snprintf(buf, sizeof(buf), "KinoPaxSTARTrue_cap%d", (int)lroundf(100.0f * cap));
+    return std::string(buf);
+}
+
+// "KPAXCap_cap25"
+static std::string kpaxCapLabel(float cap)
+{
+    char buf[96];
+    snprintf(buf, sizeof(buf), "KPAXCap_cap%d", (int)lroundf(100.0f * cap));
     return std::string(buf);
 }
 
@@ -205,7 +224,9 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
     // don't overwrite each other:
     //   KPAX baseline: {env}_KPAX_delta{build}_run{n}.csv
     //   STAR variants: {env}_{planner label}_delta{build}_run{n}.csv
-    //                  e.g. KinoPaxSTARCleanCost_w50_k100_cap25, KinoPaxSTARTrue_cap25
+    //                  e.g. KinoPaxSTARCleanCost_w90_k100_cap20, KinoPaxSTARTrue_cap25
+    //   KPAXCap:       same planner-label form (KPAXCap_cap25). The "KPAX" arm above is an EXACT
+    //                  match, so it cannot swallow these.
     //   KinoPaxPlus:   {env}_delta{label}_run{n}.csv
     // KinoPaxPlus deliberately keys on the DELTA rather than a planner name: that is what keeps
     // the two discretizations (large_* and fine_*) in separate files.
@@ -214,7 +235,7 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
     if(result.delta_label == "KPAX")
         filename << outputDir << "/" << result.environment << "_KPAX_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
-    else if(result.delta_label.rfind("KinoPaxSTAR", 0) == 0)
+    else if(result.delta_label.rfind("KinoPaxSTAR", 0) == 0 || result.delta_label.rfind("KPAXCap", 0) == 0)
         filename << outputDir << "/" << result.environment << "_" << result.delta_label << "_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
     else
@@ -578,6 +599,173 @@ void runKinoPaxPlusBenchmark(
 }
 
 // ========================================================================
+// KPAXCap benchmark + runner (stock KPAX with the Syclop score scaled by h_syclopCap_).
+//
+// Modelled on benchmarkKPAX, NOT on the CleanCost/TrueStar runners: KPAX-family planners carry no
+// h_minCost_, so a goal is detected by zeroing d_pathToGoal_ before each iteration and walking the
+// parent chain with devicePathCost() afterwards, outside the timed window.
+// ========================================================================
+RunResult benchmarkKPAXCap(
+    KPAXCap& planner,
+    const std::string& deltaLabel,
+    const std::string& environment,
+    int runNumber,
+    float* h_initial,
+    float* h_goal,
+    float* d_obstacles,
+    uint numObstacles,
+    int maxIterations,
+    float maxTimeMs,
+    float syclopCap,
+    const std::string& label)
+{
+    // resetPlanner does not touch h_syclopCap_, so setting it at entry holds for the run.
+    planner.h_syclopCap_ = syclopCap;
+    RunResult result;
+    result.delta_label = label;
+    result.build_delta = deltaLabel;
+    result.environment = environment;
+    result.run_number = runNumber;
+    result.first_solution_iteration = -1;
+    result.first_solution_cost = INFINITY;
+    result.first_solution_tree_size = -1;
+    result.final_best_cost = INFINITY;
+
+    // Per-iteration planner-only timing (diagnostics + path-cost walks excluded).
+    cudaEvent_t iterStart, iterStop;
+    cudaEventCreate(&iterStart);
+    cudaEventCreate(&iterStop);
+    float plannerMs = 0.0f;
+    float iterMs    = 0.0f;
+
+    planner.resetPlanner(h_initial, h_goal);
+
+    int zero = 0;
+    int itr = 0;
+    while(itr < maxIterations)
+    {
+        itr++;
+        planner.h_itr_++;
+
+        // Reset pathToGoal before each iteration so we can detect new goals
+        cudaMemcpy(planner.d_pathToGoal_ptr_, &zero, sizeof(int), cudaMemcpyHostToDevice);
+        planner.h_pathToGoal_ = 0;
+
+        cudaEventRecord(iterStart);
+        planner.propagateFrontier(d_obstacles, numObstacles);
+        planner.graph_.updateVertices();
+        int oldTreeSize = planner.h_treeSize_;   // nodes before this iter's additions
+        planner.updateFrontier();
+        cudaEventRecord(iterStop);
+        cudaEventSynchronize(iterStop);
+        cudaEventElapsedTime(&iterMs, iterStart, iterStop);
+        plannerMs += iterMs;
+
+        // Check if a new path to goal was found THIS iteration
+        if(planner.h_pathToGoal_ != 0)
+        {
+            float pathCost = devicePathCost(
+                planner.d_treeSamples_ptr_,
+                planner.d_treeSamplesParentIdxs_ptr_,
+                planner.h_treeSize_,
+                planner.h_pathToGoal_);
+
+            if(result.first_solution_iteration == -1)
+            {
+                result.first_solution_iteration = itr;
+                result.first_solution_cost      = pathCost;
+                result.first_solution_tree_size = planner.h_treeSize_;
+            }
+            if(pathCost < result.final_best_cost)
+                result.final_best_cost = pathCost;
+        }
+
+        // --- Frontier diagnostics (outside the timed window; KPAXCap uses the KPAX Graph) ---
+        int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
+                                             planner.d_frontier_.begin() + oldTreeSize, true);
+        int inactiveR2 = (int)thrust::count(planner.graph_.d_activeSubVertices_.begin(),
+                                            planner.graph_.d_activeSubVertices_.end(), 0);
+        float r2CoveragePct = 100.0f * float(NUM_R2_REGIONS - inactiveR2) / float(NUM_R2_REGIONS);
+        float scoreSum  = thrust::reduce(planner.graph_.d_vertexScoreArray_.begin(),
+                                         planner.graph_.d_vertexScoreArray_.end(), 0.0f);
+        float meanScore = scoreSum / float(NUM_R1_REGIONS);
+
+        IterationData d;
+        d.iteration     = itr;
+        d.frontier_size = planner.h_frontierSize_;
+        d.tree_size     = planner.h_treeSize_;
+        d.elapsed_time_ms = plannerMs;
+        d.best_cost     = result.final_best_cost;
+        d.num_regions       = NUM_R1_REGIONS;
+        d.r2_coverage_pct   = r2CoveragePct;
+        d.mean_vertex_score = meanScore;
+        d.reactivated       = reactivated;
+        result.per_iteration.push_back(d);
+
+        if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
+
+        // Timeout check (planner-only time)
+        if(plannerMs >= maxTimeMs) break;
+    }
+
+    result.total_time_seconds = plannerMs / 1000.0;
+    result.final_tree_size    = planner.h_treeSize_;
+    result.total_iterations   = itr;
+
+    cudaEventDestroy(iterStart);
+    cudaEventDestroy(iterStop);
+    return result;
+}
+
+void runKPAXCapBenchmark(
+    const std::string& environment_name,
+    float* h_initial,
+    float* h_goal,
+    float* d_obstacles,
+    uint numObstacles,
+    std::vector<RunResult>& all_results,
+    const std::string& outputDir,
+    const std::string& deltaLabel,
+    int numRuns,
+    int maxIterations,
+    float maxTimeMs)
+{
+    printf("\n========================================\n");
+    printf("KPAXCAP CAP SWEEP: %s | Delta: %s | Regions: %d\n",
+           environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
+    printf("========================================\n");
+
+    for(int ci = 0; ci < NUM_KPAXCAP_CAPS; ci++)
+    {
+        const float       cap   = KPAXCAP_CAPS[ci];
+        const std::string label = kpaxCapLabel(cap);
+
+        printf("  --- cap = %.2f (%s) ---\n", cap, label.c_str());
+        KPAXCap planner;
+        for(int run = 0; run < numRuns; run++)
+        {
+            RunResult result = benchmarkKPAXCap(planner, deltaLabel, environment_name, run,
+                                                h_initial, h_goal, d_obstacles,
+                                                numObstacles, maxIterations, maxTimeMs,
+                                                cap, label);
+            printf("  cap=%.2f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                   cap, run + 1, numRuns, result.total_time_seconds, result.total_iterations,
+                   result.final_tree_size, result.first_solution_iteration,
+                   result.first_solution_cost, result.final_best_cost);
+            writePerIterationCSV(result, outputDir);
+            if(g_dumpViz && run == 0)
+                dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
+                            planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
+                            vizTreePath(g_vizDir, environment_name, label));
+            all_results.push_back(result);
+
+            if(run < numRuns - 1)
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+    }
+}
+
+// ========================================================================
 // KinoPaxSTARCleanCost benchmark + runner.
 // Single acceptance decision: cap * min(1, w*P_syclop + (1-w)*P_cost + P_floor).
 // ========================================================================
@@ -712,6 +900,12 @@ void runKinoPaxSTARCleanCostBenchmark(
         const float       w     = WEIGHTS[wi];
         const float       k     = WEIGHTED_EXPS[ei];
         const float       cap   = CAPS[ci];
+
+        // At w = 1 the cost term vanishes from weightedAccept -- min(1, 1*P_syclop + 0*P_cost +
+        // floor) -- so k is inert and the three k rungs would be the same rule differing only by
+        // RNG stream. Run k = 1 only there.
+        if(fabsf(w - 1.0f) < 1e-6f && fabsf(k - 1.0f) > 1e-6f) continue;
+
         const std::string label = cleanLabel(w, k, cap);
 
         printf("  --- w = %.2f, k = %.2f, cap = %.2f (%s) ---\n", w, k, cap, label.c_str());
@@ -920,8 +1114,11 @@ int main(int argc, char* argv[])
     const int NUM_KINOPAXPLUS_RUNS = 5;   // drives the KinoPaxPlus runner
     const int NUM_CLEANCOST_RUNS   = 3;    // drives the KinoPaxSTARCleanCost w x k x cap grid
     const int NUM_TRUESTAR_RUNS    = 3;    // drives the KinoPaxSTARTrue cap sweep
+    // KPAXCap runs at the KPAX count, not the grid count: it is the control arm for the cap and is
+    // read directly against the KPAX baseline, so the two want a matched noise level.
+    const int NUM_KPAXCAP_RUNS     = NUM_KPAX_RUNS;
     const int MAX_ITERATIONS       = 400;
-    const float MAX_TIME_MS      = 8000.0f;  // 10 second timeout
+    const float MAX_TIME_MS      = 6000.0f;  // 6 second per-run timeout
 
     // Per-environment subfolder so house and zigzag can be plotted independently.
     std::string outputDir = "Data/Benchmarks/KinoPaxStarCostTuning/" + envName;
@@ -943,12 +1140,16 @@ int main(int argc, char* argv[])
     printf("KinoPaxPlus:    %d runs\n", NUM_KINOPAXPLUS_RUNS);
     if(!onlyKinoPaxPlus)
     {
-        printf("CleanCost:      w x k x cap = %d x %d x %d = %d points x %d runs = %d runs\n",
-               NUM_WEIGHTS, NUM_WEIGHTED_EXPS, NUM_CAPS, NUM_WEIGHTS * NUM_WEIGHTED_EXPS * NUM_CAPS,
-               NUM_CLEANCOST_RUNS,
-               NUM_WEIGHTS * NUM_WEIGHTED_EXPS * NUM_CAPS * NUM_CLEANCOST_RUNS);
+        // Not the plain product: w = 1 runs k = 1 only (the cost term drops out of
+        // weightedAccept there), so it contributes NUM_CAPS points rather than
+        // NUM_WEIGHTED_EXPS * NUM_CAPS.
+        int cleanPoints = (NUM_WEIGHTS - 1) * NUM_WEIGHTED_EXPS * NUM_CAPS + NUM_CAPS;
+        printf("CleanCost:      w x k x cap = %d points (w=1 at k=1 only) x %d runs = %d runs\n",
+               cleanPoints, NUM_CLEANCOST_RUNS, cleanPoints * NUM_CLEANCOST_RUNS);
         printf("TrueStar:       cap = %d points x %d runs = %d runs\n",
                NUM_TRUE_CAPS, NUM_TRUESTAR_RUNS, NUM_TRUE_CAPS * NUM_TRUESTAR_RUNS);
+        printf("KPAXCap:        cap = %d points x %d runs = %d runs\n",
+               NUM_KPAXCAP_CAPS, NUM_KPAXCAP_RUNS, NUM_KPAXCAP_CAPS * NUM_KPAXCAP_RUNS);
     }
     printf("Max iterations: %d\n", MAX_ITERATIONS);
     printf("=======================================================\n");
@@ -1003,6 +1204,10 @@ int main(int argc, char* argv[])
         // --- KinoPaxSTARTrue: cap sweep ---
         runKinoPaxSTARTrueBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
                                 all_results, outputDir, deltaLabel, NUM_TRUESTAR_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
+
+        // --- KPAXCap: cap sweep (control arm for the cap, against the KPAX baseline above) ---
+        runKPAXCapBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
+                                all_results, outputDir, deltaLabel, NUM_KPAXCAP_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
     }
 
     cudaFree(d_obstacles);

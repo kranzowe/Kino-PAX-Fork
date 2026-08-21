@@ -25,6 +25,32 @@ a never-active R2 sub-region. Dormant tree nodes are reactivated by the same Syc
 plus an `fAccept` boost that decays as the tree fills. Excellent coverage, no cost
 awareness → long paths.
 
+### KPAXCap  *(new)*
+Stock KPAX plus one field: `h_syclopCap_`, a multiplier in (0,1] on the Syclop region score,
+applied at **both** acceptance points — `curand < cap * vertexScores[r] || !activeSubVertices[sub]`
+in propagate, and `curand <= cap * vertexScores[r] + fAccept` at dormant-node reactivation.
+`fAccept` is **not** scaled (it is the additive floor dormant nodes rely on; multiplying it by a
+small cap would switch revival off rather than throttle it), and the R2 seeding disjunct is **not**
+capped either — it stays a free pass. `cap = 1.0`, the default, is bit-identical to KPAX and adds no
+RNG draw, so it is a genuine no-op. Same contract as `KinoPaxSTARTrue::h_syclopCap_`.
+
+**Why it exists.** `KinoPaxSTARCleanCost` at `w = 1, cap = 1` is *not* KPAX — it is strictly
+stricter, because it changes two things at once: it applies the cap, **and** it moved the acceptance
+decision past the kernel boundary. The second one is not neutral. `computeVertexScores_kernel`
+divides by `(1 + counterArray²)` with `counterArray` cumulative over the whole run, so the regions
+the frontier currently occupies take a large counter jump *within* an iteration; KPAX admits that
+batch on the pre-jump score, while CleanCost's accept kernel runs after `graph_.updateVertices()`
+and judges it on the post-jump, quadratically-crushed score. (`updateSampleAcceptance_kernel`'s
+`vertexScores[r] = 1.0` free pass for regions with `validCounterArray[r] == 0` is likewise already
+spent by gate time.) KPAXCap changes only the cap, still deciding inside propagate on pre-jump
+scores — so the triple KPAX / KPAXCap / CleanCost-at-`w=1` separates "the cap did this" from "the
+kernel boundary did this".
+
+Kernels are prefixed `KPAXCap_*`. That is load-bearing, not cosmetic: KPAX's kernels are
+*unprefixed* global symbols and `CUDA_SEPARABLE_COMPILATION` is ON, so an unprefixed copy is a
+duplicate-symbol link error. `originalKPAX.cu` already sets the precedent with its `original_*`
+prefix.
+
 ### PruneKPAX
 KPAX + (1) a spatial-hash collision grid for faster obstacle checks, (2) an extra
 goal-oriented admission gate, and (3) goal-progress pruning that rejects nodes regressing
@@ -250,6 +276,7 @@ benefit depends on seeding still supplying coverage underneath it.
 | Variant | Explore | Seeding (pSeed) | Cost-aware | Pruning | Spatial hash |
 |---|---|---|---|---|---|
 | KPAX | Syclop | 1 | — | — | — |
+| KPAXCap | capped (`h_syclopCap_`) | 1 | — | — | — |
 | PruneKPAX | ✔ | 1 | goal-dir | goal-progress | ✔ |
 | KinoPaxPlus | weak | n/a | ✔ | dormancy/cost | — |
 | KinoPaxSTARNoGoalBias | ✔ | 1 | ✔ | — | ✔ |

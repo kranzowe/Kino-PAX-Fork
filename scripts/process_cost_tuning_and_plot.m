@@ -2,10 +2,21 @@
 % Reads per-iteration CSVs produced by kinopaxstar_cost_tuning_sweep.cu
 % (run via run_cost_tuning_sweep.sh).
 %
-% Series (43 total):
-%   KinoPaxSTARCleanCost  w {0.2, 0.5, 0.8, 1.0} x k {0.5, 1, 2} x cap {0.25, 0.5, 1.0} = 36
-%   KinoPaxSTARTrue       cap {0.1, 0.25, 0.5, 1.0}                                     =  4
-%   KPAX, KinoPaxPlus, KinoPaxPlus (fine)                                               =  3
+% Series (59 total):
+%   KinoPaxSTARCleanCost  w {0.8, 0.85, 0.9, 0.95} x k {1, 2, 4} x cap {0.1, 0.2, 0.3, 0.4} = 48
+%                         plus w = 1.0 x k = 1 x cap {0.1, 0.2, 0.3, 0.4}                   =  4
+%   KinoPaxSTARTrue       cap {0.25, 0.5}                                                   =  2
+%   KPAXCap               cap {0.25, 0.5}                                                   =  2
+%   KPAX, KinoPaxPlus, KinoPaxPlus (fine)                                                   =  3
+%
+% w = 1.0 IS RUN AT k = 1 ONLY. At w = 1 the rule is min(1, 1*P_syclop + 0*P_cost + floor) -- the
+% cost term drops out entirely, so the three k rungs would be the same rule differing only by RNG
+% stream. The series list below mirrors that skip, so it matches the files the benchmark writes.
+%
+% KPAXCap is stock KPAX with the SAME cap multiplier on the Syclop score, applied at both
+% acceptance points. It is the control arm for the cap: CleanCost at w = 1 applies the cap AND
+% decides after graph_.updateVertices(), so KPAX / KPAXCap / CleanCost-at-w=1 separates the cap's
+% effect from the kernel boundary's.
 %
 % CleanCost makes exactly ONE acceptance decision, in the accept kernel, where the region cost
 % statistics have converged and vertexScores already include the current iteration's samples:
@@ -44,11 +55,11 @@
 % Per-iteration columns: iteration, frontier_size, tree_size, elapsed_time_ms, best_cost
 %
 % ENCODING (three axes, so three visual channels): colour = w (steel-blue ramp, light->dark as
-% w goes 0.2->1.0), line style = k (':' 0.5, '-.' 1.0, '--' 2.0), line width = cap (thin 0.25,
-% medium 0.5, thick 1.0). TrueStar is a separate warm/orange ramp over its cap axis, solid.
-% Baselines are near-black (KPAX), DASHED blue (KinoPaxPlus) and DOTTED blue (KinoPaxPlus fine) --
-% dashed/dotted so they do not read as part of the steel-blue ramp. Every legend here is
-% CLICKABLE — click an entry to hide/show that series.
+% w goes 0.8->1.0), line style = k (':' 1, '-.' 2, '--' 4), line width = cap (thin 0.1 -> thick
+% 0.4). TrueStar is a separate warm/orange ramp over its cap axis, solid; KPAXCap is a grey-green
+% pair, solid. Baselines are near-black (KPAX), DASHED blue (KinoPaxPlus) and DOTTED blue
+% (KinoPaxPlus fine) -- dashed/dotted so they do not read as part of the steel-blue ramp. Every
+% legend here is CLICKABLE — click an entry to hide/show that series.
 %
 % FAIR-COMPARISON NOTE: an "iteration" is a different unit of work per planner, so
 % cost-vs-TIME is the fair cross-planner axis. Error bands and error bars are
@@ -81,37 +92,44 @@ deltaLabel = 'Large-\delta (27k)';
 % CleanCost grid — must match WEIGHTS / WEIGHTED_EXPS / CAPS in
 % kinopaxstar_cost_tuning_sweep.cu. Values are the integer label tokens (100 x the float),
 % exactly as they appear in the filenames.
-weights = [20 50 80 100];
-wExps   = [50 100 200];
-caps    = [25 50 100];
+weights = [80 85 90 95 100];
+wExps   = [100 200 400];
+caps    = [10 20 30 40];
 
-% TrueStar cap sweep — must match TRUE_CAPS in the benchmark.
-trueCaps = [10 25 50 100];
+% TrueStar and KPAXCap cap sweeps — must match TRUE_CAPS / KPAXCAP_CAPS in the benchmark.
+trueCaps    = [25 50];
+kpaxCapCaps = [25 50];
 
 % Colour = w (light->dark), line style = k, line width = cap.
-steelRamp  = [0.62 0.76 0.90;    % w 0.2 - steel blue (lightest)
-              0.36 0.57 0.79;    % w 0.5
-              0.16 0.35 0.58;    % w 0.8
-              0.03 0.15 0.31];   % w 1.0 - steel blue (darkest)
-wExpStyles = {':', '-.', '--'};        % k 0.5, 1.0, 2.0
-capWidths  = [0.8, 1.4, 2.2];          % cap 0.25, 0.5, 1.0
+steelRamp  = [0.70 0.82 0.93;    % w 0.80 - steel blue (lightest)
+              0.50 0.68 0.86;    % w 0.85
+              0.31 0.51 0.74;    % w 0.90
+              0.15 0.33 0.56;    % w 0.95
+              0.03 0.15 0.31];   % w 1.00 - steel blue (darkest)
+wExpStyles = {':', '-.', '--'};             % k 1, 2, 4
+capWidths  = [0.7, 1.2, 1.7, 2.2];          % cap 0.1, 0.2, 0.3, 0.4
 
 % TrueStar gets its own warm ramp so it never reads as part of the CleanCost grid.
-amberRamp = [0.99 0.80 0.54;     % cap 0.10 (lightest)
-             0.96 0.63 0.26;
-             0.85 0.44 0.09;
-             0.60 0.28 0.02];    % cap 1.00 (darkest)
+amberRamp = [0.96 0.63 0.26;     % cap 0.25 (lighter)
+             0.72 0.33 0.04];    % cap 0.50 (darker)
 
-% --- Build the series arrays (36 CleanCost + 4 TrueStar + 3 baselines) ---
-plannerNames   = {};
-plannerDisplay = {};
-plannerColors  = [];
-plannerStyles  = {};
-plannerMarkers = {};
-plannerWidths  = [];
+% KPAXCap: grey-green, distinct from both the steel ramp and near-black KPAX it is compared to.
+mossRamp  = [0.55 0.70 0.50;     % cap 0.25 (lighter)
+             0.24 0.44 0.26];    % cap 0.50 (darker)
+
+% --- Build the series arrays (52 CleanCost + 2 TrueStar + 2 KPAXCap + 3 baselines) ---
+plannerNames    = {};
+plannerDisplay  = {};
+plannerColors   = [];
+plannerStyles   = {};
+plannerMarkers  = {};
+plannerWidths   = [];
+plannerBaseline = [];   % logical: drawn as a thick reference anchor / large scatter marker
 for wi = 1:numel(weights)
     for ei = 1:numel(wExps)
         for ci = 1:numel(caps)
+            % Mirror the benchmark's skip: at w = 1 the cost term vanishes, so only k = 1 is run.
+            if weights(wi) == 100 && wExps(ei) ~= 100, continue; end
             plannerNames{end + 1}   = sprintf('KinoPaxSTARCleanCost_w%d_k%d_cap%d', ...
                                               weights(wi), wExps(ei), caps(ci)); %#ok<SAGROW>
             plannerDisplay{end + 1} = sprintf('C w%g k%g cap%g', weights(wi) / 100, ...
@@ -120,6 +138,7 @@ for wi = 1:numel(weights)
             plannerStyles{end + 1}    = wExpStyles{ei};     %#ok<SAGROW>
             plannerMarkers{end + 1}   = 'o';                %#ok<SAGROW>
             plannerWidths(end + 1)    = capWidths(ci);      %#ok<SAGROW>
+            plannerBaseline(end + 1)  = false;              %#ok<SAGROW>
         end
     end
 end
@@ -130,16 +149,27 @@ for ci = 1:numel(trueCaps)
     plannerStyles{end + 1}    = '-';                %#ok<SAGROW>
     plannerMarkers{end + 1}   = '^';                %#ok<SAGROW>
     plannerWidths(end + 1)    = 1.6;                %#ok<SAGROW>
+    plannerBaseline(end + 1)  = false;              %#ok<SAGROW>
+end
+for ci = 1:numel(kpaxCapCaps)
+    plannerNames{end + 1}   = sprintf('KPAXCap_cap%d', kpaxCapCaps(ci));   %#ok<SAGROW>
+    plannerDisplay{end + 1} = sprintf('KPAXCap cap%g', kpaxCapCaps(ci) / 100); %#ok<SAGROW>
+    plannerColors(end + 1, :) = mossRamp(ci, :);    %#ok<SAGROW>
+    plannerStyles{end + 1}    = '-';                %#ok<SAGROW>
+    plannerMarkers{end + 1}   = 'v';                %#ok<SAGROW>
+    plannerWidths(end + 1)    = 2.0;                %#ok<SAGROW>
+    plannerBaseline(end + 1)  = true;               %#ok<SAGROW>
 end
 % Reference baselines, drawn thick so they read as anchors.
 % 'KinoPaxPlusFine' is not a planner name in the benchmark -- it is a pseudo-name this script maps
 % to the fine-delta KinoPaxPlus CSVs in loadRuns().
-plannerNames   = [plannerNames,   {'KPAX', 'KinoPaxPlus', 'KinoPaxPlusFine'}];
-plannerDisplay = [plannerDisplay, {'KPAX', 'KinoPaxPlus (27k)', 'KinoPaxPlus (216k)'}];
-plannerColors  = [plannerColors;  0.10 0.10 0.10;  0.20 0.40 0.80;  0.20 0.40 0.80];
-plannerStyles  = [plannerStyles,  {'-', '--', ':'}];   % steel-blue solid is taken by the grid
-plannerMarkers = [plannerMarkers, {'s', 's', 'd'}];
-plannerWidths  = [plannerWidths,  2.5, 2.5, 2.5];
+plannerNames    = [plannerNames,   {'KPAX', 'KinoPaxPlus', 'KinoPaxPlusFine'}];
+plannerDisplay  = [plannerDisplay, {'KPAX', 'KinoPaxPlus (27k)', 'KinoPaxPlus (216k)'}];
+plannerColors   = [plannerColors;  0.10 0.10 0.10;  0.20 0.40 0.80;  0.20 0.40 0.80];
+plannerStyles   = [plannerStyles,  {'-', '--', ':'}];   % steel-blue solid is taken by the grid
+plannerMarkers  = [plannerMarkers, {'s', 's', 'd'}];
+plannerWidths   = [plannerWidths,  2.5, 2.5, 2.5];
+plannerBaseline = [plannerBaseline, true, true, true];
 
 numRunsPer = 50 * ones(1, numel(plannerNames));   % max runs searched (missing files skipped)
 
@@ -259,8 +289,9 @@ for ei = 1:numel(environments)
             x = mFirstSolTime(pi);
             y = mFinalCost(pi);
             if isnan(x) || isnan(y), continue; end   % never solved -> nothing to place
-            isBaseline = pi > nPlanner - 2;
-            if isBaseline, msz = 11; else, msz = 8; end
+            % Explicit flag, not a positional guess: the baselines are no longer simply the
+            % last two series (KinoPaxPlusFine and the KPAXCap pair are in there too).
+            if plannerBaseline(pi), msz = 11; else, msz = 8; end
             plot(x, y, plannerMarkers{pi}, ...
                  'MarkerFaceColor', plannerColors(pi, :), ...
                  'MarkerEdgeColor', 'k', 'LineWidth', 0.5, ...
@@ -271,7 +302,7 @@ for ei = 1:numel(environments)
         clickableLegend();
         title(sprintf(['Tuning Tradeoff: Time to First Solution vs Final Cost \x2014 %s, %s\n' ...
                        'lower-left is better (fast and cheap); ' ...
-                       '\x25cb weighted grid, \x25a1 baseline'], ...
+                       '\x25cb CleanCost grid, \x25b3 TrueStar, \x25bd KPAXCap, \x25a1 baseline'], ...
                        envTitle, costTitle), 'FontWeight', 'bold');
     end   % cost metric loop
 end  % environment loop
@@ -294,8 +325,10 @@ function runs = loadRuns(dataDir, env, planner, delta, numRuns)
             case 'KPAX'
                 fn = sprintf('%s_KPAX_delta%s_run%d.csv', env, delta, ri);
             otherwise
-                % Every STAR variant uses its planner label directly as the filename token.
-                if startsWith(planner, 'KinoPaxSTAR')
+                % STAR variants and KPAXCap use their planner label directly as the filename
+                % token. The 'KPAX' arm above is an exact switch case, so it cannot swallow
+                % 'KPAXCap_*'.
+                if startsWith(planner, 'KinoPaxSTAR') || startsWith(planner, 'KPAXCap')
                     fn = sprintf('%s_%s_delta%s_run%d.csv', env, planner, delta, ri);
                 else
                     error('unknown planner %s', planner);
@@ -323,7 +356,20 @@ end
 
 function plotMeanTime(runs, col, commonTime, color, style, width, name)
     % Mean of column 'col' vs a shared time grid (previous-sample hold). No band:
-    % with 43 overlaid series the +/-std fills made the figure unreadable.
+    % with 59 overlaid series the +/-std fills made the figure unreadable.
+    %
+    % RIGHT-TAIL HOLD (this is the fix for the final-cost reporting bug). commonTime spans
+    % globalMaxTime across ALL planners, and interp1(..., 'previous', NaN) returns NaN for every
+    % query past a run's last sample. With mean(..., 'omitnan') below, the right-hand tail would
+    % then average only the runs that happened to last longest -- so the end of the curve reported
+    % the single longest run's cost rather than the mean of each run's final cost. Holding each
+    % run's last observed value forward fixes it, and is the correct semantics here: best_cost is
+    % monotone non-increasing and a finished run's best cost genuinely IS still that value.
+    % With the hold in place the curve's right edge equals the "Final Best Cost" bar exactly.
+    %
+    % Leading NaNs (before a run's first sample) are left alone -- the run has produced nothing yet.
+    % A run that never solved carries the MAX_FLOAT sentinel, which sanitize() turns into NaN after
+    % this loop, so holding it forward still correctly excludes it.
     if isempty(runs), return; end
     A = NaN(numel(runs), numel(commonTime));
     for ri = 1:numel(runs)
@@ -334,7 +380,9 @@ function plotMeanTime(runs, col, commonTime, color, style, width, name)
         [t, uix] = unique(t, 'last');
         v = v(uix);
         if numel(t) >= 2
-            A(ri, :) = interp1(t, v, commonTime, 'previous', NaN);
+            row = interp1(t, v, commonTime, 'previous', NaN);
+            row(commonTime > t(end)) = v(end);   % hold the run's final value forward
+            A(ri, :) = row;
         end
     end
     A  = sanitize(A);
@@ -346,7 +394,7 @@ function plotMeanTime(runs, col, commonTime, color, style, width, name)
 end
 
 function clickableLegend()
-    % Legend whose entries toggle their series on click — the only way 26 overlaid
+    % Legend whose entries toggle their series on click — the only way 59 overlaid
     % series stay readable. ItemHitFcn needs R2016a+; this repo is on R2023a.
     lgd = legend('Location', 'eastoutside', 'FontSize', 6);
     lgd.ItemHitFcn = @toggleSeries;
@@ -376,7 +424,7 @@ function A = sanitize(A)
 end
 
 function plannerBar(mu, plannerLabels, plannerColors, ylab, ttl)
-    % One coloured bar per variant. No error bars by request — with 26 bars the
+    % One coloured bar per variant. No error bars by request — with 59 bars the
     % whiskers obscured more than they conveyed.
     hold on;
     nP = numel(mu);

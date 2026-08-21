@@ -24,6 +24,7 @@ include_directories(
 
 set(SOURCE_FILES
     src/planners/KPAX.cu
+    src/planners/KPAXCap.cu
     src/planners/KinoPaxPlus.cu
     src/planners/originalKPAX.cu
     src/planners/originalPlanner.cu

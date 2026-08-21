@@ -2,15 +2,20 @@
 # =============================================================================
 # KinoPaxSTAR Cost Tuning Sweep Runner
 #
-# Tuning sweep for KinoPaxSTARCleanCost, plus a KinoPaxSTARTrue cap sweep and the KPAX /
-# KinoPaxPlus baselines, on both environments:
+# Tuning sweep for KinoPaxSTARCleanCost, plus KinoPaxSTARTrue / KPAXCap cap sweeps and the
+# KPAX / KinoPaxPlus baselines, on both environments:
 #
-#   KinoPaxSTARCleanCost   w {0.2, 0.5, 0.8, 1.0} x k {0.5, 1, 2} x cap {0.25, 0.5, 1.0}
-#                          = 36 points x 5 runs = 180 runs
-#   KinoPaxSTARTrue        cap {0.1, 0.25, 0.5, 1.0} = 4 points x 5 runs = 20 runs
-#   KPAX                   baseline, 10 runs
-#   KinoPaxPlus            baseline, 10 runs at the "large" delta
-#   KinoPaxPlus (fine)     the SAME baseline at a finer discretization, 10 runs
+#   KinoPaxSTARCleanCost   w {0.8, 0.85, 0.9, 0.95} x k {1, 2, 4} x cap {0.1, 0.2, 0.3, 0.4} = 48
+#                          plus w = 1.0 x k = 1 x cap {0.1, 0.2, 0.3, 0.4}                   =  4
+#                          = 52 points x 3 runs = 156 runs
+#   KinoPaxSTARTrue        cap {0.25, 0.5} = 2 points x 3 runs =  6 runs
+#   KPAXCap                cap {0.25, 0.5} = 2 points x 5 runs = 10 runs
+#   KPAX                   baseline, 5 runs
+#   KinoPaxPlus            baseline, 5 runs at the "large" delta
+#   KinoPaxPlus (fine)     the SAME baseline at a finer discretization, 5 runs
+#
+# w = 1.0 IS RUN AT k = 1 ONLY: at w = 1 the rule is min(1, 1*P_syclop + 0*P_cost + floor), so the
+# cost term drops out and the three k rungs would be one rule differing only by RNG stream.
 #
 # CleanCost makes exactly ONE acceptance decision, in the accept kernel:
 #
@@ -24,14 +29,21 @@
 # TrueStar keeps the plain KPAX Syclop roll but scales the region score by cap at both acceptance
 # points (fAccept unscaled), with the guarded stale-best cost prune fixed on.
 #
+# KPAXCap is stock KPAX with that SAME cap and nothing else -- the control arm for the cap. CleanCost
+# at w = 1 is NOT KPAX: it applies the cap AND decides after graph_.updateVertices(), reading scores
+# already penalised for the batch being judged (computeVertexScores_kernel divides by
+# 1 + counterArray^2, cumulative over the run). KPAXCap still decides inside propagate on pre-jump
+# scores, so KPAX / KPAXCap / CleanCost-at-w=1 separates the cap's effect from the boundary's.
+# Its caps are matched to TrueStar's so the two sweeps line up point-for-point.
+#
 # Algorithm-vs-algorithm comparison lives in run_comparison_benchmark.sh; this script is the
 # tuning surface.
 #
 # Runs on BOTH environments (house and zigzag), each written to its own subfolder under
 # Data/Benchmarks/KinoPaxStarCostTuning/<env>/ so they can be plotted independently.
 #
-# = 220 runs per (environment, cost metric); 4 such passes = 880 runs total.
-# At the 10 s per-run cap that is ~35 min per pass, ~2.5 h worst case overall.
+# = 182 runs per (environment, cost metric); 4 such passes = 728 runs total.
+# At the 6 s per-run cap that is ~18 min per pass, ~1.2 h worst case overall.
 #
 # TWO DISCRETIZATIONS. NUM_R1_REGIONS is compile-time (config.h), so the extra finer-grid
 # KinoPaxPlus series needs its own binary. This script therefore builds the delta x cost-metric
@@ -238,8 +250,10 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  CleanCost grid: w {0.2, 0.5, 0.8, 1.0} x k {0.5, 1, 2} x cap {0.25, 0.5, 1.0} = 36 points"
-echo "  TrueStar:       cap {0.1, 0.25, 0.5, 1.0} = 4 points"
+echo "  CleanCost grid: w {0.8, 0.85, 0.9, 0.95, 1.0} x k {1, 2, 4} x cap {0.1, 0.2, 0.3, 0.4}"
+echo "                  = 52 points (w=1.0 at k=1 only)"
+echo "  TrueStar:       cap {0.25, 0.5} = 2 points"
+echo "  KPAXCap:        cap {0.25, 0.5} = 2 points"
 echo "  Baselines: KPAX, KinoPaxPlus (large + fine)"
 echo "======================================================="
 
