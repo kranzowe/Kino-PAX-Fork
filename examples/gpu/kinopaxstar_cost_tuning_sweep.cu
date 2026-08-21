@@ -32,14 +32,16 @@ static std::string g_vizDir;
 // upstream of w; folding that away means CleanCost admits far more per iteration at the same w,
 // and cap is the explicit downstream throttle that buys it back.
 //
-// Three orthogonal axes:
+// Three orthogonal axes, though w is PINNED at 0.9 for this pass -- earlier sweeps put the
+// interesting behaviour there, so this one is a k x cap surface rather than a w x k x cap volume:
 //   w   weight on the Syclop probability. 1 = KPAX's acceptance, 0 = pure cost-greedy.
 //   k   decay rate of P_cost (costProbExp).
 //   cap flat multiplier on the final probability, applied identically at the accept kernel and at
-//       Part-B reactivation.
-static const float WEIGHTS[] = {0.8f, 0.85f, 0.9f, 0.95f, 1.0f};
-static const float WEIGHTED_EXPS[] = {1.0f, 2.0f, 4.0f};
-static const float CAPS[] = {0.1f, 0.2f, 0.3f, 0.4f};
+//       Part-B reactivation. TRUE_CAPS and KPAXCAP_CAPS use the SAME values, so a cap reads
+//       directly across CleanCost / TrueStar / KPAXCap.
+static const float WEIGHTS[] = {0.9f};
+static const float WEIGHTED_EXPS[] = {4.0f, 8.0f, 16.0f};
+static const float CAPS[] = {0.01f, 0.05f, 0.1f, 0.2f};
 static const int NUM_WEIGHTS = sizeof(WEIGHTS) / sizeof(WEIGHTS[0]);
 static const int NUM_WEIGHTED_EXPS = sizeof(WEIGHTED_EXPS) / sizeof(WEIGHTED_EXPS[0]);
 static const int NUM_CAPS = sizeof(CAPS) / sizeof(CAPS[0]);
@@ -49,7 +51,7 @@ static const int NUM_CAPS = sizeof(CAPS) / sizeof(CAPS[0]);
 // acceptance points (fAccept stays unscaled, so reactivation is throttled rather than switched
 // off). Pruning is fixed at the guarded stale-best rule; the memoized ancestor-chain mode was
 // removed, since the guard truncated the chain at the first explorer ancestor.
-static const float TRUE_CAPS[] = {0.25f, 0.5f};
+static const float TRUE_CAPS[] = {0.01f, 0.05f, 0.1f, 0.2f};
 static const int NUM_TRUE_CAPS = sizeof(TRUE_CAPS) / sizeof(TRUE_CAPS[0]);
 static const int TRUE_PRUNE_STALEBEST = 1;
 
@@ -60,10 +62,28 @@ static const int TRUE_PRUNE_STALEBEST = 1;
 // divides by 1 + counterArray^2, cumulative over the run). KPAXCap applies only the cap, still
 // inside propagate on pre-jump scores -- so KPAX / KPAXCap / CleanCost-at-w=1 separates the cap's
 // effect from the kernel boundary's. Matched to TRUE_CAPS so the two cap sweeps line up.
-static const float KPAXCAP_CAPS[] = {0.25f, 0.5f};
+static const float KPAXCAP_CAPS[] = {0.01f, 0.05f, 0.1f, 0.2f};
 static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0]);
 
-// "KinoPaxSTARCleanCost_w50_k100_cap25"
+// The w = 1 rung is the only place k is inert (the cost term drops out of weightedAccept), so
+// only k = 1 is run there. Single source of truth for that skip: the runner and the banner both
+// call this, so the printed point count can never drift from the grid actually executed.
+static bool cleanCostSkip(float w, float k)
+{
+    return fabsf(w - 1.0f) < 1e-6f && fabsf(k - 1.0f) > 1e-6f;
+}
+
+static int cleanCostPointCount()
+{
+    int n = 0;
+    for(int wi = 0; wi < NUM_WEIGHTS; wi++)
+    for(int ei = 0; ei < NUM_WEIGHTED_EXPS; ei++)
+    for(int ci = 0; ci < NUM_CAPS; ci++)
+        if(!cleanCostSkip(WEIGHTS[wi], WEIGHTED_EXPS[ei])) n++;
+    return n;
+}
+
+// "KinoPaxSTARCleanCost_w90_k400_cap5"
 static std::string cleanLabel(float w, float k, float cap)
 {
     char buf[128];
@@ -72,7 +92,7 @@ static std::string cleanLabel(float w, float k, float cap)
     return std::string(buf);
 }
 
-// "KinoPaxSTARTrue_cap25"
+// "KinoPaxSTARTrue_cap5"
 static std::string trueLabel(float cap)
 {
     char buf[96];
@@ -80,7 +100,7 @@ static std::string trueLabel(float cap)
     return std::string(buf);
 }
 
-// "KPAXCap_cap25"
+// "KPAXCap_cap5"
 static std::string kpaxCapLabel(float cap)
 {
     char buf[96];
@@ -224,8 +244,8 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
     // don't overwrite each other:
     //   KPAX baseline: {env}_KPAX_delta{build}_run{n}.csv
     //   STAR variants: {env}_{planner label}_delta{build}_run{n}.csv
-    //                  e.g. KinoPaxSTARCleanCost_w90_k100_cap20, KinoPaxSTARTrue_cap25
-    //   KPAXCap:       same planner-label form (KPAXCap_cap25). The "KPAX" arm above is an EXACT
+    //                  e.g. KinoPaxSTARCleanCost_w90_k400_cap5, KinoPaxSTARTrue_cap5
+    //   KPAXCap:       same planner-label form (KPAXCap_cap5). The "KPAX" arm above is an EXACT
     //                  match, so it cannot swallow these.
     //   KinoPaxPlus:   {env}_delta{label}_run{n}.csv
     // KinoPaxPlus deliberately keys on the DELTA rather than a planner name: that is what keeps
@@ -902,9 +922,9 @@ void runKinoPaxSTARCleanCostBenchmark(
         const float       cap   = CAPS[ci];
 
         // At w = 1 the cost term vanishes from weightedAccept -- min(1, 1*P_syclop + 0*P_cost +
-        // floor) -- so k is inert and the three k rungs would be the same rule differing only by
-        // RNG stream. Run k = 1 only there.
-        if(fabsf(w - 1.0f) < 1e-6f && fabsf(k - 1.0f) > 1e-6f) continue;
+        // floor) -- so k is inert and the k rungs would be one rule differing only by RNG stream.
+        // Run k = 1 only there. (Inert while WEIGHTS holds no 1.0, but kept so re-adding it works.)
+        if(cleanCostSkip(w, k)) continue;
 
         const std::string label = cleanLabel(w, k, cap);
 
@@ -1140,12 +1160,12 @@ int main(int argc, char* argv[])
     printf("KinoPaxPlus:    %d runs\n", NUM_KINOPAXPLUS_RUNS);
     if(!onlyKinoPaxPlus)
     {
-        // Not the plain product: w = 1 runs k = 1 only (the cost term drops out of
-        // weightedAccept there), so it contributes NUM_CAPS points rather than
-        // NUM_WEIGHTED_EXPS * NUM_CAPS.
-        int cleanPoints = (NUM_WEIGHTS - 1) * NUM_WEIGHTED_EXPS * NUM_CAPS + NUM_CAPS;
-        printf("CleanCost:      w x k x cap = %d points (w=1 at k=1 only) x %d runs = %d runs\n",
-               cleanPoints, NUM_CLEANCOST_RUNS, cleanPoints * NUM_CLEANCOST_RUNS);
+        // Counted with the same predicate the runner uses, not a closed form -- the previous
+        // closed form silently assumed the last WEIGHTS entry was 1.0.
+        int cleanPoints = cleanCostPointCount();
+        printf("CleanCost:      w x k x cap = %d x %d x %d -> %d points x %d runs = %d runs\n",
+               NUM_WEIGHTS, NUM_WEIGHTED_EXPS, NUM_CAPS, cleanPoints,
+               NUM_CLEANCOST_RUNS, cleanPoints * NUM_CLEANCOST_RUNS);
         printf("TrueStar:       cap = %d points x %d runs = %d runs\n",
                NUM_TRUE_CAPS, NUM_TRUESTAR_RUNS, NUM_TRUE_CAPS * NUM_TRUESTAR_RUNS);
         printf("KPAXCap:        cap = %d points x %d runs = %d runs\n",

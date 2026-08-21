@@ -2,16 +2,15 @@
 % Reads per-iteration CSVs produced by kinopaxstar_cost_tuning_sweep.cu
 % (run via run_cost_tuning_sweep.sh).
 %
-% Series (59 total):
-%   KinoPaxSTARCleanCost  w {0.8, 0.85, 0.9, 0.95} x k {1, 2, 4} x cap {0.1, 0.2, 0.3, 0.4} = 48
-%                         plus w = 1.0 x k = 1 x cap {0.1, 0.2, 0.3, 0.4}                   =  4
-%   KinoPaxSTARTrue       cap {0.25, 0.5}                                                   =  2
-%   KPAXCap               cap {0.25, 0.5}                                                   =  2
-%   KPAX, KinoPaxPlus, KinoPaxPlus (fine)                                                   =  3
+% Series (23 total):
+%   KinoPaxSTARCleanCost  w {0.9} x k {4, 8, 16} x cap {0.01, 0.05, 0.1, 0.2} = 12
+%   KinoPaxSTARTrue       cap {0.01, 0.05, 0.1, 0.2}                          =  4
+%   KPAXCap               cap {0.01, 0.05, 0.1, 0.2}                          =  4
+%   KPAX, KinoPaxPlus, KinoPaxPlus (fine)                                     =  3
 %
-% w = 1.0 IS RUN AT k = 1 ONLY. At w = 1 the rule is min(1, 1*P_syclop + 0*P_cost + floor) -- the
-% cost term drops out entirely, so the three k rungs would be the same rule differing only by RNG
-% stream. The series list below mirrors that skip, so it matches the files the benchmark writes.
+% w is now PINNED at 0.9, so this pass is a k x cap surface rather than a w x k x cap volume.
+% The w = 1 skip (where the cost term drops out of weightedAccept and k goes inert) is still
+% mirrored below so re-adding w = 1.0 to the benchmark keeps the two in sync.
 %
 % KPAXCap is stock KPAX with the SAME cap multiplier on the Syclop score, applied at both
 % acceptance points. It is the control arm for the cap: CleanCost at w = 1 applies the cap AND
@@ -50,16 +49,18 @@
 %   KinoPaxPlus (fine):  {env}_delta{fine_METRIC}_run{n}.csv
 %   KPAX:                {env}_KPAX_delta{large_METRIC}_run{n}.csv
 %   STAR variants:       {env}_{planner label}_delta{large_METRIC}_run{n}.csv
-%                        e.g. KinoPaxSTARCleanCost_w50_k100_cap25, KinoPaxSTARTrue_cap25
+%                        e.g. KinoPaxSTARCleanCost_w90_k400_cap5, KinoPaxSTARTrue_cap5
 %
 % Per-iteration columns: iteration, frontier_size, tree_size, elapsed_time_ms, best_cost
 %
-% ENCODING (three axes, so three visual channels): colour = w (steel-blue ramp, light->dark as
-% w goes 0.8->1.0), line style = k (':' 1, '-.' 2, '--' 4), line width = cap (thin 0.1 -> thick
-% 0.4). TrueStar is a separate warm/orange ramp over its cap axis, solid; KPAXCap is a grey-green
-% pair, solid. Baselines are near-black (KPAX), DASHED blue (KinoPaxPlus) and DOTTED blue
-% (KinoPaxPlus fine) -- dashed/dotted so they do not read as part of the steel-blue ramp. Every
-% legend here is CLICKABLE — click an entry to hide/show that series.
+% ENCODING: with w pinned, cap takes the colour channel (steel-blue ramp, light->dark as cap goes
+% 0.01->0.2) and k takes the line style (':' 4, '-.' 8, '--' 16). Line width is indexed by w, so it
+% is constant in this pass and automatically becomes a third channel again if w is swept. TrueStar
+% and KPAXCap are separate warm/orange and grey-green ramps over the SAME cap values, solid, so a
+% given cap is directly comparable across the three planners. Baselines are near-black (KPAX),
+% DASHED blue (KinoPaxPlus) and DOTTED blue (KinoPaxPlus fine) -- dashed/dotted so they do not read
+% as part of the steel-blue ramp. Every legend here is CLICKABLE — click an entry to hide/show
+% that series.
 %
 % FAIR-COMPARISON NOTE: an "iteration" is a different unit of work per planner, so
 % cost-vs-TIME is the fair cross-planner axis. Error bands and error bars are
@@ -92,32 +93,36 @@ deltaLabel = 'Large-\delta (27k)';
 % CleanCost grid — must match WEIGHTS / WEIGHTED_EXPS / CAPS in
 % kinopaxstar_cost_tuning_sweep.cu. Values are the integer label tokens (100 x the float),
 % exactly as they appear in the filenames.
-weights = [80 85 90 95 100];
-wExps   = [100 200 400];
-caps    = [10 20 30 40];
+weights = [90];
+wExps   = [400 800 1600];
+caps    = [1 5 10 20];
 
 % TrueStar and KPAXCap cap sweeps — must match TRUE_CAPS / KPAXCAP_CAPS in the benchmark.
-trueCaps    = [25 50];
-kpaxCapCaps = [25 50];
+% Deliberately the same cap values as the CleanCost grid, so a cap is comparable across planners.
+trueCaps    = [1 5 10 20];
+kpaxCapCaps = [1 5 10 20];
 
-% Colour = w (light->dark), line style = k, line width = cap.
-steelRamp  = [0.70 0.82 0.93;    % w 0.80 - steel blue (lightest)
-              0.50 0.68 0.86;    % w 0.85
-              0.31 0.51 0.74;    % w 0.90
-              0.15 0.33 0.56;    % w 0.95
-              0.03 0.15 0.31];   % w 1.00 - steel blue (darkest)
-wExpStyles = {':', '-.', '--'};             % k 1, 2, 4
-capWidths  = [0.7, 1.2, 1.7, 2.2];          % cap 0.1, 0.2, 0.3, 0.4
+% Colour = cap (light->dark), line style = k, line width = w (constant while w is pinned).
+capRamp    = [0.70 0.82 0.93;    % cap 0.01 - steel blue (lightest)
+              0.45 0.64 0.84;    % cap 0.05
+              0.21 0.42 0.66;    % cap 0.10
+              0.03 0.15 0.31];   % cap 0.20 - steel blue (darkest)
+wExpStyles = {':', '-.', '--'};             % k 4, 8, 16
+wWidths    = [1.4];                         % one entry per w; widens the channel if w is swept
 
-% TrueStar gets its own warm ramp so it never reads as part of the CleanCost grid.
-amberRamp = [0.96 0.63 0.26;     % cap 0.25 (lighter)
-             0.72 0.33 0.04];    % cap 0.50 (darker)
+% TrueStar gets its own warm ramp over the same cap values.
+amberRamp = [0.99 0.85 0.62;     % cap 0.01 (lightest)
+             0.97 0.68 0.33;
+             0.88 0.47 0.10;
+             0.60 0.28 0.02];    % cap 0.20 (darkest)
 
 % KPAXCap: grey-green, distinct from both the steel ramp and near-black KPAX it is compared to.
-mossRamp  = [0.55 0.70 0.50;     % cap 0.25 (lighter)
-             0.24 0.44 0.26];    % cap 0.50 (darker)
+mossRamp  = [0.72 0.83 0.68;     % cap 0.01 (lightest)
+             0.55 0.70 0.50;
+             0.36 0.56 0.36;
+             0.18 0.36 0.20];    % cap 0.20 (darkest)
 
-% --- Build the series arrays (52 CleanCost + 2 TrueStar + 2 KPAXCap + 3 baselines) ---
+% --- Build the series arrays (12 CleanCost + 4 TrueStar + 4 KPAXCap + 3 baselines) ---
 plannerNames    = {};
 plannerDisplay  = {};
 plannerColors   = [];
@@ -134,10 +139,10 @@ for wi = 1:numel(weights)
                                               weights(wi), wExps(ei), caps(ci)); %#ok<SAGROW>
             plannerDisplay{end + 1} = sprintf('C w%g k%g cap%g', weights(wi) / 100, ...
                                               wExps(ei) / 100, caps(ci) / 100); %#ok<SAGROW>
-            plannerColors(end + 1, :) = steelRamp(wi, :);   %#ok<SAGROW>
+            plannerColors(end + 1, :) = capRamp(ci, :);     %#ok<SAGROW>
             plannerStyles{end + 1}    = wExpStyles{ei};     %#ok<SAGROW>
             plannerMarkers{end + 1}   = 'o';                %#ok<SAGROW>
-            plannerWidths(end + 1)    = capWidths(ci);      %#ok<SAGROW>
+            plannerWidths(end + 1)    = wWidths(wi);        %#ok<SAGROW>
             plannerBaseline(end + 1)  = false;              %#ok<SAGROW>
         end
     end
