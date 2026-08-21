@@ -89,15 +89,88 @@ below 1 whenever `P_syclop < 1`, so without the exemption a region best could be
 
 Note `h_fAccept_` is computed *before* the gate in this variant (the gate needs it), so
 `treeAddSize` reflects the pre-gate frontier size — marginally smaller `fAccept` than costprune's.
-Carries the same toggleable ancestor pruning as `KinoPaxSTARNoPruneAncestor` via
-`h_ancestorPrune_` / `h_dormancyThreshold_` / `h_ancestorTol_`.
+Carries **no** retroactive pruning (an earlier revision of this file claimed otherwise); the
+cost-guarded version is `KinoPaxSTARTrueWeightedCost`.
+
+**Superseded by `KinoPaxSTARCleanCost`.** The two acceptance points here compose as an AND, so the
+effective admission probability for a non-best candidate is `[≤ h_acceptCap_, or fresh-subregion] ×
+weightedAccept(...)`, not `weightedAccept(...)`. Retained so its historical benchmark data stays
+loadable and as the A-side of the fold.
+
+### KinoPaxSTARCleanCost  *(new)*
+`KinoPaxSTARWeightedCost` folded down to **one** acceptance decision.
+
+WeightedCost ran two, and they compose as an AND for every non-best candidate: a propagate-time
+filter (`isBest || rand < min(vertexScore, h_acceptCap_) || !activeSubVertices[sub]`, cap = 0.1,
+no `fAccept`) and then the weighted gate. Three consequences — `h_acceptCap_` sat silently upstream
+of `w`, so `w` was never the single knob it was documented as; the R2 seeding "free pass" was not
+free, since a fresh-sub-region node still faced the weighted roll; and the tree grew roughly an
+order of magnitude slower than the weighted rule alone implies.
+
+**Why the gate is the only valid place for the decision.** Two inputs are invalid inside the
+propagate kernel and become valid at the next kernel boundary. Region cost statistics are
+*mid-flight*: `minCostsR1` / `sumCostsR1` / `cntCostsR1` are being updated by atomics from the very
+threads that would read them, so `costProbExp` computed there would use a partial mean over
+whichever threads landed first — two identical-cost nodes in one region would draw different
+`P_cost` from scheduling alone. (Tolerable for `isBest`, where being wrong only keeps an extra node;
+not tolerable for the distribution the weighted rule imposes.) And `vertexScores` are one iteration
+*stale* there, because `graph_.updateVertices()` runs between the two kernels. `fAccept` is a third:
+it is computed from `h_frontierNextSize_`, which does not exist until propagate has finished.
+
+So propagate is a pure **candidate producer** — mark every collision-free sample, record its cost,
+region, and R2 freshness, draw no random numbers — and the renamed `_accept_kernel` (it was never a
+prune; nothing is in the tree yet) makes the single decision:
+
+    P = cap * min(1, w*P_syclop + (1-w)*P_cost + P_floor)
+
+applied identically at the gate and at Part-B reactivation, with `P_syclop = vertexScore + fAccept`.
+Two exemptions precede it: region-best candidates (`cost <= m`, load-bearing — at the min `P_cost`
+is 1 but `P_combined` is still below 1 whenever `P_syclop < 1` or `cap < 1`), and candidates that
+claimed a virgin R2 sub-region, which is now an actual free pass. The freshness flag has to be
+recorded in propagate because by gate time every sub-region touched this iteration is already
+marked active; the read-then-set order is kept, so a whole launch landing in one virgin sub-region
+all get the pass, exactly as in KPAX.
+
+Three orthogonal knobs: `h_costWeight_` (w), `h_costPruneExp_` (k), and `h_acceptCapMul_` (cap in
+(0,1], default 1.0) — a flat multiplier on the final probability that replaces `h_acceptCap_`,
+downstream of `w` rather than upstream of it. Note `cap` multiplies `P_floor` too, so the effective
+floor is `EPSILON*cap`; under WeightedCost it was ~`0.1*EPSILON` because the propagate stage
+throttled it. Also drops `d_maxCostsR1_` (`costProbExp` normalizes by `mean - min` and never reads a
+max, so the per-sample `atomicMaxFloat` was pure overhead) and `d_pruned_` (nothing ever wrote it).
+Carries no retroactive pruning.
+
+Because the propagate-time throttle is gone, this admits far more per iteration than WeightedCost at
+the same `w` — expect to retune, with `cap` as the compensating knob.
 
 ### KinoPaxSTARTrue  *(new)*
 `KinoPaxSTARNoGoalBias` plus **cost-guarded** retroactive pruning. A node is pruned when it was
 admitted *because* it was its region's minimum and no longer is; nodes the Syclop exploration roll
-admitted are never touched. `h_ancestorPrune_` selects the rule: 0 = off (reproduces
-`KinoPaxSTARNoGoalBias` exactly), 1 = stale-best, 2 = stale-best plus the memoized ancestor chain
-over the same population. `h_dormancyThreshold_` (5) and `h_ancestorTol_` (0) match KinoPaxPlus.
+admitted are never touched. `h_ancestorPrune_` is an on/off toggle: 0 = off (reproduces
+`KinoPaxSTARNoGoalBias` exactly), nonzero = stale-best. `h_ancestorTol_` (0) matches KinoPaxPlus.
+
+**`h_syclopCap_`** *(new)*: a multiplier in (0,1] on the Syclop region score, applied at both
+acceptance points — `curand < cap * vertexScores[r]` in propagate, and
+`curand <= cap * vertexScores[r] + fAccept` at Part-B reactivation. `fAccept` is deliberately **not**
+scaled: it is KPAX's additive reactivation floor, and multiplying it by a small cap would switch
+dormant-node revival off rather than throttle it. `cap = 1.0` (the default) reproduces the previous
+behaviour exactly and adds no RNG draw either way, so it is a genuine no-op at the default.
+
+**The ancestor-chain mode (formerly 2) has been removed.** The guard returns before the recurrence
+for any Syclop-admitted node, so `ancestorBad` was never written for one and stayed `false` forever —
+and `ancestorBad[i] = selfBad(i) || ancestorBad[parent(i)]` then read "never asked" as "clean". The
+chain silently truncated at the first explorer ancestor, and since explorers are the majority of a
+STAR tree it already degenerated toward stale-best in practice. Call sites still passing 2 get
+stale-best.
+
+**`h_dormancyThreshold_` (5) no longer has any effect.** With the chain gone, `pruned[]` is only ever
+set under `selfBad`, and at `h_ancestorTol_ = 0` that is exactly `!isBest`. `isBest` is *monotone* —
+`minCostsR1` is filled once with `MAX_FLOAT` and thereafter only lowered by `atomicMinFloat`, and
+`treeSampleCosts[i]` is written once at insertion (no rewiring) — so once pruned, a node can never be
+region-best again, and the dormancy branch's `pruned && isBest` can never hold. `inactiveIterations`
+is incremented only inside that branch, so the amnesty branch never fires either. Both branches only
+did work under the chain, which could tombstone a node that was *still* region-best because an
+ancestor went bad. They are left in place to preserve the KinoPaxPlus lineage. The field is retained
+so existing benchmark call sites keep compiling.
 
 **Why the guard exists.** Its predecessor, `KinoPaxSTARNoPruneAncestor`, applied
 `cost > minCostsR1[r]` to *every* tree node. Syclop-admitted nodes are non-minimum by
@@ -182,10 +255,11 @@ benefit depends on seeding still supplying coverage underneath it.
 | KinoPaxSTARNoGoalBias | ✔ | 1 | ✔ | — | ✔ |
 | KinoPaxSTARNoPruneNoSpatialHash | ✔ | 1 | ✔ | — | — |
 | KinoPaxSTAR | ✔ | 1 | ✔ | goal-progress | ✔ |
-| KinoPaxSTARTrue | ✔ | 1 | ✔ | cost-guarded | ✔ |
+| KinoPaxSTARCleanCost | weighted (`h_costWeight_`), capped (`h_acceptCapMul_`) | 1 (true free pass) | ✔ | — | ✔ |
+| KinoPaxSTARTrue | capped (`h_syclopCap_`) | 1 | ✔ | cost-guarded | ✔ |
 | KinoPaxSTARTrueWeightedCost | weighted (`h_costWeight_`) | 1 | ✔ | cost-guarded | ✔ |
 | KinoPaxSTARcostprune | capped (`h_acceptCap_`) | 1 | ✔ | cost | ✔ |
-| KinoPaxSTARWeightedCost | weighted (`h_costWeight_`) | 1 | ✔ | cost + optional ancestor | ✔ |
+| KinoPaxSTARWeightedCost | weighted (`h_costWeight_`) | 1 (gated) | ✔ | — | ✔ |
 | KinoPaxSTARnoseed | ✔ | 0 | ✔ | — | ✔ |
 | KinoPaxSTARsparsefill | ✔ | ramp 0→1 | ✔ | — | ✔ |
 | KinoPaxSTARcostprunenoseed | capped (`h_acceptCap_`) | 0 (`h_pSeed_`) | ✔ | cost | ✔ |

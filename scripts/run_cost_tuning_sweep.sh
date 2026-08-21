@@ -2,43 +2,52 @@
 # =============================================================================
 # KinoPaxSTAR Cost Tuning Sweep Runner
 #
-# Full factorial tuning sweep of the cost-prune gate, at the Large delta on the
-# zigzag-corridor environment:
+# Tuning sweep for KinoPaxSTARCleanCost, plus a KinoPaxSTARTrue cap sweep and the KPAX /
+# KinoPaxPlus baselines, on both environments:
 #
-#   cost metric   : workspace path length (COST_MODE 0), control effort (COST_MODE 1)
-#   w             : 0, 0.2, 0.4, 0.6, 0.8, 1.0   (weight on the Syclop probability)
-#   k             : 0.5, 1.0, 2.0, 4.0            (decay rate of P_cost)
-#   planner       : KinoPaxSTARWeightedCost (no cost pruning)
+#   KinoPaxSTARCleanCost   w {0.2, 0.5, 0.8, 1.0} x k {0.5, 1, 2} x cap {0.25, 0.5, 1.0}
+#                          = 36 points x 5 runs = 180 runs
+#   KinoPaxSTARTrue        cap {0.1, 0.25, 0.5, 1.0} = 4 points x 5 runs = 20 runs
+#   KPAX                   baseline, 10 runs
+#   KinoPaxPlus            baseline, 10 runs at the "large" delta
+#   KinoPaxPlus (fine)     the SAME baseline at a finer discretization, 10 runs
 #
-# WeightedCost accepts with P = min(1, w*P_syclop + (1-w)*P_cost + P_floor) at both the
-# insertion gate and reactivation, where P_syclop = vertexScore + fAccept is the full KPAX
-# rule. w = 1 reproduces KPAX's acceptance, w = 0 is pure cost-greedy.
+# CleanCost makes exactly ONE acceptance decision, in the accept kernel:
 #
-# Algorithm-vs-algorithm comparison lives in run_comparison_benchmark.sh; this script is
-# purely the w x k tuning surface.
+#     P = cap * min(1, w*(vertexScore + fAccept) + (1-w)*costProbExp(k) + P_floor)
+#
+# with region-best and fresh-R2-sub-region candidates exempt. Its predecessor
+# KinoPaxSTARWeightedCost also ran a propagate-time filter capped at 0.1 that sat silently upstream
+# of w; folding that away is what this sweep is retuning for. cap is the explicit replacement
+# throttle and is applied at BOTH the accept kernel and Part-B reactivation.
+#
+# TrueStar keeps the plain KPAX Syclop roll but scales the region score by cap at both acceptance
+# points (fAccept unscaled), with the guarded stale-best cost prune fixed on.
+#
+# Algorithm-vs-algorithm comparison lives in run_comparison_benchmark.sh; this script is the
+# tuning surface.
 #
 # Runs on BOTH environments (house and zigzag), each written to its own subfolder under
 # Data/Benchmarks/KinoPaxStarCostTuning/<env>/ so they can be plotted independently.
 #
-# = 24 weighted x 10 runs = 240 runs, plus KPAX and KinoPaxPlus baselines (10 each) = 260 runs
-# per (environment, cost metric); 4 such passes = 1040 runs total.
-# At the 10 s per-run cap that is ~45 min per pass, ~3 h worst case overall.
+# = 220 runs per (environment, cost metric); 4 such passes = 880 runs total.
+# At the 10 s per-run cap that is ~35 min per pass, ~2.5 h worst case overall.
 #
-# NOTE: this script's config.h heredoc does NOT define KINOPAXPLUS_PARENT_CHAIN_PRUNING, so
-# `#if KINOPAXPLUS_PARENT_CHAIN_PRUNING` in KinoPaxPlus.cu sees an undefined macro and takes
-# the 0 branch -- the KinoPaxPlus baseline runs NODE-ONLY pruning here, not the full chain its
-# checked-in config.h (line 270) selects. Add `#define KINOPAXPLUS_PARENT_CHAIN_PRUNING 1` to
-# the heredoc below if you want the baseline to use chain pruning.
+# TWO DISCRETIZATIONS. NUM_R1_REGIONS is compile-time (config.h), so the extra finer-grid
+# KinoPaxPlus series needs its own binary. This script therefore builds the delta x cost-metric
+# matrix (4 binaries) and runs the "fine" ones with --only-kinopaxplus, which skips KPAX, the
+# CleanCost grid and TrueStar. "fine" matches the med_large rung of run_delta_benchmark.sh.
 #
 # COST_MODE is a compile-time #if inside edgeCost (include/helper/helper.cuh), so
 # the cost metric cannot vary within one binary. This script therefore borrows
 # run_delta_benchmark.sh's build-cache pattern: it writes config.h and builds once
-# per cost metric, caching each binary under a metric-suffixed name, then runs
-# them in a second pass. The metric rides into every output filename as the
-# argv[1] delta label (large_length / large_effort).
+# per (delta, cost metric), caching each binary under a suffixed name, then runs
+# them in a second pass. Both labels ride into every output filename as the
+# argv[1] delta label (large_length / large_effort / fine_length / fine_effort).
 #
-# Large delta (Model 1: W_DIM=3, C_DIM=1, V_DIM=3):
-#   W_R1=10  C_R1=1  V_R1=3  ->  NUM_R1_REGIONS = 10^3 * 3^3 = 27,000
+# Deltas (Model 1: W_DIM=3, C_DIM=1, V_DIM=3):
+#   large  W_R1=10  C_R1=1  V_R1=3  ->  NUM_R1_REGIONS = 10^3 * 3^3 =  27,000
+#   fine   W_R1=20  C_R1=1  V_R1=3  ->  NUM_R1_REGIONS = 20^3 * 3^3 = 216,000
 #
 # Original config.h is backed up and restored on exit/error.
 #
@@ -54,11 +63,16 @@ CONFIG_FILE="$PROJECT_DIR/include/config/config.h"
 CONFIG_BACKUP="$CONFIG_FILE.bak"
 BUILD_DIR="$PROJECT_DIR/build"
 
-# Single delta: label W_R1 C_R1 V_R1  (Large)
-DELTA_LABEL="large"
-DELTA_W_R1=10
-DELTA_C_R1=1
-DELTA_V_R1=3
+# Deltas: parallel arrays of label / W_R1 / C_R1 / V_R1.
+# Index 0 ("large") runs the full sweep. Every later index runs KinoPaxPlus ONLY, so the baseline
+# can be measured at a finer discretization without re-running the whole grid there.
+DELTA_LABELS=("large" "fine")
+DELTA_W_R1S=(10 20)
+DELTA_C_R1S=(1 1)
+DELTA_V_R1S=(3 3)
+# Extra argv passed to each delta's binary. Index 0 gets the viz flag (appended below); the rest
+# are KinoPaxPlus-only passes.
+DELTA_EXTRA_ARGS=("" "--only-kinopaxplus")
 
 # Cost metric axis: label + COST_MODE  (0 = workspace distance, 1 = control effort)
 COST_LABELS=("length" "effort")
@@ -160,6 +174,11 @@ write_config() {
 #define NUM_PARTIAL_SUMS 1024
 #define EPSILON 1e-2f
 #define VERBOSE 1
+// Without this the #if in KinoPaxPlus.cu sees an undefined macro and takes the 0 branch, so
+// the baseline would run NODE-ONLY pruning instead of the full parent chain that the
+// checked-in config.h selects. KinoPaxPlus is a headline series here (at two
+// discretizations), so it must be the real one.
+#define KINOPAXPLUS_PARENT_CHAIN_PRUNING 1
 // --- UNICYCLE MODEL: MODEL 0 ---
 #define UNI_MIN_STEERING -M_PI / 2
 #define UNI_MAX_STEERING M_PI / 2
@@ -204,52 +223,63 @@ write_config() {
 CONFIGEOF
 }
 
-REGIONS=$(( DELTA_W_R1**3 * DELTA_V_R1**3 ))
-
 echo ""
 echo "======================================================="
 echo "  KinoPaxSTAR Cost Tuning Sweep"
 echo "  Model: 1 (6D Double Integrator)"
 echo "  Environments: ${ENV_NAMES[*]}  (separate output subfolders)"
-echo "  Delta: ${DELTA_LABEL} | W_R1=${DELTA_W_R1} C_R1=${DELTA_C_R1} V_R1=${DELTA_V_R1} | Regions=${REGIONS}"
+for i in "${!DELTA_LABELS[@]}"; do
+    R=$(( DELTA_W_R1S[i]**3 * DELTA_V_R1S[i]**3 ))
+    if [ -z "${DELTA_EXTRA_ARGS[$i]}" ]; then
+        WHAT="full sweep"
+    else
+        WHAT="KinoPaxPlus only"
+    fi
+    echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
+done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  Grid: w {0, 0.2, 0.4, 0.6, 0.8, 1.0} x k {0.5, 1, 2, 4} = 24 points"
-echo "  Planner:   KinoPaxSTARWeightedCost (no cost pruning)"
-echo "  Baselines: KPAX, KinoPaxPlus"
-echo "  Baselines: KPAX, KinoPaxPlus"
+echo "  CleanCost grid: w {0.2, 0.5, 0.8, 1.0} x k {0.5, 1, 2} x cap {0.25, 0.5, 1.0} = 36 points"
+echo "  TrueStar:       cap {0.1, 0.25, 0.5, 1.0} = 4 points"
+echo "  Baselines: KPAX, KinoPaxPlus (large + fine)"
 echo "======================================================="
 
 # =============================================================================
 # BUILD — compile the Large delta config once per cost metric, caching each binary
 # =============================================================================
 if [ "$SKIP_BUILD" = false ]; then
-    for i in "${!COST_LABELS[@]}"; do
-        CL="${COST_LABELS[$i]}"
-        CM="${COST_MODES[$i]}"
+    for d in "${!DELTA_LABELS[@]}"; do
+        DL="${DELTA_LABELS[$d]}"
+        for i in "${!COST_LABELS[@]}"; do
+            CL="${COST_LABELS[$i]}"
+            CM="${COST_MODES[$i]}"
+            REGIONS=$(( DELTA_W_R1S[d]**3 * DELTA_V_R1S[d]**3 ))
 
-        echo ""
-        echo "=== BUILDING (delta=${DELTA_LABEL}, cost=${CL}, COST_MODE=${CM}, Regions=${REGIONS}) ==="
+            echo ""
+            echo "=== BUILDING (delta=${DL}, cost=${CL}, COST_MODE=${CM}, Regions=${REGIONS}) ==="
 
-        write_config "$DELTA_W_R1" "$DELTA_C_R1" "$DELTA_V_R1" "$CM"
+            write_config "${DELTA_W_R1S[$d]}" "${DELTA_C_R1S[$d]}" "${DELTA_V_R1S[$d]}" "$CM"
 
-        cd "$BUILD_DIR"
-        # shellcheck disable=SC2086
-        cmake .. -DCMAKE_BUILD_TYPE=Release $CMAKE_COMPILER_FLAGS 2>&1 | tail -5
-        make KinoPaxStarCostTuningSweep -j"$(nproc)" 2>&1 | tail -20
-        # Cache the binary under a metric-suffixed name so the run phase needs no rebuild
-        cp KinoPaxStarCostTuningSweep "KinoPaxStarCostTuningSweep_${CL}"
-        cd "$PROJECT_DIR"
+            cd "$BUILD_DIR"
+            # shellcheck disable=SC2086
+            cmake .. -DCMAKE_BUILD_TYPE=Release $CMAKE_COMPILER_FLAGS 2>&1 | tail -5
+            make KinoPaxStarCostTuningSweep -j"$(nproc)" 2>&1 | tail -20
+            # Cache under a (delta, metric)-suffixed name so the run phase needs no rebuild
+            cp KinoPaxStarCostTuningSweep "KinoPaxStarCostTuningSweep_${DL}_${CL}"
+            cd "$PROJECT_DIR"
+        done
     done
 else
     echo ""
     echo "=== SKIPPING BUILD PHASE (using cached binaries) ==="
     cd "$BUILD_DIR"
-    for CL in "${COST_LABELS[@]}"; do
-        if [ ! -f "KinoPaxStarCostTuningSweep_${CL}" ]; then
-            echo "ERROR: Cached binary not found: KinoPaxStarCostTuningSweep_${CL}"
-            echo "Run without --skip-build first to create cached binaries."
-            exit 1
-        fi
+    for DL in "${DELTA_LABELS[@]}"; do
+        for CL in "${COST_LABELS[@]}"; do
+            if [ ! -f "KinoPaxStarCostTuningSweep_${DL}_${CL}" ]; then
+                echo "ERROR: Cached binary not found: KinoPaxStarCostTuningSweep_${DL}_${CL}"
+                echo "Run without --skip-build first to create cached binaries."
+                exit 1
+            fi
+        done
     done
     echo "  All cached binaries found."
     cd "$PROJECT_DIR"
@@ -271,11 +301,22 @@ for CL in "${COST_LABELS[@]}"; do
     for i in "${!ENV_NAMES[@]}"; do
         EN="${ENV_NAMES[$i]}"
         EO="${ENV_OBSTACLES[$i]}"
-        echo ""
-        echo "=== RUNNING (delta=${DELTA_LABEL}, cost=${CL}, Env=${EN}) ==="
-        # argv[1] carries the discretization and the cost metric, so it lands in every output
-        # filename as _delta${DELTA_LABEL}_${CL}; argv[3] selects the per-environment subfolder.
-        "./KinoPaxStarCostTuningSweep_${CL}" "${DELTA_LABEL}_${CL}" "$EO" "$EN" $VIZ_FLAG
+        for d in "${!DELTA_LABELS[@]}"; do
+            DL="${DELTA_LABELS[$d]}"
+            EXTRA="${DELTA_EXTRA_ARGS[$d]}"
+            # Only the full-sweep delta dumps viz; a KinoPaxPlus-only pass has nothing extra to show.
+            if [ -z "$EXTRA" ]; then
+                PASS_FLAGS="$VIZ_FLAG"
+            else
+                PASS_FLAGS="$EXTRA"
+            fi
+            echo ""
+            echo "=== RUNNING (delta=${DL}, cost=${CL}, Env=${EN}) ${EXTRA} ==="
+            # argv[1] carries the discretization and the cost metric, so it lands in every output
+            # filename as _delta${DL}_${CL}; argv[3] selects the per-environment subfolder.
+            # shellcheck disable=SC2086
+            "./KinoPaxStarCostTuningSweep_${DL}_${CL}" "${DL}_${CL}" "$EO" "$EN" $PASS_FLAGS
+        done
     done
 done
 cd "$PROJECT_DIR"

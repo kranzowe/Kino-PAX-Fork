@@ -30,6 +30,7 @@ set(SOURCE_FILES
     src/planners/KinoPaxSTAR.cu
     src/planners/KinoPaxSTARcostprune.cu
     src/planners/KinoPaxSTARWeightedCost.cu
+    src/planners/KinoPaxSTARCleanCost.cu
     src/planners/KinoPaxSTARTrue.cu
     src/planners/KinoPaxSTARTrueWeightedCost.cu
     src/planners/KinoPaxSTARcostprunenoseed.cu

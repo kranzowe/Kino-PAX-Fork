@@ -5,9 +5,9 @@
 // for four configurations, so the early growth can be compared side by side:
 //
 //   ancestor_off  KinoPaxSTARTrue, h_ancestorPrune_ = 0  (== stock NoGoalBias)
-//   ancestor_on   KinoPaxSTARTrue, h_ancestorPrune_ = 2  (guarded ancestor chain)
+//   ancestor_on   KinoPaxSTARTrue, h_ancestorPrune_ = 1  (guarded stale-best prune)
 //   KPAX          pure explorer, reference for coverage
-//   KinoPaxPlus   pure optimizer, reference for what ancestor pruning is meant to look like
+//   KinoPaxPlus   pure optimizer, reference for what cost pruning is meant to look like
 //
 // This is a standalone runner, not a benchmark: it drives the raw iteration loop
 // (propagateFrontier -> graph_.updateVertices -> updateFrontier) the same way
@@ -207,10 +207,10 @@ int main(int argc, char* argv[])
                    d_obstacles, numObstacles, NUM_ITERS);
     }
 
-    // --- ancestor pruning ON (memoized chain) ---
+    // --- cost pruning ON (guarded stale-best; the memoized chain mode was removed) ---
     {
         KinoPaxSTARTrue planner;
-        planner.h_ancestorPrune_ = 2;
+        planner.h_ancestorPrune_ = 1;
         runAndDump(planner, "ancestor_on", envName, vizDir, h_initial, h_goal,
                    d_obstacles, numObstacles, NUM_ITERS);
     }

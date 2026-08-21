@@ -32,6 +32,10 @@ static const float CMP_K = 1.0f;   // decay rate of P_cost
 // Both are GUARDED to cost-admitted nodes, so Syclop-admitted explorers are never touched --
 // that guard is the difference from the retired KinoPaxSTARNoPruneAncestor, which applied the
 // same test to every node and froze the entire exploration population on the first pass.
+//
+// NOTE: mode 2 now applies ONLY to KinoPaxSTARTrueWeightedCost. KinoPaxSTARTrue's chain was
+// removed (the guard truncated it at the first explorer ancestor, so it already degenerated
+// toward mode 1), and that planner treats any nonzero value as stale-best.
 static const int CMP_PRUNE_STALEBEST = 1;
 static const int CMP_PRUNE_CHAIN     = 2;
 
@@ -995,14 +999,11 @@ void runComparison(
             numObstacles, maxIterations, maxTimeMs, CMP_PRUNE_STALEBEST, "KinoPaxSTARTrue"))
     }
 
-    // --- 5. KinoPaxSTARTrueAnc: guarded stale-best + ancestor chain ---
-    printf("\n--- KinoPaxSTARTrueAnc ---\n");
-    {
-        KinoPaxSTARTrue planner;
-        CMP_RUN_LOOP(RunResult result = benchmarkKinoPaxSTARTrue(
-            planner, deltaLabel, environment_name, run, h_initial, h_goal, d_obstacles,
-            numObstacles, maxIterations, maxTimeMs, CMP_PRUNE_CHAIN, "KinoPaxSTARTrueAnc"))
-    }
+    // --- 5. (removed) KinoPaxSTARTrueAnc ---
+    // KinoPaxSTARTrue's memoized ancestor-chain mode was removed, so this series would have been
+    // byte-identical to KinoPaxSTARTrue above while still being labelled "Anc" in the CSVs.
+    // KinoPaxSTARTrueWeightedCostAnc below is unaffected: KinoPaxSTARTrueWeightedCost still
+    // carries the chain, so CMP_PRUNE_CHAIN remains meaningful there.
 
     // --- 6. KinoPaxSTARWeightedCost: weighted acceptance, no cost pruning ---
     printf("\n--- KinoPaxSTARWeightedCost (w=%.2f k=%.2f) ---\n", CMP_W, CMP_K);
@@ -1076,7 +1077,7 @@ int main(int argc, char* argv[])
     printf("Cost metric:    %s (COST_MODE=%d)\n", (COST_MODE == 1) ? "control effort" : "workspace path length", COST_MODE);
     printf("Dump viz:       %s\n", g_dumpViz ? "YES (run 0 per variant)" : "NO");
     printf("KinoPaxPlus:    %d runs\n", NUM_KINOPAXPLUS_RUNS);
-    printf("STAR variants:  NoGoalBias, True, TrueAnc, WeightedCost, TrueWeightedCost, TrueWeightedCostAnc\n");
+    printf("STAR variants:  NoGoalBias, True, WeightedCost, TrueWeightedCost, TrueWeightedCostAnc\n");
     printf("Weighted point: w = %.2f, k = %.2f\n", CMP_W, CMP_K);
     printf("Runs each:      %d\n", NUM_STAR_RUNS);
     printf("Max iterations: %d\n", MAX_ITERATIONS);
@@ -1123,7 +1124,7 @@ int main(int argc, char* argv[])
     runKinoPaxPlusBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
                             all_results, outputDir, deltaLabel, NUM_KINOPAXPLUS_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
 
-    // --- All six STAR variants at fixed configurations ---
+    // --- The STAR variants at fixed configurations (TrueAnc removed: see runComparison) ---
     runComparison(envName, h_initial, h_goal, d_obstacles, numObstacles,
                   all_results, outputDir, deltaLabel, NUM_STAR_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
 

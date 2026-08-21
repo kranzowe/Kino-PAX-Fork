@@ -1,26 +1,32 @@
-%% Cost Tuning Sweep Visualization — cap x exp grid, both cost metrics
+%% Cost Tuning Sweep Visualization — w x k x cap grid, both cost metrics
 % Reads per-iteration CSVs produced by kinopaxstar_cost_tuning_sweep.cu
-% (run via run_cost_tuning_sweep.sh) and compares the full cost-prune tuning grid
-% at the single Large delta (R1 = 27k regions).
+% (run via run_cost_tuning_sweep.sh).
 %
-% Grid: KinoPaxSTARWeightedCost over w {0, 0.2, 0.4, 0.6, 0.8, 1.0} x k {0.5, 1, 2, 4} at
-% = 24 variants, plus KPAX and KinoPaxPlus baselines. 26 series.
+% Series (43 total):
+%   KinoPaxSTARCleanCost  w {0.2, 0.5, 0.8, 1.0} x k {0.5, 1, 2} x cap {0.25, 0.5, 1.0} = 36
+%   KinoPaxSTARTrue       cap {0.1, 0.25, 0.5, 1.0}                                     =  4
+%   KPAX, KinoPaxPlus, KinoPaxPlus (fine)                                               =  3
 %
-% KinoPaxSTARWeightedCost carries NO cost pruning. Algorithm-vs-algorithm comparison (including
-% the pruned "True" variants) now lives in the separate comparison benchmark; this file is purely
-% the w x k tuning surface.
+% CleanCost makes exactly ONE acceptance decision, in the accept kernel, where the region cost
+% statistics have converged and vertexScores already include the current iteration's samples:
+%     P = cap * min(1, w*(vertexScore + fAccept) + (1-w)*costProbExp(k) + P_floor)
+% with region-best and fresh-R2-sub-region candidates exempt. Its predecessor
+% KinoPaxSTARWeightedCost also ran a propagate-time filter capped at 0.1 that sat silently upstream
+% of w; cap is the explicit replacement, applied at both the accept kernel and Part-B reactivation.
+% w = 1 reproduces KPAX's acceptance, w = 0 is pure cost-greedy. P_cost is
+% exp(-k*(cost-m)/(mean-m)): exactly 1 at the region min AND with a real gradient across the whole
+% range, unlike min(1,(mean/cost)^k), which is pinned at 1 for every cost at or below the mean.
+%
+% TrueStar keeps the plain KPAX Syclop roll with the region score scaled by cap (fAccept unscaled),
+% plus the guarded stale-best cost prune.
+%
+% TWO DISCRETIZATIONS. KinoPaxPlus is measured twice: at the sweep's own delta ("large", 27k R1
+% regions) and at a finer one ("fine", 216k) built as a separate binary, since NUM_R1_REGIONS is
+% compile-time. Only KinoPaxPlus runs at the fine delta.
 %
 % ONE ENVIRONMENT PER RUN. The benchmark writes each environment to its own subfolder
 % (Data/Benchmarks/KinoPaxStarCostTuning/<env>/), so cd into the one you want and set envName
 % below to match.
-%
-% WeightedCost replaces costprune's MULTIPLICATIVE blend (costProb * syclop) with a weighted sum
-%   P_combined = min(1, w*P_syclop + (1-w)*P_cost + P_floor)
-% applied at both acceptance points, where P_syclop = vertexScore + fAccept is the full KPAX rule
-% and P_floor is fixed at EPSILON. w = 1 reproduces KPAX's acceptance, w = 0 is pure cost-greedy,
-% so the w axis brackets the exploration/cost tradeoff with one knob. P_cost is
-% exp(-k*(cost-m)/(mean-m)): exactly 1 at the region min AND with a real gradient across the whole
-% range, unlike min(1,(mean/cost)^k), which is pinned at 1 for every cost at or below the mean.
 %
 % COST METRIC: swept by rebuilding, since COST_MODE is a compile-time #if inside
 % edgeCost (include/helper/helper.cuh). The metric therefore rides in the delta
@@ -29,16 +35,20 @@
 % figure below is drawn once per metric and they are never overlaid.
 %
 % Per-run CSVs (in dataDir):
-%   KinoPaxPlus:  {env}_delta{large_METRIC}_run{n}.csv
-%   KPAX:         {env}_KPAX_delta{large_METRIC}_run{n}.csv
-%   weighted:     {env}_KinoPaxSTARWeightedCost_w{N}_k{N}_anc{N}_delta{large_METRIC}_run{n}.csv
+%   KinoPaxPlus:         {env}_delta{large_METRIC}_run{n}.csv
+%   KinoPaxPlus (fine):  {env}_delta{fine_METRIC}_run{n}.csv
+%   KPAX:                {env}_KPAX_delta{large_METRIC}_run{n}.csv
+%   STAR variants:       {env}_{planner label}_delta{large_METRIC}_run{n}.csv
+%                        e.g. KinoPaxSTARCleanCost_w50_k100_cap25, KinoPaxSTARTrue_cap25
 %
 % Per-iteration columns: iteration, frontier_size, tree_size, elapsed_time_ms, best_cost
 %
-% ENCODING: colour = w (steel-blue ramp, light->dark as w goes 0->1), line style = k (':' 0.5,
-% '-.' 1.0, '--' 2.0, '-' 4.0). Baselines are near-black (KPAX) and DASHED blue (KinoPaxPlus,
-% dashed so it does not read as part of the steel-blue ramp). Every legend here is CLICKABLE —
-% click an entry to hide/show that series.
+% ENCODING (three axes, so three visual channels): colour = w (steel-blue ramp, light->dark as
+% w goes 0.2->1.0), line style = k (':' 0.5, '-.' 1.0, '--' 2.0), line width = cap (thin 0.25,
+% medium 0.5, thick 1.0). TrueStar is a separate warm/orange ramp over its cap axis, solid.
+% Baselines are near-black (KPAX), DASHED blue (KinoPaxPlus) and DOTTED blue (KinoPaxPlus fine) --
+% dashed/dotted so they do not read as part of the steel-blue ramp. Every legend here is
+% CLICKABLE — click an entry to hide/show that series.
 %
 % FAIR-COMPARISON NOTE: an "iteration" is a different unit of work per planner, so
 % cost-vs-TIME is the fair cross-planner axis. Error bands and error bars are
@@ -68,21 +78,31 @@ costYLabels = {'Path Cost (control effort)', 'Path Cost (workspace path length)'
 
 deltaLabel = 'Large-\delta (27k)';
 
-% WeightedCost grid — must match WEIGHTS / WEIGHTED_EXPS / WEIGHTED_ANC in
-% kinopaxstar_cost_tuning_sweep.cu. Values are the integer label tokens (100 x the float for
-% w and k), exactly as they appear in the filenames.
-weights   = [0 20 40 60 80 100];
-wExps     = [50 100 200 400];
-% Colour = w (light->dark), line style = k. The ancestor axis is fixed, so no hue family split.
-steelRamp  = [0.78 0.87 0.95;    % w 0    - steel blue (lightest)
-              0.56 0.72 0.88;    % w 0.2
-              0.36 0.57 0.79;    % w 0.4
-              0.21 0.42 0.66;    % w 0.6
-              0.11 0.28 0.50;    % w 0.8
-              0.03 0.15 0.31];   % w 1.0  - steel blue (darkest)
-wExpStyles = {':', '-.', '--', '-'};   % k 0.5, 1.0, 2.0, 4.0
+% CleanCost grid — must match WEIGHTS / WEIGHTED_EXPS / CAPS in
+% kinopaxstar_cost_tuning_sweep.cu. Values are the integer label tokens (100 x the float),
+% exactly as they appear in the filenames.
+weights = [20 50 80 100];
+wExps   = [50 100 200];
+caps    = [25 50 100];
 
-% --- Build the series arrays (24 weighted + 2 baselines) ---
+% TrueStar cap sweep — must match TRUE_CAPS in the benchmark.
+trueCaps = [10 25 50 100];
+
+% Colour = w (light->dark), line style = k, line width = cap.
+steelRamp  = [0.62 0.76 0.90;    % w 0.2 - steel blue (lightest)
+              0.36 0.57 0.79;    % w 0.5
+              0.16 0.35 0.58;    % w 0.8
+              0.03 0.15 0.31];   % w 1.0 - steel blue (darkest)
+wExpStyles = {':', '-.', '--'};        % k 0.5, 1.0, 2.0
+capWidths  = [0.8, 1.4, 2.2];          % cap 0.25, 0.5, 1.0
+
+% TrueStar gets its own warm ramp so it never reads as part of the CleanCost grid.
+amberRamp = [0.99 0.80 0.54;     % cap 0.10 (lightest)
+             0.96 0.63 0.26;
+             0.85 0.44 0.09;
+             0.60 0.28 0.02];    % cap 1.00 (darkest)
+
+% --- Build the series arrays (36 CleanCost + 4 TrueStar + 3 baselines) ---
 plannerNames   = {};
 plannerDisplay = {};
 plannerColors  = [];
@@ -91,23 +111,35 @@ plannerMarkers = {};
 plannerWidths  = [];
 for wi = 1:numel(weights)
     for ei = 1:numel(wExps)
-        plannerNames{end + 1}   = sprintf('KinoPaxSTARWeightedCost_w%d_k%d', ...
-                                          weights(wi), wExps(ei)); %#ok<SAGROW>
-        plannerDisplay{end + 1} = sprintf('W w%g k%g', weights(wi) / 100, ...
-                                          wExps(ei) / 100); %#ok<SAGROW>
-        plannerColors(end + 1, :) = steelRamp(wi, :);   %#ok<SAGROW>
-        plannerStyles{end + 1}    = wExpStyles{ei};     %#ok<SAGROW>
-        plannerMarkers{end + 1}   = 'o';                %#ok<SAGROW>
-        plannerWidths(end + 1)    = 1.4;                %#ok<SAGROW>
+        for ci = 1:numel(caps)
+            plannerNames{end + 1}   = sprintf('KinoPaxSTARCleanCost_w%d_k%d_cap%d', ...
+                                              weights(wi), wExps(ei), caps(ci)); %#ok<SAGROW>
+            plannerDisplay{end + 1} = sprintf('C w%g k%g cap%g', weights(wi) / 100, ...
+                                              wExps(ei) / 100, caps(ci) / 100); %#ok<SAGROW>
+            plannerColors(end + 1, :) = steelRamp(wi, :);   %#ok<SAGROW>
+            plannerStyles{end + 1}    = wExpStyles{ei};     %#ok<SAGROW>
+            plannerMarkers{end + 1}   = 'o';                %#ok<SAGROW>
+            plannerWidths(end + 1)    = capWidths(ci);      %#ok<SAGROW>
+        end
     end
 end
-% Reference baselines, drawn thick so they read as anchors
-plannerNames   = [plannerNames,   {'KPAX', 'KinoPaxPlus'}];
-plannerDisplay = [plannerDisplay, {'KPAX', 'KinoPaxPlus'}];
-plannerColors  = [plannerColors;  0.10 0.10 0.10;  0.20 0.40 0.80];
-plannerStyles  = [plannerStyles,  {'-', '--'}];   % KinoPaxPlus dashed: steel-blue is taken
-plannerMarkers = [plannerMarkers, {'s', 's'}];
-plannerWidths  = [plannerWidths,  2.5, 2.5];
+for ci = 1:numel(trueCaps)
+    plannerNames{end + 1}   = sprintf('KinoPaxSTARTrue_cap%d', trueCaps(ci)); %#ok<SAGROW>
+    plannerDisplay{end + 1} = sprintf('True cap%g', trueCaps(ci) / 100);      %#ok<SAGROW>
+    plannerColors(end + 1, :) = amberRamp(ci, :);   %#ok<SAGROW>
+    plannerStyles{end + 1}    = '-';                %#ok<SAGROW>
+    plannerMarkers{end + 1}   = '^';                %#ok<SAGROW>
+    plannerWidths(end + 1)    = 1.6;                %#ok<SAGROW>
+end
+% Reference baselines, drawn thick so they read as anchors.
+% 'KinoPaxPlusFine' is not a planner name in the benchmark -- it is a pseudo-name this script maps
+% to the fine-delta KinoPaxPlus CSVs in loadRuns().
+plannerNames   = [plannerNames,   {'KPAX', 'KinoPaxPlus', 'KinoPaxPlusFine'}];
+plannerDisplay = [plannerDisplay, {'KPAX', 'KinoPaxPlus (27k)', 'KinoPaxPlus (216k)'}];
+plannerColors  = [plannerColors;  0.10 0.10 0.10;  0.20 0.40 0.80;  0.20 0.40 0.80];
+plannerStyles  = [plannerStyles,  {'-', '--', ':'}];   % steel-blue solid is taken by the grid
+plannerMarkers = [plannerMarkers, {'s', 's', 'd'}];
+plannerWidths  = [plannerWidths,  2.5, 2.5, 2.5];
 
 numRunsPer = 50 * ones(1, numel(plannerNames));   % max runs searched (missing files skipped)
 
@@ -255,11 +287,15 @@ function runs = loadRuns(dataDir, env, planner, delta, numRuns)
         switch planner
             case 'KinoPaxPlus'
                 fn = sprintf('%s_delta%s_run%d.csv', env, delta, ri);
+            case 'KinoPaxPlusFine'
+                % Pseudo-name: the finer discretization is a separate binary that writes
+                % KinoPaxPlus rows under the 'fine_*' delta token instead of 'large_*'.
+                fn = sprintf('%s_delta%s_run%d.csv', env, strrep(delta, 'large', 'fine'), ri);
             case 'KPAX'
                 fn = sprintf('%s_KPAX_delta%s_run%d.csv', env, delta, ri);
             otherwise
-                % The WeightedCost grid uses the planner name directly as the filename token.
-                if startsWith(planner, 'KinoPaxSTARWeightedCost')
+                % Every STAR variant uses its planner label directly as the filename token.
+                if startsWith(planner, 'KinoPaxSTAR')
                     fn = sprintf('%s_%s_delta%s_run%d.csv', env, planner, delta, ri);
                 else
                     error('unknown planner %s', planner);
@@ -287,7 +323,7 @@ end
 
 function plotMeanTime(runs, col, commonTime, color, style, width, name)
     % Mean of column 'col' vs a shared time grid (previous-sample hold). No band:
-    % with 26 overlaid series the +/-std fills made the figure unreadable.
+    % with 43 overlaid series the +/-std fills made the figure unreadable.
     if isempty(runs), return; end
     A = NaN(numel(runs), numel(commonTime));
     for ri = 1:numel(runs)
