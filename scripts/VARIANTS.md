@@ -168,6 +168,40 @@ Carries no retroactive pruning.
 Because the propagate-time throttle is gone, this admits far more per iteration than WeightedCost at
 the same `w` — expect to retune, with `cap` as the compensating knob.
 
+**Choosing `cap`: it is a thread count, not a free parameter.** Each frontier node is expanded
+`repeat × h_activeBlockSize_` times (`repeat` = 15 while `validVertexCounter[r] < 10`, else 1;
+`blockSize` = 32), and after the fold *every one* of those candidates is judged by the single accept
+rule — where KPAX pre-filtered them inside propagate with a separate roll. The per-node branching
+factor is
+
+    b = repeat · blockSize · ν · cap · p̄        (ν = collision-free fraction)
+
+so holding `b` near 1 gives `cap ≈ 1 / (repeat · blockSize · ν · p̄)`. The geometric term is the
+principled part: **`cap` should scale as `1/blockSize`** — "one accepted child per frontier node per
+expansion block", i.e. exactly the factor that restores the branching KPAX had before the fold
+removed its pre-filter. With `h_activeBlockSize_ = 32` that is `1/32 = 0.03125`; the sweeps use
+`0.03` as its exact-label neighbour under the `100·cap` filename convention. It falls inside the
+0.01–0.05 band that measured best empirically, which is the evidence for the argument.
+
+**Why `k` is inert at the operating point** (worth knowing before re-sweeping it). With `w = 0.9`
+and `h_probFloor_ = EPSILON = 0.01`, the cost term outranks the floor only while
+
+    0.1 · exp(−k·x) > 0.01   ⟺   x < ln(10)/k,     x = (cost − m)/(mean − m)
+
+so `k` = 4 / 8 / 16 gives windows of `x` < 0.58 / 0.29 / 0.14 — and the region minimum never reaches
+the formula at all, since `cost <= m` returns early. Outside that shrinking sliver every candidate
+takes the same floor-dominated probability. Underneath, `vertexScore = EPSILON + score/total` and the
+`score/total` terms sum to 1 across active regions, so at 27k regions the average discriminative term
+is ~3.7e-5 — ~270× below its own `EPSILON` floor. For the bulk of the tree the whole expression
+collapses to `P ≈ cap · (0.9·0.01 + ~0 + 0.01)`, i.e. **cap × a constant**. The lever for making `k`
+bite is `h_probFloor_ → 0`, not a larger `k`.
+
+**Discretization note for the sweeps.** `NUM_R1_REGIONS = W_R1^3 * V_R1^3` has no C term, and Model 1
+sets `C_DIM 0`, so `getRegion` / `getSubRegion` skip the C dimension entirely — `C_R1_LENGTH` is a
+no-op and stays at 1. Control-side refinement rides on `V_R1`. That makes the sweep's `fine`
+(`W_R1` 10→20) and `fine_control` (`V_R1` 3→6) a controlled pair: **identical 216,000 region count,
+refined in workspace vs in velocity.**
+
 ### KinoPaxSTARTrue  *(new)*
 `KinoPaxSTARNoGoalBias` plus **cost-guarded** retroactive pruning. A node is pruned when it was
 admitted *because* it was its region's minimum and no longer is; nodes the Syclop exploration roll

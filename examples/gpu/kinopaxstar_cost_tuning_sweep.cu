@@ -32,16 +32,22 @@ static std::string g_vizDir;
 // upstream of w; folding that away means CleanCost admits far more per iteration at the same w,
 // and cap is the explicit downstream throttle that buys it back.
 //
-// Three orthogonal axes, though w is PINNED at 0.9 for this pass -- earlier sweeps put the
-// interesting behaviour there, so this one is a k x cap surface rather than a w x k x cap volume:
+// Three orthogonal axes, but w and k are both PINNED for this pass, so it is a pure cap sweep.
+// Earlier sweeps put the interesting behaviour at w = 0.9 and showed k to be inert (see below):
 //   w   weight on the Syclop probability. 1 = KPAX's acceptance, 0 = pure cost-greedy.
-//   k   decay rate of P_cost (costProbExp).
+//   k   decay rate of P_cost (costProbExp). PINNED at 8: it was measured to do essentially
+//       nothing, and the formula says why. With w = 0.9 and P_floor = EPSILON = 0.01, the cost
+//       term outranks the floor only while 0.1*exp(-k*x) > 0.01, i.e. x < ln(10)/k, where
+//       x = (cost - m)/(mean - m). k = 4/8/16 gives windows of x < 0.58/0.29/0.14 -- and the
+//       region minimum itself never reaches the formula at all (the cost <= m early return
+//       exempts it). Outside that sliver every candidate takes the same floor-dominated
+//       probability. The lever for making k bite is h_probFloor_ -> 0, not a larger k.
 //   cap flat multiplier on the final probability, applied identically at the accept kernel and at
 //       Part-B reactivation. TRUE_CAPS and KPAXCAP_CAPS use the SAME values, so a cap reads
 //       directly across CleanCost / TrueStar / KPAXCap.
 static const float WEIGHTS[] = {0.9f};
-static const float WEIGHTED_EXPS[] = {4.0f, 8.0f, 16.0f};
-static const float CAPS[] = {0.01f, 0.05f, 0.1f, 0.2f};
+static const float WEIGHTED_EXPS[] = {8.0f};
+static const float CAPS[] = {0.01f, 0.03f, 0.05f, 0.1f};
 static const int NUM_WEIGHTS = sizeof(WEIGHTS) / sizeof(WEIGHTS[0]);
 static const int NUM_WEIGHTED_EXPS = sizeof(WEIGHTED_EXPS) / sizeof(WEIGHTED_EXPS[0]);
 static const int NUM_CAPS = sizeof(CAPS) / sizeof(CAPS[0]);
@@ -51,7 +57,7 @@ static const int NUM_CAPS = sizeof(CAPS) / sizeof(CAPS[0]);
 // acceptance points (fAccept stays unscaled, so reactivation is throttled rather than switched
 // off). Pruning is fixed at the guarded stale-best rule; the memoized ancestor-chain mode was
 // removed, since the guard truncated the chain at the first explorer ancestor.
-static const float TRUE_CAPS[] = {0.01f, 0.05f, 0.1f, 0.2f};
+static const float TRUE_CAPS[] = {0.01f, 0.03f, 0.05f, 0.1f};
 static const int NUM_TRUE_CAPS = sizeof(TRUE_CAPS) / sizeof(TRUE_CAPS[0]);
 static const int TRUE_PRUNE_STALEBEST = 1;
 
@@ -62,8 +68,35 @@ static const int TRUE_PRUNE_STALEBEST = 1;
 // divides by 1 + counterArray^2, cumulative over the run). KPAXCap applies only the cap, still
 // inside propagate on pre-jump scores -- so KPAX / KPAXCap / CleanCost-at-w=1 separates the cap's
 // effect from the kernel boundary's. Matched to TRUE_CAPS so the two cap sweeps line up.
-static const float KPAXCAP_CAPS[] = {0.01f, 0.05f, 0.1f, 0.2f};
+static const float KPAXCAP_CAPS[] = {0.01f, 0.03f, 0.05f, 0.1f};
 static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0]);
+
+// ---- The derived cap ----
+// After the fold, every frontier node offers repeat * h_activeBlockSize_ candidates to ONE
+// acceptance rule, where KPAX pre-filtered them inside propagate with a separate roll. The per-node
+// branching factor is
+//
+//     b = repeat * blockSize * nu * cap * p_bar        (nu = collision-free fraction)
+//
+// so holding b near 1 gives cap ~ 1 / (repeat * blockSize * nu * p_bar). The geometric term is the
+// principled part: cap should scale as 1 / blockSize -- "one accepted child per frontier node per
+// expansion block", the factor that restores the branching KPAX had before the fold. With
+// h_activeBlockSize_ = 32 that is 1/32 = 0.03125, and 0.03 is its exact-label neighbour under the
+// 100*cap filename convention (and within 4% of it). It sits inside the 0.01-0.05 band that
+// measured best, which is the evidence this pass is testing directly.
+//
+// CAP_DERIVED must stay a member of all three cap lists: --single-cap selects it by value, so the
+// reduced passes emit a label that also exists in the full sweep and the two overlay like with like.
+static const float CAP_DERIVED = 0.03f;
+
+// --single-cap: run only CAP_DERIVED on every cap axis. Used for the finer discretizations, where
+// the cap sweep would just repeat what the coarse delta already measured.
+static bool g_singleCap = false;
+
+static bool capSkip(float cap)
+{
+    return g_singleCap && fabsf(cap - CAP_DERIVED) > 1e-6f;
+}
 
 // The w = 1 rung is the only place k is inert (the cost term drops out of weightedAccept), so
 // only k = 1 is run there. Single source of truth for that skip: the runner and the banner both
@@ -79,11 +112,20 @@ static int cleanCostPointCount()
     for(int wi = 0; wi < NUM_WEIGHTS; wi++)
     for(int ei = 0; ei < NUM_WEIGHTED_EXPS; ei++)
     for(int ci = 0; ci < NUM_CAPS; ci++)
-        if(!cleanCostSkip(WEIGHTS[wi], WEIGHTED_EXPS[ei])) n++;
+        if(!cleanCostSkip(WEIGHTS[wi], WEIGHTED_EXPS[ei]) && !capSkip(CAPS[ci])) n++;
     return n;
 }
 
-// "KinoPaxSTARCleanCost_w90_k400_cap5"
+// Points on a bare cap axis (TrueStar, KPAXCap) under the current --single-cap setting.
+static int capAxisPointCount(const float* caps, int nCaps)
+{
+    int n = 0;
+    for(int ci = 0; ci < nCaps; ci++)
+        if(!capSkip(caps[ci])) n++;
+    return n;
+}
+
+// "KinoPaxSTARCleanCost_w90_k800_cap3"
 static std::string cleanLabel(float w, float k, float cap)
 {
     char buf[128];
@@ -758,6 +800,7 @@ void runKPAXCapBenchmark(
     for(int ci = 0; ci < NUM_KPAXCAP_CAPS; ci++)
     {
         const float       cap   = KPAXCAP_CAPS[ci];
+        if(capSkip(cap)) continue;
         const std::string label = kpaxCapLabel(cap);
 
         printf("  --- cap = %.2f (%s) ---\n", cap, label.c_str());
@@ -921,6 +964,8 @@ void runKinoPaxSTARCleanCostBenchmark(
         const float       k     = WEIGHTED_EXPS[ei];
         const float       cap   = CAPS[ci];
 
+        if(capSkip(cap)) continue;
+
         // At w = 1 the cost term vanishes from weightedAccept -- min(1, 1*P_syclop + 0*P_cost +
         // floor) -- so k is inert and the k rungs would be one rule differing only by RNG stream.
         // Run k = 1 only there. (Inert while WEIGHTS holds no 1.0, but kept so re-adding it works.)
@@ -1077,6 +1122,7 @@ void runKinoPaxSTARTrueBenchmark(
     for(int ci = 0; ci < NUM_TRUE_CAPS; ci++)
     {
         const float       cap   = TRUE_CAPS[ci];
+        if(capSkip(cap)) continue;
         const std::string label = trueLabel(cap);
 
         printf("  --- cap = %.2f (%s) ---\n", cap, label.c_str());
@@ -1114,6 +1160,10 @@ int main(int argc, char* argv[])
     // --dump-viz additionally dumps run-0's full tree per variant for the spatial /
     // tree-growth visualization (Data/Benchmarks/KinoPaxStarCostTuning/viz/).
     //
+    // --single-cap restricts every cap axis to CAP_DERIVED. The finer discretizations use it: the
+    // cap sweep proper happens at the coarse delta, and the finer ones only need the derived
+    // operating point so the deltas can be overlaid at a matched cap.
+    //
     // --only-kinopaxplus runs the KinoPaxPlus series and nothing else. The discretization is a
     // compile-time property (NUM_R1_REGIONS via config.h), so the only way to get KinoPaxPlus at a
     // second, finer delta is a second binary; this flag lets that binary reuse this file instead of
@@ -1128,6 +1178,8 @@ int main(int argc, char* argv[])
             g_dumpViz = true;
         else if(std::string(argv[i]) == "--only-kinopaxplus")
             onlyKinoPaxPlus = true;
+        else if(std::string(argv[i]) == "--single-cap")
+            g_singleCap = true;
     }
 
     const int NUM_KPAX_RUNS        = 5;
@@ -1154,6 +1206,7 @@ int main(int argc, char* argv[])
     printf("Obstacle file:  %s\n", obstaclePath.c_str());
     printf("Environment:    %s\n", envName.c_str());
     printf("Mode:           %s\n", onlyKinoPaxPlus ? "KinoPaxPlus ONLY (--only-kinopaxplus)" : "full sweep");
+    printf("Cap axis:       %s\n", g_singleCap ? "SINGLE (--single-cap, cap = CAP_DERIVED)" : "swept");
     printf("Baselines:      %s (KPAX, %d runs)\n", (skipBaselines || onlyKinoPaxPlus) ? "NO" : "YES", NUM_KPAX_RUNS);
     printf("Cost metric:    %s (COST_MODE=%d)\n", (COST_MODE == 1) ? "control effort" : "workspace path length", COST_MODE);
     printf("Dump viz:       %s\n", g_dumpViz ? "YES (run 0 per variant)" : "NO");
@@ -1166,10 +1219,12 @@ int main(int argc, char* argv[])
         printf("CleanCost:      w x k x cap = %d x %d x %d -> %d points x %d runs = %d runs\n",
                NUM_WEIGHTS, NUM_WEIGHTED_EXPS, NUM_CAPS, cleanPoints,
                NUM_CLEANCOST_RUNS, cleanPoints * NUM_CLEANCOST_RUNS);
+        int truePoints = capAxisPointCount(TRUE_CAPS, NUM_TRUE_CAPS);
+        int kcapPoints = capAxisPointCount(KPAXCAP_CAPS, NUM_KPAXCAP_CAPS);
         printf("TrueStar:       cap = %d points x %d runs = %d runs\n",
-               NUM_TRUE_CAPS, NUM_TRUESTAR_RUNS, NUM_TRUE_CAPS * NUM_TRUESTAR_RUNS);
+               truePoints, NUM_TRUESTAR_RUNS, truePoints * NUM_TRUESTAR_RUNS);
         printf("KPAXCap:        cap = %d points x %d runs = %d runs\n",
-               NUM_KPAXCAP_CAPS, NUM_KPAXCAP_RUNS, NUM_KPAXCAP_CAPS * NUM_KPAXCAP_RUNS);
+               kcapPoints, NUM_KPAXCAP_RUNS, kcapPoints * NUM_KPAXCAP_RUNS);
     }
     printf("Max iterations: %d\n", MAX_ITERATIONS);
     printf("=======================================================\n");

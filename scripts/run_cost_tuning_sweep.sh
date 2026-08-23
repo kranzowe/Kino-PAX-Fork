@@ -5,17 +5,28 @@
 # Tuning sweep for KinoPaxSTARCleanCost, plus KinoPaxSTARTrue / KPAXCap cap sweeps and the
 # KPAX / KinoPaxPlus baselines, on both environments:
 #
-#   KinoPaxSTARCleanCost   w {0.9} x k {4, 8, 16} x cap {0.01, 0.05, 0.1, 0.2}
-#                          = 12 points x 3 runs = 36 runs
-#   KinoPaxSTARTrue        cap {0.01, 0.05, 0.1, 0.2} = 4 points x 3 runs = 12 runs
-#   KPAXCap                cap {0.01, 0.05, 0.1, 0.2} = 4 points x 5 runs = 20 runs
-#   KPAX                   baseline, 5 runs
-#   KinoPaxPlus            baseline, 5 runs at the "large" delta
-#   KinoPaxPlus (fine)     the SAME baseline at a finer discretization, 5 runs
+# w AND k ARE BOTH PINNED (w = 0.9, k = 8), so this is a pure cap sweep. k was measured to do
+# essentially nothing and the formula says why: with w = 0.9 and P_floor = EPSILON = 0.01, the cost
+# term outranks the floor only while x < ln(10)/k for x = (cost-m)/(mean-m), and the region minimum
+# is already exempt via the cost <= m early return. See the note in the benchmark .cu.
 #
-# w IS PINNED AT 0.9 for this pass, so it is a k x cap surface rather than a w x k x cap volume.
+# Per (environment, cost metric, delta):
+#   KinoPaxSTARCleanCost   w {0.9} x k {8} x cap {0.01, 0.03, 0.05, 0.1} = 4 points x 3 runs = 12
+#   KinoPaxSTARTrue        cap {0.01, 0.03, 0.05, 0.1} = 4 points x 3 runs = 12
+#   KPAXCap                cap {0.01, 0.03, 0.05, 0.1} = 4 points x 5 runs = 20
+#   KPAX                   baseline, 5 runs
+#   KinoPaxPlus            baseline, 5 runs
+#   => 54 runs at the "large" delta; 21 at each finer delta (--single-cap, see below)
+#
 # All three capped planners sweep the SAME cap values, so a cap reads across CleanCost / TrueStar /
 # KPAXCap directly.
+#
+# cap = 0.03 IS THE DERIVED OPERATING POINT. After the acceptance fold, each frontier node offers
+# repeat * h_activeBlockSize_ candidates to one rule, so the per-node branching factor carries a
+# blockSize term; holding it near 1 gives cap ~ 1/blockSize = 1/32 = 0.03125, of which 0.03 is the
+# exact-label neighbour. The finer deltas run ONLY that point (--single-cap): the cap sweep proper
+# happens at "large", and the finer ones measure the derived value so the deltas overlay at a
+# matched cap.
 #
 # CleanCost makes exactly ONE acceptance decision, in the accept kernel:
 #
@@ -42,13 +53,19 @@
 # Runs on BOTH environments (house and zigzag), each written to its own subfolder under
 # Data/Benchmarks/KinoPaxStarCostTuning/<env>/ so they can be plotted independently.
 #
-# = 78 runs per (environment, cost metric); 4 such passes = 312 runs total.
-# At the 6 s per-run cap that is ~8 min per pass, ~35 min worst case overall.
+# = 54 + 21 + 21 = 96 runs per (environment, cost metric); 3 envs x 2 metrics = 576 runs total.
+# At the 6 s per-run cap that is ~10 min per (env, metric), ~1 h worst case overall, plus 6 builds.
 #
-# TWO DISCRETIZATIONS. NUM_R1_REGIONS is compile-time (config.h), so the extra finer-grid
-# KinoPaxPlus series needs its own binary. This script therefore builds the delta x cost-metric
-# matrix (4 binaries) and runs the "fine" ones with --only-kinopaxplus, which skips KPAX, the
-# CleanCost grid and TrueStar. "fine" matches the med_large rung of run_delta_benchmark.sh.
+# THREE DISCRETIZATIONS, ALL RUNNING THE FULL PLANNER SET. NUM_R1_REGIONS is compile-time
+# (config.h), so each needs its own binary: this script builds the delta x cost-metric matrix
+# (6 binaries) and runs the two finer deltas with --single-cap.
+#
+# "fine" and "fine_control" are a CONTROLLED PAIR: identical 216,000 region count, refined in
+# different subspaces -- workspace (W_R1 10 -> 20) vs velocity (V_R1 3 -> 6).
+#
+# C_R1 STAYS AT 1 EVERYWHERE. NUM_R1_REGIONS = W_R1^3 * V_R1^3 has no C term, and this config sets
+# C_DIM 0, so getRegion / getSubRegion skip the C dimension entirely -- raising C_R1 would change
+# nothing at all. The control-side refinement rides on V_R1.
 #
 # COST_MODE is a compile-time #if inside edgeCost (include/helper/helper.cuh), so
 # the cost metric cannot vary within one binary. This script therefore borrows
@@ -57,9 +74,10 @@
 # them in a second pass. Both labels ride into every output filename as the
 # argv[1] delta label (large_length / large_effort / fine_length / fine_effort).
 #
-# Deltas (Model 1: W_DIM=3, C_DIM=1, V_DIM=3):
-#   large  W_R1=10  C_R1=1  V_R1=3  ->  NUM_R1_REGIONS = 10^3 * 3^3 =  27,000
-#   fine   W_R1=20  C_R1=1  V_R1=3  ->  NUM_R1_REGIONS = 20^3 * 3^3 = 216,000
+# Deltas (Model 1: W_DIM=3, C_DIM=0, V_DIM=3):
+#   large         W_R1=10  C_R1=1  V_R1=3  ->  10^3 * 3^3 =  27,000
+#   fine          W_R1=20  C_R1=1  V_R1=3  ->  20^3 * 3^3 = 216,000  (workspace-refined)
+#   fine_control  W_R1=10  C_R1=1  V_R1=6  ->  10^3 * 6^3 = 216,000  (velocity-refined)
 #
 # Original config.h is backed up and restored on exit/error.
 #
@@ -78,22 +96,28 @@ BUILD_DIR="$PROJECT_DIR/build"
 # Deltas: parallel arrays of label / W_R1 / C_R1 / V_R1.
 # Index 0 ("large") runs the full sweep. Every later index runs KinoPaxPlus ONLY, so the baseline
 # can be measured at a finer discretization without re-running the whole grid there.
-DELTA_LABELS=("large" "fine")
-DELTA_W_R1S=(10 20)
-DELTA_C_R1S=(1 1)
-DELTA_V_R1S=(3 3)
-# Extra argv passed to each delta's binary. Index 0 gets the viz flag (appended below); the rest
-# are KinoPaxPlus-only passes.
-DELTA_EXTRA_ARGS=("" "--only-kinopaxplus")
+DELTA_LABELS=("large" "fine" "fine_control")
+DELTA_W_R1S=(10 20 10)
+DELTA_C_R1S=(1  1  1)   # inert for Model 1 (C_DIM 0); control refinement rides on V_R1
+DELTA_V_R1S=(3  3  6)
+# Extra argv per delta. Index 0 (the coarse delta) sweeps the cap axis and gets the viz flag
+# appended below; the finer deltas run only the derived cap so the three overlay at a matched point.
+DELTA_EXTRA_ARGS=("" "--single-cap" "--single-cap")
 
 # Cost metric axis: label + COST_MODE  (0 = workspace distance, 1 = control effort)
 COST_LABELS=("length" "effort")
 COST_MODES=(0 1)
 
 # Environments (obstacles already in [0,1]^3 for Model 1). Each gets its own output subfolder.
-ENV_NAMES=("house" "zigzag")
+# narrowPassage is a wall at x in [0.3, 0.5] spanning all z, split by a gap at y in [0.49, 0.51] --
+# 0.02 wide against an agent diameter of 0.01 (AGENT_RADIUS 0.005). The benchmark's start
+# (0.1, 0.08, 0.05) and goal (0.8, 0.95, 0.9) are clear of both boxes and on opposite sides of the
+# wall, so no endpoint change is needed -- but expect low success rates there, and read the
+# success-rate subplot alongside the cost bars (unsolved runs are dropped from the cost mean).
+ENV_NAMES=("house" "zigzag" "narrowPassage")
 ENV_OBSTACLES=("../include/config/obstacles/house/obstacles.csv"
-               "../include/config/obstacles/zigzag/obstacles.csv")
+               "../include/config/obstacles/zigzag/obstacles.csv"
+               "../include/config/obstacles/narrowPassage/obstacles.csv")
 
 # --- Parse arguments ---
 SKIP_BUILD=false
@@ -250,9 +274,10 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  CleanCost grid: w {0.9} x k {4, 8, 16} x cap {0.01, 0.05, 0.1, 0.2} = 12 points"
-echo "  TrueStar:       cap {0.01, 0.05, 0.1, 0.2} = 4 points"
-echo "  KPAXCap:        cap {0.01, 0.05, 0.1, 0.2} = 4 points"
+echo "  CleanCost:      w {0.9} x k {8} x cap {0.01, 0.03, 0.05, 0.1} = 4 points"
+echo "  TrueStar:       cap {0.01, 0.03, 0.05, 0.1} = 4 points"
+echo "  KPAXCap:        cap {0.01, 0.03, 0.05, 0.1} = 4 points"
+echo "  Finer deltas run only the derived cap = 0.03 (~1/blockSize) via --single-cap"
 echo "  Baselines: KPAX, KinoPaxPlus (large + fine)"
 echo "======================================================="
 

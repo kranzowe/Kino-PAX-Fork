@@ -2,15 +2,30 @@
 % Reads per-iteration CSVs produced by kinopaxstar_cost_tuning_sweep.cu
 % (run via run_cost_tuning_sweep.sh).
 %
-% Series (23 total):
-%   KinoPaxSTARCleanCost  w {0.9} x k {4, 8, 16} x cap {0.01, 0.05, 0.1, 0.2} = 12
-%   KinoPaxSTARTrue       cap {0.01, 0.05, 0.1, 0.2}                          =  4
-%   KPAXCap               cap {0.01, 0.05, 0.1, 0.2}                          =  4
-%   KPAX, KinoPaxPlus, KinoPaxPlus (fine)                                     =  3
+% THREE DELTAS ARE OVERLAID in every figure. Series are (planner, delta) pairs:
 %
-% w is now PINNED at 0.9, so this pass is a k x cap surface rather than a w x k x cap volume.
-% The w = 1 skip (where the cost term drops out of weightedAccept and k goes inert) is still
-% mirrored below so re-adding w = 1.0 to the benchmark keeps the two in sync.
+%   delta 'large' (27k regions, full cap sweep)                                = 14
+%       CleanCost w {0.9} x k {8} x cap {0.01, 0.03, 0.05, 0.1}                     4
+%       TrueStar  cap {0.01, 0.03, 0.05, 0.1}                                       4
+%       KPAXCap   cap {0.01, 0.03, 0.05, 0.1}                                       4
+%       KPAX, KinoPaxPlus                                                           2
+%   delta 'fine' (216k, workspace-refined; --single-cap, derived cap only)     =  5
+%   delta 'fine_control' (216k, velocity-refined; --single-cap)                =  5
+%                                                                              -------
+%                                                                                  24
+%
+% w and k are both PINNED (0.9, 8), so this is a pure cap sweep. k was measured to be inert and the
+% formula says why: with w = 0.9 and P_floor = EPSILON = 0.01 the cost term outranks the floor only
+% while x < ln(10)/k for x = (cost-m)/(mean-m), and the region minimum is exempt anyway via the
+% cost <= m early return.
+%
+% cap = 0.03 is the DERIVED operating point (~1/h_activeBlockSize_ = 1/32): after the acceptance
+% fold each frontier node offers repeat*blockSize candidates to one rule, so holding the per-node
+% branching factor near 1 gives cap ~ 1/blockSize. The finer deltas run only that cap, so all three
+% deltas overlay at a matched point.
+%
+% 'fine' and 'fine_control' are a CONTROLLED PAIR: identical 216,000 region count, refined in
+% workspace (W_R1 10->20) vs velocity (V_R1 3->6). C_R1 is inert under C_DIM 0 and stays at 1.
 %
 % KPAXCap is stock KPAX with the SAME cap multiplier on the Syclop score, applied at both
 % acceptance points. It is the control arm for the cap: CleanCost at w = 1 applies the cap AND
@@ -53,14 +68,12 @@
 %
 % Per-iteration columns: iteration, frontier_size, tree_size, elapsed_time_ms, best_cost
 %
-% ENCODING: with w pinned, cap takes the colour channel (steel-blue ramp, light->dark as cap goes
-% 0.01->0.2) and k takes the line style (':' 4, '-.' 8, '--' 16). Line width is indexed by w, so it
-% is constant in this pass and automatically becomes a third channel again if w is swept. TrueStar
-% and KPAXCap are separate warm/orange and grey-green ramps over the SAME cap values, solid, so a
-% given cap is directly comparable across the three planners. Baselines are near-black (KPAX),
-% DASHED blue (KinoPaxPlus) and DOTTED blue (KinoPaxPlus fine) -- dashed/dotted so they do not read
-% as part of the steel-blue ramp. Every legend here is CLICKABLE — click an entry to hide/show
-% that series.
+% ENCODING: k is pinned, which frees the line-style channel for DELTA -- '-' large, '--' fine,
+% ':' fine_control. Colour keeps its planner+cap meaning: steel-blue ramp = CleanCost (light->dark
+% as cap goes 0.01->0.1), amber = TrueStar, grey-green = KPAXCap, near-black = KPAX, blue =
+% KinoPaxPlus. So a COLOUR is one planner at one cap across all three deltas, and a STYLE is one
+% delta across all planners -- which makes delta-vs-delta the easy read. Every legend here is
+% CLICKABLE — click an entry to hide/show that series.
 %
 % FAIR-COMPARISON NOTE: an "iteration" is a different unit of work per planner, so
 % cost-vs-TIME is the fair cross-planner axis. Error bands and error bars are
@@ -84,45 +97,58 @@ environments = {'zigzag'};
 envTitles    = {'Zigzag Corridor'};
 
 % Cost metric axis — one build each, so one set of figures each.
-costTokens  = {'large_effort', 'large_length'};
-costTitles  = {'Control Effort', 'Workspace Path Length'};
-costYLabels = {'Path Cost (control effort)', 'Path Cost (workspace path length)'};
+metrics      = {'effort', 'length'};
+metricTitles = {'Control Effort', 'Workspace Path Length'};
+metricYLabels = {'Path Cost (control effort)', 'Path Cost (workspace path length)'};
 
-deltaLabel = 'Large-\delta (27k)';
+% Delta axis — OVERLAID inside each figure, encoded as line style. The filename token is
+% sprintf('%s_%s', delta, metric), e.g. 'fine_control_length'.
+deltas      = {'large', 'fine', 'fine_control'};
+deltaTitles = {'27k', '216k W-refined', '216k V-refined'};
+deltaStyles = {'-', '--', ':'};
+% Which caps exist at each delta: the coarse delta sweeps the axis, the finer ones ran --single-cap
+% so only the derived point exists. Must match DELTA_EXTRA_ARGS in run_cost_tuning_sweep.sh.
+capDerived  = 3;                       % label token for cap = 0.03 (~1/blockSize)
+deltaCaps   = {[1 3 5 10], capDerived, capDerived};
+
+deltaLabel = '3 deltas overlaid';
 
 % CleanCost grid — must match WEIGHTS / WEIGHTED_EXPS / CAPS in
 % kinopaxstar_cost_tuning_sweep.cu. Values are the integer label tokens (100 x the float),
 % exactly as they appear in the filenames.
+% CleanCost grid — must match WEIGHTS / WEIGHTED_EXPS / CAPS in the benchmark. Values are the
+% integer label tokens (100 x the float), exactly as they appear in the filenames.
 weights = [90];
-wExps   = [400 800 1600];
-caps    = [1 5 10 20];
+wExps   = [800];
+caps    = [1 3 5 10];
 
 % TrueStar and KPAXCap cap sweeps — must match TRUE_CAPS / KPAXCAP_CAPS in the benchmark.
 % Deliberately the same cap values as the CleanCost grid, so a cap is comparable across planners.
-trueCaps    = [1 5 10 20];
-kpaxCapCaps = [1 5 10 20];
+trueCaps    = [1 3 5 10];
+kpaxCapCaps = [1 3 5 10];
 
-% Colour = cap (light->dark), line style = k, line width = w (constant while w is pinned).
+% Colour = planner + cap (light->dark as cap grows). Line style = delta. Width = w (constant).
 capRamp    = [0.70 0.82 0.93;    % cap 0.01 - steel blue (lightest)
-              0.45 0.64 0.84;    % cap 0.05
-              0.21 0.42 0.66;    % cap 0.10
-              0.03 0.15 0.31];   % cap 0.20 - steel blue (darkest)
-wExpStyles = {':', '-.', '--'};             % k 4, 8, 16
-wWidths    = [1.4];                         % one entry per w; widens the channel if w is swept
+              0.45 0.64 0.84;    % cap 0.03  <- the derived operating point
+              0.21 0.42 0.66;    % cap 0.05
+              0.03 0.15 0.31];   % cap 0.10 - steel blue (darkest)
+wWidths    = [1.4];              % one entry per w; widens the channel again if w is swept
 
 % TrueStar gets its own warm ramp over the same cap values.
 amberRamp = [0.99 0.85 0.62;     % cap 0.01 (lightest)
              0.97 0.68 0.33;
              0.88 0.47 0.10;
-             0.60 0.28 0.02];    % cap 0.20 (darkest)
+             0.60 0.28 0.02];    % cap 0.10 (darkest)
 
 % KPAXCap: grey-green, distinct from both the steel ramp and near-black KPAX it is compared to.
 mossRamp  = [0.72 0.83 0.68;     % cap 0.01 (lightest)
              0.55 0.70 0.50;
              0.36 0.56 0.36;
-             0.18 0.36 0.20];    % cap 0.20 (darkest)
+             0.18 0.36 0.20];    % cap 0.10 (darkest)
 
-% --- Build the series arrays (12 CleanCost + 4 TrueStar + 4 KPAXCap + 3 baselines) ---
+% --- Build the series arrays: (planner, delta) pairs, 24 in total ---
+% plannerDeltaIdx carries each series' delta so loadRuns can build its own filename token; the
+% style channel is delta, so every series of one delta shares a line style.
 plannerNames    = {};
 plannerDisplay  = {};
 plannerColors   = [];
@@ -130,51 +156,70 @@ plannerStyles   = {};
 plannerMarkers  = {};
 plannerWidths   = [];
 plannerBaseline = [];   % logical: drawn as a thick reference anchor / large scatter marker
-for wi = 1:numel(weights)
-    for ei = 1:numel(wExps)
-        for ci = 1:numel(caps)
-            % Mirror the benchmark's skip: at w = 1 the cost term vanishes, so only k = 1 is run.
-            if weights(wi) == 100 && wExps(ei) ~= 100, continue; end
-            plannerNames{end + 1}   = sprintf('KinoPaxSTARCleanCost_w%d_k%d_cap%d', ...
-                                              weights(wi), wExps(ei), caps(ci)); %#ok<SAGROW>
-            plannerDisplay{end + 1} = sprintf('C w%g k%g cap%g', weights(wi) / 100, ...
-                                              wExps(ei) / 100, caps(ci) / 100); %#ok<SAGROW>
-            plannerColors(end + 1, :) = capRamp(ci, :);     %#ok<SAGROW>
-            plannerStyles{end + 1}    = wExpStyles{ei};     %#ok<SAGROW>
-            plannerMarkers{end + 1}   = 'o';                %#ok<SAGROW>
-            plannerWidths(end + 1)    = wWidths(wi);        %#ok<SAGROW>
-            plannerBaseline(end + 1)  = false;              %#ok<SAGROW>
+plannerDeltaIdx = [];   % index into `deltas`
+
+for di = 1:numel(deltas)
+    dStyle = deltaStyles{di};
+    dTag   = deltaTitles{di};
+    dCaps  = deltaCaps{di};    % caps that actually exist at this delta
+
+    % --- CleanCost: w x k x cap, restricted to this delta's caps ---
+    for wi = 1:numel(weights)
+        for ei = 1:numel(wExps)
+            for ci = 1:numel(caps)
+                if ~ismember(caps(ci), dCaps), continue; end
+                % Mirror the benchmark's skip: at w = 1 the cost term vanishes, so only k = 1 runs.
+                if weights(wi) == 100 && wExps(ei) ~= 100, continue; end
+                plannerNames{end + 1}   = sprintf('KinoPaxSTARCleanCost_w%d_k%d_cap%d', ...
+                                                  weights(wi), wExps(ei), caps(ci)); %#ok<SAGROW>
+                plannerDisplay{end + 1} = sprintf('C cap%g [%s]', caps(ci) / 100, dTag); %#ok<SAGROW>
+                plannerColors(end + 1, :) = capRamp(ci, :);   %#ok<SAGROW>
+                plannerStyles{end + 1}    = dStyle;           %#ok<SAGROW>
+                plannerMarkers{end + 1}   = 'o';              %#ok<SAGROW>
+                plannerWidths(end + 1)    = wWidths(wi);      %#ok<SAGROW>
+                plannerBaseline(end + 1)  = false;            %#ok<SAGROW>
+                plannerDeltaIdx(end + 1)  = di;               %#ok<SAGROW>
+            end
         end
     end
+
+    % --- TrueStar ---
+    for ci = 1:numel(trueCaps)
+        if ~ismember(trueCaps(ci), dCaps), continue; end
+        plannerNames{end + 1}   = sprintf('KinoPaxSTARTrue_cap%d', trueCaps(ci)); %#ok<SAGROW>
+        plannerDisplay{end + 1} = sprintf('True cap%g [%s]', trueCaps(ci) / 100, dTag); %#ok<SAGROW>
+        plannerColors(end + 1, :) = amberRamp(ci, :);   %#ok<SAGROW>
+        plannerStyles{end + 1}    = dStyle;             %#ok<SAGROW>
+        plannerMarkers{end + 1}   = '^';                %#ok<SAGROW>
+        plannerWidths(end + 1)    = 1.6;                %#ok<SAGROW>
+        plannerBaseline(end + 1)  = false;              %#ok<SAGROW>
+        plannerDeltaIdx(end + 1)  = di;                 %#ok<SAGROW>
+    end
+
+    % --- KPAXCap ---
+    for ci = 1:numel(kpaxCapCaps)
+        if ~ismember(kpaxCapCaps(ci), dCaps), continue; end
+        plannerNames{end + 1}   = sprintf('KPAXCap_cap%d', kpaxCapCaps(ci)); %#ok<SAGROW>
+        plannerDisplay{end + 1} = sprintf('KPAXCap cap%g [%s]', kpaxCapCaps(ci) / 100, dTag); %#ok<SAGROW>
+        plannerColors(end + 1, :) = mossRamp(ci, :);    %#ok<SAGROW>
+        plannerStyles{end + 1}    = dStyle;             %#ok<SAGROW>
+        plannerMarkers{end + 1}   = 'v';                %#ok<SAGROW>
+        plannerWidths(end + 1)    = 2.0;                %#ok<SAGROW>
+        plannerBaseline(end + 1)  = true;               %#ok<SAGROW>
+        plannerDeltaIdx(end + 1)  = di;                 %#ok<SAGROW>
+    end
+
+    % --- Baselines, once per delta, drawn thick so they read as anchors ---
+    plannerNames    = [plannerNames,   {'KPAX', 'KinoPaxPlus'}];                          %#ok<AGROW>
+    plannerDisplay  = [plannerDisplay, {sprintf('KPAX [%s]', dTag), ...
+                                        sprintf('KinoPaxPlus [%s]', dTag)}];              %#ok<AGROW>
+    plannerColors   = [plannerColors;  0.10 0.10 0.10;  0.20 0.40 0.80];                  %#ok<AGROW>
+    plannerStyles   = [plannerStyles,  {dStyle, dStyle}];                                 %#ok<AGROW>
+    plannerMarkers  = [plannerMarkers, {'s', 'd'}];                                       %#ok<AGROW>
+    plannerWidths   = [plannerWidths,  2.5, 2.5];                                         %#ok<AGROW>
+    plannerBaseline = [plannerBaseline, true, true];                                      %#ok<AGROW>
+    plannerDeltaIdx = [plannerDeltaIdx, di, di];                                          %#ok<AGROW>
 end
-for ci = 1:numel(trueCaps)
-    plannerNames{end + 1}   = sprintf('KinoPaxSTARTrue_cap%d', trueCaps(ci)); %#ok<SAGROW>
-    plannerDisplay{end + 1} = sprintf('True cap%g', trueCaps(ci) / 100);      %#ok<SAGROW>
-    plannerColors(end + 1, :) = amberRamp(ci, :);   %#ok<SAGROW>
-    plannerStyles{end + 1}    = '-';                %#ok<SAGROW>
-    plannerMarkers{end + 1}   = '^';                %#ok<SAGROW>
-    plannerWidths(end + 1)    = 1.6;                %#ok<SAGROW>
-    plannerBaseline(end + 1)  = false;              %#ok<SAGROW>
-end
-for ci = 1:numel(kpaxCapCaps)
-    plannerNames{end + 1}   = sprintf('KPAXCap_cap%d', kpaxCapCaps(ci));   %#ok<SAGROW>
-    plannerDisplay{end + 1} = sprintf('KPAXCap cap%g', kpaxCapCaps(ci) / 100); %#ok<SAGROW>
-    plannerColors(end + 1, :) = mossRamp(ci, :);    %#ok<SAGROW>
-    plannerStyles{end + 1}    = '-';                %#ok<SAGROW>
-    plannerMarkers{end + 1}   = 'v';                %#ok<SAGROW>
-    plannerWidths(end + 1)    = 2.0;                %#ok<SAGROW>
-    plannerBaseline(end + 1)  = true;               %#ok<SAGROW>
-end
-% Reference baselines, drawn thick so they read as anchors.
-% 'KinoPaxPlusFine' is not a planner name in the benchmark -- it is a pseudo-name this script maps
-% to the fine-delta KinoPaxPlus CSVs in loadRuns().
-plannerNames    = [plannerNames,   {'KPAX', 'KinoPaxPlus', 'KinoPaxPlusFine'}];
-plannerDisplay  = [plannerDisplay, {'KPAX', 'KinoPaxPlus (27k)', 'KinoPaxPlus (216k)'}];
-plannerColors   = [plannerColors;  0.10 0.10 0.10;  0.20 0.40 0.80;  0.20 0.40 0.80];
-plannerStyles   = [plannerStyles,  {'-', '--', ':'}];   % steel-blue solid is taken by the grid
-plannerMarkers  = [plannerMarkers, {'s', 's', 'd'}];
-plannerWidths   = [plannerWidths,  2.5, 2.5, 2.5];
-plannerBaseline = [plannerBaseline, true, true, true];
 
 numRunsPer = 50 * ones(1, numel(plannerNames));   % max runs searched (missing files skipped)
 
@@ -189,17 +234,20 @@ for ei = 1:numel(environments)
     env      = environments{ei};
     envTitle = envTitles{ei};
 
-    for mi = 1:numel(costTokens)
-        costTok   = costTokens{mi};
-        costTitle = costTitles{mi};
-        costYLab  = costYLabels{mi};
+    for mi = 1:numel(metrics)
+        metric    = metrics{mi};
+        costTitle = metricTitles{mi};
+        costYLab  = metricYLabels{mi};
         fprintf('\n=== Environment: %s | Cost metric: %s ===\n', env, costTitle);
 
-        % --- Load every planner's runs for this cost metric ---
+        % --- Load every (planner, delta) series for this cost metric ---
+        % Each series builds its own delta_metric token, so the three deltas overlay in one figure.
         R = cell(1, nPlanner);
         for pi = 1:nPlanner
-            R{pi} = loadRuns(dataDir, env, plannerNames{pi}, costTok, numRunsPer(pi));
-            fprintf('  %-44s : %d runs\n', plannerNames{pi}, numel(R{pi}));
+            tok   = sprintf('%s_%s', deltas{plannerDeltaIdx(pi)}, metric);
+            R{pi} = loadRuns(dataDir, env, plannerNames{pi}, tok, numRunsPer(pi));
+            fprintf('  %-34s %-18s : %d runs\n', plannerNames{pi}, ...
+                    ['[' deltas{plannerDeltaIdx(pi)} ']'], numel(R{pi}));
         end
 
         %% ---------- FIGURE: Best Cost vs Time (mean lines, no bands) ----------
@@ -295,7 +343,7 @@ for ei = 1:numel(environments)
             y = mFinalCost(pi);
             if isnan(x) || isnan(y), continue; end   % never solved -> nothing to place
             % Explicit flag, not a positional guess: the baselines are no longer simply the
-            % last two series (KinoPaxPlusFine and the KPAXCap pair are in there too).
+            % last two series (each delta contributes its own baselines and KPAXCap pair).
             if plannerBaseline(pi), msz = 11; else, msz = 8; end
             plot(x, y, plannerMarkers{pi}, ...
                  'MarkerFaceColor', plannerColors(pi, :), ...
@@ -317,16 +365,14 @@ fprintf('\nAll figures generated (%d total). Click a legend entry to hide/show t
 %% ====================== helper functions ======================
 
 function runs = loadRuns(dataDir, env, planner, delta, numRuns)
-    % Load a planner's per-run CSVs for one cost metric; missing files are skipped.
+    % Load one (planner, delta) series' per-run CSVs; missing files are skipped.
+    % 'delta' is the full filename token, e.g. 'large_length' or 'fine_control_effort' -- the
+    % caller builds it from the series' own delta, which is what lets the three deltas overlay.
     runs = {};
     for ri = 0:(numRuns - 1)
         switch planner
             case 'KinoPaxPlus'
                 fn = sprintf('%s_delta%s_run%d.csv', env, delta, ri);
-            case 'KinoPaxPlusFine'
-                % Pseudo-name: the finer discretization is a separate binary that writes
-                % KinoPaxPlus rows under the 'fine_*' delta token instead of 'large_*'.
-                fn = sprintf('%s_delta%s_run%d.csv', env, strrep(delta, 'large', 'fine'), ri);
             case 'KPAX'
                 fn = sprintf('%s_KPAX_delta%s_run%d.csv', env, delta, ri);
             otherwise
