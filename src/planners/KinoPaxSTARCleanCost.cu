@@ -32,9 +32,10 @@
 //
 // applied identically at the gate and at Part-B reactivation, with P_syclop = vertexScore + fAccept
 // (the full KPAX rule). Region-best candidates are exempt, and so are candidates that claimed a
-// virgin R2 sub-region -- seeding is now an actual free pass. Knobs: w (1 = KPAX's acceptance,
+// virgin R2 sub-region -- seeding is now an actual free pass, and h_r2SeedAccept_ turns that pass
+// on or off so its contribution can be measured directly. Knobs: w (1 = KPAX's acceptance,
 // 0 = pure cost-greedy), k (P_cost decay), cap in (0,1] (flat throttle on the final probability,
-// replacing h_acceptCap_).
+// replacing h_acceptCap_), and r2SeedAccept (on/off).
 //
 // TWO NORMALIZATION FIXES relative to the first version of this planner:
 //
@@ -139,6 +140,8 @@ KinoPaxSTARCleanCost::KinoPaxSTARCleanCost()
     // 0.9*0.01 + 0.01 = 0.019 that swamped the cost term and made acceptance cost-blind.
     h_probFloor_    = 0.0f;
     h_costScale_    = 0.0f;   // recomputed every iteration in updateFrontier
+    // R2 seeding free pass ON by default, matching KPAX. Set false for the noseed condition.
+    h_r2SeedAccept_ = true;
     // cap = 1.0 means the weighted rule alone decides. Because the propagate-time filter is gone,
     // this planner admits far more per iteration than KinoPaxSTARWeightedCost at the same w --
     // cap is the knob that buys that throttle back, explicitly and downstream of w rather than
@@ -527,7 +530,7 @@ __global__ void KinoPaxSTARCleanCost_accept_kernel(uint* activeFrontierNextIdxs,
                                                   bool* frontierNext, curandState* randomSeeds,
                                                   float* vertexScores, float fAccept,
                                                   float costWeight, float costPruneExp, float probFloor,
-                                                  float acceptCapMul, float costScale)
+                                                  float acceptCapMul, float costScale, bool r2SeedAccept)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if(tid >= frontierNextSize) return;
@@ -546,8 +549,12 @@ __global__ void KinoPaxSTARCleanCost_accept_kernel(uint* activeFrontierNextIdxs,
     // --- Exemption 2: this thread claimed a virgin R2 sub-region. In KinoPaxSTARWeightedCost the
     // seeding pass only cleared the propagate-time filter and then still faced the weighted roll,
     // so it was never actually free; here it is. The flag has to come from propagate because by
-    // now every sub-region touched this iteration is already marked active. ---
-    if(frontierNextFresh[idx]) return;
+    // now every sub-region touched this iteration is already marked active.
+    //
+    // Gated by r2SeedAccept: with it off, a fresh-sub-region candidate takes the same weighted roll
+    // as everything else (the KinoPaxSTARnoseed condition, pSeed = 0). Propagate still MARKS the
+    // sub-region either way, so r2_coverage_pct stays comparable across both modes. ---
+    if(r2SeedAccept && frontierNextFresh[idx]) return;
 
     // --- Everything else: weighted sum of the Syclop and cost probabilities, throttled by cap.
     // costScale is GLOBAL while m is this region's own minimum -- see costProbExpGlobal. ---
@@ -713,7 +720,7 @@ void KinoPaxSTARCleanCost::updateFrontier()
       d_frontierNextXR1s_ptr_, d_frontierNextFresh_ptr_,
       d_unexploredSampleCosts_ptr_, d_frontierNext_ptr_, d_randomSeeds_ptr_,
       graph_.d_vertexScoreArray_ptr_, h_fAccept_,
-      h_costWeight_, h_costPruneExp_, h_probFloor_, h_acceptCapMul_, h_costScale_);
+      h_costWeight_, h_costPruneExp_, h_probFloor_, h_acceptCapMul_, h_costScale_, h_r2SeedAccept_);
 
     // --- Re-scan after the accept kernel ---
     thrust::exclusive_scan(d_frontierNext_.begin(), d_frontierNext_.end(), d_frontierScanIdx_.begin(), 0, thrust::plus<uint>());

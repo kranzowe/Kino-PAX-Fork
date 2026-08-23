@@ -210,6 +210,19 @@ floors. With both fixed, the cost-independent part falls from ~0.019 to ~0.002, 
 rises by roughly the same 8× — **`cap = 1.0` may now be correct**, and the sweep re-opens the axis
 upward to find out.
 
+**R2 seeding free pass is now switchable** (`h_r2SeedAccept_`, default `true`). A candidate that
+claimed a virgin R2 sub-region is normally admitted unconditionally, bypassing the weighted roll —
+this is KPAX's main coverage drive, and in CleanCost it is a genuine free pass (in
+`KinoPaxSTARWeightedCost` it only cleared the propagate-time filter and then still faced the
+weighted roll). Setting it `false` makes such a candidate take the same roll as everything else,
+i.e. the `KinoPaxSTARnoseed` condition (pSeed = 0), so the on/off pair measures how much of the
+exploration is seeding rather than the Syclop score.
+
+Only *admission* changes: propagate still marks `activeSubVertices` unconditionally, so
+`r2_coverage_pct` stays a valid, comparable diagnostic in both arms — the same contract the other
+noseed variants keep. A bool rather than `KinoPaxSTARcostprunenoseed`'s float `h_pSeed_`; widen it
+to a probability if the annealed middle ground is wanted.
+
 **`EPSILON` is overloaded — do not redefine it.** It does three unrelated jobs:
 
 | use | site | status |

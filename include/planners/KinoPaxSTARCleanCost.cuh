@@ -50,6 +50,20 @@ public:
     // same factor -- cap = 1.0 may now be correct.
     float h_acceptCapMul_;
 
+    // R2 SUB-REGION SEEDING FREE PASS, on/off. When true (default) a candidate that claimed a
+    // virgin R2 sub-region is admitted unconditionally, bypassing the weighted roll entirely --
+    // this is KPAX's main coverage drive. When false it takes the same weighted roll as everything
+    // else, i.e. the KinoPaxSTARnoseed condition (pSeed = 0), which isolates how much of the
+    // exploration is actually seeding rather than the Syclop score.
+    //
+    // Only the ADMISSION changes: propagate still marks activeSubVertices unconditionally, so
+    // r2_coverage_pct stays a valid diagnostic in both modes (same contract as the other noseed
+    // variants). The freshness flag is still recorded either way.
+    //
+    // A bool rather than KinoPaxSTARcostprunenoseed's float h_pSeed_ -- if the annealed middle
+    // ground is wanted later, widen this to a probability and roll against it.
+    bool h_r2SeedAccept_;
+
     float* h_controlPathsToGoal_;
 
     // --- device fields (KPAX exploration) ---
@@ -138,7 +152,7 @@ __global__ void KinoPaxSTARCleanCost_accept_kernel(uint* activeFrontierNextIdxs,
                                                   bool* frontierNext, curandState* randomSeeds,
                                                   float* vertexScores, float fAccept,
                                                   float costWeight, float costPruneExp, float probFloor,
-                                                  float acceptCapMul, float costScale);
+                                                  float acceptCapMul, float costScale, bool r2SeedAccept);
 
 /***************************/
 /* FRONTIER UPDATE KERNEL */

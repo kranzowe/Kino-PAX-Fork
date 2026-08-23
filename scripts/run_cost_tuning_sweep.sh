@@ -7,13 +7,22 @@
 #
 #
 # Per (environment, cost metric, delta):
-#   KinoPaxSTARCleanCost   w {0.9, 0.99} x k {1, 16} x cap {0.03, 0.1, 0.3, 1.0}
-#                          = 16 points x 3 runs = 48 runs
+#   KinoPaxSTARCleanCost   r2 {on, off} x w {0.1, 0.5, 0.9, 1.0} x k {1, 16} x cap {0.03, 0.1, 1.0}
+#                          = 42 points x 3 runs = 126 runs
+#                          (42, not 2*4*2*3 = 48: at w = 1 the cost term vanishes from
+#                           weightedAccept, so only k = 1 runs there -- the other six points would
+#                           be the same rule differing only by RNG stream)
 #   KinoPaxSTARTrue        cap {0.03, 0.1, 0.3, 1.0} = 4 points x 3 runs = 12 runs
 #   KPAXCap                cap {0.03, 0.1, 0.3, 1.0} = 4 points x 5 runs = 20 runs
 #   KPAX                   baseline, 5 runs  -- KEEPS THE LEGACY EPSILON SCORE FLOOR
 #   KinoPaxPlus            baseline, 5 runs
-#   => 90 runs per (environment, cost metric)
+#   => 168 runs per (environment, cost metric)
+#
+# r2 IS THE R2 SUB-REGION SEEDING FREE PASS, now a swept arm. On (KPAX's behaviour): a candidate
+# claiming a virgin R2 sub-region is admitted unconditionally, bypassing the weighted roll. Off: it
+# takes the same roll as everything else -- the KinoPaxSTARnoseed condition (pSeed = 0). Propagate
+# marks activeSubVertices either way, so r2_coverage_pct stays comparable across both arms and the
+# pair measures how much of the exploration is seeding rather than the Syclop score.
 #
 # TWO NORMALIZATION FIXES land in this pass, which is why k and cap are both re-opened:
 #   * Graph's Syclop floor becomes 1/N_active (the mean share) instead of a fixed EPSILON = 1e-2,
@@ -60,8 +69,8 @@
 # Runs on BOTH environments (house and zigzag), each written to its own subfolder under
 # Data/Benchmarks/KinoPaxStarCostTuning/<env>/ so they can be plotted independently.
 #
-# This pass: 90 runs per (environment, cost metric); 1 env x 2 metrics = 180 runs total.
-# At the 6 s per-run cap that is ~9 min per metric, ~18 min overall, plus 2 builds.
+# This pass: 168 runs per (environment, cost metric); 1 env x 2 metrics = 336 runs total.
+# At the 6 s per-run cap that is ~17 min per metric, ~34 min overall, plus 2 builds.
 #
 # THREE DISCRETIZATIONS, ALL RUNNING THE FULL PLANNER SET. NUM_R1_REGIONS is compile-time
 # (config.h), so each needs its own binary: this script builds the delta x cost-metric matrix
@@ -296,7 +305,7 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  CleanCost:      w {0.9, 0.99} x k {1, 16} x cap {0.03, 0.1, 0.3, 1.0} = 16 points"
+echo "  CleanCost:      r2 {on,off} x w {0.1,0.5,0.9,1.0} x k {1,16} x cap {0.03,0.1,1.0} = 42 points"
 echo "  TrueStar:       cap {0.03, 0.1, 0.3, 1.0} = 4 points"
 echo "  KPAXCap:        cap {0.03, 0.1, 0.3, 1.0} = 4 points"
 echo "  Score floor:    dynamic 1/N_active for KPAXCap/TrueStar/CleanCost; legacy EPSILON for KPAX"

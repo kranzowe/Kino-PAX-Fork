@@ -6,12 +6,22 @@
 % delta and the house environment only (see the commented full sets below and in
 % run_cost_tuning_sweep.sh):
 %
-%   KinoPaxSTARCleanCost  w {0.9, 0.99} x k {1, 16} x cap {0.03, 0.1, 0.3, 1.0}   = 16
+%   KinoPaxSTARCleanCost  r2 {on, off} x w {0.1, 0.5, 0.9, 1.0} x k {1, 16}
+%                         x cap {0.03, 0.1, 1.0}                                  = 42
 %   KinoPaxSTARTrue       cap {0.03, 0.1, 0.3, 1.0}                               =  4
 %   KPAXCap               cap {0.03, 0.1, 0.3, 1.0}                               =  4
 %   KPAX, KinoPaxPlus                                                             =  2
 %                                                                                 -----
-%                                                                                    26
+%                                                                                    52
+%
+% 42 and not the plain 2*4*2*3 = 48: at w = 1 the cost term vanishes from weightedAccept, so only
+% k = 1 is run there -- the other six points would be the same rule differing only by RNG stream.
+%
+% r2 = the R2 SUB-REGION SEEDING FREE PASS. With it on (KPAX's behaviour) a candidate claiming a
+% virgin R2 sub-region is admitted unconditionally, bypassing the weighted roll; with it off it
+% takes the same roll as everything else (the KinoPaxSTARnoseed condition). Propagate marks
+% activeSubVertices either way, so r2_coverage_pct is comparable across both arms -- the pair
+% measures how much of the exploration is seeding rather than the Syclop score.
 %
 % TWO NORMALIZATION FIXES land in this data, which is why k and cap are both re-opened:
 %   * Graph's Syclop floor is now 1/N_active (the mean share) rather than a fixed EPSILON = 1e-2,
@@ -24,11 +34,12 @@
 %     thing everywhere instead of being pinned at x ~ 1 in every region by construction. The
 %     cost_scale column logs that denominator.
 %
-% ENCODING (four axes, four channels): colour = cap (steel ramp light->dark 0.03->1.0 for
-% CleanCost, amber for TrueStar, grey-green for KPAXCap, near-black KPAX, blue KinoPaxPlus),
-% line style = k ('-' 1, '--' 16), marker = w ('o' 0.9, 's' 0.99), line width = delta. With one
-% delta active the width channel is constant; it separates the deltas again as soon as the full
-% set is restored. Every legend here is CLICKABLE — click an entry to hide/show that series.
+% ENCODING: colour = cap (steel ramp light->dark 0.03->1.0 for CleanCost, amber for TrueStar,
+% grey-green for KPAXCap, near-black KPAX, blue KinoPaxPlus); line style = k ('-' 1, '--' 16);
+% marker = w ('o' 0.1, 'x' 0.5, '+' 0.9, '*' 1.0, scatter only); line width = delta base + an r2
+% bump (THIN = seeding on, THICK = seeding off). With one delta active the width carries r2 alone;
+% both separate again when the full delta set is restored. Every legend here is CLICKABLE — click
+% an entry to hide/show that series.
 %
 % FAIR-COMPARISON NOTE: an "iteration" is a different unit of work per planner, so
 % cost-vs-TIME is the fair cross-planner axis. Error bands and error bars are
@@ -61,7 +72,7 @@ metricYLabels = {'Path Cost (control effort)', 'Path Cost (workspace path length
 % Delta axis — OVERLAID inside each figure, encoded as line style. The filename token is
 % sprintf('%s_%s', delta, metric), e.g. 'fine_control_length'.
 % SCOPE: coarse delta only this pass. Full set preserved on the commented line below -- swap the
-% two blocks (here and in deltaCaps) to restore, exactly as in run_cost_tuning_sweep.sh.
+% two blocks (here and in deltaSingleCap) to restore, exactly as in run_cost_tuning_sweep.sh.
 deltas      = {'large'};
 deltaTitles = {'27k'};
 deltaWidths = [1.4];      % one per delta; line WIDTH is the delta channel now that k took style
@@ -70,9 +81,12 @@ deltaWidths = [1.4];      % one per delta; line WIDTH is the delta channel now t
 % deltaWidths = [1.0, 1.8, 2.6];
 % Which caps exist at each delta: the coarse delta sweeps the axis, the finer ones ran --single-cap
 % so only the derived point exists. Must match DELTA_EXTRA_ARGS in run_cost_tuning_sweep.sh.
-capDerived  = 10;                      % label token for cap = 0.1 (CAP_DERIVED in the benchmark)
-deltaCaps   = {[3 10 30 100]};
-% deltaCaps = {[3 10 30 100], capDerived, capDerived};   % restore alongside the full delta set
+capDerived     = 10;      % label token for cap = 0.1 (CAP_DERIVED in the benchmark)
+% true where run_cost_tuning_sweep.sh passes --single-cap for that delta, i.e. only capDerived was
+% run there. Mirrors capSkip() in the benchmark; each planner then filters its OWN cap list, which
+% matters now that CleanCost's caps and TrueStar/KPAXCap's caps are different sets.
+deltaSingleCap = [false];
+% deltaSingleCap = [false, true, true];   % restore alongside the full delta set
 
 deltaLabel = '3 deltas overlaid';
 
@@ -81,24 +95,29 @@ deltaLabel = '3 deltas overlaid';
 % exactly as they appear in the filenames.
 % CleanCost grid — must match WEIGHTS / WEIGHTED_EXPS / CAPS in the benchmark. Values are the
 % integer label tokens (100 x the float), exactly as they appear in the filenames.
-weights = [90 99];
+% R2 sub-region seeding free pass, on/off -- must match R2_ACCEPT in the benchmark.
+r2Tokens = {'on', 'off'};
+r2Widths = [0.0, 1.3];   % width BUMP per r2 arm: thin = seeding on, thick = seeding off
+
+weights = [10 50 90 100];
 wExps   = [100 1600];
-caps    = [3 10 30 100];
+caps    = [3 10 100];
 
 % TrueStar and KPAXCap cap sweeps — must match TRUE_CAPS / KPAXCAP_CAPS in the benchmark.
 % Deliberately the same cap values as the CleanCost grid, so a cap is comparable across planners.
 trueCaps    = [3 10 30 100];
 kpaxCapCaps = [3 10 30 100];
 
-% Four axes, four channels: colour = cap, line style = k, marker = w, line width = delta.
-capRamp    = [0.70 0.82 0.93;    % cap 0.03 - steel blue (lightest)
-              0.45 0.64 0.84;    % cap 0.10  <- CAP_DERIVED
-              0.21 0.42 0.66;    % cap 0.30
+% Five axes, four channels + a width bump: colour = cap, line style = k, marker = w,
+% line width = delta base + r2 bump.
+capRamp    = [0.62 0.76 0.90;    % cap 0.03 - steel blue (lightest)
+              0.24 0.45 0.70;    % cap 0.10  <- CAP_DERIVED
               0.03 0.15 0.31];   % cap 1.00 - steel blue (darkest)
-kStyles    = {'-', '--'};        % k = 1, 16
-wMarkers   = {'o', 's'};         % w = 0.9, 0.99
+kStyles    = {'-', '--'};             % k = 1, 16
+wMarkers   = {'o', 'x', '+', '*'};    % w = 0.1, 0.5, 0.9, 1.0 (scatter only)
 
-% TrueStar gets its own warm ramp over the same cap values.
+% TrueStar and KPAXCap keep the 4-point cap axis (they sweep cap alone), so their ramps stay at
+% four entries even though CleanCost's dropped to three.
 amberRamp = [0.99 0.85 0.62;     % cap 0.01 (lightest)
              0.97 0.68 0.33;
              0.88 0.47 0.10;
@@ -125,32 +144,37 @@ plannerDeltaIdx = [];   % index into `deltas`
 for di = 1:numel(deltas)
     dWidth = deltaWidths(di);
     dTag   = deltaTitles{di};
-    dCaps  = deltaCaps{di};    % caps that actually exist at this delta
+    dOne   = deltaSingleCap(di);   % this delta ran --single-cap: only capDerived exists
 
-    % --- CleanCost: w x k x cap, restricted to this delta's caps ---
-    for wi = 1:numel(weights)
-        for ei = 1:numel(wExps)
-            for ci = 1:numel(caps)
-                if ~ismember(caps(ci), dCaps), continue; end
-                % Mirror the benchmark's skip: at w = 1 the cost term vanishes, so only k = 1 runs.
-                if weights(wi) == 100 && wExps(ei) ~= 100, continue; end
-                plannerNames{end + 1}   = sprintf('KinoPaxSTARCleanCost_w%d_k%d_cap%d', ...
-                                                  weights(wi), wExps(ei), caps(ci)); %#ok<SAGROW>
-                plannerDisplay{end + 1} = sprintf('C w%g k%g cap%g [%s]', weights(wi) / 100, ...
-                                                  wExps(ei) / 100, caps(ci) / 100, dTag); %#ok<SAGROW>
-                plannerColors(end + 1, :) = capRamp(ci, :);   %#ok<SAGROW>
-                plannerStyles{end + 1}    = kStyles{ei};      %#ok<SAGROW>
-                plannerMarkers{end + 1}   = wMarkers{wi};     %#ok<SAGROW>
-                plannerWidths(end + 1)    = dWidth;           %#ok<SAGROW>
-                plannerBaseline(end + 1)  = false;            %#ok<SAGROW>
-                plannerDeltaIdx(end + 1)  = di;               %#ok<SAGROW>
+    % --- CleanCost: r2 x w x k x cap ---
+    for ri = 1:numel(r2Tokens)
+        for wi = 1:numel(weights)
+            for ei = 1:numel(wExps)
+                for ci = 1:numel(caps)
+                    if dOne && caps(ci) ~= capDerived, continue; end
+                    % Mirror the benchmark's skip: at w = 1 the cost term vanishes from
+                    % weightedAccept, so only k = 1 was run there.
+                    if weights(wi) == 100 && wExps(ei) ~= 100, continue; end
+                    plannerNames{end + 1}   = sprintf('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d', ...
+                                                      r2Tokens{ri}, weights(wi), wExps(ei), ...
+                                                      caps(ci)); %#ok<SAGROW>
+                    plannerDisplay{end + 1} = sprintf('C r2%s w%g k%g cap%g [%s]', r2Tokens{ri}, ...
+                                                      weights(wi) / 100, wExps(ei) / 100, ...
+                                                      caps(ci) / 100, dTag); %#ok<SAGROW>
+                    plannerColors(end + 1, :) = capRamp(ci, :);            %#ok<SAGROW>
+                    plannerStyles{end + 1}    = kStyles{ei};               %#ok<SAGROW>
+                    plannerMarkers{end + 1}   = wMarkers{wi};              %#ok<SAGROW>
+                    plannerWidths(end + 1)    = dWidth + r2Widths(ri);     %#ok<SAGROW>
+                    plannerBaseline(end + 1)  = false;                     %#ok<SAGROW>
+                    plannerDeltaIdx(end + 1)  = di;                        %#ok<SAGROW>
+                end
             end
         end
     end
 
     % --- TrueStar ---
     for ci = 1:numel(trueCaps)
-        if ~ismember(trueCaps(ci), dCaps), continue; end
+        if dOne && trueCaps(ci) ~= capDerived, continue; end
         plannerNames{end + 1}   = sprintf('KinoPaxSTARTrue_cap%d', trueCaps(ci)); %#ok<SAGROW>
         plannerDisplay{end + 1} = sprintf('True cap%g [%s]', trueCaps(ci) / 100, dTag); %#ok<SAGROW>
         plannerColors(end + 1, :) = amberRamp(ci, :);   %#ok<SAGROW>
@@ -163,7 +187,7 @@ for di = 1:numel(deltas)
 
     % --- KPAXCap ---
     for ci = 1:numel(kpaxCapCaps)
-        if ~ismember(kpaxCapCaps(ci), dCaps), continue; end
+        if dOne && kpaxCapCaps(ci) ~= capDerived, continue; end
         plannerNames{end + 1}   = sprintf('KPAXCap_cap%d', kpaxCapCaps(ci)); %#ok<SAGROW>
         plannerDisplay{end + 1} = sprintf('KPAXCap cap%g [%s]', kpaxCapCaps(ci) / 100, dTag); %#ok<SAGROW>
         plannerColors(end + 1, :) = mossRamp(ci, :);    %#ok<SAGROW>
