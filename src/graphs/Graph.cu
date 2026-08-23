@@ -2,6 +2,14 @@
 #include "config/config.h"
 #include <filesystem>
 
+// Predicate for counting active regions (validCounterArray[r] > 0) when the dynamic score floor is
+// enabled. A named functor rather than a thrust placeholder so it compiles the same way under every
+// nvcc this repo targets.
+struct IsActiveRegion
+{
+    __host__ __device__ bool operator()(int v) const { return v > 0; }
+};
+
 Graph::Graph(const float ws)
 {
     if(VERBOSE)
@@ -217,8 +225,22 @@ void Graph::updateVertices()
     float total = thrust::reduce(d_vertexScoreArray_.begin(), d_vertexScoreArray_.end(), 0.0f);
     cudaMemcpy(d_totalScore_ptr_, &total, sizeof(float), cudaMemcpyHostToDevice);
 
-    // --- Normalize: active regions -> EPSILON + score/total; inactive regions -> 1.0. ---
-    updateSampleAcceptance_kernel<<<blocks, h_blockSize_>>>(d_validCounterArray_ptr_, d_vertexScoreArray_ptr_, d_totalScore_ptr_);
+    // --- Score floor: the mean share (1/N_active) when dynamic, else the legacy fixed EPSILON.
+    //     See the comment on h_dynamicScoreFloor_ in Graph.cuh for why the legacy floor swamps the
+    //     score it is meant to floor. Skipped entirely in legacy mode, so KPAX pays no extra pass. ---
+    if(h_dynamicScoreFloor_)
+        {
+            int nActive = (int)thrust::count_if(d_validCounterArray_.begin(), d_validCounterArray_.end(), IsActiveRegion());
+            h_scoreFloor_ = (nActive > 0) ? 1.0f / (float)nActive : 1.0f;
+        }
+    else
+        {
+            h_scoreFloor_ = EPSILON;
+        }
+
+    // --- Normalize: active regions -> scoreFloor + score/total; inactive regions -> 1.0. ---
+    updateSampleAcceptance_kernel<<<blocks, h_blockSize_>>>(d_validCounterArray_ptr_, d_vertexScoreArray_ptr_, d_totalScore_ptr_,
+                                                            h_scoreFloor_);
 }
 
 /***************************/
@@ -258,16 +280,21 @@ computeVertexScores_kernel(int* activeSubVertices, int* validCounterArray, int* 
 /* UPDATE SAMPLE ACCEPTANCE KERNEL */
 /***************************/
 // --- normalizes score for each active region ---
-__global__ void updateSampleAcceptance_kernel(int* validCounterArray, float* vertexScores, float* totalScore)
+// scoreFloor is EPSILON in legacy mode and 1/N_active in dynamic mode (Graph::updateVertices).
+// The division only runs on the active branch, and a region can only be active if some region
+// scored, so totalScore > 0 whenever it is read -- no 0/0.
+__global__ void updateSampleAcceptance_kernel(int* validCounterArray, float* vertexScores, float* totalScore,
+                                              float scoreFloor)
 {
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
     if(tid >= NUM_R1_REGIONS) return;
     if(validCounterArray[tid] == 0)
         {
+            // Never-visited region: unconditional free pass, the main exploration drive.
             vertexScores[tid] = 1.0f;
         }
     else
         {
-            vertexScores[tid] = EPSILON + (vertexScores[tid] / *totalScore);
+            vertexScores[tid] = scoreFloor + (vertexScores[tid] / *totalScore);
         }
 }

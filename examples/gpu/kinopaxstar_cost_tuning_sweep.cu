@@ -35,19 +35,30 @@ static std::string g_vizDir;
 // Three orthogonal axes, but w and k are both PINNED for this pass, so it is a pure cap sweep.
 // Earlier sweeps put the interesting behaviour at w = 0.9 and showed k to be inert (see below):
 //   w   weight on the Syclop probability. 1 = KPAX's acceptance, 0 = pure cost-greedy.
-//   k   decay rate of P_cost (costProbExp). PINNED at 8: it was measured to do essentially
-//       nothing, and the formula says why. With w = 0.9 and P_floor = EPSILON = 0.01, the cost
-//       term outranks the floor only while 0.1*exp(-k*x) > 0.01, i.e. x < ln(10)/k, where
-//       x = (cost - m)/(mean - m). k = 4/8/16 gives windows of x < 0.58/0.29/0.14 -- and the
-//       region minimum itself never reaches the formula at all (the cost <= m early return
-//       exempts it). Outside that sliver every candidate takes the same floor-dominated
-//       probability. The lever for making k bite is h_probFloor_ -> 0, not a larger k.
+//   k   decay rate of P_cost. RE-OPENED and deliberately BRACKETED at {1, 16}.
+//       k measured as inert in the previous passes, for two reasons that are both now fixed:
+//       P_floor added an unconditional EPSILON that swamped the cost term, and costProbExp
+//       divided by the region's OWN spread (mean_r - m_r), which pins the typical candidate at
+//       x ~ 1 in every region by construction -- so exp(-k*x) was uniform across the grid.
+//       costProbExpGlobal keeps m_r as the reference but divides by a GLOBAL scale, so
+//       x_new = x_old * (mean_r - m_r)/D_global. The right k therefore depends on how a region's
+//       internal cost spread compares to the whole tree's cost range: a corridor region reachable
+//       one way has a tiny spread and wants large k, a junction region reachable many ways has a
+//       spread near the global one and wants k ~ 1. That ratio is unknown until measured, which
+//       is why this pass brackets rather than guesses -- and why cost_scale (D_global) is now
+//       logged per iteration, so the next pass can be targeted.
 //   cap flat multiplier on the final probability, applied identically at the accept kernel and at
 //       Part-B reactivation. TRUE_CAPS and KPAXCAP_CAPS use the SAME values, so a cap reads
 //       directly across CleanCost / TrueStar / KPAXCap.
-static const float WEIGHTS[] = {0.9f};
-static const float WEIGHTED_EXPS[] = {8.0f};
-static const float CAPS[] = {0.01f, 0.03f, 0.05f, 0.1f};
+//       RE-OPENED UPWARD. cap was derived as ~1/h_activeBlockSize_ against an acceptance
+//       probability inflated by two EPSILON floors. With P_floor removed and the Graph floor down
+//       to 1/N_active, the cost-independent part falls from ~0.019 to ~0.002 -- about 8x -- and
+//       since cap ~ 1/(repeat*blockSize*nu*p_bar), an 8x smaller p_bar implies an ~8x larger cap.
+//       cap = 1.0 may now be correct: the cap existed to throttle a rule whose output was an
+//       artificially inflated constant, and that constant is gone.
+static const float WEIGHTS[] = {0.9f, 0.99f};
+static const float WEIGHTED_EXPS[] = {1.0f, 16.0f};
+static const float CAPS[] = {0.03f, 0.1f, 0.3f, 1.0f};
 static const int NUM_WEIGHTS = sizeof(WEIGHTS) / sizeof(WEIGHTS[0]);
 static const int NUM_WEIGHTED_EXPS = sizeof(WEIGHTED_EXPS) / sizeof(WEIGHTED_EXPS[0]);
 static const int NUM_CAPS = sizeof(CAPS) / sizeof(CAPS[0]);
@@ -57,7 +68,7 @@ static const int NUM_CAPS = sizeof(CAPS) / sizeof(CAPS[0]);
 // acceptance points (fAccept stays unscaled, so reactivation is throttled rather than switched
 // off). Pruning is fixed at the guarded stale-best rule; the memoized ancestor-chain mode was
 // removed, since the guard truncated the chain at the first explorer ancestor.
-static const float TRUE_CAPS[] = {0.01f, 0.03f, 0.05f, 0.1f};
+static const float TRUE_CAPS[] = {0.03f, 0.1f, 0.3f, 1.0f};
 static const int NUM_TRUE_CAPS = sizeof(TRUE_CAPS) / sizeof(TRUE_CAPS[0]);
 static const int TRUE_PRUNE_STALEBEST = 1;
 
@@ -68,7 +79,7 @@ static const int TRUE_PRUNE_STALEBEST = 1;
 // divides by 1 + counterArray^2, cumulative over the run). KPAXCap applies only the cap, still
 // inside propagate on pre-jump scores -- so KPAX / KPAXCap / CleanCost-at-w=1 separates the cap's
 // effect from the kernel boundary's. Matched to TRUE_CAPS so the two cap sweeps line up.
-static const float KPAXCAP_CAPS[] = {0.01f, 0.03f, 0.05f, 0.1f};
+static const float KPAXCAP_CAPS[] = {0.03f, 0.1f, 0.3f, 1.0f};
 static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0]);
 
 // ---- The derived cap ----
@@ -81,13 +92,13 @@ static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0
 // so holding b near 1 gives cap ~ 1 / (repeat * blockSize * nu * p_bar). The geometric term is the
 // principled part: cap should scale as 1 / blockSize -- "one accepted child per frontier node per
 // expansion block", the factor that restores the branching KPAX had before the fold. With
-// h_activeBlockSize_ = 32 that is 1/32 = 0.03125, and 0.03 is its exact-label neighbour under the
-// 100*cap filename convention (and within 4% of it). It sits inside the 0.01-0.05 band that
-// measured best, which is the evidence this pass is testing directly.
+// h_activeBlockSize_ = 32 that is 1/32 = 0.03125. NOTE that derivation assumed the old,
+// floor-inflated p_bar; with both floors fixed the implied value rises roughly 8x, which is why
+// CAP_DERIVED now sits at 0.1 and the swept range reaches 1.0.
 //
 // CAP_DERIVED must stay a member of all three cap lists: --single-cap selects it by value, so the
 // reduced passes emit a label that also exists in the full sweep and the two overlay like with like.
-static const float CAP_DERIVED = 0.03f;
+static const float CAP_DERIVED = 0.1f;
 
 // --single-cap: run only CAP_DERIVED on every cap axis. Used for the finer discretizations, where
 // the cap sweep would just repeat what the coarse delta already measured.
@@ -161,6 +172,15 @@ struct IterationData
     float r2_coverage_pct;    // % of R2 sub-regions ever activated (KPAX-family planners; NaN otherwise)
     float mean_vertex_score;  // mean Syclop region score (KPAX-family planners; NaN otherwise)
     int reactivated;          // dormant tree nodes re-added to frontier this iter (KPAX-family planners; -1 otherwise)
+    // --- normalization diagnostics ---
+    float score_floor;        // Graph::h_scoreFloor_: EPSILON for legacy planners, 1/N_active for
+                              // the opted-in ones. The direct evidence the floor fix is live, and
+                              // the one column where KPAX and KPAXCap visibly differ. NaN if the
+                              // planner has no Graph (KinoPaxPlus).
+    float cost_scale;         // CleanCost's D_global = globalMeanCost - globalMinCost, the
+                              // denominator in costProbExpGlobal. Compare against the per-region
+                              // spreads that used to be the denominator to pick the next k range.
+                              // NaN for every other planner.
 };
 
 struct RunResult
@@ -305,8 +325,11 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
                  << "_run" << result.run_number << ".csv";
 
     std::ofstream file(filename.str());
+    // score_floor / cost_scale are appended, not inserted -- the plot script reads columns by name
+    // via getCol(), which returns [] for a missing one, so older CSVs still load.
     file << "iteration,frontier_size,tree_size,elapsed_time_ms,best_cost,"
-         << "num_regions,r2_coverage_pct,mean_vertex_score,reactivated\n";
+         << "num_regions,r2_coverage_pct,mean_vertex_score,reactivated,"
+         << "score_floor,cost_scale\n";
 
     for(const auto& d : result.per_iteration)
     {
@@ -318,7 +341,9 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
              << d.num_regions << ","
              << std::fixed << std::setprecision(3) << d.r2_coverage_pct << ","
              << std::fixed << std::setprecision(6) << d.mean_vertex_score << ","
-             << d.reactivated << "\n";
+             << d.reactivated << ","
+             << std::fixed << std::setprecision(9) << d.score_floor << ","
+             << std::fixed << std::setprecision(6) << d.cost_scale << "\n";
     }
     file.close();
 }
@@ -435,6 +460,8 @@ RunResult benchmarkKinoPaxPlus(
         d.r2_coverage_pct   = NAN;   // KinoPaxPlus has no R2/vertexScore machinery
         d.mean_vertex_score = NAN;
         d.reactivated       = -1;
+        d.score_floor       = NAN;   // KinoPaxPlus uses KinoPaxPlusRegions, not Graph
+        d.cost_scale        = NAN;
         result.per_iteration.push_back(d);
 
         if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
@@ -555,6 +582,8 @@ RunResult benchmarkKPAX(
         d.r2_coverage_pct   = r2CoveragePct;
         d.mean_vertex_score = meanScore;
         d.reactivated       = reactivated;
+        d.score_floor       = planner.graph_.h_scoreFloor_;
+        d.cost_scale        = NAN;
         result.per_iteration.push_back(d);
 
         if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
@@ -762,6 +791,8 @@ RunResult benchmarkKPAXCap(
         d.r2_coverage_pct   = r2CoveragePct;
         d.mean_vertex_score = meanScore;
         d.reactivated       = reactivated;
+        d.score_floor       = planner.graph_.h_scoreFloor_;
+        d.cost_scale        = NAN;
         result.per_iteration.push_back(d);
 
         if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
@@ -919,6 +950,8 @@ RunResult benchmarkKinoPaxSTARCleanCost(
         d.r2_coverage_pct   = r2CoveragePct;
         d.mean_vertex_score = meanScore;
         d.reactivated       = reactivated;
+        d.score_floor       = planner.graph_.h_scoreFloor_;
+        d.cost_scale        = planner.h_costScale_;
         result.per_iteration.push_back(d);
 
         if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
@@ -1084,6 +1117,8 @@ RunResult benchmarkKinoPaxSTARTrue(
         d.r2_coverage_pct   = r2CoveragePct;
         d.mean_vertex_score = meanScore;
         d.reactivated       = reactivated;
+        d.score_floor       = planner.graph_.h_scoreFloor_;
+        d.cost_scale        = NAN;
         result.per_iteration.push_back(d);
 
         if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;

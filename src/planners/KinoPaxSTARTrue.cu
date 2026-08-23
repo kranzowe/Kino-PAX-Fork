@@ -15,6 +15,11 @@
 KinoPaxSTARTrue::KinoPaxSTARTrue()
 {
     graph_ = Graph(W_SIZE);
+    // Opt into the mean-share score floor (1/N_active) instead of the legacy fixed EPSILON, which
+    // exceeds the score it floors by ~270x at 27k regions and caps the number of discriminated
+    // regions at 1/EPSILON = 100 regardless of grid size. KPAX deliberately keeps the legacy floor
+    // so it remains a fixed baseline.
+    graph_.h_dynamicScoreFloor_ = true;
 
     // KPAX exploration vectors
     d_frontier_                    = thrust::device_vector<bool>(MAX_TREE_SIZE);

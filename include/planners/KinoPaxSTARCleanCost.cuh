@@ -27,18 +27,27 @@ public:
     float h_fAccept_;
     float h_minCost_;
     // --- CleanCost tunables (set in ctor, deliberately NOT reset by resetPlanner) ---
-    //   P_combined = cap * min(1, w*P_syclop + (1-w)*P_cost + P_floor)
+    //   P_combined = cap * min(1, w*P_syclop + (1-w)*P_cost)
     //     P_syclop = vertexScores[xR1] + fAccept   (the full KPAX rule)
-    //     P_cost   = costProbExp(...)             (exp decay in normalized excess, no floor)
+    //     P_cost   = costProbExpGlobal(...)        (local reference, GLOBAL scale)
     //   w = 1 recovers KPAX's acceptance; w = 0 is pure cost-greedy.
     float h_costWeight_;      // w in [0,1]
-    float h_costPruneExp_;    // k in costProbExp
-    float h_probFloor_;       // P_floor, fixed (EPSILON by default)
+    float h_costPruneExp_;    // k in costProbExpGlobal
+    float h_probFloor_;       // P_floor. Now 0: vertexScore already carries the Graph score floor,
+                              // and a second additive floor is what made acceptance cost-blind.
+    // Global cost scale, RECOMPUTED EACH ITERATION -- not a tunable. dGlobal in costProbExpGlobal:
+    //     h_costScale_ = (mean cost over all valid samples) - (min cost over all regions)
+    // Reduced on the host in updateFrontier from the per-region arrays the propagate kernels fill.
+    float h_costScale_;
     // cap in (0,1]: a flat multiplier on the FINAL acceptance probability, applied identically at
     // the admission gate and at Part-B reactivation. 1.0 = no throttle. It replaces
     // KinoPaxSTARWeightedCost's h_acceptCap_, which capped only the propagate-time roll and so sat
-    // silently upstream of w. Note the P_floor is now un-multiplied: WeightedCost's effective floor
-    // was ~0.1*EPSILON because the propagate stage throttled it; here it is EPSILON*cap.
+    // silently upstream of w.
+    //
+    // NOTE cap was originally derived as ~1/h_activeBlockSize_ against an acceptance probability
+    // inflated by the two EPSILON floors. With P_floor removed and the Graph floor down to
+    // 1/N_active, the cost-independent part drops roughly 8x, so the derived cap rises by about the
+    // same factor -- cap = 1.0 may now be correct.
     float h_acceptCapMul_;
 
     float* h_controlPathsToGoal_;
@@ -51,8 +60,10 @@ public:
     thrust::device_vector<float> d_unexploredSamples_, d_goalSample_;
 
     // --- device fields (KinoPaxPlus optimization) ---
-    // No running max: costProbExp normalizes by (mean - min) and never reads one, so the
-    // atomicMaxFloat KinoPaxSTARWeightedCost ran on every propagated sample is pure overhead here.
+    // No running max: neither cost probability reads one, so the atomicMaxFloat that
+    // KinoPaxSTARWeightedCost ran on every propagated sample is pure overhead here.
+    // sum/cnt are still accumulated per region, but they are now inputs to the HOST-side global
+    // reduction that produces h_costScale_ rather than being read per candidate in the kernels.
     thrust::device_vector<float> d_minCostsR1_, d_sumCostsR1_;   // per-region cost stats
     thrust::device_vector<int>   d_cntCostsR1_;                  // per-region sample count (mean)
     thrust::device_vector<float> d_unexploredSampleCosts_;
@@ -121,13 +132,13 @@ __global__ void KinoPaxSTARCleanCost_propagateFrontier_kernel2(bool* frontier, u
 // Region-best and fresh-sub-region candidates are exempt; everything else is kept with
 // cap * min(1, w*(vertexScore + fAccept) + (1-w)*costProbExp + P_floor).
 __global__ void KinoPaxSTARCleanCost_accept_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
-                                                  float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
+                                                  float* minCostsR1,
                                                   int* frontierNextXR1s, bool* frontierNextFresh,
                                                   float* unexploredSampleCosts,
                                                   bool* frontierNext, curandState* randomSeeds,
                                                   float* vertexScores, float fAccept,
                                                   float costWeight, float costPruneExp, float probFloor,
-                                                  float acceptCapMul);
+                                                  float acceptCapMul, float costScale);
 
 /***************************/
 /* FRONTIER UPDATE KERNEL */
@@ -139,7 +150,8 @@ KinoPaxSTARCleanCost_updateFrontier_kernel(bool* frontier, bool* frontierNext, u
                                uint* activeFrontierRepeatCount, int* validVertexCounter, curandState* randomSeeds,
                                float* vertexScores, float fAccept,
                                float costWeight, float costPruneExp, float probFloor, float acceptCapMul,
-                               float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
+                               float costScale,
+                               float* minCostsR1,
                                int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet,
                                int* iterations, int iteration);

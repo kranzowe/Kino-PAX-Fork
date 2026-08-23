@@ -28,7 +28,7 @@
 // region and sub-region freshness, draw no random numbers), and the gate -- renamed _accept_kernel,
 // because nothing is in the tree yet and it was never a prune -- makes the single decision:
 //
-//     P_combined = cap * min(1, w*P_syclop + (1-w)*P_cost + P_floor)
+//     P_combined = cap * min(1, w*P_syclop + (1-w)*P_cost)
 //
 // applied identically at the gate and at Part-B reactivation, with P_syclop = vertexScore + fAccept
 // (the full KPAX rule). Region-best candidates are exempt, and so are candidates that claimed a
@@ -36,10 +36,22 @@
 // 0 = pure cost-greedy), k (P_cost decay), cap in (0,1] (flat throttle on the final probability,
 // replacing h_acceptCap_).
 //
-// P_cost is costProbExp (helper.cuh), not costKeepProb: exp(-k*(cost-m)/(mean-m)) is exactly 1 at
-// the region min AND has a real gradient across the whole range, where min(1,(mean/cost)^k) is
-// pinned at 1 for every cost at or below the mean. It carries no floor -- P_floor is added once,
-// in weightedAccept().
+// TWO NORMALIZATION FIXES relative to the first version of this planner:
+//
+//   1. P_floor is GONE (h_probFloor_ = 0). vertexScore already carries the Graph score floor, so a
+//      second additive EPSILON was duplication -- and together the pair contributed an
+//      unconditional 0.9*0.01 + 0.01 = 0.019 that swamped the cost term outright. Acceptance for a
+//      mature region was literally cap * 0.019, independent of cost.
+//
+//   2. P_cost is costProbExpGlobal, not costProbExp. costProbExp divides by the region's OWN spread
+//      (mean_r - m_r), which pins the typical candidate at x ~ 1 in every region by construction --
+//      so exp(-k*x) is uniform across the grid and k does nothing. The global form keeps the
+//      region's minimum as the reference (preserving the bias toward each region's cheapest node,
+//      which is what stops the search collapsing onto the root) but divides by a GLOBAL scale, so
+//      a given cost excess means the same thing everywhere.
+//
+// This planner also opts into Graph's dynamic score floor (1/N_active instead of a fixed EPSILON);
+// see Graph.cuh. KPAX keeps the legacy floor so it stays a fixed baseline.
 //
 // Carries NO retroactive pruning: see KinoPaxSTARTrueWeightedCost for a cost-guarded version.
 #include "planners/KinoPaxSTARCleanCost.cuh"
@@ -49,6 +61,11 @@
 KinoPaxSTARCleanCost::KinoPaxSTARCleanCost()
 {
     graph_ = Graph(W_SIZE);
+    // Opt into the mean-share score floor (1/N_active) instead of the legacy fixed EPSILON, which
+    // exceeds the score it floors by ~270x at 27k regions and caps the number of discriminated
+    // regions at 1/EPSILON = 100 regardless of grid size. KPAX deliberately keeps the legacy floor
+    // so it remains a fixed baseline.
+    graph_.h_dynamicScoreFloor_ = true;
 
     // KPAX exploration vectors
     d_frontier_                    = thrust::device_vector<bool>(MAX_TREE_SIZE);
@@ -117,7 +134,11 @@ KinoPaxSTARCleanCost::KinoPaxSTARCleanCost()
     // baked into the Syclop score itself (Graph.cu: vertexScores = EPSILON + score/total).
     h_costWeight_   = 0.5f;
     h_costPruneExp_ = 1.0f;
-    h_probFloor_    = EPSILON;
+    // No additive probability floor. vertexScore already carries the Graph score floor, so a second
+    // EPSILON here was pure duplication -- and together the two contributed an unconditional
+    // 0.9*0.01 + 0.01 = 0.019 that swamped the cost term and made acceptance cost-blind.
+    h_probFloor_    = 0.0f;
+    h_costScale_    = 0.0f;   // recomputed every iteration in updateFrontier
     // cap = 1.0 means the weighted rule alone decides. Because the propagate-time filter is gone,
     // this planner admits far more per iteration than KinoPaxSTARWeightedCost at the same w --
     // cap is the knob that buys that throttle back, explicitly and downstream of w rather than
@@ -500,13 +521,13 @@ __global__ void KinoPaxSTARCleanCost_propagateFrontier_kernel2(bool* frontier, u
 // Two exemptions, then the single rule:
 //     P = cap * min(1, w*(vertexScore + fAccept) + (1-w)*costProbExp(...) + P_floor)
 __global__ void KinoPaxSTARCleanCost_accept_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
-                                                  float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
+                                                  float* minCostsR1,
                                                   int* frontierNextXR1s, bool* frontierNextFresh,
                                                   float* unexploredSampleCosts,
                                                   bool* frontierNext, curandState* randomSeeds,
                                                   float* vertexScores, float fAccept,
                                                   float costWeight, float costPruneExp, float probFloor,
-                                                  float acceptCapMul)
+                                                  float acceptCapMul, float costScale)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if(tid >= frontierNextSize) return;
@@ -528,8 +549,9 @@ __global__ void KinoPaxSTARCleanCost_accept_kernel(uint* activeFrontierNextIdxs,
     // now every sub-region touched this iteration is already marked active. ---
     if(frontierNextFresh[idx]) return;
 
-    // --- Everything else: weighted sum of the Syclop and cost probabilities, throttled by cap. ---
-    float pCost   = costProbExp(m, sumCostsR1[xR1], cntCostsR1[xR1], cost, costPruneExp);
+    // --- Everything else: weighted sum of the Syclop and cost probabilities, throttled by cap.
+    // costScale is GLOBAL while m is this region's own minimum -- see costProbExpGlobal. ---
+    float pCost   = costProbExpGlobal(m, cost, costScale, costPruneExp);
     float pSyclop = vertexScores[xR1] + fAccept;
     float acceptanceProbability = acceptCapMul * weightedAccept(costWeight, pSyclop, pCost, probFloor);
 
@@ -551,7 +573,8 @@ KinoPaxSTARCleanCost_updateFrontier_kernel(bool* frontier, bool* frontierNext, u
                                uint* activeFrontierRepeatCount, int* validVertexCounter, curandState* randomSeeds,
                                float* vertexScores, float fAccept,
                                float costWeight, float costPruneExp, float probFloor, float acceptCapMul,
-                               float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
+                               float costScale,
+                               float* minCostsR1,
                                int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet,
                                int* iterations, int iteration)
@@ -641,8 +664,8 @@ KinoPaxSTARCleanCost_updateFrontier_kernel(bool* frontier, bool* frontierNext, u
             // retroactive pruning, so nothing ever set it; the array and the branch are gone.)
             if(frontier[treeIdx] == 0)
                 {
-                    float pCost   = costProbExp(minCostsR1[xR1], sumCostsR1[xR1], cntCostsR1[xR1],
-                                                treeSampleCosts[treeIdx], costPruneExp);
+                    float pCost   = costProbExpGlobal(minCostsR1[xR1], treeSampleCosts[treeIdx],
+                                                      costScale, costPruneExp);
                     float pSyclop = vertexScores[xR1] + fAccept;
                     float reactivationProb = acceptCapMul * weightedAccept(costWeight, pSyclop, pCost, probFloor);
 
@@ -673,14 +696,24 @@ void KinoPaxSTARCleanCost::updateFrontier()
     float treeAddSize = 1 - (float(h_treeSize_ + h_frontierNextSize_) / (MAX_TREE_SIZE));
     h_fAccept_        = (h_itr_ * EPSILON) * pow(treeAddSize, 5);
 
+    // --- Global cost scale for costProbExpGlobal: (mean cost over all valid samples ever) minus
+    // (min cost over all regions). Unreached regions contribute sum = 0, cnt = 0, min = MAX_FLOAT,
+    // so all three reductions are correct with no masking. Three passes over NUM_R1_REGIONS against
+    // the two existing MAX_TREE_SIZE scans -- negligible. Must run after propagate (which fills the
+    // arrays) and before the accept kernel. ---
+    float sumAll = thrust::reduce(d_sumCostsR1_.begin(), d_sumCostsR1_.end(), 0.0f);
+    int   cntAll = thrust::reduce(d_cntCostsR1_.begin(), d_cntCostsR1_.end(), 0);
+    float minAll = thrust::reduce(d_minCostsR1_.begin(), d_minCostsR1_.end(), MAX_FLOAT, thrust::minimum<float>());
+    h_costScale_ = (cntAll > 0 && minAll < MAX_FLOAT) ? (sumAll / (float)cntAll - minAll) : 0.0f;
+
     // --- THE acceptance decision: region-best and fresh-sub-region candidates exempt, everything
     // else kept with cap * weightedAccept(...). ---
     KinoPaxSTARCleanCost_accept_kernel<<<iDivUp(h_frontierNextSize_, h_blockSize_), h_blockSize_>>>(
-      d_activeFrontierIdxs_ptr_, h_frontierNextSize_, d_minCostsR1_ptr_, d_sumCostsR1_ptr_, d_cntCostsR1_ptr_,
+      d_activeFrontierIdxs_ptr_, h_frontierNextSize_, d_minCostsR1_ptr_,
       d_frontierNextXR1s_ptr_, d_frontierNextFresh_ptr_,
       d_unexploredSampleCosts_ptr_, d_frontierNext_ptr_, d_randomSeeds_ptr_,
       graph_.d_vertexScoreArray_ptr_, h_fAccept_,
-      h_costWeight_, h_costPruneExp_, h_probFloor_, h_acceptCapMul_);
+      h_costWeight_, h_costPruneExp_, h_probFloor_, h_acceptCapMul_, h_costScale_);
 
     // --- Re-scan after the accept kernel ---
     thrust::exclusive_scan(d_frontierNext_.begin(), d_frontierNext_.end(), d_frontierScanIdx_.begin(), 0, thrust::plus<uint>());
@@ -701,8 +734,8 @@ void KinoPaxSTARCleanCost::updateFrontier()
       d_unexploredSamples_ptr_, d_treeSamples_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_treeSamplesParentIdxs_ptr_,
       d_treeSampleCosts_ptr_, d_activeFrontierRepeatCount_ptr_, graph_.d_validCounterArray_ptr_, d_randomSeeds_ptr_,
       graph_.d_vertexScoreArray_ptr_, h_fAccept_,
-      h_costWeight_, h_costPruneExp_, h_probFloor_, h_acceptCapMul_,
-      d_minCostsR1_ptr_, d_sumCostsR1_ptr_, d_cntCostsR1_ptr_,
+      h_costWeight_, h_costPruneExp_, h_probFloor_, h_acceptCapMul_, h_costScale_,
+      d_minCostsR1_ptr_,
       d_treeXR1s_ptr_, d_frontierNextXR1s_ptr_, d_bestNodeIdxPerR1_ptr_,
       d_minCost_ptr_, d_unexploredSampleCosts_ptr_, d_goalSet_ptr_,
       d_iterations_ptr_, h_itr_);

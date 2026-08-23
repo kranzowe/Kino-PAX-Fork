@@ -2,78 +2,33 @@
 % Reads per-iteration CSVs produced by kinopaxstar_cost_tuning_sweep.cu
 % (run via run_cost_tuning_sweep.sh).
 %
-% THREE DELTAS ARE OVERLAID in every figure. Series are (planner, delta) pairs:
+% Series are (planner, delta) pairs; the delta machinery is intact but THIS PASS runs the coarse
+% delta and the house environment only (see the commented full sets below and in
+% run_cost_tuning_sweep.sh):
 %
-%   delta 'large' (27k regions, full cap sweep)                                = 14
-%       CleanCost w {0.9} x k {8} x cap {0.01, 0.03, 0.05, 0.1}                     4
-%       TrueStar  cap {0.01, 0.03, 0.05, 0.1}                                       4
-%       KPAXCap   cap {0.01, 0.03, 0.05, 0.1}                                       4
-%       KPAX, KinoPaxPlus                                                           2
-%   delta 'fine' (216k, workspace-refined; --single-cap, derived cap only)     =  5
-%   delta 'fine_control' (216k, velocity-refined; --single-cap)                =  5
-%                                                                              -------
-%                                                                                  24
+%   KinoPaxSTARCleanCost  w {0.9, 0.99} x k {1, 16} x cap {0.03, 0.1, 0.3, 1.0}   = 16
+%   KinoPaxSTARTrue       cap {0.03, 0.1, 0.3, 1.0}                               =  4
+%   KPAXCap               cap {0.03, 0.1, 0.3, 1.0}                               =  4
+%   KPAX, KinoPaxPlus                                                             =  2
+%                                                                                 -----
+%                                                                                    26
 %
-% w and k are both PINNED (0.9, 8), so this is a pure cap sweep. k was measured to be inert and the
-% formula says why: with w = 0.9 and P_floor = EPSILON = 0.01 the cost term outranks the floor only
-% while x < ln(10)/k for x = (cost-m)/(mean-m), and the region minimum is exempt anyway via the
-% cost <= m early return.
+% TWO NORMALIZATION FIXES land in this data, which is why k and cap are both re-opened:
+%   * Graph's Syclop floor is now 1/N_active (the mean share) rather than a fixed EPSILON = 1e-2,
+%     which exceeded the score it floored by ~270x and capped the number of discriminated regions
+%     at 1/EPSILON = 100 at ANY grid size. OPT-IN: KPAXCap / TrueStar / CleanCost take it; KPAX
+%     deliberately keeps the legacy floor, so it stays an unmodified baseline. The score_floor
+%     column makes that split visible: flat 0.01 for KPAX, decaying for the others.
+%   * CleanCost drops P_floor and uses a GLOBAL cost scale (costProbExpGlobal): the region's own
+%     minimum stays the reference, but the denominator is global, so a cost excess means the same
+%     thing everywhere instead of being pinned at x ~ 1 in every region by construction. The
+%     cost_scale column logs that denominator.
 %
-% cap = 0.03 is the DERIVED operating point (~1/h_activeBlockSize_ = 1/32): after the acceptance
-% fold each frontier node offers repeat*blockSize candidates to one rule, so holding the per-node
-% branching factor near 1 gives cap ~ 1/blockSize. The finer deltas run only that cap, so all three
-% deltas overlay at a matched point.
-%
-% 'fine' and 'fine_control' are a CONTROLLED PAIR: identical 216,000 region count, refined in
-% workspace (W_R1 10->20) vs velocity (V_R1 3->6). C_R1 is inert under C_DIM 0 and stays at 1.
-%
-% KPAXCap is stock KPAX with the SAME cap multiplier on the Syclop score, applied at both
-% acceptance points. It is the control arm for the cap: CleanCost at w = 1 applies the cap AND
-% decides after graph_.updateVertices(), so KPAX / KPAXCap / CleanCost-at-w=1 separates the cap's
-% effect from the kernel boundary's.
-%
-% CleanCost makes exactly ONE acceptance decision, in the accept kernel, where the region cost
-% statistics have converged and vertexScores already include the current iteration's samples:
-%     P = cap * min(1, w*(vertexScore + fAccept) + (1-w)*costProbExp(k) + P_floor)
-% with region-best and fresh-R2-sub-region candidates exempt. Its predecessor
-% KinoPaxSTARWeightedCost also ran a propagate-time filter capped at 0.1 that sat silently upstream
-% of w; cap is the explicit replacement, applied at both the accept kernel and Part-B reactivation.
-% w = 1 reproduces KPAX's acceptance, w = 0 is pure cost-greedy. P_cost is
-% exp(-k*(cost-m)/(mean-m)): exactly 1 at the region min AND with a real gradient across the whole
-% range, unlike min(1,(mean/cost)^k), which is pinned at 1 for every cost at or below the mean.
-%
-% TrueStar keeps the plain KPAX Syclop roll with the region score scaled by cap (fAccept unscaled),
-% plus the guarded stale-best cost prune.
-%
-% TWO DISCRETIZATIONS. KinoPaxPlus is measured twice: at the sweep's own delta ("large", 27k R1
-% regions) and at a finer one ("fine", 216k) built as a separate binary, since NUM_R1_REGIONS is
-% compile-time. Only KinoPaxPlus runs at the fine delta.
-%
-% ONE ENVIRONMENT PER RUN. The benchmark writes each environment to its own subfolder
-% (Data/Benchmarks/KinoPaxStarCostTuning/<env>/), so cd into the one you want and set envName
-% below to match.
-%
-% COST METRIC: swept by rebuilding, since COST_MODE is a compile-time #if inside
-% edgeCost (include/helper/helper.cuh). The metric therefore rides in the delta
-% token of every filename: large_effort (control effort) vs large_length (workspace
-% path length). The two metrics have DIFFERENT UNITS, so every cost-dependent
-% figure below is drawn once per metric and they are never overlaid.
-%
-% Per-run CSVs (in dataDir):
-%   KinoPaxPlus:         {env}_delta{large_METRIC}_run{n}.csv
-%   KinoPaxPlus (fine):  {env}_delta{fine_METRIC}_run{n}.csv
-%   KPAX:                {env}_KPAX_delta{large_METRIC}_run{n}.csv
-%   STAR variants:       {env}_{planner label}_delta{large_METRIC}_run{n}.csv
-%                        e.g. KinoPaxSTARCleanCost_w90_k400_cap5, KinoPaxSTARTrue_cap5
-%
-% Per-iteration columns: iteration, frontier_size, tree_size, elapsed_time_ms, best_cost
-%
-% ENCODING: k is pinned, which frees the line-style channel for DELTA -- '-' large, '--' fine,
-% ':' fine_control. Colour keeps its planner+cap meaning: steel-blue ramp = CleanCost (light->dark
-% as cap goes 0.01->0.1), amber = TrueStar, grey-green = KPAXCap, near-black = KPAX, blue =
-% KinoPaxPlus. So a COLOUR is one planner at one cap across all three deltas, and a STYLE is one
-% delta across all planners -- which makes delta-vs-delta the easy read. Every legend here is
-% CLICKABLE — click an entry to hide/show that series.
+% ENCODING (four axes, four channels): colour = cap (steel ramp light->dark 0.03->1.0 for
+% CleanCost, amber for TrueStar, grey-green for KPAXCap, near-black KPAX, blue KinoPaxPlus),
+% line style = k ('-' 1, '--' 16), marker = w ('o' 0.9, 's' 0.99), line width = delta. With one
+% delta active the width channel is constant; it separates the deltas again as soon as the full
+% set is restored. Every legend here is CLICKABLE — click an entry to hide/show that series.
 %
 % FAIR-COMPARISON NOTE: an "iteration" is a different unit of work per planner, so
 % cost-vs-TIME is the fair cross-planner axis. Error bands and error bars are
@@ -93,8 +48,10 @@ dataDir = '';   % '' = current directory (run this from Data/Benchmarks/KinoPaxS
 
 % One environment per run — must match the subfolder you cd'd into.
 %   'zigzag' -> 'Zigzag Corridor',  'house' -> 'House'
-environments = {'zigzag'};
-envTitles    = {'Zigzag Corridor'};
+% SCOPE: house only this pass (matches ENV_NAMES in run_cost_tuning_sweep.sh).
+%   'zigzag' -> 'Zigzag Corridor',  'house' -> 'House',  'narrowPassage' -> 'Narrow Passage'
+environments = {'house'};
+envTitles    = {'House'};
 
 % Cost metric axis — one build each, so one set of figures each.
 metrics      = {'effort', 'length'};
@@ -103,13 +60,19 @@ metricYLabels = {'Path Cost (control effort)', 'Path Cost (workspace path length
 
 % Delta axis — OVERLAID inside each figure, encoded as line style. The filename token is
 % sprintf('%s_%s', delta, metric), e.g. 'fine_control_length'.
-deltas      = {'large', 'fine', 'fine_control'};
-deltaTitles = {'27k', '216k W-refined', '216k V-refined'};
-deltaStyles = {'-', '--', ':'};
+% SCOPE: coarse delta only this pass. Full set preserved on the commented line below -- swap the
+% two blocks (here and in deltaCaps) to restore, exactly as in run_cost_tuning_sweep.sh.
+deltas      = {'large'};
+deltaTitles = {'27k'};
+deltaWidths = [1.4];      % one per delta; line WIDTH is the delta channel now that k took style
+% deltas      = {'large', 'fine', 'fine_control'};
+% deltaTitles = {'27k', '216k W-refined', '216k V-refined'};
+% deltaWidths = [1.0, 1.8, 2.6];
 % Which caps exist at each delta: the coarse delta sweeps the axis, the finer ones ran --single-cap
 % so only the derived point exists. Must match DELTA_EXTRA_ARGS in run_cost_tuning_sweep.sh.
-capDerived  = 3;                       % label token for cap = 0.03 (~1/blockSize)
-deltaCaps   = {[1 3 5 10], capDerived, capDerived};
+capDerived  = 10;                      % label token for cap = 0.1 (CAP_DERIVED in the benchmark)
+deltaCaps   = {[3 10 30 100]};
+% deltaCaps = {[3 10 30 100], capDerived, capDerived};   % restore alongside the full delta set
 
 deltaLabel = '3 deltas overlaid';
 
@@ -118,21 +81,22 @@ deltaLabel = '3 deltas overlaid';
 % exactly as they appear in the filenames.
 % CleanCost grid — must match WEIGHTS / WEIGHTED_EXPS / CAPS in the benchmark. Values are the
 % integer label tokens (100 x the float), exactly as they appear in the filenames.
-weights = [90];
-wExps   = [800];
-caps    = [1 3 5 10];
+weights = [90 99];
+wExps   = [100 1600];
+caps    = [3 10 30 100];
 
 % TrueStar and KPAXCap cap sweeps — must match TRUE_CAPS / KPAXCAP_CAPS in the benchmark.
 % Deliberately the same cap values as the CleanCost grid, so a cap is comparable across planners.
-trueCaps    = [1 3 5 10];
-kpaxCapCaps = [1 3 5 10];
+trueCaps    = [3 10 30 100];
+kpaxCapCaps = [3 10 30 100];
 
-% Colour = planner + cap (light->dark as cap grows). Line style = delta. Width = w (constant).
-capRamp    = [0.70 0.82 0.93;    % cap 0.01 - steel blue (lightest)
-              0.45 0.64 0.84;    % cap 0.03  <- the derived operating point
-              0.21 0.42 0.66;    % cap 0.05
-              0.03 0.15 0.31];   % cap 0.10 - steel blue (darkest)
-wWidths    = [1.4];              % one entry per w; widens the channel again if w is swept
+% Four axes, four channels: colour = cap, line style = k, marker = w, line width = delta.
+capRamp    = [0.70 0.82 0.93;    % cap 0.03 - steel blue (lightest)
+              0.45 0.64 0.84;    % cap 0.10  <- CAP_DERIVED
+              0.21 0.42 0.66;    % cap 0.30
+              0.03 0.15 0.31];   % cap 1.00 - steel blue (darkest)
+kStyles    = {'-', '--'};        % k = 1, 16
+wMarkers   = {'o', 's'};         % w = 0.9, 0.99
 
 % TrueStar gets its own warm ramp over the same cap values.
 amberRamp = [0.99 0.85 0.62;     % cap 0.01 (lightest)
@@ -159,7 +123,7 @@ plannerBaseline = [];   % logical: drawn as a thick reference anchor / large sca
 plannerDeltaIdx = [];   % index into `deltas`
 
 for di = 1:numel(deltas)
-    dStyle = deltaStyles{di};
+    dWidth = deltaWidths(di);
     dTag   = deltaTitles{di};
     dCaps  = deltaCaps{di};    % caps that actually exist at this delta
 
@@ -172,11 +136,12 @@ for di = 1:numel(deltas)
                 if weights(wi) == 100 && wExps(ei) ~= 100, continue; end
                 plannerNames{end + 1}   = sprintf('KinoPaxSTARCleanCost_w%d_k%d_cap%d', ...
                                                   weights(wi), wExps(ei), caps(ci)); %#ok<SAGROW>
-                plannerDisplay{end + 1} = sprintf('C cap%g [%s]', caps(ci) / 100, dTag); %#ok<SAGROW>
+                plannerDisplay{end + 1} = sprintf('C w%g k%g cap%g [%s]', weights(wi) / 100, ...
+                                                  wExps(ei) / 100, caps(ci) / 100, dTag); %#ok<SAGROW>
                 plannerColors(end + 1, :) = capRamp(ci, :);   %#ok<SAGROW>
-                plannerStyles{end + 1}    = dStyle;           %#ok<SAGROW>
-                plannerMarkers{end + 1}   = 'o';              %#ok<SAGROW>
-                plannerWidths(end + 1)    = wWidths(wi);      %#ok<SAGROW>
+                plannerStyles{end + 1}    = kStyles{ei};      %#ok<SAGROW>
+                plannerMarkers{end + 1}   = wMarkers{wi};     %#ok<SAGROW>
+                plannerWidths(end + 1)    = dWidth;           %#ok<SAGROW>
                 plannerBaseline(end + 1)  = false;            %#ok<SAGROW>
                 plannerDeltaIdx(end + 1)  = di;               %#ok<SAGROW>
             end
@@ -189,9 +154,9 @@ for di = 1:numel(deltas)
         plannerNames{end + 1}   = sprintf('KinoPaxSTARTrue_cap%d', trueCaps(ci)); %#ok<SAGROW>
         plannerDisplay{end + 1} = sprintf('True cap%g [%s]', trueCaps(ci) / 100, dTag); %#ok<SAGROW>
         plannerColors(end + 1, :) = amberRamp(ci, :);   %#ok<SAGROW>
-        plannerStyles{end + 1}    = dStyle;             %#ok<SAGROW>
+        plannerStyles{end + 1}    = '-';                %#ok<SAGROW>
         plannerMarkers{end + 1}   = '^';                %#ok<SAGROW>
-        plannerWidths(end + 1)    = 1.6;                %#ok<SAGROW>
+        plannerWidths(end + 1)    = dWidth;             %#ok<SAGROW>
         plannerBaseline(end + 1)  = false;              %#ok<SAGROW>
         plannerDeltaIdx(end + 1)  = di;                 %#ok<SAGROW>
     end
@@ -202,9 +167,9 @@ for di = 1:numel(deltas)
         plannerNames{end + 1}   = sprintf('KPAXCap_cap%d', kpaxCapCaps(ci)); %#ok<SAGROW>
         plannerDisplay{end + 1} = sprintf('KPAXCap cap%g [%s]', kpaxCapCaps(ci) / 100, dTag); %#ok<SAGROW>
         plannerColors(end + 1, :) = mossRamp(ci, :);    %#ok<SAGROW>
-        plannerStyles{end + 1}    = dStyle;             %#ok<SAGROW>
+        plannerStyles{end + 1}    = '-';                %#ok<SAGROW>
         plannerMarkers{end + 1}   = 'v';                %#ok<SAGROW>
-        plannerWidths(end + 1)    = 2.0;                %#ok<SAGROW>
+        plannerWidths(end + 1)    = dWidth + 0.6;       %#ok<SAGROW>
         plannerBaseline(end + 1)  = true;               %#ok<SAGROW>
         plannerDeltaIdx(end + 1)  = di;                 %#ok<SAGROW>
     end
@@ -214,9 +179,9 @@ for di = 1:numel(deltas)
     plannerDisplay  = [plannerDisplay, {sprintf('KPAX [%s]', dTag), ...
                                         sprintf('KinoPaxPlus [%s]', dTag)}];              %#ok<AGROW>
     plannerColors   = [plannerColors;  0.10 0.10 0.10;  0.20 0.40 0.80];                  %#ok<AGROW>
-    plannerStyles   = [plannerStyles,  {dStyle, dStyle}];                                 %#ok<AGROW>
+    plannerStyles   = [plannerStyles,  {'-', '--'}];                                      %#ok<AGROW>
     plannerMarkers  = [plannerMarkers, {'s', 'd'}];                                       %#ok<AGROW>
-    plannerWidths   = [plannerWidths,  2.5, 2.5];                                         %#ok<AGROW>
+    plannerWidths   = [plannerWidths,  dWidth + 1.1, dWidth + 1.1];                        %#ok<AGROW>
     plannerBaseline = [plannerBaseline, true, true];                                      %#ok<AGROW>
     plannerDeltaIdx = [plannerDeltaIdx, di, di];                                          %#ok<AGROW>
 end
@@ -267,6 +232,36 @@ for ei = 1:numel(environments)
         clickableLegend();
         title(sprintf('Best Cost vs Time \x2014 %s, %s, %s', envTitle, deltaLabel, costTitle), ...
               'FontWeight', 'bold');
+
+        %% ---------- FIGURE: normalization diagnostics ----------
+        % The direct evidence for both fixes. score_floor should sit flat at EPSILON = 0.01 for KPAX
+        % and decay as 1/N_active for KPAXCap / TrueStar / CleanCost; cost_scale is CleanCost's
+        % global denominator, whose size relative to the per-region spreads tells you which k range
+        % to sweep next. Series lacking either column are skipped by getCol/plotMeanTime.
+        figNum = figNum + 1;
+        figure('Name', sprintf('%s - Normalization Diagnostics (%s)', envTitle, costTitle), ...
+               'Position', [90 90 1400 620]);
+        subplot(1, 2, 1); hold on;
+        if tmax > 0
+            for pi = 1:nPlanner
+                plotMeanTime(R{pi}, 'score_floor', ct, plannerColors(pi, :), ...
+                             plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
+            end
+        end
+        set(gca, 'YScale', 'log');
+        xlabel('Elapsed Time (ms)'); ylabel('Syclop score floor'); grid on;
+        title('score\_floor: flat 0.01 = legacy EPSILON, decaying = 1/N\_active');
+
+        subplot(1, 2, 2); hold on;
+        if tmax > 0
+            for pi = 1:nPlanner
+                plotMeanTime(R{pi}, 'cost_scale', ct, plannerColors(pi, :), ...
+                             plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
+            end
+        end
+        xlabel('Elapsed Time (ms)'); ylabel('D\_global (global mean cost - global min cost)'); grid on;
+        title('cost\_scale: the costProbExpGlobal denominator (CleanCost only)');
+        clickableLegend();
 
         %% ---------- Aggregate summary metrics per planner ----------
         mFirstIter    = NaN(1, nPlanner);

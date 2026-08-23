@@ -170,6 +170,28 @@ __device__ __forceinline__ float costProbExp(float m, float sum, int cnt, float 
     return fminf(1.0f, __expf(-k * (cost - m) / d));
 }
 
+// Cost keep-probability with a LOCAL reference and a GLOBAL scale.
+//
+// costProbExp above divides by (mean_r - m_r), the region's OWN spread. That pins the typical
+// candidate at x ~ 1 in EVERY region by construction -- which is what the mean means -- so
+// exp(-k*x) ~ exp(-k) uniformly across the grid and k loses its grip entirely. It also makes k mean
+// different things in different places: a corridor region whose costs span 2 units punishes a
+// 2-unit excess exactly as hard as an open region punishes a 30-unit one.
+//
+// Here the reference stays the region's own minimum -- so the bias toward each region's cheapest
+// node survives, which is what keeps the search from collapsing onto the root, where all the
+// globally-cheapest nodes live -- and only the SCALE is global:
+//
+//     x = (cost - m_r) / dGlobal,   dGlobal = globalMeanCost - globalMinCost
+//
+// A given cost excess now means the same thing everywhere. Numerator and denominator are both in
+// cost units, so this is COST_MODE-agnostic: no heuristic, no mixing of distance with effort.
+__device__ __forceinline__ float costProbExpGlobal(float m, float cost, float dGlobal, float k)
+{
+    if(dGlobal <= 0.0f) return 1.0f;   // no global spread yet: no evidence, so do not penalize
+    return fminf(1.0f, __expf(-k * (cost - m) / dGlobal));
+}
+
 // Weighted-sum acceptance: P = min(1, w*P_syclop + (1-w)*P_cost + P_floor).
 // w = 1 recovers the KPAX rule (P_syclop = vertexScore + fAccept) plus the floor; w = 0 is pure
 // cost-greedy. Replaces the multiplicative `costProb * syclop` blend, which collapses to zero in

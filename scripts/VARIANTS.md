@@ -168,33 +168,61 @@ Carries no retroactive pruning.
 Because the propagate-time throttle is gone, this admits far more per iteration than WeightedCost at
 the same `w` — expect to retune, with `cap` as the compensating knob.
 
-**Choosing `cap`: it is a thread count, not a free parameter.** Each frontier node is expanded
-`repeat × h_activeBlockSize_` times (`repeat` = 15 while `validVertexCounter[r] < 10`, else 1;
-`blockSize` = 32), and after the fold *every one* of those candidates is judged by the single accept
-rule — where KPAX pre-filtered them inside propagate with a separate roll. The per-node branching
-factor is
+**Two normalization fixes (current).** Both of the following were diagnosed by walking the
+formula, and both flattened acceptance into "cap × a constant":
 
-    b = repeat · blockSize · ν · cap · p̄        (ν = collision-free fraction)
+*1. The Syclop floor was larger than the score it floored.* `updateSampleAcceptance_kernel` sets
+`vertexScore = floor + score/total`, and the `score/total` shares sum to exactly 1 across active
+regions — so the mean share is `1/N_active`, 3.7e-5 at 27k regions, against a fixed
+`EPSILON = 1e-2`. Because the shares sum to 1, **at most `1/EPSILON = 100` regions can rise above
+the floor at any grid size**; everything else sits at exactly 0.01, and refining the grid makes it
+worse (same budget of 1.0, split more ways). `Graph::h_dynamicScoreFloor_` replaces it with
+`1/N_active` — the mean share itself — so an average region gets exactly 2× the floor at any
+discretization.
 
-so holding `b` near 1 gives `cap ≈ 1 / (repeat · blockSize · ν · p̄)`. The geometric term is the
-principled part: **`cap` should scale as `1/blockSize`** — "one accepted child per frontier node per
-expansion block", i.e. exactly the factor that restores the branching KPAX had before the fold
-removed its pre-filter. With `h_activeBlockSize_ = 32` that is `1/32 = 0.03125`; the sweeps use
-`0.03` as its exact-label neighbour under the `100·cap` filename convention. It falls inside the
-0.01–0.05 band that measured best empirically, which is the evidence for the argument.
+**Opt-in, not global.** `KPAXCap`, `KinoPaxSTARTrue` and `KinoPaxSTARCleanCost` set
+`graph_.h_dynamicScoreFloor_ = true`; **`KPAX` deliberately does not**, so it remains an unmodified
+historical baseline. Every other `Graph`-based variant also keeps the legacy floor. `KinoPaxPlus`
+is unaffected either way — it uses `KinoPaxPlusRegions`, not `Graph`, and never reads
+`vertexScores`. The `count_if` only runs in dynamic mode, so legacy planners pay nothing.
 
-**Why `k` is inert at the operating point** (worth knowing before re-sweeping it). With `w = 0.9`
-and `h_probFloor_ = EPSILON = 0.01`, the cost term outranks the floor only while
+*2. The cost term was normalized per-region, so `x ≈ 1` everywhere by construction.* `costProbExp`
+divides by the region's own spread `(mean_r − m_r)`, which pins the typical candidate at x ≈ 1 in
+*every* region simultaneously — that is what dividing by the mean does — so `exp(−k·x) ≈ exp(−k)`
+was uniform across the grid and raising k just multiplied the same near-zero everywhere. It also
+made k mean different things in different places: a corridor region whose costs span 2 units
+punished a 2-unit excess exactly as hard as an open region punished a 30-unit one.
+`costProbExpGlobal` keeps the region's own minimum as the **reference** — preserving the bias
+toward each region's cheapest node, which is what stops the search collapsing onto the root where
+all the globally-cheapest nodes live — but divides by a **global scale**
+`D_global = globalMeanCost − globalMinCost`. Both terms are in cost units, so it is COST_MODE-safe:
+no heuristic, no mixing distance with control effort.
 
-    0.1 · exp(−k·x) > 0.01   ⟺   x < ln(10)/k,     x = (cost − m)/(mean − m)
+`h_probFloor_` is now **0** in CleanCost. `vertexScore` already carries the Graph floor, so the
+second additive EPSILON was duplication — and together the pair contributed an unconditional
+`0.9·0.01 + 0.01 = 0.019` that swamped the cost term outright.
 
-so `k` = 4 / 8 / 16 gives windows of `x` < 0.58 / 0.29 / 0.14 — and the region minimum never reaches
-the formula at all, since `cost <= m` returns early. Outside that shrinking sliver every candidate
-takes the same floor-dominated probability. Underneath, `vertexScore = EPSILON + score/total` and the
-`score/total` terms sum to 1 across active regions, so at 27k regions the average discriminative term
-is ~3.7e-5 — ~270× below its own `EPSILON` floor. For the bulk of the tree the whole expression
-collapses to `P ≈ cap · (0.9·0.01 + ~0 + 0.01)`, i.e. **cap × a constant**. The lever for making `k`
-bite is `h_probFloor_ → 0`, not a larger `k`.
+**Where `cap` stands now.** The `cap ≈ 1/h_activeBlockSize_` derivation still holds structurally —
+after the fold each frontier node offers `repeat · blockSize` candidates to one rule, so the
+per-node branching factor is `b = repeat · blockSize · ν · cap · p̄` and holding `b ≈ 1` gives
+`cap ≈ 1/(repeat · blockSize · ν · p̄)`. But it was *calibrated* against a `p̄` inflated by the two
+floors. With both fixed, the cost-independent part falls from ~0.019 to ~0.002, so the implied cap
+rises by roughly the same 8× — **`cap = 1.0` may now be correct**, and the sweep re-opens the axis
+upward to find out.
+
+**`EPSILON` is overloaded — do not redefine it.** It does three unrelated jobs:
+
+| use | site | status |
+|---|---|---|
+| Syclop floor, `EPSILON + score/total` | `Graph.cu` `updateSampleAcceptance_kernel` | **replaced** by `h_scoreFloor_` (opt-in) |
+| Laplace smoothing, `(EPSILON + valid)/(EPSILON + total)` | `Graph.cu` `computeVertexScores_kernel` | leave — only guards 0/0 |
+| fAccept scale, `(h_itr_ * EPSILON) * treeAddSize^5` | **15 planners** | leave — redefining EPSILON silently rescales reactivation everywhere |
+
+**Diagnostics.** The sweep logs `score_floor` and `cost_scale` per iteration. `score_floor` sits
+flat at 0.01 for KPAX and decays as `1/N_active` for the opted-in planners — the direct evidence
+the floor fix is live. `cost_scale` is `D_global`; compare it against the per-region spreads that
+used to be the denominator to pick the next k range, since `x_new = x_old · (mean_r − m_r)/D_global`
+and the right k depends entirely on that ratio.
 
 **Discretization note for the sweeps.** `NUM_R1_REGIONS = W_R1^3 * V_R1^3` has no C term, and Model 1
 sets `C_DIM 0`, so `getRegion` / `getSubRegion` skip the C dimension entirely — `C_R1_LENGTH` is a

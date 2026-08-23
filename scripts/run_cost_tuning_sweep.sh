@@ -5,18 +5,25 @@
 # Tuning sweep for KinoPaxSTARCleanCost, plus KinoPaxSTARTrue / KPAXCap cap sweeps and the
 # KPAX / KinoPaxPlus baselines, on both environments:
 #
-# w AND k ARE BOTH PINNED (w = 0.9, k = 8), so this is a pure cap sweep. k was measured to do
-# essentially nothing and the formula says why: with w = 0.9 and P_floor = EPSILON = 0.01, the cost
-# term outranks the floor only while x < ln(10)/k for x = (cost-m)/(mean-m), and the region minimum
-# is already exempt via the cost <= m early return. See the note in the benchmark .cu.
 #
 # Per (environment, cost metric, delta):
-#   KinoPaxSTARCleanCost   w {0.9} x k {8} x cap {0.01, 0.03, 0.05, 0.1} = 4 points x 3 runs = 12
-#   KinoPaxSTARTrue        cap {0.01, 0.03, 0.05, 0.1} = 4 points x 3 runs = 12
-#   KPAXCap                cap {0.01, 0.03, 0.05, 0.1} = 4 points x 5 runs = 20
-#   KPAX                   baseline, 5 runs
+#   KinoPaxSTARCleanCost   w {0.9, 0.99} x k {1, 16} x cap {0.03, 0.1, 0.3, 1.0}
+#                          = 16 points x 3 runs = 48 runs
+#   KinoPaxSTARTrue        cap {0.03, 0.1, 0.3, 1.0} = 4 points x 3 runs = 12 runs
+#   KPAXCap                cap {0.03, 0.1, 0.3, 1.0} = 4 points x 5 runs = 20 runs
+#   KPAX                   baseline, 5 runs  -- KEEPS THE LEGACY EPSILON SCORE FLOOR
 #   KinoPaxPlus            baseline, 5 runs
-#   => 54 runs at the "large" delta; 21 at each finer delta (--single-cap, see below)
+#   => 90 runs per (environment, cost metric)
+#
+# TWO NORMALIZATION FIXES land in this pass, which is why k and cap are both re-opened:
+#   * Graph's Syclop floor becomes 1/N_active (the mean share) instead of a fixed EPSILON = 1e-2,
+#     which exceeded the score it floored by ~270x and capped the number of discriminated regions
+#     at 1/EPSILON = 100 at ANY grid size. OPT-IN: KPAXCap / TrueStar / CleanCost take it, KPAX
+#     deliberately does not, so KPAX remains an unmodified baseline.
+#   * CleanCost drops P_floor and switches to costProbExpGlobal -- the region's own minimum stays
+#     the reference, but the SCALE is global, so a cost excess means the same thing everywhere
+#     instead of being pinned at x ~ 1 in every region by construction.
+# Both scales are now logged per iteration as score_floor / cost_scale.
 #
 # All three capped planners sweep the SAME cap values, so a cap reads across CleanCost / TrueStar /
 # KPAXCap directly.
@@ -53,8 +60,8 @@
 # Runs on BOTH environments (house and zigzag), each written to its own subfolder under
 # Data/Benchmarks/KinoPaxStarCostTuning/<env>/ so they can be plotted independently.
 #
-# = 54 + 21 + 21 = 96 runs per (environment, cost metric); 3 envs x 2 metrics = 576 runs total.
-# At the 6 s per-run cap that is ~10 min per (env, metric), ~1 h worst case overall, plus 6 builds.
+# This pass: 90 runs per (environment, cost metric); 1 env x 2 metrics = 180 runs total.
+# At the 6 s per-run cap that is ~9 min per metric, ~18 min overall, plus 2 builds.
 #
 # THREE DISCRETIZATIONS, ALL RUNNING THE FULL PLANNER SET. NUM_R1_REGIONS is compile-time
 # (config.h), so each needs its own binary: this script builds the delta x cost-metric matrix
@@ -96,13 +103,23 @@ BUILD_DIR="$PROJECT_DIR/build"
 # Deltas: parallel arrays of label / W_R1 / C_R1 / V_R1.
 # Index 0 ("large") runs the full sweep. Every later index runs KinoPaxPlus ONLY, so the baseline
 # can be measured at a finer discretization without re-running the whole grid there.
-DELTA_LABELS=("large" "fine" "fine_control")
-DELTA_W_R1S=(10 20 10)
-DELTA_C_R1S=(1  1  1)   # inert for Model 1 (C_DIM 0); control refinement rides on V_R1
-DELTA_V_R1S=(3  3  6)
-# Extra argv per delta. Index 0 (the coarse delta) sweeps the cap axis and gets the viz flag
-# appended below; the finer deltas run only the derived cap so the three overlay at a matched point.
-DELTA_EXTRA_ARGS=("" "--single-cap" "--single-cap")
+# SCOPE: this pass runs the coarse delta only. The full three-delta set is preserved below --
+# uncomment the second block and comment the first to restore it. Nothing else in the script needs
+# to change: the build/run matrix, the per-delta binary caching and --single-cap all still loop.
+DELTA_LABELS=("large")
+DELTA_W_R1S=(10)
+DELTA_C_R1S=(1)         # inert for Model 1 (C_DIM 0); control refinement rides on V_R1
+DELTA_V_R1S=(3)
+DELTA_EXTRA_ARGS=("")
+
+# --- Full delta set (uncomment to restore; comment out the four lines above) ---
+# DELTA_LABELS=("large" "fine" "fine_control")
+# DELTA_W_R1S=(10 20 10)
+# DELTA_C_R1S=(1  1  1)
+# DELTA_V_R1S=(3  3  6)
+# Index 0 (the coarse delta) sweeps the cap axis and gets the viz flag appended below; the finer
+# deltas run only the derived cap so the three overlay at a matched point.
+# DELTA_EXTRA_ARGS=("" "--single-cap" "--single-cap")
 
 # Cost metric axis: label + COST_MODE  (0 = workspace distance, 1 = control effort)
 COST_LABELS=("length" "effort")
@@ -114,10 +131,15 @@ COST_MODES=(0 1)
 # (0.1, 0.08, 0.05) and goal (0.8, 0.95, 0.9) are clear of both boxes and on opposite sides of the
 # wall, so no endpoint change is needed -- but expect low success rates there, and read the
 # success-rate subplot alongside the cost bars (unsolved runs are dropped from the cost mean).
-ENV_NAMES=("house" "zigzag" "narrowPassage")
-ENV_OBSTACLES=("../include/config/obstacles/house/obstacles.csv"
-               "../include/config/obstacles/zigzag/obstacles.csv"
-               "../include/config/obstacles/narrowPassage/obstacles.csv")
+# SCOPE: house only this pass. Full set preserved below -- uncomment to restore.
+ENV_NAMES=("house")
+ENV_OBSTACLES=("../include/config/obstacles/house/obstacles.csv")
+
+# --- Full environment set (uncomment to restore; comment out the two lines above) ---
+# ENV_NAMES=("house" "zigzag" "narrowPassage")
+# ENV_OBSTACLES=("../include/config/obstacles/house/obstacles.csv"
+#                "../include/config/obstacles/zigzag/obstacles.csv"
+#                "../include/config/obstacles/narrowPassage/obstacles.csv")
 
 # --- Parse arguments ---
 SKIP_BUILD=false
@@ -274,10 +296,11 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  CleanCost:      w {0.9} x k {8} x cap {0.01, 0.03, 0.05, 0.1} = 4 points"
-echo "  TrueStar:       cap {0.01, 0.03, 0.05, 0.1} = 4 points"
-echo "  KPAXCap:        cap {0.01, 0.03, 0.05, 0.1} = 4 points"
-echo "  Finer deltas run only the derived cap = 0.03 (~1/blockSize) via --single-cap"
+echo "  CleanCost:      w {0.9, 0.99} x k {1, 16} x cap {0.03, 0.1, 0.3, 1.0} = 16 points"
+echo "  TrueStar:       cap {0.03, 0.1, 0.3, 1.0} = 4 points"
+echo "  KPAXCap:        cap {0.03, 0.1, 0.3, 1.0} = 4 points"
+echo "  Score floor:    dynamic 1/N_active for KPAXCap/TrueStar/CleanCost; legacy EPSILON for KPAX"
+echo "  Any finer delta added back runs only cap = 0.1 (CAP_DERIVED) via --single-cap"
 echo "  Baselines: KPAX, KinoPaxPlus (large + fine)"
 echo "======================================================="
 

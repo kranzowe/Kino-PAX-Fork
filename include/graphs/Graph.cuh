@@ -21,6 +21,25 @@ public:
     int h_numPartialSums_;
     int h_blockSize_ = 32;
 
+    // ---- Syclop score floor ----
+    // updateSampleAcceptance_kernel sets vertexScore = floor + score/total, and the score/total
+    // shares sum to exactly 1 across ACTIVE regions -- so the mean share is 1/N_active.
+    //
+    // LEGACY (default): floor = EPSILON = 1e-2. At 27k active regions the mean share is 3.7e-5, so
+    // the floor exceeds the thing it floors by ~270x. Because the shares sum to 1, at most
+    // 1/EPSILON = 100 regions can rise above the floor AT ANY GRID SIZE; every other region sits at
+    // exactly 0.01, and refining the grid makes it worse (same budget of 1.0, split more ways).
+    //
+    // DYNAMIC: floor = 1/N_active, i.e. the mean share itself. An average region then gets exactly
+    // 2x the floor regardless of discretization, and the fraction of regions that discriminate stops
+    // collapsing as the grid is refined.
+    //
+    // Opt-in per planner rather than global: KPAX must stay a fixed historical baseline, so it keeps
+    // the legacy floor while KPAXCap / KinoPaxSTARTrue / KinoPaxSTARCleanCost take the dynamic one.
+    // The count_if only runs in dynamic mode, so legacy planners pay nothing.
+    bool  h_dynamicScoreFloor_ = false;
+    float h_scoreFloor_        = EPSILON;   // value actually used last updateVertices(); logged
+
     // --- device fields ---
     thrust::device_vector<int> d_validCounterArray_, d_counterArray_, d_activeVerticesScanIdx_, d_activeSubVertices_;
     thrust::device_vector<float> d_vertexScoreArray_, d_minValueInRegion_, d_partialSums_, d_totalScore_;
@@ -45,7 +64,8 @@ __device__ int getSubRegion(float* coord, int r1, float* minRegion);
 //     region count. (The old cub reduction launched > 1024 threads/block once NUM_R1_REGIONS
 //     exceeded 32768, causing an illegal-memory-access crash at the larger deltas.) ---
 __global__ void computeVertexScores_kernel(int* activeSubVertices, int* validCounterArray, int* counterArray, float* vertexScores);
-__global__ void updateSampleAcceptance_kernel(int* validCounterArray, float* vertexScores, float* totalScore);
+__global__ void updateSampleAcceptance_kernel(int* validCounterArray, float* vertexScores, float* totalScore,
+                                              float scoreFloor);
 
 /***************************/
 /* INITIALIZE REGIONS KERNEL */
