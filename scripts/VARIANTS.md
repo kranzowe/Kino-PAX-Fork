@@ -210,7 +210,7 @@ floors. With both fixed, the cost-independent part falls from ~0.019 to ~0.002, 
 rises by roughly the same 8× — **`cap = 1.0` may now be correct**, and the sweep re-opens the axis
 upward to find out.
 
-**R2 seeding free pass is now switchable** (`h_r2SeedAccept_`, default `true`). A candidate that
+**R2 seeding free pass is switchable and now DEFAULTS OFF** (`h_r2SeedAccept_ = false`). Both arms were measured head to head and off is the permanent condition: admission is steered only by the Syclop score and the cost term. A candidate that
 claimed a virgin R2 sub-region is normally admitted unconditionally, bypassing the weighted roll —
 this is KPAX's main coverage drive, and in CleanCost it is a genuine free pass (in
 `KinoPaxSTARWeightedCost` it only cleared the propagate-time filter and then still faced the

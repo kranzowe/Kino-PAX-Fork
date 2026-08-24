@@ -6,22 +6,23 @@
 % delta and the house environment only (see the commented full sets below and in
 % run_cost_tuning_sweep.sh):
 %
-%   KinoPaxSTARCleanCost  r2 {on, off} x w {0.1, 0.5, 0.9, 1.0} x k {1, 16}
-%                         x cap {0.03, 0.1, 1.0}                                  = 42
-%   KinoPaxSTARTrue       cap {0.03, 0.1, 0.3, 1.0}                               =  4
-%   KPAXCap               cap {0.03, 0.1, 0.3, 1.0}                               =  4
+%   KinoPaxSTARCleanCost  r2 OFF (fixed) x w {0.9, 0.95, 1.0} x k {0.25, 1, 16}
+%                         x cap {0.03, 0.1, 1.0}                                  = 21
+%   KinoPaxSTARTrue       cap {0.03, 0.1}                                         =  2
+%   KPAXCap               cap {0.03, 0.1}                                         =  2
 %   KPAX, KinoPaxPlus                                                             =  2
 %                                                                                 -----
-%                                                                                    52
+%                                                                                    27
 %
-% 42 and not the plain 2*4*2*3 = 48: at w = 1 the cost term vanishes from weightedAccept, so only
+% 21 and not the plain 3*3*3 = 27: at w = 1 the cost term vanishes from weightedAccept, so only
 % k = 1 is run there -- the other six points would be the same rule differing only by RNG stream.
 %
-% r2 = the R2 SUB-REGION SEEDING FREE PASS. With it on (KPAX's behaviour) a candidate claiming a
-% virgin R2 sub-region is admitted unconditionally, bypassing the weighted roll; with it off it
-% takes the same roll as everything else (the KinoPaxSTARnoseed condition). Propagate marks
-% activeSubVertices either way, so r2_coverage_pct is comparable across both arms -- the pair
-% measures how much of the exploration is seeding rather than the Syclop score.
+% r2 = the R2 SUB-REGION SEEDING FREE PASS, now FIXED OFF. With it on (KPAX's behaviour) a candidate
+% claiming a virgin R2 sub-region is admitted unconditionally, bypassing the weighted roll; off, it
+% takes the same roll as everything else (the KinoPaxSTARnoseed condition). Both arms were measured
+% and off is now permanent, so admission is steered only by the Syclop score and the cost term.
+% Propagate still marks activeSubVertices, so r2_coverage_pct stays valid and comparable with the
+% earlier two-arm data.
 %
 % TWO NORMALIZATION FIXES land in this data, which is why k and cap are both re-opened:
 %   * Graph's Syclop floor is now 1/N_active (the mean share) rather than a fixed EPSILON = 1e-2,
@@ -35,11 +36,10 @@
 %     cost_scale column logs that denominator.
 %
 % ENCODING: colour = cap (steel ramp light->dark 0.03->1.0 for CleanCost, amber for TrueStar,
-% grey-green for KPAXCap, near-black KPAX, blue KinoPaxPlus); line style = k ('-' 1, '--' 16);
-% marker = w ('o' 0.1, 'x' 0.5, '+' 0.9, '*' 1.0, scatter only); line width = delta base + an r2
-% bump (THIN = seeding on, THICK = seeding off). With one delta active the width carries r2 alone;
-% both separate again when the full delta set is restored. Every legend here is CLICKABLE — click
-% an entry to hide/show that series.
+% grey-green for KPAXCap, near-black KPAX, blue KinoPaxPlus); line style = k (':' 0.25, '-' 1, '--' 16);
+% marker = w ('o' 0.9, 'x' 0.95, '+' 1.0, scatter only); line width = delta (constant with one
+% delta and one r2 arm; it separates them again as soon as either set is restored). Every legend
+% here is CLICKABLE — click an entry to hide/show that series.
 %
 % FAIR-COMPARISON NOTE: an "iteration" is a different unit of work per planner, so
 % cost-vs-TIME is the fair cross-planner axis. Error bands and error bars are
@@ -59,10 +59,13 @@ dataDir = '';   % '' = current directory (run this from Data/Benchmarks/KinoPaxS
 
 % One environment per run — must match the subfolder you cd'd into.
 %   'zigzag' -> 'Zigzag Corridor',  'house' -> 'House'
-% SCOPE: house only this pass (matches ENV_NAMES in run_cost_tuning_sweep.sh).
-%   'zigzag' -> 'Zigzag Corridor',  'house' -> 'House',  'narrowPassage' -> 'Narrow Passage'
-environments = {'house'};
-envTitles    = {'House'};
+% SCOPE: zigzag and narrowPassage this pass (matches ENV_NAMES in run_cost_tuning_sweep.sh).
+% ONE PER RUN -- each environment writes to its own subfolder, so set this to match the folder you
+% cd'd into and re-run for the other.
+%   'zigzag' -> 'Zigzag Corridor',  'narrowPassage' -> 'Narrow Passage',  'house' -> 'House'
+environments = {'zigzag'};
+envTitles    = {'Zigzag Corridor'};
+% environments = {'narrowPassage'};   envTitles = {'Narrow Passage'};
 
 % Cost metric axis — one build each, so one set of figures each.
 metrics      = {'effort', 'length'};
@@ -95,41 +98,37 @@ deltaLabel = '3 deltas overlaid';
 % exactly as they appear in the filenames.
 % CleanCost grid — must match WEIGHTS / WEIGHTED_EXPS / CAPS in the benchmark. Values are the
 % integer label tokens (100 x the float), exactly as they appear in the filenames.
-% R2 sub-region seeding free pass, on/off -- must match R2_ACCEPT in the benchmark.
-r2Tokens = {'on', 'off'};
-r2Widths = [0.0, 1.3];   % width BUMP per r2 arm: thin = seeding on, thick = seeding off
+% R2 sub-region seeding free pass -- must match R2_ACCEPT in the benchmark. FIXED OFF now, but kept
+% as a one-element list because the label still carries the "_r2off_" token (which distinguishes
+% this data from the two-arm pass and from anything predating the toggle). Add 'on' back to sweep it.
+r2Tokens = {'off'};
+r2Widths = [0.0];        % width BUMP per r2 arm; constant while only one arm runs
 
-weights = [10 50 90 100];
-wExps   = [100 1600];
+weights = [90 95 100];
+wExps   = [25 100 1600];
 caps    = [3 10 100];
 
 % TrueStar and KPAXCap cap sweeps — must match TRUE_CAPS / KPAXCAP_CAPS in the benchmark.
 % Deliberately the same cap values as the CleanCost grid, so a cap is comparable across planners.
-trueCaps    = [3 10 30 100];
-kpaxCapCaps = [3 10 30 100];
+trueCaps    = [3 10];
+kpaxCapCaps = [3 10];
 
-% Five axes, four channels + a width bump: colour = cap, line style = k, marker = w,
-% line width = delta base + r2 bump.
+% colour = cap, line style = k, marker = w, line width = delta base (+ r2 bump if r2 is swept).
 capRamp    = [0.62 0.76 0.90;    % cap 0.03 - steel blue (lightest)
               0.24 0.45 0.70;    % cap 0.10  <- CAP_DERIVED
               0.03 0.15 0.31];   % cap 1.00 - steel blue (darkest)
-kStyles    = {'-', '--'};             % k = 1, 16
-wMarkers   = {'o', 'x', '+', '*'};    % w = 0.1, 0.5, 0.9, 1.0 (scatter only)
+kStyles    = {':', '-', '--'};        % k = 0.25, 1, 16
+wMarkers   = {'o', 'x', '+'};         % w = 0.9, 0.95, 1.0 (scatter only)
 
-% TrueStar and KPAXCap keep the 4-point cap axis (they sweep cap alone), so their ramps stay at
-% four entries even though CleanCost's dropped to three.
-amberRamp = [0.99 0.85 0.62;     % cap 0.01 (lightest)
-             0.97 0.68 0.33;
-             0.88 0.47 0.10;
-             0.60 0.28 0.02];    % cap 0.10 (darkest)
+% TrueStar and KPAXCap sweep the low two caps only, so two entries each.
+amberRamp = [0.95 0.62 0.24;     % cap 0.03 (lighter)
+             0.66 0.30 0.03];    % cap 0.10 (darker)
 
 % KPAXCap: grey-green, distinct from both the steel ramp and near-black KPAX it is compared to.
-mossRamp  = [0.72 0.83 0.68;     % cap 0.01 (lightest)
-             0.55 0.70 0.50;
-             0.36 0.56 0.36;
-             0.18 0.36 0.20];    % cap 0.10 (darkest)
+mossRamp  = [0.58 0.73 0.53;     % cap 0.03 (lighter)
+             0.24 0.44 0.26];    % cap 0.10 (darker)
 
-% --- Build the series arrays: (planner, delta) pairs, 24 in total ---
+% --- Build the series arrays: (planner, delta) pairs, 27 in total ---
 % plannerDeltaIdx carries each series' delta so loadRuns can build its own filename token; the
 % style channel is delta, so every series of one delta shares a line style.
 plannerNames    = {};

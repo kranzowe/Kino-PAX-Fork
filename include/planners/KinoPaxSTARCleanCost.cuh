@@ -50,11 +50,12 @@ public:
     // same factor -- cap = 1.0 may now be correct.
     float h_acceptCapMul_;
 
-    // R2 SUB-REGION SEEDING FREE PASS, on/off. When true (default) a candidate that claimed a
-    // virgin R2 sub-region is admitted unconditionally, bypassing the weighted roll entirely --
-    // this is KPAX's main coverage drive. When false it takes the same weighted roll as everything
-    // else, i.e. the KinoPaxSTARnoseed condition (pSeed = 0), which isolates how much of the
-    // exploration is actually seeding rather than the Syclop score.
+    // R2 SUB-REGION SEEDING FREE PASS, on/off. DEFAULTS FALSE -- off is now the permanent
+    // condition for this planner, after measuring the two arms head to head. When true, a candidate
+    // that claimed a virgin R2 sub-region is admitted unconditionally, bypassing the weighted roll
+    // entirely (KPAX's main coverage drive). When false it takes the same weighted roll as
+    // everything else -- the KinoPaxSTARnoseed condition (pSeed = 0) -- so the Syclop score and the
+    // cost term are the only things steering admission.
     //
     // Only the ADMISSION changes: propagate still marks activeSubVertices unconditionally, so
     // r2_coverage_pct stays a valid diagnostic in both modes (same contract as the other noseed

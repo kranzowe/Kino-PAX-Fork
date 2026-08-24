@@ -7,22 +7,24 @@
 #
 #
 # Per (environment, cost metric, delta):
-#   KinoPaxSTARCleanCost   r2 {on, off} x w {0.1, 0.5, 0.9, 1.0} x k {1, 16} x cap {0.03, 0.1, 1.0}
-#                          = 42 points x 3 runs = 126 runs
-#                          (42, not 2*4*2*3 = 48: at w = 1 the cost term vanishes from
+#   KinoPaxSTARCleanCost   r2 OFF (fixed) x w {0.9, 0.95, 1.0} x k {0.25, 1, 16}
+#                          x cap {0.03, 0.1, 1.0}
+#                          = 21 points x 3 runs = 63 runs
+#                          (21, not 3*3*3 = 27: at w = 1 the cost term vanishes from
 #                           weightedAccept, so only k = 1 runs there -- the other six points would
 #                           be the same rule differing only by RNG stream)
-#   KinoPaxSTARTrue        cap {0.03, 0.1, 0.3, 1.0} = 4 points x 3 runs = 12 runs
-#   KPAXCap                cap {0.03, 0.1, 0.3, 1.0} = 4 points x 5 runs = 20 runs
+#   KinoPaxSTARTrue        cap {0.03, 0.1} = 2 points x 3 runs =  6 runs
+#   KPAXCap                cap {0.03, 0.1} = 2 points x 5 runs = 10 runs
 #   KPAX                   baseline, 5 runs  -- KEEPS THE LEGACY EPSILON SCORE FLOOR
 #   KinoPaxPlus            baseline, 5 runs
-#   => 168 runs per (environment, cost metric)
+#   => 89 runs per (environment, cost metric)
 #
-# r2 IS THE R2 SUB-REGION SEEDING FREE PASS, now a swept arm. On (KPAX's behaviour): a candidate
-# claiming a virgin R2 sub-region is admitted unconditionally, bypassing the weighted roll. Off: it
-# takes the same roll as everything else -- the KinoPaxSTARnoseed condition (pSeed = 0). Propagate
-# marks activeSubVertices either way, so r2_coverage_pct stays comparable across both arms and the
-# pair measures how much of the exploration is seeding rather than the Syclop score.
+# r2 IS THE R2 SUB-REGION SEEDING FREE PASS, now FIXED OFF for CleanCost. On (KPAX's behaviour) a
+# candidate claiming a virgin R2 sub-region is admitted unconditionally, bypassing the weighted
+# roll; off, it takes the same roll as everything else -- the KinoPaxSTARnoseed condition
+# (pSeed = 0). Both arms were measured and off is now permanent, so admission is steered only by the
+# Syclop score and the cost term. Propagate still marks activeSubVertices, so r2_coverage_pct
+# remains valid and stays comparable with the earlier two-arm data.
 #
 # TWO NORMALIZATION FIXES land in this pass, which is why k and cap are both re-opened:
 #   * Graph's Syclop floor becomes 1/N_active (the mean share) instead of a fixed EPSILON = 1e-2,
@@ -69,8 +71,8 @@
 # Runs on BOTH environments (house and zigzag), each written to its own subfolder under
 # Data/Benchmarks/KinoPaxStarCostTuning/<env>/ so they can be plotted independently.
 #
-# This pass: 168 runs per (environment, cost metric); 1 env x 2 metrics = 336 runs total.
-# At the 6 s per-run cap that is ~17 min per metric, ~34 min overall, plus 2 builds.
+# This pass: 89 runs per (environment, cost metric); 2 envs x 2 metrics = 356 runs total.
+# At the 6 s per-run cap that is ~9 min per (env, metric), ~36 min overall, plus 2 builds.
 #
 # THREE DISCRETIZATIONS, ALL RUNNING THE FULL PLANNER SET. NUM_R1_REGIONS is compile-time
 # (config.h), so each needs its own binary: this script builds the delta x cost-metric matrix
@@ -140,11 +142,17 @@ COST_MODES=(0 1)
 # (0.1, 0.08, 0.05) and goal (0.8, 0.95, 0.9) are clear of both boxes and on opposite sides of the
 # wall, so no endpoint change is needed -- but expect low success rates there, and read the
 # success-rate subplot alongside the cost bars (unsolved runs are dropped from the cost mean).
-# SCOPE: house only this pass. Full set preserved below -- uncomment to restore.
-ENV_NAMES=("house")
-ENV_OBSTACLES=("../include/config/obstacles/house/obstacles.csv")
+# SCOPE: zigzag and narrowPassage this pass. Full set preserved below -- uncomment to restore.
+#
+# narrowPassage is a wall at x in [0.3, 0.5] spanning all z, split by a gap at y in [0.49, 0.51] --
+# 0.02 wide against an agent diameter of 0.01 (AGENT_RADIUS 0.005). Expect low success rates there,
+# and read the success-rate subplot alongside the cost bars: unsolved runs are dropped from the cost
+# mean rather than penalised, so a config that solved once cheaply can look best.
+ENV_NAMES=("zigzag" "narrowPassage")
+ENV_OBSTACLES=("../include/config/obstacles/zigzag/obstacles.csv"
+               "../include/config/obstacles/narrowPassage/obstacles.csv")
 
-# --- Full environment set (uncomment to restore; comment out the two lines above) ---
+# --- Full environment set (uncomment to restore; comment out the block above) ---
 # ENV_NAMES=("house" "zigzag" "narrowPassage")
 # ENV_OBSTACLES=("../include/config/obstacles/house/obstacles.csv"
 #                "../include/config/obstacles/zigzag/obstacles.csv"
@@ -305,9 +313,9 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  CleanCost:      r2 {on,off} x w {0.1,0.5,0.9,1.0} x k {1,16} x cap {0.03,0.1,1.0} = 42 points"
-echo "  TrueStar:       cap {0.03, 0.1, 0.3, 1.0} = 4 points"
-echo "  KPAXCap:        cap {0.03, 0.1, 0.3, 1.0} = 4 points"
+echo "  CleanCost:      r2 OFF x w {0.9,0.95,1.0} x k {0.25,1,16} x cap {0.03,0.1,1.0} = 21 points"
+echo "  TrueStar:       cap {0.03, 0.1} = 2 points"
+echo "  KPAXCap:        cap {0.03, 0.1} = 2 points"
 echo "  Score floor:    dynamic 1/N_active for KPAXCap/TrueStar/CleanCost; legacy EPSILON for KPAX"
 echo "  Any finer delta added back runs only cap = 0.1 (CAP_DERIVED) via --single-cap"
 echo "  Baselines: KPAX, KinoPaxPlus (large + fine)"

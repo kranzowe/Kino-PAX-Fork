@@ -32,7 +32,7 @@ static std::string g_vizDir;
 // upstream of w; folding that away means CleanCost admits far more per iteration at the same w,
 // and cap is the explicit downstream throttle that buys it back.
 //
-// Four axes this pass -- the R2 seeding pass is now a swept arm alongside w, k and cap:
+// Three swept axes this pass (w, k, cap); the R2 seeding pass is fixed OFF, see R2_ACCEPT below:
 //   w   weight on the Syclop probability. 1 = KPAX's acceptance, 0 = pure cost-greedy.
 //   k   decay rate of P_cost. RE-OPENED and deliberately BRACKETED at {1, 16}.
 //       k measured as inert in the previous passes, for two reasons that are both now fixed:
@@ -55,17 +55,20 @@ static std::string g_vizDir;
 //       since cap ~ 1/(repeat*blockSize*nu*p_bar), an 8x smaller p_bar implies an ~8x larger cap.
 //       cap = 1.0 may now be correct: the cap existed to throttle a rule whose output was an
 //       artificially inflated constant, and that constant is gone.
-static const float WEIGHTS[] = {0.1f, 0.5f, 0.9f, 1.0f};
-static const float WEIGHTED_EXPS[] = {1.0f, 16.0f};
+static const float WEIGHTS[] = {0.9f, 0.95f, 1.0f};
+static const float WEIGHTED_EXPS[] = {0.25f, 1.0f, 16.0f};
 static const float CAPS[] = {0.03f, 0.1f, 1.0f};
 
-// ---- R2 sub-region seeding free pass, on/off ----
-// A candidate that claimed a virgin R2 sub-region is normally admitted unconditionally, bypassing
-// the weighted roll -- KPAX's main coverage drive. Turning it off makes such a candidate take the
-// same weighted roll as everything else: the KinoPaxSTARnoseed condition (pSeed = 0). Propagate
-// still MARKS activeSubVertices either way, so r2_coverage_pct stays comparable across both arms
-// and the pair measures how much of the exploration is seeding rather than the Syclop score.
-static const bool R2_ACCEPT[] = {true, false};
+// ---- R2 sub-region seeding free pass ----
+// FIXED OFF. The on/off pair was measured head to head and off is now the permanent condition:
+// every candidate takes the weighted roll, with no unconditional bypass for virgin sub-regions
+// (the KinoPaxSTARnoseed condition, pSeed = 0). Propagate still MARKS activeSubVertices, so
+// r2_coverage_pct remains a valid diagnostic and stays comparable with the earlier two-arm data.
+//
+// Kept as a one-element array rather than deleted: the label still records the condition as
+// "_r2off_", which distinguishes this data both from the two-arm pass and from anything collected
+// before the toggle existed. Put true back in the list to sweep it again.
+static const bool R2_ACCEPT[] = {false};
 static const int NUM_R2_ACCEPT = sizeof(R2_ACCEPT) / sizeof(R2_ACCEPT[0]);
 static const int NUM_WEIGHTS = sizeof(WEIGHTS) / sizeof(WEIGHTS[0]);
 static const int NUM_WEIGHTED_EXPS = sizeof(WEIGHTED_EXPS) / sizeof(WEIGHTED_EXPS[0]);
@@ -76,9 +79,9 @@ static const int NUM_CAPS = sizeof(CAPS) / sizeof(CAPS[0]);
 // acceptance points (fAccept stays unscaled, so reactivation is throttled rather than switched
 // off). Pruning is fixed at the guarded stale-best rule; the memoized ancestor-chain mode was
 // removed, since the guard truncated the chain at the first explorer ancestor.
-// Keeps 0.3, which CleanCost's axis drops -- these two sweep cap alone, so they can afford the
-// extra rung. CAP_DERIVED (0.1) must remain a member of all three lists; cross_check asserts it.
-static const float TRUE_CAPS[] = {0.03f, 0.1f, 0.3f, 1.0f};
+// Trimmed to the two caps that matter -- these sweep cap alone and the high end was measured.
+// CAP_DERIVED (0.1) must remain a member of all three lists; cross_check_grid.py asserts it.
+static const float TRUE_CAPS[] = {0.03f, 0.1f};
 static const int NUM_TRUE_CAPS = sizeof(TRUE_CAPS) / sizeof(TRUE_CAPS[0]);
 static const int TRUE_PRUNE_STALEBEST = 1;
 
@@ -89,7 +92,7 @@ static const int TRUE_PRUNE_STALEBEST = 1;
 // divides by 1 + counterArray^2, cumulative over the run). KPAXCap applies only the cap, still
 // inside propagate on pre-jump scores -- so KPAX / KPAXCap / CleanCost-at-w=1 separates the cap's
 // effect from the kernel boundary's. Matched to TRUE_CAPS so the two cap sweeps line up.
-static const float KPAXCAP_CAPS[] = {0.03f, 0.1f, 0.3f, 1.0f};
+static const float KPAXCAP_CAPS[] = {0.03f, 0.1f};
 static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0]);
 
 // ---- The derived cap ----
@@ -1269,9 +1272,9 @@ int main(int argc, char* argv[])
         // Counted with the same predicate the runner uses, not a closed form -- the previous
         // closed form silently assumed the last WEIGHTS entry was 1.0.
         int cleanPoints = cleanCostPointCount();
-        printf("CleanCost:      r2 x w x k x cap = %d x %d x %d x %d -> %d points (w=1 at k=1 only)"
-               " x %d runs = %d runs\n",
-               NUM_R2_ACCEPT, NUM_WEIGHTS, NUM_WEIGHTED_EXPS, NUM_CAPS, cleanPoints,
+        printf("CleanCost:      r2 OFF (fixed) x w x k x cap = %d x %d x %d -> %d points"
+               " (w=1 at k=1 only) x %d runs = %d runs\n",
+               NUM_WEIGHTS, NUM_WEIGHTED_EXPS, NUM_CAPS, cleanPoints,
                NUM_CLEANCOST_RUNS, cleanPoints * NUM_CLEANCOST_RUNS);
         int truePoints = capAxisPointCount(TRUE_CAPS, NUM_TRUE_CAPS);
         int kcapPoints = capAxisPointCount(KPAXCAP_CAPS, NUM_KPAXCAP_CAPS);

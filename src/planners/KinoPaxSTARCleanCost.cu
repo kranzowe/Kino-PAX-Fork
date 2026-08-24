@@ -32,10 +32,10 @@
 //
 // applied identically at the gate and at Part-B reactivation, with P_syclop = vertexScore + fAccept
 // (the full KPAX rule). Region-best candidates are exempt, and so are candidates that claimed a
-// virgin R2 sub-region -- seeding is now an actual free pass, and h_r2SeedAccept_ turns that pass
-// on or off so its contribution can be measured directly. Knobs: w (1 = KPAX's acceptance,
-// 0 = pure cost-greedy), k (P_cost decay), cap in (0,1] (flat throttle on the final probability,
-// replacing h_acceptCap_), and r2SeedAccept (on/off).
+// virgin R2 sub-region -- though h_r2SeedAccept_ now DEFAULTS FALSE, so that second exemption is
+// off: after measuring both arms head to head, every candidate takes the weighted roll. Knobs:
+// w (1 = KPAX's acceptance, 0 = pure cost-greedy), k (P_cost decay), cap in (0,1] (flat throttle on
+// the final probability, replacing h_acceptCap_), and r2SeedAccept (set true to restore seeding).
 //
 // TWO NORMALIZATION FIXES relative to the first version of this planner:
 //
@@ -140,8 +140,10 @@ KinoPaxSTARCleanCost::KinoPaxSTARCleanCost()
     // 0.9*0.01 + 0.01 = 0.019 that swamped the cost term and made acceptance cost-blind.
     h_probFloor_    = 0.0f;
     h_costScale_    = 0.0f;   // recomputed every iteration in updateFrontier
-    // R2 seeding free pass ON by default, matching KPAX. Set false for the noseed condition.
-    h_r2SeedAccept_ = true;
+    // R2 seeding free pass OFF. Measured on/off head-to-head and off is now the permanent
+    // condition for this planner: acceptance is the weighted roll for every candidate, with no
+    // unconditional bypass for virgin sub-regions. Set true to recover KPAX's seeding behaviour.
+    h_r2SeedAccept_ = false;
     // cap = 1.0 means the weighted rule alone decides. Because the propagate-time filter is gone,
     // this planner admits far more per iteration than KinoPaxSTARWeightedCost at the same w --
     // cap is the knob that buys that throttle back, explicitly and downstream of w rather than
