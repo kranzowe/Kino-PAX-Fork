@@ -637,7 +637,7 @@ __global__ void KinoPaxSTARCOMBO_accept_kernel(uint* activeFrontierNextIdxs, uin
     // distribution. Fixed-point so ~1e6 atomics onto one address commute exactly. Accumulated over
     // ROLLED candidates only, matching the population pTargetAccept is divided across. ---
     atomicAdd(&acceptCounts[KinoPaxSTARCOMBO::ACC_SHAPE_SUM],
-              (unsigned long long)llroundf((float)ACCEPT_CREDIT_SCALE * shape));
+              (unsigned long long)llroundf((float)COMBO_CREDIT_SCALE * shape));
 
     float acceptanceProbability = fminf(shape * pTargetAccept, pMax);
 
@@ -658,7 +658,7 @@ __global__ void KinoPaxSTARCOMBO_accept_kernel(uint* activeFrontierNextIdxs, uin
                     float tot3 = t1 + t2 + t3;
                     if(tot3 > 0.0f)
                         {
-                            const float SC = (float)ACCEPT_CREDIT_SCALE;
+                            const float SC = (float)COMBO_CREDIT_SCALE;
                             atomicAdd(&acceptCounts[KinoPaxSTARCOMBO::ACC_CREDIT_COV],
                                       (unsigned long long)llroundf(SC * t1 / tot3));
                             atomicAdd(&acceptCounts[KinoPaxSTARCOMBO::ACC_CREDIT_COL],
@@ -985,7 +985,7 @@ void KinoPaxSTARCOMBO::updateFrontier()
     // barren iteration cannot reset the correction to a meaningless number.
     if(rolled > 0.0f)
         {
-            float shapeSum = float(h_acceptCounts_[ACC_SHAPE_SUM]) / float(ACCEPT_CREDIT_SCALE);
+            float shapeSum = float(h_acceptCounts_[ACC_SHAPE_SUM]) / float(COMBO_CREDIT_SCALE);
             float meanShape = shapeSum / rolled;
             if(meanShape > 1e-3f) h_meanShapePrev_ = meanShape;
         }

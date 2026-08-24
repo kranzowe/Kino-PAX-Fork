@@ -6,7 +6,15 @@
 // Fixed-point scale for the diagnostic acceptance-credit counters AND for the mean-shape
 // accumulator. Integer addition COMMUTES EXACTLY, which float addition over ~1e6 atomics onto one
 // address does not -- the result would be both lossy and launch-order dependent. Host divides back.
-static const unsigned long long ACCEPT_CREDIT_SCALE = 1000000ULL;
+//
+// PREFIXED, and the prefix is load-bearing. This is a FILE-SCOPE name in a header, so it is not
+// covered by the class-name rename that deriving a planner from another one otherwise handles --
+// and the tuning sweep includes BOTH this header and KinoPaxSTARCleanCost.cuh (which declares its
+// own ACCEPT_CREDIT_SCALE) in one translation unit. An unprefixed copy is a redefinition error in
+// exactly the one .cu that matters, and nowhere else. Same discipline as the kernel prefixes,
+// different mechanism: kernels collide at LINK time under CUDA_SEPARABLE_COMPILATION, header
+// constants collide at COMPILE time in whichever TU pulls in both.
+static const unsigned long long COMBO_CREDIT_SCALE = 1000000ULL;
 
 class KinoPaxSTARCOMBO : public Planner
 {
