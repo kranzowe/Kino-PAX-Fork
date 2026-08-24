@@ -192,6 +192,87 @@ __device__ __forceinline__ float costProbExpGlobal(float m, float cost, float dG
     return fminf(1.0f, __expf(-k * (cost - m) / dGlobal));
 }
 
+// ======================================================================================
+// KinoPaxSTARCOMBO acceptance SHAPE. Three sigmoids, renormalised so a neutral candidate
+// (every delta zero) returns exactly 1.0. Range (0, 2).
+//
+// This returns the shape ONLY -- no budget, no cap. The caller multiplies by a per-iteration
+// pTarget, which is what lets the admission gate and Part-B reactivation share one rule while
+// carrying different budgets over their genuinely different populations (~1e6 candidates vs the
+// whole tree). Folding the budget in here would force one scalar on both and the reactivation
+// flux, which scales with tree size, would swamp admission late in a run.
+//
+// EVERY DELTA IS SIGNED SO d > 0 MEANS UNFAVOURABLE, and every one is divided by a GLOBAL
+// reference. The global scale is load-bearing twice over:
+//   - Raw deltas have no usable range. With NUM_R2_PER_R1 = 64 a one-sub-region coverage
+//     difference is 0.0156, and sigmoid(0.0156) = 0.4961 -- T1 would be the constant 0.5 to three
+//     digits. At the other extreme (cost - mean) is in cost units, O(1e2) under COST_MODE 1, so T3
+//     would saturate to a hard step and k3 would be inert. That is exactly the failure
+//     costProbExpGlobal above was written to escape.
+//   - A LOCAL scale (the region's own spread) pins the typical candidate at d ~ 1 in EVERY region
+//     by construction -- see costProbExpGlobal's comment -- which is what made the old k knob inert.
+//
+// k ENTERS THE ARGUMENT, NOT AS AN EXPONENT. sigmoid(x)^k moves the midpoint to 2^-k and its slope
+// actually FALLS past k = 2 (0.250 at k=1 and k=2, 0.188 at k=3, 0.125 at k=4) -- it squashes
+// rather than sharpens. sigmoid(k*x) holds the midpoint at 0.5 for every k with slope k/4, which is
+// both what "sharper" means and what makes the /1.5 renormalisation exact for ALL k rather than
+// only for k = 1.
+//
+// k_i = 0 pins term i at 0.5, i.e. an exact ablation switch. The tuning grid uses this.
+//
+// COLD START is the caller's job, because the caller holds the raw arrays: pass
+// r1MeanCost = nodeCost when cntCostsR1[r] == 0, and r1CollisionFrac = globalCollisionFrac when
+// counterArray[r] == 0. Both collapse the delta to 0 (neutral).
+// ======================================================================================
+// The three terms individually. Split out from comboShape so the acceptance-credit diagnostic can
+// report WHICH term argued for a node without a second, drifting copy of the delta math.
+__device__ __forceinline__ void comboTerms(float nodeCost, float r1MeanCost, float costScale,
+                                           float r1Coverage, float exploredMeanCoverage,
+                                           float r1CollisionFrac, float globalCollisionFrac,
+                                           float k1, float k2, float k3,
+                                           float* t1, float* t2, float* t3)
+{
+    // T1: prefer regions covered LESS than the explored average -- steer toward the thin places.
+    float d1 = (exploredMeanCoverage > 0.0f) ? (r1Coverage - exploredMeanCoverage) / exploredMeanCoverage : 0.0f;
+    // T2: prefer regions that collide MORE than global -- the narrow-passage drive. The sign is
+    // flipped relative to T1/T3 because the desired direction is inverted. Deliberate, not a typo.
+    float d2 = (globalCollisionFrac > 0.0f) ? (globalCollisionFrac - r1CollisionFrac) / globalCollisionFrac : 0.0f;
+    // T3: prefer nodes cheaper than their OWN region's mean, measured on the GLOBAL cost scale.
+    float d3 = (costScale > 0.0f) ? (nodeCost - r1MeanCost) / costScale : 0.0f;
+
+    *t1 = 1.0f / (1.0f + __expf(k1 * d1));
+    *t2 = 1.0f / (1.0f + __expf(k2 * d2));
+    *t3 = 1.0f / (1.0f + __expf(k3 * d3));
+}
+
+__device__ __forceinline__ float comboShape(float nodeCost, float r1MeanCost, float costScale,
+                                            float r1Coverage, float exploredMeanCoverage,
+                                            float r1CollisionFrac, float globalCollisionFrac,
+                                            float k1, float k2, float k3)
+{
+    float t1, t2, t3;
+    comboTerms(nodeCost, r1MeanCost, costScale, r1Coverage, exploredMeanCoverage, r1CollisionFrac, globalCollisionFrac,
+               k1, k2, k3, &t1, &t2, &t3);
+    return (t1 + t2 + t3) * (1.0f / 1.5f);
+}
+
+// Fan-out for one node from its acceptance shape. Used at BOTH Part A and Part B, replacing KPAX's
+// binary 15/1. repTarget is the host-side per-iteration budget (see the planner's updateFrontier):
+// keeping the BUDGET scalar out of the repeat -- only the shape enters -- is what stops a 5x swing
+// in pTarget from dragging the mean fan-out through the narrow band the kernel1 ceiling allows.
+//
+// THE >= 1 CLAMP IS CORRECTNESS, NOT AN OPTIMISATION. repeatInd emits nothing for count 0, and on
+// the kernel1 path the frontier bit is cleared BY THE EXPANDING BLOCK ITSELF -- so a node with no
+// block is never expanded and never cleared. Its frontier bit stays true forever, inflating
+// h_frontierSize_, and Part B cannot rescue it because its reactivation guard is frontier == 0.
+__device__ __forceinline__ unsigned int repeatFromShape(float shape, float repTarget, float repeatMax)
+{
+    float r = repTarget * shape;
+    if(!(r >= 1.0f)) r = 1.0f;   // NaN-safe: an unordered compare falls through to the floor
+    if(r > repeatMax) r = repeatMax;
+    return (unsigned int)lroundf(r);
+}
+
 // Weighted-sum acceptance: P = min(1, w*P_syclop + (1-w)*P_cost + P_floor).
 // w = 1 recovers the KPAX rule (P_syclop = vertexScore + fAccept) plus the floor; w = 0 is pure
 // cost-greedy. Replaces the multiplicative `costProb * syclop` blend, which collapses to zero in

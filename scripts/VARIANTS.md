@@ -243,6 +243,117 @@ no-op and stays at 1. Control-side refinement rides on `V_R1`. That makes the sw
 (`W_R1` 10→20) and `fine_control` (`V_R1` 3→6) a controlled pair: **identical 216,000 region count,
 refined in workspace vs in velocity.**
 
+### KinoPaxSTARCOMBO  *(new)*
+`KinoPaxSTARCleanCost` with the acceptance **cap replaced by a growth controller**, and the weighted
+sum replaced by three sigmoids over globally-normalized metrics.
+
+The propagate/gate structure is copied verbatim — propagate is a pure candidate producer, one
+acceptance rule runs in `_accept_kernel` after `graph_.updateVertices()`. Two things change.
+
+**1. What the probability is a function of.** `weightedAccept(w, vertexScore + fAccept,
+costProbExpGlobal, floor)` becomes `comboShape` (`helper.cuh`):
+
+```
+shape = [ σ(-k1·d1) + σ(-k2·d2) + σ(-k3·d3) ] / 1.5        in (0, 2), = 1 at the neutral point
+    d1 = (r1Coverage      − exploredMeanCoverage) / exploredMeanCoverage    prefer thin regions
+    d2 = (globalCollFrac  − r1CollisionFrac)      / globalCollFrac          prefer narrow passages
+    d3 = (nodeCost        − r1MeanCost)           / costScale               prefer cheap nodes
+```
+
+Every `d` is signed so `d > 0` means unfavourable, and every one is divided by a **global**
+reference. Both halves of that are load-bearing. Raw deltas have no usable range: with
+`NUM_R2_PER_R1 = 64` a one-sub-region coverage difference is 0.0156 and `σ(0.0156) = 0.4961`, so T1
+would be a constant, while `(cost − mean)` is O(10²) in cost units so T3 would saturate to a step. A
+*local* scale is worse still — dividing by the region's own spread pins the typical candidate at
+`d ≈ 1` in every region by construction, which is what made the old `k` knob inert (see
+`costProbExpGlobal`).
+
+**`k` is a gain in the argument, not an exponent.** `σ(x)^k` moves the midpoint to `2^-k` and its
+slope actually *falls* past `k = 2`; `σ(k·x)` holds the midpoint at 0.5 for every `k`. That is what
+makes the `/1.5` renormalization exact for all `k` rather than only for `k = 1`. `k_i = 0` pins term
+*i* at 0.5 — an exact ablation switch, which is how the sweep isolates the three terms.
+
+`h_costWeight_`, `h_costPruneExp_`, `h_probFloor_` are gone. So is `h_fAccept_`: reactivation
+pressure is now set explicitly by `h_reactFrac_` rather than by a decaying nudge on a term that no
+longer exists.
+
+**2. How it is scaled — `h_acceptCapMul_` is gone.** A cap is a constant, but the probability that
+hits a given growth rate is not:
+
+```
+pTargetAccept = (wantThisIter − exempt) / ((candidates − exempt) · meanShape)
+```
+
+`candidates` falls over a run as the tree buffer fills and the fan-out is forced down, so the
+required value **rises ~5×**. That is why every earlier variant needed a hand-swept cap and why no
+single value was ever right at both ends — the empirical 0.03 is this expression evaluated near the
+end of a run. Here it is computed from measured quantities every iteration: feedforward and
+deadbeat, no gain to tune.
+
+**Two budget scalars, not one.** The gate judges ~10⁶ candidates; Part B judges the whole tree.
+CleanCost shares one scalar only because its P is ~1e-4, so reactivation is a trickle; at the P this
+planner needs, a shared scalar would reactivate more nodes per iteration than the entire growth
+target and the frontier would run away. The *shape* is shared — that is the CleanCost invariant that
+matters — the budget cannot be.
+
+**Fan-out replaces the binary 15/1 at both sites.** `rep = clamp(repTarget · shape, 1, repeatMax)`,
+where `repTarget` comes from `h_selectivity_` (candidates examined per node kept) and is then
+clamped by the kernel1 ceiling — `frontierRepeatSize · 32 ≤ MAX_TREE_SIZE − treeSize`, at 0.8
+margin. Taking that ceiling as a `min` rather than as the target is deliberate: filling it would
+spend ~0.8× the remaining buffer on propagation every iteration purely because the buffer is empty,
+2–3× the work for the same growth. Because it is enforced, **staying on the kernel1 path is an
+invariant rather than a tuning outcome**, until `repTarget` hits its floor of 1 at ~88% of the tree.
+
+Using the *shape* rather than P keeps the budget scalar out of the fan-out — `pTarget` swings 5×
+over a run and would drag the mean repeat through the narrow usable band. Per-node yield still goes
+as `shape²`, since the shape gates admission *and* fan-out; `h_meanShapePrev_` (one fixed-point
+atomic in the accept kernel) measures `E[shape]` and both budget scalars divide by it.
+
+**Knobs.** Shape: `h_kCoverage_` / `h_kCollision_` / `h_kCost_` (default 4.0, 0 = ablate). Budget:
+`h_selectivity_` (120 — the measured candidates-per-admission of a well-tuned CleanCost run),
+`h_reactFrac_` (0.1), `h_growthIters_` / `h_growthExp_` (schedule; `exp = 1` is linear), and the
+clamps `h_repeatMax_` (15) / `h_pMax_` (0.5). **None of them is a scale factor on a probability** —
+each describes what you want or is a safety limit.
+
+**R2 seeding is removed outright**, not switched off: `h_r2SeedAccept_`, `d_frontierNextFresh_` and
+the accept kernel's second exemption are all gone. Propagate still *marks* `activeSubVertices`, so
+`r2_coverage_pct` and the new `d_regionCoverage_` stay valid; a virgin sub-region simply no longer
+buys admission. The `ACC_SEED` counter slot is retained and permanently 0 so the CSV schema stays
+comparable with CleanCost's.
+
+**The min-cost exemption is kept** as an unconditional free pass at both acceptance points —
+optimality convergence depends on every region's best staying in the frontier. Exempt nodes get the
+*neutral* shape for fan-out, not the maximum: ~4.5e3 exemptions at `repeatMax` would be the whole
+propagation budget on its own, and there is one region-best per explored region.
+
+**Two bugs fixed relative to CleanCost, both found by auditing the data flow rather than by a run.**
+`activeFrontierRepeatCount` is zeroed wholesale each iteration and Part B's reactivation is gated on
+`frontier[treeIdx] == 0`, so a node that ends an iteration with `frontier == true` and count 0 is
+never expanded (kernel1 clears the bit only from the expanding block) and never re-counted — the bit
+sticks true forever, inflating `h_frontierSize_`, and the same guard rejects it on every future
+iteration. COMBO adds an explicit repair arm. Separately, `resetPlanner` now zeroes
+`d_acceptCounts_` / `h_acceptCounts_`, which CleanCost never did — a planner object reused across
+runs carried the previous run's final counts into iteration 1, and here those counts feed the
+controller.
+
+**Additive `Graph` change, shared by every planner:** `d_regionCoverage_` materializes the per-region
+coverage `computeVertexScores_kernel` already computed as a local and discarded, and `h_nActive_`
+keeps the count the dynamic score floor already made. The score still consumes the same local the
+same way, so every existing planner is bit-identical. `IsActiveRegion` moved from file-local in
+`Graph.cu` to `Graph.cuh` so planners reduce over the same active set rather than defining a second
+copy.
+
+**Known exposure worth watching.** Dropping `vertexScores` from acceptance also drops Syclop's
+`1/(1 + counterArray²)`, the only term that penalized an over-sampled region. Coverage (T1) is the
+intended replacement — but coverage is cumulative and monotone toward 1.0, so once it saturates T1
+goes constant and that penalty is gone with it. `explored_mean_coverage` is logged per iteration
+precisely to show when. The lever if it matters is config, not code: `W_R2_LENGTH`/`V_R2_LENGTH`
+2→3 gives 729 sub-regions per R1 instead of 64.
+
+Swept by `examples/gpu/kinopaxstar_combo_tuning_sweep.cu` (profile × gain, 13 points; the
+all-gains-zero `none` point is the control — shape ≡ 1, so it measures the growth controller with no
+metric steering at all). Opts into the dynamic score floor. Carries no retroactive pruning.
+
 ### KinoPaxSTARTrue  *(new)*
 `KinoPaxSTARNoGoalBias` plus **cost-guarded** retroactive pruning. A node is pruned when it was
 admitted *because* it was its region's minimum and no longer is; nodes the Syclop exploration roll
@@ -357,7 +468,8 @@ benefit depends on seeding still supplying coverage underneath it.
 | KinoPaxSTARNoGoalBias | ✔ | 1 | ✔ | — | ✔ |
 | KinoPaxSTARNoPruneNoSpatialHash | ✔ | 1 | ✔ | — | — |
 | KinoPaxSTAR | ✔ | 1 | ✔ | goal-progress | ✔ |
-| KinoPaxSTARCleanCost | weighted (`h_costWeight_`), capped (`h_acceptCapMul_`) | 1 (true free pass) | ✔ | — | ✔ |
+| KinoPaxSTARCleanCost | weighted (`h_costWeight_`), capped (`h_acceptCapMul_`) | 0 by default (`h_r2SeedAccept_`; true free pass when on) | ✔ | — | ✔ |
+| KinoPaxSTARCOMBO | 3 sigmoids (`h_kCoverage_`/`h_kCollision_`/`h_kCost_`), budget-controlled (no cap) | 0 (removed) | ✔ | — | ✔ |
 | KinoPaxSTARTrue | capped (`h_syclopCap_`) | 1 | ✔ | cost-guarded | ✔ |
 | KinoPaxSTARTrueWeightedCost | weighted (`h_costWeight_`) | 1 | ✔ | cost-guarded | ✔ |
 | KinoPaxSTARcostprune | capped (`h_acceptCap_`) | 1 | ✔ | cost | ✔ |

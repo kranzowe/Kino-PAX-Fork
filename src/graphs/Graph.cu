@@ -2,13 +2,7 @@
 #include "config/config.h"
 #include <filesystem>
 
-// Predicate for counting active regions (validCounterArray[r] > 0) when the dynamic score floor is
-// enabled. A named functor rather than a thrust placeholder so it compiles the same way under every
-// nvcc this repo targets.
-struct IsActiveRegion
-{
-    __host__ __device__ bool operator()(int v) const { return v > 0; }
-};
+// IsActiveRegion now lives in Graph.cuh -- planners reduce over the same active set.
 
 Graph::Graph(const float ws)
 {
@@ -24,6 +18,7 @@ Graph::Graph(const float ws)
     d_validCounterArray_     = thrust::device_vector<int>(NUM_R1_REGIONS);
     d_counterArray_          = thrust::device_vector<int>(NUM_R1_REGIONS);
     d_vertexScoreArray_      = thrust::device_vector<float>(NUM_R1_REGIONS);
+    d_regionCoverage_        = thrust::device_vector<float>(NUM_R1_REGIONS);
     d_activeVerticesScanIdx_ = thrust::device_vector<int>(NUM_R1_REGIONS);
     d_activeSubVertices_     = thrust::device_vector<int>(NUM_R2_REGIONS);
     d_minValueInRegion_      = thrust::device_vector<float>(NUM_R1_REGIONS * STATE_DIM);
@@ -33,6 +28,7 @@ Graph::Graph(const float ws)
     d_validCounterArray_ptr_ = thrust::raw_pointer_cast(d_validCounterArray_.data());
     d_counterArray_ptr_      = thrust::raw_pointer_cast(d_counterArray_.data());
     d_vertexScoreArray_ptr_  = thrust::raw_pointer_cast(d_vertexScoreArray_.data());
+    d_regionCoverage_ptr_    = thrust::raw_pointer_cast(d_regionCoverage_.data());
     d_activeSubVertices_ptr_ = thrust::raw_pointer_cast(d_activeSubVertices_.data());
     d_minValueInRegion_ptr_  = thrust::raw_pointer_cast(d_minValueInRegion_.data());
     d_partialSums_ptr_       = thrust::raw_pointer_cast(d_partialSums_.data());
@@ -218,7 +214,7 @@ void Graph::updateVertices()
 
     // --- Compute raw per-region scores (one thread per region; 0 for inactive regions). ---
     computeVertexScores_kernel<<<blocks, h_blockSize_>>>(d_activeSubVertices_ptr_, d_validCounterArray_ptr_, d_counterArray_ptr_,
-                                                         d_vertexScoreArray_ptr_);
+                                                         d_vertexScoreArray_ptr_, d_regionCoverage_ptr_);
 
     // --- Sum scores -> totalScore. thrust::reduce is correct for any region count, unlike the
     //     old single-block cub reduction which launched > 1024 threads/block for large grids. ---
@@ -230,8 +226,10 @@ void Graph::updateVertices()
     //     score it is meant to floor. Skipped entirely in legacy mode, so KPAX pays no extra pass. ---
     if(h_dynamicScoreFloor_)
         {
-            int nActive = (int)thrust::count_if(d_validCounterArray_.begin(), d_validCounterArray_.end(), IsActiveRegion());
-            h_scoreFloor_ = (nActive > 0) ? 1.0f / (float)nActive : 1.0f;
+            // Kept as a member: it is also the denominator for a mean over EXPLORED regions, which
+            // KinoPaxSTARCOMBO needs. Computing it twice is how two definitions of "active" drift.
+            h_nActive_    = (int)thrust::count_if(d_validCounterArray_.begin(), d_validCounterArray_.end(), IsActiveRegion());
+            h_scoreFloor_ = (h_nActive_ > 0) ? 1.0f / (float)h_nActive_ : 1.0f;
         }
     else
         {
@@ -249,7 +247,8 @@ void Graph::updateVertices()
 // --- Calculates the raw Syclop desirability score for each region (0 for inactive regions).
 //     The total is summed separately with thrust::reduce in Graph::updateVertices. ---
 __global__ void
-computeVertexScores_kernel(int* activeSubVertices, int* validCounterArray, int* counterArray, float* vertexScores)
+computeVertexScores_kernel(int* activeSubVertices, int* validCounterArray, int* counterArray, float* vertexScores,
+                           float* regionCoverage)
 {
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
     if(tid >= NUM_R1_REGIONS) return;
@@ -266,6 +265,10 @@ computeVertexScores_kernel(int* activeSubVertices, int* validCounterArray, int* 
                 }
             coverage /= NUM_R2_PER_R1;
 
+            // --- Publish the coverage the score is about to consume. Additive only: the score line
+            //     below still reads the same local, so every existing planner is unchanged. ---
+            regionCoverage[tid] = coverage;
+
             // --- From OMPL Syclop ref: https://ompl.kavrakilab.org/classompl_1_1control_1_1Syclop.html---
             float freeVol = (EPSILON + numValidSamples) / (EPSILON + numValidSamples + (counterArray[tid] - numValidSamples)) * W_R1_VOL;
             vertexScores[tid] = pow(freeVol, 4) / ((1 + coverage) * (1 + pow(counterArray[tid], 2)));
@@ -273,6 +276,10 @@ computeVertexScores_kernel(int* activeSubVertices, int* validCounterArray, int* 
     else
         {
             vertexScores[tid] = 0.0f;  // inactive region contributes nothing to totalScore
+            // MUST write: an inactive region that was active earlier would otherwise keep a stale
+            // coverage, which then poisons any sum over the array. (Regions cannot currently go
+            // back to inactive, but nothing enforces that and the write is free.)
+            regionCoverage[tid] = 0.0f;
         }
 }
 
