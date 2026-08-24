@@ -3,6 +3,11 @@
 #include "graphs/Graph.cuh"
 #include "collisionCheck/spatialHash.cuh"
 
+// Fixed-point scale for the fractional acceptance-credit counters. Each accepted node splits one
+// unit of credit across the acceptance terms; the shares are accumulated as
+// llroundf(share * ACCEPT_CREDIT_SCALE) so the atomics are exact integer adds. Host divides back.
+static const unsigned long long ACCEPT_CREDIT_SCALE = 1000000ULL;
+
 class KinoPaxSTARCleanCost : public Planner
 {
 public:
@@ -64,6 +69,41 @@ public:
     // A bool rather than KinoPaxSTARcostprunenoseed's float h_pSeed_ -- if the annealed middle
     // ground is wanted later, widen this to a probability and roll against it.
     bool h_r2SeedAccept_;
+
+    // ================== ACCEPTANCE-REASON INSTRUMENTATION (diagnostic only) ==================
+    // A candidate enters the frontier through one of three doors -- the region-best exemption, the
+    // R2 seeding exemption, or the weighted roll -- and nothing in the normal output distinguishes
+    // them. These counters do, for kinopaxstar_accept_breakdown.cu.
+    //
+    // OFF BY DEFAULT: the tuning sweep pays only one kernel-wide uniform branch (no divergence),
+    // so its behaviour and timing are unchanged.
+    bool h_countAcceptReasons_;
+
+    // Slot layout for d_acceptCounts_ / h_acceptCounts_.
+    //   MIN_COST, SEED, ROLL_ACCEPTED  -- plain node counts
+    //   CREDIT_*                       -- FRACTIONAL credit, fixed-point at ACCEPT_CREDIT_SCALE
+    //
+    // The weighted roll is a single Bernoulli draw against w*pSyclop + (1-w)*pCost + probFloor, so
+    // "accepted by syclop" is not a distinction the rule makes. Each accepted node instead splits
+    // one unit of credit in proportion to each term's share, which is RNG-independent.
+    //
+    // Fixed-point rather than float because integer addition COMMUTES EXACTLY: with ~1e6 atomics
+    // onto one address a float accumulator would be both lossy and order-dependent, which is
+    // useless for a diagnostic. Range is safe: 3e6 candidates * 1e6 ~ 3e12, far inside 2^64.
+    enum AcceptSlot { ACC_MIN_COST = 0, ACC_SEED, ACC_ROLL, ACC_CREDIT_SYCLOP,
+                      ACC_CREDIT_COST, ACC_CREDIT_FLOOR, ACC_NUM_SLOTS };
+    thrust::device_vector<unsigned long long> d_acceptCounts_;
+    unsigned long long* d_acceptCounts_ptr_;
+    unsigned long long  h_acceptCounts_[ACC_NUM_SLOTS];   // mirrored back each iteration when on
+
+    // Two denominators the planner already knows and used to discard. Always recorded (free).
+    //   h_propAttempted_     propagation attempts this iteration, INCLUDING collisions. Set inside
+    //                        propagateFrontier because only it knows which of the two launch paths
+    //                        ran; re-deriving that in the benchmark would duplicate fragile logic.
+    //   h_candidatesPreGate_ collision-free candidates the accept kernel judges, captured before
+    //                        the post-gate re-scan overwrites h_frontierNextSize_.
+    uint h_propAttempted_;
+    uint h_candidatesPreGate_;
 
     float* h_controlPathsToGoal_;
 
@@ -153,7 +193,8 @@ __global__ void KinoPaxSTARCleanCost_accept_kernel(uint* activeFrontierNextIdxs,
                                                   bool* frontierNext, curandState* randomSeeds,
                                                   float* vertexScores, float fAccept,
                                                   float costWeight, float costPruneExp, float probFloor,
-                                                  float acceptCapMul, float costScale, bool r2SeedAccept);
+                                                  float acceptCapMul, float costScale, bool r2SeedAccept,
+                                                  bool countReasons, unsigned long long* acceptCounts);
 
 /***************************/
 /* FRONTIER UPDATE KERNEL */

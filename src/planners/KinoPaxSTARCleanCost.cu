@@ -90,6 +90,7 @@ KinoPaxSTARCleanCost::KinoPaxSTARCleanCost()
     d_unexploredSampleCosts_  = thrust::device_vector<float>(MAX_TREE_SIZE);
     d_goalSet_                = thrust::device_vector<bool>(MAX_TREE_SIZE);
     d_frontierNextFresh_      = thrust::device_vector<bool>(MAX_TREE_SIZE);
+    d_acceptCounts_           = thrust::device_vector<unsigned long long>(ACC_NUM_SLOTS, 0ULL);
     d_goalSetIdxs_            = thrust::device_vector<uint>(MAX_TREE_SIZE);
     d_goalSetScanIdx_         = thrust::device_vector<uint>(MAX_TREE_SIZE);
     d_iterations_             = thrust::device_vector<int>(MAX_TREE_SIZE);
@@ -119,6 +120,7 @@ KinoPaxSTARCleanCost::KinoPaxSTARCleanCost()
     d_goalSetIdxs_ptr_            = thrust::raw_pointer_cast(d_goalSetIdxs_.data());
     d_goalSetScanIdx_ptr_         = thrust::raw_pointer_cast(d_goalSetScanIdx_.data());
     d_frontierNextFresh_ptr_      = thrust::raw_pointer_cast(d_frontierNextFresh_.data());
+    d_acceptCounts_ptr_           = thrust::raw_pointer_cast(d_acceptCounts_.data());
     d_iterations_ptr_             = thrust::raw_pointer_cast(d_iterations_.data());
     d_pathCosts_ptr_              = thrust::raw_pointer_cast(d_pathCosts_.data());
     d_controlPathsToGoal_ptr_     = thrust::raw_pointer_cast(d_controlPathsToGoal_.data());
@@ -144,6 +146,11 @@ KinoPaxSTARCleanCost::KinoPaxSTARCleanCost()
     // condition for this planner: acceptance is the weighted roll for every candidate, with no
     // unconditional bypass for virgin sub-regions. Set true to recover KPAX's seeding behaviour.
     h_r2SeedAccept_ = false;
+    // Acceptance-reason counting OFF: diagnostic only, see kinopaxstar_accept_breakdown.cu.
+    h_countAcceptReasons_ = false;
+    h_propAttempted_      = 0;
+    h_candidatesPreGate_  = 0;
+    for(int i = 0; i < ACC_NUM_SLOTS; i++) h_acceptCounts_[i] = 0ULL;
     // cap = 1.0 means the weighted rule alone decides. Because the propagate-time filter is gone,
     // this planner admits far more per iteration than KinoPaxSTARWeightedCost at the same w --
     // cap is the knob that buys that throttle back, explicitly and downstream of w rather than
@@ -367,6 +374,9 @@ void KinoPaxSTARCleanCost::propagateFrontier(float* d_obstacles_ptr, uint h_obst
               h_propIterations_, graph_.d_minValueInRegion_ptr_,
               d_treeSampleCosts_ptr_, d_minCostsR1_ptr_, d_sumCostsR1_ptr_, d_cntCostsR1_ptr_,
               d_frontierNextXR1s_ptr_, d_frontierNextFresh_ptr_, d_unexploredSampleCosts_ptr_, h_spatialHashGrid_);
+
+            // kernel2 launches h_frontierRepeatSize_ * h_propIterations_ threads, one candidate each.
+            h_propAttempted_ = h_frontierRepeatSize_ * (uint)h_propIterations_;
         }
     else
         {
@@ -377,6 +387,9 @@ void KinoPaxSTARCleanCost::propagateFrontier(float* d_obstacles_ptr, uint h_obst
               graph_.d_minValueInRegion_ptr_,
               d_treeSampleCosts_ptr_, d_minCostsR1_ptr_, d_sumCostsR1_ptr_, d_cntCostsR1_ptr_,
               d_frontierNextXR1s_ptr_, d_frontierNextFresh_ptr_, d_unexploredSampleCosts_ptr_, h_spatialHashGrid_);
+
+            // kernel1 launches one block of h_activeBlockSize_ threads per repeat entry.
+            h_propAttempted_ = h_frontierRepeatSize_ * h_activeBlockSize_;
         }
 }
 
@@ -532,7 +545,8 @@ __global__ void KinoPaxSTARCleanCost_accept_kernel(uint* activeFrontierNextIdxs,
                                                   bool* frontierNext, curandState* randomSeeds,
                                                   float* vertexScores, float fAccept,
                                                   float costWeight, float costPruneExp, float probFloor,
-                                                  float acceptCapMul, float costScale, bool r2SeedAccept)
+                                                  float acceptCapMul, float costScale, bool r2SeedAccept,
+                                                  bool countReasons, unsigned long long* acceptCounts)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if(tid >= frontierNextSize) return;
@@ -546,7 +560,11 @@ __global__ void KinoPaxSTARCleanCost_accept_kernel(uint* activeFrontierNextIdxs,
     // frontier). LOAD-BEARING, and must not be folded into the formula: at cost == m, P_cost == 1
     // but P_combined == cap*min(1, w*P_syclop + (1-w) + floor), which is below 1 whenever
     // P_syclop < 1 or cap < 1 -- so a region best could be rejected. ---
-    if(cost <= m) return;
+    if(cost <= m)
+        {
+            if(countReasons) atomicAdd(&acceptCounts[KinoPaxSTARCleanCost::ACC_MIN_COST], 1ULL);
+            return;
+        }
 
     // --- Exemption 2: this thread claimed a virgin R2 sub-region. In KinoPaxSTARWeightedCost the
     // seeding pass only cleared the propagate-time filter and then still faced the weighted roll,
@@ -556,7 +574,11 @@ __global__ void KinoPaxSTARCleanCost_accept_kernel(uint* activeFrontierNextIdxs,
     // Gated by r2SeedAccept: with it off, a fresh-sub-region candidate takes the same weighted roll
     // as everything else (the KinoPaxSTARnoseed condition, pSeed = 0). Propagate still MARKS the
     // sub-region either way, so r2_coverage_pct stays comparable across both modes. ---
-    if(r2SeedAccept && frontierNextFresh[idx]) return;
+    if(r2SeedAccept && frontierNextFresh[idx])
+        {
+            if(countReasons) atomicAdd(&acceptCounts[KinoPaxSTARCleanCost::ACC_SEED], 1ULL);
+            return;
+        }
 
     // --- Everything else: weighted sum of the Syclop and cost probabilities, throttled by cap.
     // costScale is GLOBAL while m is this region's own minimum -- see costProbExpGlobal. ---
@@ -567,6 +589,29 @@ __global__ void KinoPaxSTARCleanCost_accept_kernel(uint* activeFrontierNextIdxs,
     curandState seed = randomSeeds[idx];
     bool accept      = curand_uniform(&seed) < acceptanceProbability;
     randomSeeds[idx] = seed;
+
+    // --- Diagnostic: split one unit of credit across the terms that argued for this node.
+    // Shares are taken BEFORE weightedAccept's min(1,.) clamp and before acceptCapMul, because both
+    // scale the terms equally and therefore cancel in the ratio -- the credit measures WHICH TERM
+    // wanted the node, independent of the throttle. Fixed-point so the atomics commute exactly. ---
+    if(accept && countReasons)
+        {
+            atomicAdd(&acceptCounts[KinoPaxSTARCleanCost::ACC_ROLL], 1ULL);
+
+            float sSyc = costWeight * pSyclop;
+            float sCst = (1.0f - costWeight) * pCost;
+            float tot  = sSyc + sCst + probFloor;
+            if(tot > 0.0f)
+                {
+                    const float SC = (float)ACCEPT_CREDIT_SCALE;
+                    atomicAdd(&acceptCounts[KinoPaxSTARCleanCost::ACC_CREDIT_SYCLOP],
+                              (unsigned long long)llroundf(SC * sSyc / tot));
+                    atomicAdd(&acceptCounts[KinoPaxSTARCleanCost::ACC_CREDIT_COST],
+                              (unsigned long long)llroundf(SC * sCst / tot));
+                    atomicAdd(&acceptCounts[KinoPaxSTARCleanCost::ACC_CREDIT_FLOOR],
+                              (unsigned long long)llroundf(SC * probFloor / tot));
+                }
+        }
 
     if(!accept) frontierNext[idx] = false;
 }
@@ -696,6 +741,12 @@ void KinoPaxSTARCleanCost::updateFrontier()
     h_frontierNextSize_ = d_frontierScanIdx_[MAX_TREE_SIZE - 1];
     findInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_frontierNext_ptr_, d_frontierScanIdx_ptr_, d_activeFrontierIdxs_ptr_);
 
+    // Collision-free candidates the accept kernel is about to judge. Captured here because the
+    // post-gate re-scan below overwrites h_frontierNextSize_ with the survivors.
+    h_candidatesPreGate_ = h_frontierNextSize_;
+    if(h_countAcceptReasons_)
+        thrust::fill(d_acceptCounts_.begin(), d_acceptCounts_.end(), 0ULL);
+
     // --- Compute fAccept (KPAX re-activation boost) ---
     // Must precede the accept kernel: the weighted rule needs P_syclop = vertexScore + fAccept at
     // both acceptance points and the gate is the first of them. treeAddSize is therefore based on
@@ -722,7 +773,12 @@ void KinoPaxSTARCleanCost::updateFrontier()
       d_frontierNextXR1s_ptr_, d_frontierNextFresh_ptr_,
       d_unexploredSampleCosts_ptr_, d_frontierNext_ptr_, d_randomSeeds_ptr_,
       graph_.d_vertexScoreArray_ptr_, h_fAccept_,
-      h_costWeight_, h_costPruneExp_, h_probFloor_, h_acceptCapMul_, h_costScale_, h_r2SeedAccept_);
+      h_costWeight_, h_costPruneExp_, h_probFloor_, h_acceptCapMul_, h_costScale_, h_r2SeedAccept_,
+      h_countAcceptReasons_, d_acceptCounts_ptr_);
+
+    if(h_countAcceptReasons_)
+        cudaMemcpy(h_acceptCounts_, d_acceptCounts_ptr_,
+                   ACC_NUM_SLOTS * sizeof(unsigned long long), cudaMemcpyDeviceToHost);
 
     // --- Re-scan after the accept kernel ---
     thrust::exclusive_scan(d_frontierNext_.begin(), d_frontierNext_.end(), d_frontierScanIdx_.begin(), 0, thrust::plus<uint>());

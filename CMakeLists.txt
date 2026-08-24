@@ -226,6 +226,17 @@ target_link_libraries(KinoPaxStarComparison
     Python3::NumPy
 )
 
+add_executable(KinoPaxStarAcceptBreakdown examples/gpu/kinopaxstar_accept_breakdown.cu)
+target_link_libraries(KinoPaxStarAcceptBreakdown
+    PUBLIC KPAX_lib
+    ${CUDA_LIBRARIES}
+    ${Boost_LIBRARIES}
+    ${EIGEN3_LIBRARIES}
+    yaml-cpp
+    Python3::Python
+    Python3::NumPy
+)
+
 add_executable(TreeGrowthDump examples/gpu/tree_growth_dump.cu)
 target_link_libraries(TreeGrowthDump
     PUBLIC KPAX_lib
@@ -253,6 +264,7 @@ set_target_properties(KinoPaxStarLargeBenchmark PROPERTIES CUDA_SEPARABLE_COMPIL
 set_target_properties(KinoPaxStarCostBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(KinoPaxStarCostTuningSweep PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(KinoPaxStarComparison PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(KinoPaxStarAcceptBreakdown PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(TreeGrowthDump PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
 
