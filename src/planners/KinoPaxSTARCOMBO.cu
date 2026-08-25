@@ -37,7 +37,9 @@
 //
 //    The fan-out follows the same logic: repTarget comes from h_selectivity_ (candidates examined
 //    per node kept) and is then clamped by the kernel1 ceiling, which makes "never drop onto the
-//    slow kernel2 propagate path" an INVARIANT rather than a tuning outcome.
+//    slow kernel2 propagate path" hold for as long as it CAN hold. Not forever: rep >= 1 is a
+//    correctness clamp and the region-best reactivation is unconditional, so F >= nActive and
+//    kernel2 is forced once 32*F > remaining -- see the note at the repTarget block.
 //
 //    TWO budget scalars, not one. The gate judges ~1e6 candidates; Part B judges the whole tree.
 //    CleanCost shares one scalar only because its P is ~1e-4; at the P this planner needs, a shared
@@ -1014,17 +1016,51 @@ void KinoPaxSTARCOMBO::updateFrontier()
     // spend ~0.8x the whole remaining buffer on propagation every iteration purely because the
     // buffer happens to be empty, which is 2-3x the work for the same growth.
     //
-    // Because the ceiling is enforced here, staying on the kernel1 path is an INVARIANT rather than
-    // a tuning outcome -- until repTarget hits its floor of 1, which for a steady frontier is past
-    // ~88% of the tree. It also keeps sum(rep) far below MAX_TREE_SIZE, so repeatInd never
-    // truncates (truncation would silently drop the HIGHEST tree indices, i.e. the newest nodes).
+    // The ceiling keeps propagate on kernel1 for as long as it CAN be kept there -- but not
+    // indefinitely, and it is worth being precise about the limit rather than claiming an
+    // invariant that does not hold. Kernel2 fires when frontierRepeatSize * 32 > remaining, and
+    // every frontier node has rep >= 1 (a hard correctness clamp, see repeatFromShape), so
+    // frontierRepeatSize >= F. The region-best guarantee then puts a floor under F itself:
+    // F >= nActive, up to NUM_R1_REGIONS. So kernel2 becomes UNAVOIDABLE once 32*F > remaining, no
+    // matter what repTarget does.
+    //
+    // For the sweep config (27k regions, MAX_TREE_SIZE 3e6, want 10k/iter, reactFrac 0.1): F
+    // settles near 10k + nActive + 1k, so once nActive saturates F ~ 38k, 32*F ~ 1.22e6, and
+    // kernel2 is forced at remaining < 1.22e6 -- about 59% of the tree, not the ~88% an earlier
+    // version of this comment claimed on a frontier estimate that omitted nActive entirely.
+    // Pushing it further means shrinking F, i.e. revisiting the region-best guarantee or the R1
+    // grid size -- a design decision, not a tuning one.
+    //
+    // The ceiling also keeps sum(rep) far below MAX_TREE_SIZE, so repeatInd never truncates
+    // (truncation would silently drop the HIGHEST tree indices, i.e. the newest nodes).
     // nu is MEASURED, not estimated. 1 - globalCollisionFrac is the run-cumulative collision-free
     // fraction, already reduced from the counter arrays above, so it costs nothing extra and is
     // smoother than a single-iteration ratio (which the measured data says is stationary anyway).
     // 0.9 is only the degenerate-case fallback.
     float nu = (h_globalCollisionFrac_ > 0.0f && h_globalCollisionFrac_ < 1.0f)
                  ? (1.0f - h_globalCollisionFrac_) : 0.9f;
-    float fNext = fmaxf(1.0f, float(h_frontierNextSize_) + h_reactFrac_ * wantThisIter);
+    // F_next has to count EVERY node this update kernel is about to place in the frontier:
+    //   Part A         h_frontierNextSize_           admitted candidates (exact, post-gate)
+    //   Part B rolled  h_reactFrac_ * wantThisIter    the budgeted reactivation
+    //   Part B best    graph_.h_nActive_              THE UNCONDITIONAL REGION-BEST GUARANTEE
+    //
+    // THE THIRD TERM IS THE ONE THIS ORIGINALLY MISSED, AND IT DOMINATES. Part B's best-per-region
+    // branch fires with no roll and no budget -- one node per explored region, up to
+    // NUM_R1_REGIONS -- so it is outside h_reactFrac_ entirely. Omitting it made fNext 2-4x too
+    // small as soon as regions started being discovered; repTarget then came out 2-4x too large,
+    // frontierRepeatSize * 32 overran the remaining tree buffer, and propagate dropped onto the
+    // slow kernel2 path after only a handful of iterations. The "kernel1 holds to ~88%" figure that
+    // was derived alongside this line assumed a frontier of ~11k and is wrong for the same reason:
+    // with the region-best guarantee, F >= nActive, and kernel1 can only hold while 32*F <=
+    // remaining. See the note in updateFrontier's header comment.
+    //
+    // h_nActive_ is an UPPER bound (a region can have samples but no accepted node, so no best node
+    // yet), and over-estimating F is the safe direction -- it shrinks repTarget, which is what
+    // keeps propagate on kernel1. h_frontierSize_ is last iteration's REALISED frontier, a
+    // measurement rather than an estimate, so taking the max lets the measurement catch whatever
+    // the estimate still under-counts.
+    float fEstimate = float(h_frontierNextSize_) + float(graph_.h_nActive_) + h_reactFrac_ * wantThisIter;
+    float fNext     = fmaxf(1.0f, fmaxf(fEstimate, float(h_frontierSize_)));
     // h_meanShapePrev_ was just refreshed above, so this is THIS iteration's mean -- which is the
     // right one, because the shapes multiplying repTarget belong to the candidates this update
     // kernel is about to place. It is a mean over ROLLED candidates, while Part A's population is

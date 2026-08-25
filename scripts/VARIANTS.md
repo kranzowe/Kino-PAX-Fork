@@ -302,7 +302,14 @@ clamped by the kernel1 ceiling — `frontierRepeatSize · 32 ≤ MAX_TREE_SIZE �
 margin. Taking that ceiling as a `min` rather than as the target is deliberate: filling it would
 spend ~0.8× the remaining buffer on propagation every iteration purely because the buffer is empty,
 2–3× the work for the same growth. Because it is enforced, **staying on the kernel1 path is an
-invariant rather than a tuning outcome**, until `repTarget` hits its floor of 1 at ~88% of the tree.
+hold for as long as it can hold** — but not forever. `rep ≥ 1` is a correctness clamp so
+`frontierRepeatSize ≥ F`, and Part B's *unconditional* region-best reactivation puts a floor under
+`F` itself (`F ≥ nActive`, up to `NUM_R1_REGIONS`). Kernel2 is therefore forced once `32·F >
+remaining` regardless of `repTarget` — roughly **59%** of the tree in the sweep config, not the
+~88% an earlier draft claimed from a frontier estimate that omitted `nActive`. `fNext` must count
+that region-best term or `repTarget` comes out 2–4× too large and kernel2 fires within a handful of
+iterations; pushing the crossover later means shrinking `F`, i.e. revisiting the region-best
+guarantee or the R1 grid size.
 
 Using the *shape* rather than P keeps the budget scalar out of the fan-out — `pTarget` swings 5×
 over a run and would drag the mean repeat through the narrow usable band. Per-node yield still goes

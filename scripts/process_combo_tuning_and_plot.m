@@ -250,6 +250,12 @@ numRunsPer = 50 * ones(1, numel(plannerNames));   % max runs searched (missing f
 MAX_FLOAT_THRESH = 1e30;   % best_cost sentinel (MAX_FLOAT / INFINITY) -> NaN
 numTimeSamples   = 500;
 
+% Reference line for the growth-schedule panel. MUST match the MAX_TREE_SIZE / MAX_ITER that
+% run_combo_tuning_sweep.sh writes into config.h -- neither is in the CSV, so this is the one place
+% the plot has to be told. Only used to draw the dashed ideal; nothing else depends on it.
+maxTreeSize = 3000000;
+growthIters = 300;
+
 nPlanner = numel(plannerNames);
 
 %% ======================================================================
@@ -361,44 +367,63 @@ for ei = 1:numel(environments)
         clickableLegend();
 
         %% ---------- FIGURE: budget invariants ----------
-        % Two checks that decide whether a tuning conclusion from this run is trustworthy at all.
-        %   prop_attempted / frontier_repeat_size == 32 for as long as propagate stays on kernel1.
-        %       Anything below 32 is the kernel2 path, which splits a block across candidates and is
-        %       much slower - the thing the repCeiling clamp exists to prevent.
-        %   tree_size vs the ideal straight line to (last iteration, MAX_TREE_SIZE). Systematic
-        %       shortfall means the controller is asking for more than the candidate pool can give.
+        % Three checks that decide whether a tuning conclusion from this run is trustworthy at all.
+        %
+        % All three are per-ITERATION quantities, so they use plotMeanIter -- the mean across runs
+        % at each iteration index -- and draw ONE LINE PER SERIES. The first version drew one raw
+        % line per RUN with no legend, i.e. ~60 unlabelled lines, which is why this figure was
+        % unreadable.
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Budget Invariants (%s)', envTitle, costTitle), ...
-               'Position', [150 150 1400 620]);
-        subplot(1, 2, 1); hold on;
-        for pi = 1:nPlanner
-            for ri = 1:numel(R{pi})
-                pa = getCol(R{pi}{ri}, 'prop_attempted');
-                fr = getCol(R{pi}{ri}, 'frontier_repeat_size');
-                if isempty(pa) || isempty(fr), continue; end
-                ok = fr > 0;
-                plot(find(ok), pa(ok) ./ fr(ok), plannerStyles{pi}, ...
-                     'Color', plannerColors(pi, :), 'LineWidth', plannerWidths(pi));
-            end
-        end
-        yline(32, 'k--', 'kernel1 (32 threads/block)', 'LineWidth', 1.2);
-        ylim([0 40]);
-        xlabel('Iteration'); ylabel('propagations per repeat entry'); grid on;
-        title('Kernel1 invariant: 32 while the ceiling holds, less once kernel2 fires');
+               'Position', [150 150 1560 640]);
 
-        subplot(1, 2, 2); hold on;
-        maxIterSeen = 0;
+        % --- 1. Is propagate still on kernel1? ---
+        % prop_attempted / frontier_repeat_size is exactly 32 on the kernel1 path (one 32-thread
+        % block per repeat entry) and h_propIterations_ < 32 on kernel2. h_propIterations_ ALONE is
+        % not a valid detector: it is only assigned inside the kernel2 branch, so on the kernel1
+        % path it still holds a stale value from whichever earlier iteration last took kernel2.
+        subplot(1, 3, 1); hold on;
         for pi = 1:nPlanner
-            for ri = 1:numel(R{pi})
-                ts = getCol(R{pi}{ri}, 'tree_size');
-                if isempty(ts), continue; end
-                plot(1:numel(ts), ts, plannerStyles{pi}, 'Color', plannerColors(pi, :), ...
-                     'LineWidth', plannerWidths(pi));
-                maxIterSeen = max(maxIterSeen, numel(ts));
-            end
+            plotMeanIter(R{pi}, @(t) safeRatio(getCol(t, 'prop_attempted'), ...
+                                               getCol(t, 'frontier_repeat_size')), ...
+                         plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
         end
+        yline(32, 'k--', 'kernel1', 'LineWidth', 1.2);
+        ylim([0 36]);
+        xlabel('Iteration'); ylabel('propagations per repeat entry'); grid on;
+        title({'Kernel1 check: 32 while the ceiling holds', 'below 32 = kernel2 (block split across candidates)'});
+
+        % --- 2. Is the controller tracking its growth schedule? ---
+        subplot(1, 3, 2); hold on;
+        for pi = 1:nPlanner
+            plotMeanIter(R{pi}, @(t) getCol(t, 'tree_size'), ...
+                         plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
+        end
+        plot([0 growthIters], [0 maxTreeSize], 'k--', 'LineWidth', 1.2, ...
+             'DisplayName', 'linear schedule');
         xlabel('Iteration'); ylabel('tree\_size'); grid on;
-        title('Tree growth: the controller targets a straight line to MAX\_TREE\_SIZE');
+        title({'Tree growth vs the linear schedule', 'shortfall = demand exceeds the candidate pool'});
+
+        % --- 3. What is the frontier actually made of? ---
+        % `reactivated` counts frontier bits among the PRE-EXISTING tree, i.e. exactly Part B's
+        % output, so this is the share of the frontier that is re-expansion rather than new nodes.
+        %
+        % READ THIS PANEL FIRST WHEN KERNEL1 FAILS EARLY. Part B's region-best branch is
+        % UNCONDITIONAL -- one node per explored region, up to NUM_R1_REGIONS, outside h_reactFrac_
+        % entirely -- so F has a floor at nActive. Since rep >= 1, frontierRepeatSize >= F, and
+        % kernel2 is forced once 32*F > remaining no matter what repTarget does. A curve pinned near
+        % 100% here means F is region-best dominated and no acceptance tuning will move the kernel1
+        % crossover; the levers are the guarantee itself or the R1 grid size.
+        subplot(1, 3, 3); hold on;
+        for pi = 1:nPlanner
+            plotMeanIter(R{pi}, @(t) 100 * safeRatio(getCol(t, 'reactivated'), ...
+                                                     getCol(t, 'frontier_size')), ...
+                         plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
+        end
+        ylim([0 105]);
+        xlabel('Iteration'); ylabel('% of frontier from Part B'); grid on;
+        title({'Frontier composition: reactivated / frontier\_size', 'near 100% = the region-best guarantee dominates F'});
+        clickableLegend();
 
         %% ---------- Aggregate summary metrics per planner ----------
         mFirstIter    = NaN(1, nPlanner);
@@ -646,4 +671,52 @@ function c = finalCost(tbl, thresh)
     costs(costs > thresh) = NaN;
     v = costs(~isnan(costs));
     if isempty(v), c = NaN; else, c = v(end); end
+end
+
+function plotMeanIter(runs, valueFcn, color, style, width, name)
+    % Mean of a per-ITERATION quantity across a series' runs, drawn as ONE line.
+    %
+    % The iteration-domain counterpart of plotMeanTime. Used for the budget invariants, which are
+    % properties of an iteration (a launch configuration, a budget) and not of elapsed time, so
+    % resampling them onto a time grid would blur exactly the step changes worth seeing.
+    %
+    % valueFcn(tbl) returns a per-iteration column, or [] when the run lacks the columns it needs --
+    % baselines write NaN for every COMBO-only column, so those series simply do not draw rather
+    % than erroring.
+    %
+    % Runs are RAGGED: the 6 s timeout ends them at different iterations. Each iteration index is
+    % averaged over whatever runs reached it, then the tail is trimmed where fewer than half the
+    % runs did, which stops the right edge silently degenerating into one long run's trace -- the
+    % same failure plotMeanTime's right-tail hold exists to prevent.
+    if isempty(runs), return; end
+    vals = {};
+    for ri = 1:numel(runs)
+        if isempty(runs{ri}), continue; end
+        v = valueFcn(runs{ri});
+        if isempty(v) || all(isnan(v)), continue; end
+        vals{end + 1} = v(:); %#ok<AGROW>
+    end
+    if isempty(vals), return; end
+
+    n = max(cellfun(@numel, vals));
+    A = NaN(numel(vals), n);
+    for ri = 1:numel(vals)
+        A(ri, 1:numel(vals{ri})) = vals{ri};
+    end
+    cnt  = sum(~isnan(A), 1);
+    mu   = mean(A, 1, 'omitnan');
+    keep = cnt >= max(1, ceil(numel(vals) / 2));
+    if ~any(keep), return; end
+    plot(find(keep), mu(keep), style, 'Color', color, 'LineWidth', width, 'DisplayName', name);
+end
+
+function r = safeRatio(a, b)
+    % Elementwise a./b guarding both a missing column and a zero denominator. Returns [] when
+    % either column is absent, which plotMeanIter treats as "this series has nothing to draw".
+    if isempty(a) || isempty(b), r = []; return; end
+    n = min(numel(a), numel(b));
+    a = a(1:n); b = b(1:n);
+    r = NaN(n, 1);
+    ok = b > 0;
+    r(ok) = a(ok) ./ b(ok);
 end

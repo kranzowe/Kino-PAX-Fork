@@ -141,8 +141,11 @@ public:
     // Mean fan-out target. Derived from h_selectivity_, then clamped by the kernel1 ceiling:
     // propagateFrontier drops onto the slow kernel2 path when frontierRepeatSize * 32 exceeds the
     // remaining tree buffer, so capping repTarget at 0.8x that bound makes staying on kernel1 an
-    // INVARIANT rather than a tuning outcome -- until repTarget hits its floor of 1, which with a
-    // steady frontier is past ~88% of the tree.
+    // as long as it CAN be kept there. Not indefinitely: rep >= 1 is a correctness clamp, so
+    // frontierRepeatSize >= F, and the unconditional region-best reactivation puts a floor under F
+    // itself (F >= nActive). Kernel2 is therefore forced once 32*F > remaining regardless of
+    // repTarget -- around 59% of the tree in the sweep config. Shrinking F further is a design
+    // question (the region-best guarantee, or the R1 grid size), not a tuning one.
     float h_repTarget_;
 
     // ================== ACCEPTANCE-REASON INSTRUMENTATION ==================

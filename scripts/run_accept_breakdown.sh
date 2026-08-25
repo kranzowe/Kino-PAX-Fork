@@ -1,13 +1,20 @@
 #!/bin/bash
 # =============================================================================
-# Acceptance-Reason Breakdown Runner  (KinoPaxSTARCleanCost)
+# Acceptance-Reason Breakdown Runner  (KinoPaxSTARCOMBO + a KinoPaxSTARCleanCost reference)
 #
 # Diagnostic, not a benchmark. Answers "WHY did this tuning admit the nodes it admitted", which the
 # tuning sweep cannot: a candidate enters the frontier through one of three doors --
 #
-#   1. the region-best exemption   (cost <= minCostsR1[r])
-#   2. the R2 seeding exemption    (virgin sub-region; OFF by default, so expected to be 0)
-#   3. the weighted roll           (rand < cap * (w*pSyclop + (1-w)*pCost + probFloor))
+#   1. the region-best exemption   (cost <= minCostsR1[r])                    both planners
+#   2. the R2 seeding exemption    CleanCost only, off by default; REMOVED in COMBO
+#   3. the roll                    CleanCost: rand < cap * (w*pSyclop + (1-w)*pCost + floor)
+#                                  COMBO:     rand < min(pMax, comboShape * pTargetAccept)
+#
+# It also logs the growth-controller and frontier-composition columns, because for COMBO the
+# acceptance split is only half the rule. n_active and reactivated are the two to read when
+# propagate falls onto the slow kernel2 path early: Part B re-activates the region best
+# UNCONDITIONALLY, one per explored region, so the frontier has a hard floor at nActive and kernel2
+# is forced once 32*F > remaining regardless of the acceptance tuning.
 #
 # -- and nothing in the normal output distinguishes them. Door 3 is a single Bernoulli draw against
 # a weighted SUM, so each accepted node splits one unit of credit in proportion to each term's
@@ -187,11 +194,13 @@ REGIONS=$(( DELTA_W_R1**3 * DELTA_V_R1**3 ))
 
 echo ""
 echo "======================================================="
-echo "  Acceptance-Reason Breakdown (KinoPaxSTARCleanCost)"
+echo "  Acceptance-Reason Breakdown (COMBO grid + CleanCost reference)"
 echo "  Delta: ${DELTA_LABEL} | W_R1=${DELTA_W_R1} C_R1=${DELTA_C_R1} V_R1=${DELTA_V_R1} | Regions=${REGIONS}"
 echo "  Cost metric: ${COST_LABEL} (COST_MODE=${COST_MODE_VAL})"
 echo "  Environments: ${ENV_NAMES[*]}"
-echo "  Grid: w {0.9,0.95,1.0} x k {0.25,1,16} x cap {0.03,0.1,1.0} = 21 points, 1 run each"
+echo "  COMBO: profile {none,cov,col,cst,all} x gain {1,4,16} x rf 0.1 = 13 points"
+echo "  Reference: CleanCost w 0.9, k 1, cap 0.03 (r2 off) = 1 point"
+echo "  1 run each, reported against ITERATION (counting atomics distort wall-clock)"
 echo "======================================================="
 
 # =============================================================================
