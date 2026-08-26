@@ -92,7 +92,7 @@ KinoPaxSTARCOMBO::KinoPaxSTARCOMBO()
     d_frontierNextXR1s_       = thrust::device_vector<int>(MAX_TREE_SIZE);
     d_unexploredSampleCosts_  = thrust::device_vector<float>(MAX_TREE_SIZE);
     d_goalSet_                = thrust::device_vector<bool>(MAX_TREE_SIZE);
-    d_frontierNextAcceptShape_ = thrust::device_vector<float>(MAX_TREE_SIZE, 1.0f);
+    d_frontierNextAcceptShape_ = thrust::device_vector<float>(MAX_TREE_SIZE, COMBO_NEUTRAL_SHAPE);
     d_acceptCounts_           = thrust::device_vector<unsigned long long>(ACC_NUM_SLOTS, 0ULL);
     d_goalSetIdxs_            = thrust::device_vector<uint>(MAX_TREE_SIZE);
     d_goalSetScanIdx_         = thrust::device_vector<uint>(MAX_TREE_SIZE);
@@ -162,7 +162,7 @@ KinoPaxSTARCOMBO::KinoPaxSTARCOMBO()
     h_globalCollisionFrac_  = 0.1f;   // => nu = 0.9, the measured collision-free fraction
     h_exploredMeanCoverage_ = 0.0f;
     h_globalCoverage_       = 0.0f;
-    h_meanShapePrev_        = 1.0f;   // neutral until the first batch has been measured
+    h_meanShapePrev_        = COMBO_NEUTRAL_SHAPE;   // neutral until the first batch is measured
     h_pTargetAccept_        = 0.0f;
     h_pTargetReactivate_    = 0.0f;
     h_repTarget_            = 1.0f;
@@ -229,7 +229,7 @@ void KinoPaxSTARCOMBO::resetPlanner(float* h_initial, float* h_goal)
     thrust::fill(d_frontierNextXR1s_.begin(), d_frontierNextXR1s_.end(), 0);
     thrust::fill(d_unexploredSampleCosts_.begin(), d_unexploredSampleCosts_.end(), 0.0f);
     thrust::fill(d_goalSet_.begin(), d_goalSet_.end(), false);
-    thrust::fill(d_frontierNextAcceptShape_.begin(), d_frontierNextAcceptShape_.end(), 1.0f);
+    thrust::fill(d_frontierNextAcceptShape_.begin(), d_frontierNextAcceptShape_.end(), COMBO_NEUTRAL_SHAPE);
     thrust::fill(d_iterations_.begin(), d_iterations_.end(), 0);
     thrust::fill(d_pathCosts_.begin(), d_pathCosts_.end(), 0.0f);
     thrust::fill(d_controlPathsToGoal_.begin(), d_controlPathsToGoal_.end(), 0.0f);
@@ -263,7 +263,7 @@ void KinoPaxSTARCOMBO::resetPlanner(float* h_initial, float* h_goal)
     h_globalCollisionFrac_  = 0.1f;   // => nu = 0.9 seed
     h_exploredMeanCoverage_ = 0.0f;
     h_globalCoverage_       = 0.0f;
-    h_meanShapePrev_        = 1.0f;
+    h_meanShapePrev_        = COMBO_NEUTRAL_SHAPE;
     h_pTargetAccept_        = 0.0f;
     h_pTargetReactivate_    = 0.0f;
     h_repTarget_            = 1.0f;
@@ -605,7 +605,7 @@ __global__ void KinoPaxSTARCOMBO_accept_kernel(uint* activeFrontierNextIdxs, uin
 
     // --- Exemption: min-cost candidates are always inserted, so every region's best node stays in
     // the frontier. LOAD-BEARING for optimality convergence, and it must not be folded into the
-    // formula: at cost == m the cost term is 1 but the SHAPE is still only (1 + T1 + T2)/1.5, which
+    // formula: at cost == m the cost term is 1 but the SHAPE is still only (1 + T1 + T2)/DIVISOR, which
     // multiplied by a pTarget of ~5e-3 would reject the region best almost always. ---
     if(cost <= m)
         {
@@ -613,7 +613,7 @@ __global__ void KinoPaxSTARCOMBO_accept_kernel(uint* activeFrontierNextIdxs, uin
             // fan-out; a slot left unwritten holds the shape of whatever candidate occupied it in a
             // previous iteration. NEUTRAL rather than maximum on purpose: exemptions run to ~4.5e3
             // per iteration, and 4.5e3 nodes at repeatMax would be the whole propagation budget.
-            frontierNextAcceptShape[idx] = 1.0f;
+            frontierNextAcceptShape[idx] = COMBO_NEUTRAL_SHAPE;
             atomicAdd(&acceptCounts[KinoPaxSTARCOMBO::ACC_MIN_COST], 1ULL);
             return;
         }
@@ -629,7 +629,7 @@ __global__ void KinoPaxSTARCOMBO_accept_kernel(uint* activeFrontierNextIdxs, uin
     float t1, t2, t3;
     comboTerms(cost, r1MeanCost, costScale, regionCoverage[xR1], exploredMeanCoverage,
                r1CollFrac, globalCollisionFrac, kCoverage, kCollision, kCost, &t1, &t2, &t3);
-    float shape = (t1 + t2 + t3) * (1.0f / 1.5f);
+    float shape = (t1 + t2 + t3) / COMBO_SHAPE_DIVISOR;
 
     frontierNextAcceptShape[idx] = shape;
 
@@ -652,7 +652,7 @@ __global__ void KinoPaxSTARCOMBO_accept_kernel(uint* activeFrontierNextIdxs, uin
             atomicAdd(&acceptCounts[KinoPaxSTARCOMBO::ACC_ROLL], 1ULL);
 
             // --- Diagnostic: split one unit of credit across the terms that argued for this node.
-            // Shares are taken before the /1.5 and before pTargetAccept, since both scale the terms
+            // Shares are taken before the divisor and before pTargetAccept, since both scale the terms
             // equally and cancel in the ratio -- the credit measures WHICH TERM wanted the node,
             // independent of the throttle. Gated: 3 extra atomics on hot addresses. ---
             if(countReasons)
@@ -780,7 +780,7 @@ KinoPaxSTARCOMBO_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint*
                     // up to NUM_R1_REGIONS of them -- so repeatMax here would dwarf the entire
                     // propagation budget on its own. It is still a promotion over CleanCost's flat
                     // 1, which gave the region best the SMALLEST fan-out of any node in the tree.
-                    activeFrontierRepeatCount[treeIdx] = repeatFromShape(1.0f, repTarget, repeatMax);
+                    activeFrontierRepeatCount[treeIdx] = repeatFromShape(COMBO_NEUTRAL_SHAPE, repTarget, repeatMax);
                     return;
                 }
 
@@ -822,7 +822,7 @@ KinoPaxSTARCOMBO_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint*
                     // expanding block, and the bit is stuck true forever: it inflates
                     // h_frontierSize_ and this same guard rejects the node on every future
                     // iteration. Handing it a block is what breaks the cycle.
-                    activeFrontierRepeatCount[treeIdx] = repeatFromShape(1.0f, repTarget, repeatMax);
+                    activeFrontierRepeatCount[treeIdx] = repeatFromShape(COMBO_NEUTRAL_SHAPE, repTarget, repeatMax);
                 }
         }
 }
@@ -946,10 +946,11 @@ void KinoPaxSTARCOMBO::updateFrontier()
     // target then 0 is the correct answer, and a positive floor would admit P_MIN * candidates
     // extra nodes on top of a budget that is already satisfied.
     //
-    // Dividing by meanShapePrev corrects for E[shape] != 1. The /1.5 in comboShape makes the shape
-    // 1.0 at the NEUTRAL point, but the deltas are asymmetric -- bounded at +1 on the unfavourable
-    // side, unbounded on the favourable side -- so the realised mean is not 1 and the bias would
-    // otherwise pass straight through into the growth rate.
+    // Dividing by meanShapePrev corrects for E[shape] != COMBO_NEUTRAL_SHAPE. comboShape puts a
+    // neutral candidate exactly at COMBO_NEUTRAL_SHAPE, but the deltas are asymmetric -- bounded at
+    // +1 on the unfavourable side, unbounded on the favourable side -- so the realised mean is not
+    // the neutral value and the bias would otherwise pass straight into the growth rate. Dividing by
+    // the MEASURED mean is also what makes the whole planner invariant to COMBO_SHAPE_DIVISOR.
     float rolled = float(h_candidatesPreGate_) - float(h_exemptCount_);
     float shapeAdj = fmaxf(1e-3f, h_meanShapePrev_);
     h_pTargetAccept_ = (rolled > 0.0f) ? fmaxf(0.0f, wantThisIter - float(h_exemptCount_)) / (rolled * shapeAdj) : 0.0f;

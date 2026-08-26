@@ -139,7 +139,8 @@ static const char* profileTok(ComboProfile p)
 }
 
 // Profile -> the three gains. COMBO_NONE leaves all three at 0, so every sigmoid sits at 0.5 and
-// comboShape returns (0.5+0.5+0.5)/1.5 == 1.0 exactly, for every candidate.
+// comboShape returns (0.5+0.5+0.5)/COMBO_SHAPE_DIVISOR == COMBO_NEUTRAL_SHAPE exactly, for every
+// candidate -- so P = shape*pTarget is a single constant across the whole batch.
 static void profileGains(ComboProfile p, float g, float* k1, float* k2, float* k3)
 {
     *k1 = 0.0f; *k2 = 0.0f; *k3 = 0.0f;

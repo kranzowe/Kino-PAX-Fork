@@ -15,14 +15,18 @@
 % share, so the three credits sum to acc_roll by construction. The three terms differ per planner:
 % CleanCost splits across (syclop, cost, floor), COMBO across its three sigmoids (cov, col, cst).
 %
-% AND WHY IT ALSO PLOTS THE BUDGET (figure 4). For COMBO the acceptance split is only half the rule
-% -- the growth controller sets the scale and the fan-out. Figure 4 is the one to read when
-% propagate falls onto kernel2 early; see its header for what each panel means.
+% AND WHY IT ALSO PLOTS THE BUDGET (figures 4-8). For COMBO the acceptance split is only half the
+% rule -- the growth controller sets the scale and the fan-out. Those five are the ones to read when
+% propagate falls onto kernel2 early, and every quantity in them is computed from columns BOTH
+% planners write, so the CleanCost reference appears in all five.
 %
 % ANTI-CLUTTER RULE: COLOUR ENCODES THE ACCEPTANCE REASON and POSITION ENCODES THE POINT in figures
 % 1-3. There are only five reasons, so one fixed palette is reused and the eye learns it once.
-% Figure 4 is different -- it overlays points, so there colour encodes the PROFILE and line style
-% the GAIN, matching process_combo_tuning_and_plot.m.
+% Figures 4-8 are different -- they overlay points, so there colour encodes the PROFILE and line
+% style the GAIN, matching process_combo_tuning_and_plot.m, with the CleanCost reference in crimson
+% and drawn thicker. They are five separate figures rather than one 2x2 BECAUSE A LEGEND ATTACHES
+% TO THE CURRENT AXES: a single legend on a multi-panel figure describes only the last panel, so any
+% series that panel omits looks absent from the entire figure.
 %
 % AXIS NOTE: everything is plotted against ITERATION, never wall-clock. The counting atomics distort
 % timing, so elapsed time from this binary is not comparable to the tuning sweep's.
@@ -66,13 +70,14 @@ gainStyles = {':', '-', '--'};      % gain = 1, 4, 16
 cleanColor = [0.70 0.15 0.20];
 
 %% --- Build the flat point list: the reference first, then the COMBO grid ---
-% P(i) = struct(label, name, isCombo, color, style)
-P = struct('label', {}, 'name', {}, 'isCombo', {}, 'color', {}, 'style', {});
+% P(i) = struct(label, name, isCombo, color, style, width)
+P = struct('label', {}, 'name', {}, 'isCombo', {}, 'color', {}, 'style', {}, 'width', {});
 
+% The reference is drawn thicker so it reads as the anchor the grid is measured against.
 P(end + 1) = struct( ...
     'label',   sprintf('KinoPaxSTARCleanCost_r2off_w%d_k%d_cap%d', cleanRef(1), cleanRef(2), cleanRef(3)), ...
     'name',    sprintf('CleanCost w%g k%g cap%g', cleanRef(1)/100, cleanRef(2)/100, cleanRef(3)/100), ...
-    'isCombo', false, 'color', cleanColor, 'style', '-');
+    'isCombo', false, 'color', cleanColor, 'style', '-', 'width', 2.2);
 
 for pi = 1:numel(comboProfiles)
     for gi = 1:numel(comboGains)
@@ -88,7 +93,7 @@ for pi = 1:numel(comboProfiles)
         P(end + 1) = struct( ...
             'label',   sprintf('KinoPaxSTARCOMBO_%s_g%d_rf%d', prof, gval, comboRf), ...
             'name',    sprintf('COMBO %s g%g', prof, gval/100), ...
-            'isCombo', true, 'color', profileColors(pi, :), 'style', sty); %#ok<SAGROW>
+            'isCombo', true, 'color', profileColors(pi, :), 'style', sty, 'width', 1.2); %#ok<SAGROW>
     end
 end
 nP = numel(P);
@@ -193,26 +198,32 @@ sgtitle(sprintf(['Throughput vs iteration \\x2014 %s (log y)\n' ...
                  'the gap between blue and green is what the acceptance budget throttles'], envTitle), ...
         'FontSize', 11, 'FontWeight', 'bold');
 
-%% ====================== FIGURE 4: budget and frontier composition ======================
-% READ THIS FIRST WHEN PROPAGATE FALLS ONTO KERNEL2 EARLY.
+%% ============ FIGURES 4-8: budget and frontier composition ============
+% THESE ARE THE ONES TO READ WHEN PROPAGATE FALLS ONTO KERNEL2 EARLY.
 %
-%   1  prop_attempted / frontier_repeat_size -- exactly 32 on the kernel1 path (one 32-thread block
-%      per repeat entry), less on kernel2. h_propIterations_ alone is NOT a valid detector: it is
-%      only assigned inside the kernel2 branch, so on kernel1 it holds a stale value.
-%   2  reactivated / frontier_size -- Part B's share of the frontier. Part B re-activates the region
-%      best UNCONDITIONALLY, one per explored region, outside h_reactFrac_ entirely, so F has a hard
-%      floor at nActive. Near 100% here means F is region-best dominated.
-%   3  n_active against frontier_size -- the floor itself, drawn against what the frontier actually
-%      is. When the two curves meet, the region-best guarantee IS the frontier.
-%   4  the two acceptance budgets and the fan-out target (COMBO only).
+% Deliberately five SEPARATE figures rather than one 2x2. A legend attaches to the CURRENT AXES, so
+% a single legend on a multi-panel figure describes only the last panel -- and if that panel happens
+% to exclude a series, the series looks absent from the whole figure. One figure per quantity means
+% one clickable legend per quantity, each covering every series drawn in it.
 %
-% Since rep >= 1 always, frontierRepeatSize >= F, so kernel2 is forced once 32*F > remaining no
-% matter what repTarget does. If panels 2 and 3 show F pinned to nActive, no acceptance tuning will
-% move the kernel1 crossover -- the levers are the region-best guarantee or the R1 grid size.
-figure('Name', sprintf('%s - Budget and frontier composition', envTitle), ...
-       'Position', [90 90 1650 860]);
+% Every quantity below is computed from columns BOTH planners write, so the CleanCost reference
+% appears in all five. That is the point: COMBO's controller is only meaningful against what the
+% hand-tuned cap actually did.
+%
+% The chain these five trace out:
+%   kernel1 fails  <=  32*frontierRepeatSize > remaining
+%                  <=  frontierRepeatSize >= F        (rep >= 1 is a correctness clamp)
+%                  <=  F >= nActive                   (region-best reactivation is UNCONDITIONAL)
+% so if figure 6 shows n_active/frontier_size near 1, no acceptance tuning will move the crossover
+% in figure 4 -- the levers are the region-best guarantee itself or the R1 grid size.
 
-subplot(2, 2, 1); hold on;
+%% ---- FIGURE 4: kernel1 check ----
+% prop_attempted / frontier_repeat_size is exactly 32 on the kernel1 path (one 32-thread block per
+% repeat entry) and h_propIterations_ < 32 on kernel2. h_propIterations_ ALONE is not a valid
+% detector: it is only assigned inside the kernel2 branch, so on kernel1 it holds a stale value
+% from whichever earlier iteration last took kernel2.
+figure('Name', sprintf('%s - Kernel1 check', envTitle), 'Position', [90 90 1150 620]);
+hold on;
 for i = 1:nP
     t = T{i};
     if isempty(t), continue; end
@@ -221,14 +232,24 @@ for i = 1:nP
     if isempty(fr) || isempty(pa), continue; end
     ok = fr > 0;
     plot(t.iteration(ok), pa(ok) ./ fr(ok), P(i).style, 'Color', P(i).color, ...
-         'LineWidth', 1.2, 'DisplayName', P(i).name);
+         'LineWidth', P(i).width, 'DisplayName', P(i).name);
 end
 yline(32, 'k--', 'kernel1', 'LineWidth', 1.2, 'HandleVisibility', 'off');
 ylim([0 36]); grid on;
 xlabel('iteration'); ylabel('propagations per repeat entry');
-title('Kernel1 check: 32 while the ceiling holds, below = kernel2');
+title(sprintf(['Kernel1 check \\x2014 %s\n' ...
+               '32 while the ceiling holds; below 32 = kernel2 (block split across candidates)'], envTitle), ...
+      'FontWeight', 'bold');
+clickableLegend();
 
-subplot(2, 2, 2); hold on;
+%% ---- FIGURE 5: frontier composition ----
+% `reactivated` counts frontier bits among the PRE-EXISTING tree, i.e. exactly Part B's output, so
+% this is the share of the frontier that is re-expansion rather than newly admitted nodes.
+% CleanCost's realised value is ~75% and nobody chose it -- it fell out of the Syclop score floor.
+% COMBO's h_reactFrac_ is the first time this has been an explicit knob, so this figure is the
+% direct check on whether it is being honoured.
+figure('Name', sprintf('%s - Frontier composition', envTitle), 'Position', [100 100 1150 620]);
+hold on;
 for i = 1:nP
     t = T{i};
     if isempty(t), continue; end
@@ -236,48 +257,94 @@ for i = 1:nP
     if isempty(re), continue; end
     ok = t.frontier_size > 0;
     plot(t.iteration(ok), 100 * re(ok) ./ double(t.frontier_size(ok)), P(i).style, ...
-         'Color', P(i).color, 'LineWidth', 1.2, 'DisplayName', P(i).name);
+         'Color', P(i).color, 'LineWidth', P(i).width, 'DisplayName', P(i).name);
 end
 ylim([0 105]); grid on;
 xlabel('iteration'); ylabel('% of frontier from Part B');
-title('Frontier composition: near 100% = region-best dominated');
+title(sprintf(['Frontier composition: reactivated / frontier\\_size \\x2014 %s\n' ...
+               'near 100%% = the frontier is re-expansion, not new nodes'], envTitle), ...
+      'FontWeight', 'bold');
+clickableLegend();
 
-subplot(2, 2, 3); hold on;
+%% ---- FIGURE 6: region-best share ----
+% n_active / frontier_size. Part B re-activates the region best UNCONDITIONALLY -- one node per
+% explored region, outside h_reactFrac_ entirely -- so the frontier has a hard floor at nActive.
+% A curve approaching 1 means the guarantee IS the frontier, and since rep >= 1 forces
+% frontierRepeatSize >= F, kernel2 then becomes unavoidable at 32*F > remaining no matter what the
+% acceptance budget or repTarget do. THIS IS THE FIGURE THAT EXPLAINS FIGURE 4.
+figure('Name', sprintf('%s - Region-best share of the frontier', envTitle), ...
+       'Position', [110 110 1150 620]);
+hold on;
 for i = 1:nP
     t = T{i};
     if isempty(t), continue; end
     na = col(t, 'n_active');
     if isempty(na), continue; end
-    plot(t.iteration, t.frontier_size, P(i).style, 'Color', P(i).color, 'LineWidth', 1.2, ...
-         'DisplayName', sprintf('%s: frontier', P(i).name));
-    plot(t.iteration, na, ':', 'Color', min(P(i).color + 0.35, 1), 'LineWidth', 1.0, ...
-         'HandleVisibility', 'off');
+    ok = t.frontier_size > 0;
+    plot(t.iteration(ok), na(ok) ./ double(t.frontier_size(ok)), P(i).style, ...
+         'Color', P(i).color, 'LineWidth', P(i).width, 'DisplayName', P(i).name);
 end
-set(gca, 'YScale', 'log'); grid on;
-xlabel('iteration'); ylabel('nodes / regions');
-title({'frontier\_size (solid) vs n\_active (dotted)', 'curves meeting = the guarantee IS the frontier'});
+yline(1, 'k--', 'frontier == nActive', 'LineWidth', 1.2, 'HandleVisibility', 'off');
+grid on;
+xlabel('iteration'); ylabel('n\_active / frontier\_size');
+title(sprintf(['Region-best share \\x2014 %s\n' ...
+               'approaching 1 = the unconditional guarantee is the whole frontier'], envTitle), ...
+      'FontWeight', 'bold');
+clickableLegend();
 
-subplot(2, 2, 4); hold on;
+%% ---- FIGURE 7: realised roll acceptance rate ----
+% acc_roll / (candidates that actually took the roll). Computed the same way for both planners, so
+% it is the apples-to-apples comparison between COMBO's derived pTargetAccept and CleanCost's
+% hand-swept cap: it is the fraction of non-exempt candidates that were admitted.
+%
+% Exemptions are excluded from the denominator because they bypass the roll entirely -- including
+% them would make a planner look more permissive purely for finding more region minima.
+figure('Name', sprintf('%s - Realised roll acceptance rate', envTitle), ...
+       'Position', [120 120 1150 620]);
+hold on;
 for i = 1:nP
     t = T{i};
-    if ~P(i).isCombo || isempty(t), continue; end
-    pt = col(t, 'p_target_accept');
-    pr = col(t, 'p_target_reactivate');
-    if isempty(pt), continue; end
-    plot(t.iteration, pt, P(i).style, 'Color', P(i).color, 'LineWidth', 1.2, ...
-         'DisplayName', sprintf('%s: p\\_accept', P(i).name));
-    if ~isempty(pr)
-        plot(t.iteration, pr, ':', 'Color', min(P(i).color + 0.35, 1), 'LineWidth', 1.0, ...
-             'HandleVisibility', 'off');
-    end
+    if isempty(t), continue; end
+    rolled = double(t.prop_valid) - double(t.acc_min_cost) - double(t.acc_seed);
+    ok = rolled > 0;
+    if ~any(ok), continue; end
+    semilogy(t.iteration(ok), max(double(t.acc_roll(ok)) ./ rolled(ok), 1e-8), P(i).style, ...
+             'Color', P(i).color, 'LineWidth', P(i).width, 'DisplayName', P(i).name);
 end
 set(gca, 'YScale', 'log'); grid on;
-xlabel('iteration'); ylabel('acceptance budget');
-title({'p\_target\_accept (solid), p\_target\_reactivate (dotted)', 'flat = pinned at pMax, i.e. demand exceeds supply'});
-legend('Location', 'eastoutside', 'FontSize', 6);
+xlabel('iteration'); ylabel('acc\_roll / non-exempt candidates');
+title(sprintf(['Realised roll acceptance rate \\x2014 %s\n' ...
+               'COMBO: should RISE over a run as the candidate pool shrinks. Flat = pinned at pMax'], envTitle), ...
+      'FontWeight', 'bold');
+clickableLegend();
 
-sgtitle(sprintf('Budget and frontier composition \\x2014 %s', envTitle), ...
-        'FontSize', 11, 'FontWeight', 'bold');
+%% ---- FIGURE 8: mean fan-out ----
+% frontier_repeat_size / frontier_size -- the mean repeat count per frontier node, i.e. how many
+% 32-thread blocks the average node gets. CleanCost's is the realised mean of its binary 15/1 rule;
+% COMBO's is repTarget * meanShape. Both are computable from the same two columns, so this is the
+% other half of the budget story and it is directly comparable.
+%
+% Multiply this by 32 * frontier_size to recover prop_attempted, which is the quantity the kernel1
+% ceiling actually constrains.
+figure('Name', sprintf('%s - Mean fan-out per frontier node', envTitle), ...
+       'Position', [130 130 1150 620]);
+hold on;
+for i = 1:nP
+    t = T{i};
+    if isempty(t), continue; end
+    fr = col(t, 'frontier_repeat_size');
+    if isempty(fr), continue; end
+    ok = t.frontier_size > 0;
+    plot(t.iteration(ok), fr(ok) ./ double(t.frontier_size(ok)), P(i).style, ...
+         'Color', P(i).color, 'LineWidth', P(i).width, 'DisplayName', P(i).name);
+end
+yline(1, 'k--', 'rep = 1 (the correctness floor)', 'LineWidth', 1.2, 'HandleVisibility', 'off');
+grid on;
+xlabel('iteration'); ylabel('mean repeat count per frontier node');
+title(sprintf(['Mean fan-out \\x2014 %s\n' ...
+               'at the floor of 1, repTarget has no room left and kernel2 is next'], envTitle), ...
+      'FontWeight', 'bold');
+clickableLegend();
 
 %% ====================== consistency report ======================
 % The identities the CSV must satisfy. The runner already checks these per iteration and exits
@@ -319,7 +386,10 @@ for i = 1:nP
                 P(i).name, t.iteration(idx), height(t), t.tree_size(idx));
     end
 end
-fprintf('\n4 figures generated.\n');
+fprintf('\n8 figures generated.\n');
+fprintf(['  1-3  acceptance composition and throughput (colour = reason, position = point)\n' ...
+         '  4-8  budget and frontier composition (colour = profile, style = gain;\n' ...
+         '       CleanCost reference in crimson, drawn thicker; one clickable legend each)\n']);
 
 %% --- helpers ---
 function v = col(t, name)
@@ -344,4 +414,22 @@ end
 function c = creditThird(t, isCombo)
     if isCombo, c = col(t, 'credit_cst'); else, c = col(t, 'credit_floor'); end
     if isempty(c), c = zeros(height(t), 1); end
+end
+
+function clickableLegend()
+    % Legend whose entries toggle their series on click -- the only way 14 overlaid series stay
+    % readable. Attaches to the CURRENT axes, which is why figures 4-8 are one plot each: a legend
+    % on a multi-panel figure describes only the last panel, and a series missing from that panel
+    % then looks absent from the whole figure. ItemHitFcn needs R2016a+; this repo is on R2023a.
+    lgd = legend('Location', 'eastoutside', 'FontSize', 7);
+    lgd.ItemHitFcn = @toggleSeries;
+end
+
+function toggleSeries(~, evt)
+    h = evt.Peer;
+    if strcmp(h.Visible, 'on')
+        h.Visible = 'off';
+    else
+        h.Visible = 'on';
+    end
 end

@@ -254,7 +254,7 @@ acceptance rule runs in `_accept_kernel` after `graph_.updateVertices()`. Two th
 costProbExpGlobal, floor)` becomes `comboShape` (`helper.cuh`):
 
 ```
-shape = [ σ(-k1·d1) + σ(-k2·d2) + σ(-k3·d3) ] / 1.5        in (0, 2), = 1 at the neutral point
+shape = [ σ(-k1·d1) + σ(-k2·d2) + σ(-k3·d3) ] / 3.0        in (0, 1), = 0.5 at the neutral point
     d1 = (r1Coverage      − exploredMeanCoverage) / exploredMeanCoverage    prefer thin regions
     d2 = (globalCollFrac  − r1CollisionFrac)      / globalCollFrac          prefer narrow passages
     d3 = (nodeCost        − r1MeanCost)           / costScale               prefer cheap nodes
@@ -270,7 +270,7 @@ would be a constant, while `(cost − mean)` is O(10²) in cost units so T3 woul
 
 **`k` is a gain in the argument, not an exponent.** `σ(x)^k` moves the midpoint to `2^-k` and its
 slope actually *falls* past `k = 2`; `σ(k·x)` holds the midpoint at 0.5 for every `k`. That is what
-makes the `/1.5` renormalization exact for all `k` rather than only for `k = 1`. `k_i = 0` pins term
+makes the neutral value exact for all `k` rather than only for `k = 1`. `k_i = 0` pins term
 *i* at 0.5 — an exact ablation switch, which is how the sweep isolates the three terms.
 
 `h_costWeight_`, `h_costPruneExp_`, `h_probFloor_` are gone. So is `h_fAccept_`: reactivation
@@ -358,7 +358,7 @@ precisely to show when. The lever if it matters is config, not code: `W_R2_LENGT
 2→3 gives 729 sub-regions per R1 instead of 64.
 
 Swept by `examples/gpu/kinopaxstar_combo_tuning_sweep.cu` (profile × gain, 13 points; the
-all-gains-zero `none` point is the control — shape ≡ 1, so it measures the growth controller with no
+all-gains-zero `none` point is the control — shape is a constant, so it measures the controller with no
 metric steering at all). Opts into the dynamic score floor. Carries no retroactive pruning.
 
 ### KinoPaxSTARTrue  *(new)*

@@ -49,7 +49,7 @@ public:
     //   P = min(pMax, comboShape(...) * pTarget)
     //
     // comboShape (helper.cuh) is three sigmoids over globally-normalized deltas, renormalized so a
-    // neutral candidate returns exactly 1.0. Each k is a dimensionless GAIN in the sigmoid argument
+    // neutral candidate returns exactly COMBO_NEUTRAL_SHAPE (0.5). Each k is a dimensionless GAIN
     // -- not an exponent -- so 0 pins its term at 0.5 (an exact ablation switch) and larger values
     // sharpen without moving the midpoint. See helper.cuh for why that distinction matters.
     // ==================================================================================
@@ -124,10 +124,12 @@ public:
     //
     // WHY THIS EXISTS. Both the fan-out and the acceptance roll are gated by the shape, so a
     // frontier node's expected admitted children scale as shape^2, and E[shape^2] = E[shape]^2 +
-    // Var. The /1.5 renormalization makes shape == 1 at the NEUTRAL point, but the deltas are
-    // asymmetric (bounded at +1 on the unfavourable side, unbounded on the favourable side), so
-    // E[shape] != 1 in practice. Measuring it costs one atomic and removes both errors; deriving it
-    // would mean predicting the delta distribution, which is exactly what the k's change.
+    // Var. comboShape puts a NEUTRAL candidate at exactly COMBO_NEUTRAL_SHAPE, but the deltas are
+    // asymmetric (bounded at +1 on the unfavourable side, unbounded on the favourable side), so the
+    // realised E[shape] is not that value. Measuring it costs one atomic and removes both errors;
+    // deriving it would mean predicting the delta distribution, which is exactly what the k's change.
+    // It is also what makes the planner invariant to COMBO_SHAPE_DIVISOR: rescale every shape and
+    // this scalar rescales with it, so shape*pTarget and repTarget*shape are both unchanged.
     float h_meanShapePrev_;
 
     // The two budget scalars. SEPARATE ON PURPOSE -- one shape, two populations.

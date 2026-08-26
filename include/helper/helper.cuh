@@ -193,8 +193,25 @@ __device__ __forceinline__ float costProbExpGlobal(float m, float cost, float dG
 }
 
 // ======================================================================================
-// KinoPaxSTARCOMBO acceptance SHAPE. Three sigmoids, renormalised so a neutral candidate
-// (every delta zero) returns exactly 1.0. Range (0, 2).
+// ---- Shape normalisation. Change the divisor here and NOWHERE else. ----
+// Three sigmoids, each in (0,1), so the raw sum spans (0,3). Dividing by 3 puts the shape in
+// (0, 1) with a neutral candidate -- every metric delta zero, so every sigmoid exactly 0.5 -- at
+// 0.5. Read that way, shape is the fraction of maximum desirability a candidate has, and since
+// P_c = shape_c * pTarget with shape_c < 1, pTarget is the probability a PERFECT candidate would
+// get, i.e. a ceiling on the whole batch.
+//
+// THE PLANNER'S BEHAVIOUR IS INVARIANT TO THIS DIVISOR. Both consumers divide by the measured mean
+// shape: pTargetAccept = (want-exempt)/(rolled*meanShape) and repTarget = .../(32*F'*meanShape).
+// Halving every shape halves meanShape, so pTarget and repTarget both double, and the products
+// shape*pTarget and repTarget*shape are unchanged. The divisor is a labelling choice, not a tuning
+// knob -- but the NEUTRAL constant below must move with it, or every site that hands out an
+// "average" shape without computing one (the min-cost exemptions, Part B's region best) silently
+// gets the wrong fan-out.
+#define COMBO_SHAPE_DIVISOR 3.0f
+#define COMBO_NEUTRAL_SHAPE (1.5f / COMBO_SHAPE_DIVISOR)
+
+// KinoPaxSTARCOMBO acceptance SHAPE. Three sigmoids, normalised by COMBO_SHAPE_DIVISOR so a
+// neutral candidate returns exactly COMBO_NEUTRAL_SHAPE. Range (0, 3/COMBO_SHAPE_DIVISOR).
 //
 // This returns the shape ONLY -- no budget, no cap. The caller multiplies by a per-iteration
 // pTarget, which is what lets the admission gate and Part-B reactivation share one rule while
@@ -215,7 +232,7 @@ __device__ __forceinline__ float costProbExpGlobal(float m, float cost, float dG
 // k ENTERS THE ARGUMENT, NOT AS AN EXPONENT. sigmoid(x)^k moves the midpoint to 2^-k and its slope
 // actually FALLS past k = 2 (0.250 at k=1 and k=2, 0.188 at k=3, 0.125 at k=4) -- it squashes
 // rather than sharpens. sigmoid(k*x) holds the midpoint at 0.5 for every k with slope k/4, which is
-// both what "sharper" means and what makes the /1.5 renormalisation exact for ALL k rather than
+// both what "sharper" means and what makes the neutral value exact for ALL k rather than
 // only for k = 1.
 //
 // k_i = 0 pins term i at 0.5, i.e. an exact ablation switch. The tuning grid uses this.
@@ -253,7 +270,7 @@ __device__ __forceinline__ float comboShape(float nodeCost, float r1MeanCost, fl
     float t1, t2, t3;
     comboTerms(nodeCost, r1MeanCost, costScale, r1Coverage, exploredMeanCoverage, r1CollisionFrac, globalCollisionFrac,
                k1, k2, k3, &t1, &t2, &t3);
-    return (t1 + t2 + t3) * (1.0f / 1.5f);
+    return (t1 + t2 + t3) / COMBO_SHAPE_DIVISOR;
 }
 
 // Fan-out for one node from its acceptance shape. Used at BOTH Part A and Part B, replacing KPAX's
