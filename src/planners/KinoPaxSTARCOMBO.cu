@@ -151,9 +151,22 @@ KinoPaxSTARCOMBO::KinoPaxSTARCOMBO()
     h_reactFrac_   = 0.1f;
     // "Fill MAX_TREE_SIZE in MAX_ITER iterations", linearly. h_growthExp_ > 1 front-loads it.
     h_growthIters_ = MAX_ITER;
+    // Cumulative target fraction is s(u) = u^(1/growthExp); 1 is linear, and reduces
+    // wantThisIter exactly to remaining/(growthIters - itr). >1 is concave (front-loaded).
     h_growthExp_   = 1.0f;
     // Safety clamps. repeatMax matches the legacy binary rule's 15.
+    // Ceiling on repTarget, and hence on any node's block count. NO ALIGNMENT CONSTRAINT: rep is a
+    // COUNT OF BLOCKS, not a stride or a memory offset -- repeatInd writes rep integer entries and
+    // kernel1 launches exactly one 32-thread block per entry, so any positive integer is valid.
+    // (32 is the warp-multiple that matters, and that is h_activeBlockSize_, a different knob.)
+    //
+    // Applied ONLY per node, in repeatFromShape, to the product repTarget*shape -- which is
+    // invariant under COMBO_SHAPE_DIVISOR, so 15 means 15 blocks whatever the divisor is. It is
+    // deliberately NOT applied to repTarget itself; see the repTarget block in updateFrontier.
     h_repeatMax_   = 15.0f;
+    // Per-candidate probability ceiling, applied ONLY in the kernels, to min(shape*pTarget, pMax)
+    // -- again the invariant product, so 0.5 means "no candidate exceeds a 50% chance" whatever the
+    // divisor is. NOT applied to pTarget on the host; see the pTargetAccept block in updateFrontier.
     h_pMax_        = 0.5f;
 
     // ---- Derived per-iteration scalars. All recomputed in updateFrontier; these are only the
@@ -954,14 +967,24 @@ void KinoPaxSTARCOMBO::updateFrontier()
     float rolled = float(h_candidatesPreGate_) - float(h_exemptCount_);
     float shapeAdj = fmaxf(1e-3f, h_meanShapePrev_);
     h_pTargetAccept_ = (rolled > 0.0f) ? fmaxf(0.0f, wantThisIter - float(h_exemptCount_)) / (rolled * shapeAdj) : 0.0f;
-    h_pTargetAccept_ = fminf(h_pTargetAccept_, h_pMax_);
+    // DELIBERATELY NOT CLAMPED HERE. pTarget is not a probability -- it is a probability PER UNIT
+    // SHAPE, and the candidate's actual probability is min(shape*pTarget, pMax), enforced in the
+    // accept kernel where the product is formed. Clamping pTarget against pMax on the host is a
+    // units error, and it is scale-dependent: pTarget is divided by the measured mean shape, so
+    // changing COMBO_SHAPE_DIVISOR rescales pTarget while pMax -- an absolute threshold -- does
+    // not, and the clamp silently starts biting at a different physical acceptance rate. Leaving it
+    // unclamped also makes the logged p_target_accept show the true DEMAND, so how deep into
+    // saturation an iteration went is visible rather than hidden behind a flat line at pMax.
 
     // Reactivation budget, over ITS OWN population -- the whole tree, not the candidate list. A
     // single shared scalar is what would break here: at treeSize = 2e6 the acceptance budget applied
     // to the tree would reactivate more nodes per iteration than the entire growth target.
-    // The pMax clamp is load-bearing at iteration 1, where treeSize == 1 and the raw ratio is ~1e3.
+    // Unclamped for the same reason as pTargetAccept above: the kernel forms
+    // min(shape*pTargetReactivate, pMax), which is where the probability actually gets bounded. At
+    // iteration 1 this is ~1e3 because treeSize == 1; that is correct and harmless, since every
+    // per-node product still clamps to pMax.
     h_pTargetReactivate_ = (h_treeSize_ > 0)
-                             ? fminf(h_reactFrac_ * wantThisIter / float(h_treeSize_) / shapeAdj, h_pMax_)
+                             ? h_reactFrac_ * wantThisIter / float(h_treeSize_) / shapeAdj
                              : 0.0f;
 
     // --- THE acceptance decision: region-best candidates exempt, everything else kept with
@@ -1073,7 +1096,17 @@ void KinoPaxSTARCOMBO::updateFrontier()
     float denom = 32.0f * fNext * fmaxf(1e-3f, h_meanShapePrev_);
     float repWanted  = (h_selectivity_ * wantThisIter / nu) / denom;
     float repCeiling = 0.8f * remaining / denom;
-    h_repTarget_ = fminf(h_repeatMax_, fmaxf(1.0f, fminf(repWanted, repCeiling)));
+    // repeatMax is NOT applied here, for the same units reason as pMax above: repTarget is a block
+    // count PER UNIT SHAPE, not a block count. repeatFromShape already clamps the actual per-node
+    // count, rep = clamp(repTarget*shape, 1, repeatMax), and that product is invariant under
+    // COMBO_SHAPE_DIVISOR -- so 15 reliably means "no node gets more than 15 blocks". Clamping
+    // repTarget here as well was redundant AND scale-dependent: halving every shape doubles
+    // repTarget, so the clamp began biting at half the physical fan-out it used to.
+    //
+    // repTarget still has both bounds that mean something: the floor of 1 (rep >= 1 is a
+    // correctness clamp) and repCeiling (the kernel1 budget, expressed in invariant terms since
+    // repTarget*meanShape is what the budget constrains).
+    h_repTarget_ = fmaxf(1.0f, fminf(repWanted, repCeiling));
 
     // --- Update Frontier ---
     thrust::fill(d_activeFrontierRepeatCount_.begin(), d_activeFrontierRepeatCount_.end(), 0);
