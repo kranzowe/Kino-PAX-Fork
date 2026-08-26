@@ -151,19 +151,32 @@ KinoPaxSTARCOMBO::KinoPaxSTARCOMBO()
     h_reactFrac_   = 0.1f;
     // "Fill MAX_TREE_SIZE in MAX_ITER iterations", linearly. h_growthExp_ > 1 front-loads it.
     h_growthIters_ = MAX_ITER;
-    // Cumulative target fraction is s(u) = u^(1/growthExp); 1 is linear, and reduces
-    // wantThisIter exactly to remaining/(growthIters - itr). >1 is concave (front-loaded).
-    h_growthExp_   = 1.0f;
-    // Safety clamps. repeatMax matches the legacy binary rule's 15.
-    // Ceiling on repTarget, and hence on any node's block count. NO ALIGNMENT CONSTRAINT: rep is a
-    // COUNT OF BLOCKS, not a stride or a memory offset -- repeatInd writes rep integer entries and
-    // kernel1 launches exactly one 32-thread block per entry, so any positive integer is valid.
-    // (32 is the warp-multiple that matters, and that is h_activeBlockSize_, a different knob.)
+    // Cumulative target fraction is s(u) = u^(1/growthExp); 1 is linear and reduces wantThisIter
+    // exactly to remaining/(growthIters - itr). 2 gives sqrt(u) -- half the tree inside the first
+    // quarter of the iterations.
     //
-    // Applied ONLY per node, in repeatFromShape, to the product repTarget*shape -- which is
-    // invariant under COMBO_SHAPE_DIVISOR, so 15 means 15 blocks whatever the divisor is. It is
-    // deliberately NOT applied to repTarget itself; see the repTarget block in updateFrontier.
-    h_repeatMax_   = 15.0f;
+    // CONCAVE ON PURPOSE, aimed at time-to-first-solution, which needs tree REACH rather than tree
+    // size. Early on the buffer is empty, repCeiling is generous and the frontier is tiny, so a
+    // linear schedule throttles growth exactly when extending outward is cheapest. Note the first
+    // few iterations are CAPACITY-limited rather than schedule-limited -- at iteration 1 there is
+    // one frontier node -- so the schedule only starts to bind once candidates exceed
+    // wantThisIter/pMax, and that is the window this opens up.
+    h_growthExp_   = 2.0f;
+
+    // Per-node ceiling on the block count. NO ALIGNMENT CONSTRAINT: rep is a COUNT OF BLOCKS, not a
+    // stride or a memory offset -- repeatInd writes rep integer entries and kernel1 launches one
+    // 32-thread block per entry, so any positive integer is valid. That 32 here equals
+    // h_activeBlockSize_ is a coincidence, not a requirement; a node at this cap gets 32 blocks x
+    // 32 threads = 1024 propagations.
+    //
+    // Applied ONLY in repeatFromShape, to the product repTarget*shape, which is invariant under
+    // COMBO_SHAPE_DIVISOR -- so this means "no node gets more than 32 blocks" whatever the divisor
+    // is. Deliberately NOT applied to repTarget itself; see the repTarget block in updateFrontier.
+    //
+    // Raised from the legacy 15 to pair with growthExp = 2: early iterations have a large
+    // repCeiling and a small frontier, so the high-shape nodes are exactly the ones that were
+    // hitting the old cap during the front-loaded phase.
+    h_repeatMax_   = 32.0f;
     // Per-candidate probability ceiling, applied ONLY in the kernels, to min(shape*pTarget, pMax)
     // -- again the invariant product, so 0.5 means "no candidate exceeds a 50% chance" whatever the
     // divisor is. NOT applied to pTarget on the host; see the pTargetAccept block in updateFrontier.
