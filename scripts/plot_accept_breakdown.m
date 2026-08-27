@@ -8,12 +8,19 @@
 %   min-cost   the region-best exemption   (cost <= minCostsR1[r])          both planners
 %   seed       the R2 seeding exemption    CleanCost only, off by default; REMOVED in COMBO
 %   roll       CleanCost: rand < cap*(w*pSyclop + (1-w)*pCost + floor)
-%              COMBO:     rand < min(pMax, comboShape * pTargetAccept)
+%              COMBO:     rand < min(pMax, shape_accept * pTargetAccept)
+%
+% COMBO RUNS TWO SHAPES. shape_accept decides WHICH nodes join the tree; shape_fanout decides WHERE
+% propagation goes, and only the latter sizes rep. Cost belongs in the first and is counter-
+% productive in the second -- cost is cumulative root-to-node, so "cheap" means shallow, and
+% weighting fan-out by it pours propagation around the root.
 %
 % The roll is a single Bernoulli draw against a SUM, so "accepted because of X" is not a distinction
 % the rule makes. Each accepted node instead splits one unit of credit in proportion to each term's
-% share, so the three credits sum to acc_roll by construction. The three terms differ per planner:
-% CleanCost splits across (syclop, cost, floor), COMBO across its three sigmoids (cov, col, cst).
+% share, so the credits sum to acc_roll by construction. CleanCost splits across (syclop, cost,
+% floor); COMBO across the two terms of its ACCEPTANCE shape (coverage, cost), weighted the same way
+% the blend weights them -- so the credit reports not just which signal liked the node but how much
+% say it had at this point in the coverage->cost slide.
 %
 % AND WHY IT ALSO PLOTS THE BUDGET (figures 4-8). For COMBO the acceptance split is only half the
 % rule -- the growth controller sets the scale and the fan-out. Those five are the ones to read when
@@ -22,8 +29,8 @@
 %
 % ANTI-CLUTTER RULE: COLOUR ENCODES THE ACCEPTANCE REASON and POSITION ENCODES THE POINT in figures
 % 1-3. There are only five reasons, so one fixed palette is reused and the eye learns it once.
-% Figures 4-8 are different -- they overlay points, so there colour encodes the PROFILE and line
-% style the GAIN, matching process_combo_tuning_and_plot.m, with the CleanCost reference in crimson
+% Figures 4-8 are different -- they overlay points, so there colour encodes the FAN-OUT GAIN and line
+% style the ACCEPTANCE GAIN, matching process_combo_tuning_and_plot.m, with the CleanCost reference in crimson
 % and drawn thicker. They are five separate figures rather than one 2x2 BECAUSE A LEGEND ATTACHES
 % TO THE CURRENT AXES: a single legend on a multi-panel figure describes only the last panel, so any
 % series that panel omits looks absent from the entire figure.
@@ -44,29 +51,35 @@ env       = 'house';
 envTitle  = 'House';
 delta     = 'large_length';     % delta + cost metric token, as in the filenames
 
-% Must mirror PROFILES / GAINS / REACT_FRAC and the CleanCost reference in
+% Must mirror ACC_GAINS / FAN_GAINS / REACT_FRAC and the CleanCost reference in
 % kinopaxstar_accept_breakdown.cu (integer label tokens: 100 x the float, as in the filenames).
-comboProfiles = {'none', 'cov', 'col', 'cst', 'all'};
-comboGains    = [0 100 400 1600];
+%
+% COMBO runs TWO shapes: acceptance (which nodes join) and fan-out (where propagation goes).
+% kFan = 0 is the uniform-fan-out control arm -- both fan-out sigmoids pinned at 0.5, so every node
+% gets identical rep, which is CleanCost's and KinoPaxPlus's behaviour.
+comboAccGains = [100 400 1600];
+comboFanGains = [0 100 400 1600];
 comboRf       = 10;
 cleanRef      = [90 100 3];     % [w k cap] tokens -- the low-cap reference run
 
 % Five reasons, one fixed palette, reused in figures 1-3. The three credit slots mean different
 % terms for the two planners, which the legend spells out.
-catNames  = {'min-cost', 'seed', 'credit A (syclop|cov)', 'credit B (cost|col)', 'rejected'};
+% For COMBO the two live credit terms are the ACCEPTANCE shape's coverage and cost halves; the
+% collision slot is structurally 0 now, so slot B carries cost for both planners.
+catNames  = {'min-cost', 'seed', 'credit A (syclop|coverage)', 'credit B (cost|cost)', 'rejected'};
 catColors = [0.85 0.33 0.10;    % min-cost   - burnt orange
              0.93 0.69 0.13;    % seed       - amber (expected 0)
              0.20 0.42 0.69;    % credit A   - steel blue
              0.30 0.64 0.36;    % credit B   - green
              0.72 0.72 0.72];   % rejected   - grey
 
-% Figure 4 channels: colour = profile, style = gain. Matches the tuning-sweep plot.
-profileColors = [0.15 0.15 0.15;    % none (control)
-                 0.13 0.55 0.45;    % cov
-                 0.60 0.25 0.60;    % col
-                 0.85 0.45 0.10;    % cst
-                 0.24 0.45 0.70];   % all
-gainStyles = {':', '-', '--'};      % gain = 1, 4, 16
+% Figures 4-8 channels: colour = FAN-OUT gain (the headline axis), style = ACCEPTANCE gain.
+% Matches process_combo_tuning_and_plot.m so the two plots read the same way.
+fanColors = [0.15 0.15 0.15;    % kFan 0    (control: uniform rep)
+             0.62 0.76 0.90;    % kFan 1
+             0.24 0.45 0.70;    % kFan 4
+             0.03 0.15 0.31];   % kFan 16   (near-bimodal, KPAX-like sparsity)
+accStyles  = {':', '-', '--'};  % kAcc = 1, 4, 16
 cleanColor = [0.70 0.15 0.20];
 
 %% --- Build the flat point list: the reference first, then the COMBO grid ---
@@ -79,21 +92,22 @@ P(end + 1) = struct( ...
     'name',    sprintf('CleanCost w%g k%g cap%g', cleanRef(1)/100, cleanRef(2)/100, cleanRef(3)/100), ...
     'isCombo', false, 'color', cleanColor, 'style', '-', 'width', 2.2);
 
-for pi = 1:numel(comboProfiles)
-    for gi = 1:numel(comboGains)
-        prof = comboProfiles{pi};
-        gval = comboGains(gi);
-        % Mirror comboSkip(): 'none' owns gain 0 and nothing else.
-        if xor(strcmp(prof, 'none'), gval == 0), continue; end
-        if gval == 0
-            sty = '-';
+for ai = 1:numel(comboAccGains)
+    for fi = 1:numel(comboFanGains)
+        kAcc = comboAccGains(ai);
+        kFan = comboFanGains(fi);
+        if kFan == 0
+            fanTag = 'uniform';
+            w = 1.8;              % the control arm, drawn thicker
         else
-            sty = gainStyles{find(comboGains(2:end) == gval, 1)};
+            fanTag = sprintf('kFan%g', kFan / 100);
+            w = 1.2;
         end
         P(end + 1) = struct( ...
-            'label',   sprintf('KinoPaxSTARCOMBO_%s_g%d_rf%d', prof, gval, comboRf), ...
-            'name',    sprintf('COMBO %s g%g', prof, gval/100), ...
-            'isCombo', true, 'color', profileColors(pi, :), 'style', sty, 'width', 1.2); %#ok<SAGROW>
+            'label',   sprintf('KinoPaxSTARCOMBO_ka%d_kf%d_rf%d', kAcc, kFan, comboRf), ...
+            'name',    sprintf('COMBO kAcc%g %s', kAcc / 100, fanTag), ...
+            'isCombo', true, 'color', fanColors(fi, :), 'style', accStyles{ai}, ...
+            'width',   w); %#ok<SAGROW>
     end
 end
 nP = numel(P);
@@ -402,7 +416,10 @@ function [a, b] = creditPair(t, isCombo)
     % The first two credit terms for whichever planner wrote this run. CleanCost splits across
     % (syclop, cost, floor); COMBO across its three sigmoids (cov, col, cst).
     if isCombo
-        a = col(t, 'credit_cov'); b = col(t, 'credit_col');
+        % COMBO's two live acceptance terms. credit_col is structurally 0 (the collision term is
+        % gone), so the second slot carries COST for both planners -- which makes the stacked bars
+        % directly comparable rather than accidentally plotting a dead series for one of them.
+        a = col(t, 'credit_cov'); b = col(t, 'credit_cst');
     else
         a = col(t, 'credit_syclop'); b = col(t, 'credit_cost');
     end
@@ -412,7 +429,9 @@ function [a, b] = creditPair(t, isCombo)
 end
 
 function c = creditThird(t, isCombo)
-    if isCombo, c = col(t, 'credit_cst'); else, c = col(t, 'credit_floor'); end
+    % The third slot exists only so the consistency check still sums to acc_roll. For COMBO that is
+    % the (structurally zero) collision credit; for CleanCost it is the probability floor.
+    if isCombo, c = col(t, 'credit_col'); else, c = col(t, 'credit_floor'); end
     if isempty(c), c = zeros(height(t), 1); end
 end
 

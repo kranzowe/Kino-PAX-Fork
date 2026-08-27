@@ -47,29 +47,6 @@ def cu_scalar(name):
     return float(mo.group(1))
 
 
-def cu_profiles():
-    """PROFILES[] enum members -> the string tokens profileTok() actually emits."""
-    mo = re.search(r'static const ComboProfile PROFILES\[\]\s*=\s*\{([^}]*)\}', cu)
-    if not mo:
-        sys.exit('FATAL: PROFILES[] not found in %s' % CU)
-    members = [x.strip() for x in mo.group(1).split(',') if x.strip()]
-
-    # Parse profileTok's switch rather than assuming COMBO_FOO -> "foo": if someone renames a token
-    # there and not here, that is exactly the drift this script exists to catch.
-    tok = dict(re.findall(r'case\s+(COMBO_\w+):\s*return\s*"(\w+)"', cu))
-    dmo = re.search(r'default:\s*return\s*"(\w+)"', cu)
-    default = dmo.group(1) if dmo else None
-    out = []
-    for mem in members:
-        if mem in tok:
-            out.append(tok[mem])
-        elif default:
-            out.append(default)
-        else:
-            sys.exit('FATAL: no profileTok() case or default for %s' % mem)
-    return out
-
-
 def sh_array(name):
     """Anchored at ^ so the commented-out full variants in the .sh are correctly ignored."""
     mo = re.search(r'^%s=\(([^)]*)\)' % name, sh, re.M)
@@ -119,21 +96,16 @@ def tok(x):
 
 
 # ---------------------------------------------------------------- the C++ side
-cu_prof = cu_profiles()
-cu_gains = cu_floats('GAINS')
-cu_rfs = cu_floats('REACT_FRACS')
+# COMBO's grid is now acceptance-gain x fan-out-gain: two shapes, one for "which nodes join" and one
+# for "where propagation goes". kFan = 0 is the uniform-fan-out control arm.
+cu_acc = cu_floats('ACC_GAINS')
+cu_fan = cu_floats('FAN_GAINS')
+cu_rf = cu_scalar('REACT_FRAC')
 cu_true = cu_floats('TRUE_CAPS')
 cu_kcap = cu_floats('KPAXCAP_CAPS')
 cu_cap_derived = cu_scalar('CAP_DERIVED')
-cu_gain_derived = cu_scalar('COMBO_DERIVED_GAIN')
-cu_rf_derived = cu_scalar('COMBO_DERIVED_RF')
-
-pmo = re.search(r'static const ComboProfile COMBO_DERIVED_PROFILE\s*=\s*(COMBO_\w+)', cu)
-if not pmo:
-    sys.exit('FATAL: COMBO_DERIVED_PROFILE not found in %s' % CU)
-_tokmap = dict(re.findall(r'case\s+(COMBO_\w+):\s*return\s*"(\w+)"', cu))
-_dmo = re.search(r'default:\s*return\s*"(\w+)"', cu)
-cu_prof_derived = _tokmap.get(pmo.group(1), _dmo.group(1) if _dmo else None)
+cu_acc_derived = cu_scalar('COMBO_DERIVED_ACC')
+cu_fan_derived = cu_scalar('COMBO_DERIVED_FAN')
 
 cu_clean = {}
 for fld, key in (('CLEAN_BASE_W', 'w'), ('CLEAN_BASE_K', 'k'), ('CLEAN_BASE_CAP', 'cap')):
@@ -158,34 +130,30 @@ if not any(abs(c - cu_cap_derived) < 1e-6 for c in cu_true):
     problems.append('CAP_DERIVED (%g) is not in TRUE_CAPS %s' % (cu_cap_derived, cu_true))
 if not any(abs(c - cu_cap_derived) < 1e-6 for c in cu_kcap):
     problems.append('CAP_DERIVED (%g) is not in KPAXCAP_CAPS %s' % (cu_cap_derived, cu_kcap))
-if not any(abs(g - cu_gain_derived) < 1e-6 for g in cu_gains):
-    problems.append('COMBO_DERIVED_GAIN (%g) is not in GAINS %s' % (cu_gain_derived, cu_gains))
-if not any(abs(r - cu_rf_derived) < 1e-6 for r in cu_rfs):
-    problems.append('COMBO_DERIVED_RF (%g) is not in REACT_FRACS %s' % (cu_rf_derived, cu_rfs))
-if cu_prof_derived not in cu_prof:
-    problems.append('COMBO_DERIVED_PROFILE (%s) is not in PROFILES %s' % (cu_prof_derived, cu_prof))
+if not any(abs(g - cu_acc_derived) < 1e-6 for g in cu_acc):
+    problems.append('COMBO_DERIVED_ACC (%g) is not in ACC_GAINS %s' % (cu_acc_derived, cu_acc))
+if not any(abs(g - cu_fan_derived) < 1e-6 for g in cu_fan):
+    problems.append('COMBO_DERIVED_FAN (%g) is not in FAN_GAINS %s' % (cu_fan_derived, cu_fan))
+# kFan = 0 is the uniform-fan-out control arm and the only direct test of whether shaped fan-out
+# beats CleanCost's behaviour at all. Losing it silently would gut the sweep's headline comparison.
+if not any(abs(g) < 1e-9 for g in cu_fan):
+    problems.append('FAN_GAINS %s has no 0 entry -- the uniform-fan-out control arm is missing' % (cu_fan,))
 
 
-def combo_skip(prof, gain, rf, single):
-    """Mirrors comboSkip() in the benchmark."""
-    if (prof == 'none') != (gain == 0.0):
-        return True
-    if single:
-        if not (prof == cu_prof_derived and abs(gain - cu_gain_derived) < 1e-6):
-            return True
-        if abs(rf - cu_rf_derived) > 1e-6:
-            return True
-    return False
+def combo_skip(kAcc, kFan, single):
+    """Mirrors comboSkip() in the benchmark: full factorial, --single-point is the only skip."""
+    if not single:
+        return False
+    return abs(kAcc - cu_acc_derived) > 1e-6 or abs(kFan - cu_fan_derived) > 1e-6
 
 
 cu_pairs = set()
 for d, single in zip(sh_deltas, sh_single):
-    for prof in cu_prof:
-        for g in cu_gains:
-            for rf in cu_rfs:
-                if combo_skip(prof, g, rf, single):
-                    continue
-                cu_pairs.add(('KinoPaxSTARCOMBO_%s_g%d_rf%d' % (prof, tok(g), tok(rf)), d))
+    for kAcc in cu_acc:
+        for kFan in cu_fan:
+            if combo_skip(kAcc, kFan, single):
+                continue
+            cu_pairs.add(('KinoPaxSTARCOMBO_ka%d_kf%d_rf%d' % (tok(kAcc), tok(kFan), tok(cu_rf)), d))
     cu_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                   % (cu_clean['r2'], cu_clean['w'], cu_clean['k'], cu_clean['cap']), d))
     for c in cu_true:
@@ -200,17 +168,16 @@ for d, single in zip(sh_deltas, sh_single):
     cu_pairs.add(('KinoPaxPlus', d))
 
 # ---------------------------------------------------------------- the MATLAB side
-m_prof = m_cellstr('comboProfiles')
-m_gains = m_ints('comboGains')
-m_rfs = m_ints('comboReact')
+m_acc = m_ints('comboAccGains')
+m_fan = m_ints('comboFanGains')
+m_rf = m_scalar_int('comboReact')
 m_true = m_ints('trueCaps')
 m_kcap = m_ints('kpaxCapCaps')
 m_deltas = m_cellstr('deltas')
 m_single = m_bools('deltaSingleCap')
 m_cap_derived = m_scalar_int('capDerived')
-m_prof_derived = m_str('comboDerivedProfile')
-m_gain_derived = m_scalar_int('comboDerivedGain')
-m_rf_derived = m_scalar_int('comboDerivedRf')
+m_acc_derived = m_scalar_int('comboDerivedAcc')
+m_fan_derived = m_scalar_int('comboDerivedFan')
 m_clean = {
     'r2': m_str('cleanBaseR2'),
     'w': m_scalar_int('cleanBaseW'),
@@ -220,17 +187,11 @@ m_clean = {
 
 m_pairs = set()
 for d, single in zip(m_deltas, m_single):
-    for prof in m_prof:
-        for g in m_gains:
-            for rf in m_rfs:
-                if (prof == 'none') != (g == 0):
-                    continue
-                if single:
-                    if not (prof == m_prof_derived and g == m_gain_derived):
-                        continue
-                    if rf != m_rf_derived:
-                        continue
-                m_pairs.add(('KinoPaxSTARCOMBO_%s_g%d_rf%d' % (prof, g, rf), d))
+    for kAcc in m_acc:
+        for kFan in m_fan:
+            if single and not (kAcc == m_acc_derived and kFan == m_fan_derived):
+                continue
+            m_pairs.add(('KinoPaxSTARCOMBO_ka%d_kf%d_rf%d' % (kAcc, kFan, m_rf), d))
     m_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                  % (m_clean['r2'], m_clean['w'], m_clean['k'], m_clean['cap']), d))
     for c in m_true:
@@ -257,7 +218,7 @@ if sh_single != m_single:
 # --- Assertion 2: distinct floats must not collapse onto the same round(100x) token.
 # 0.01 and 0.1 both look plausible and both want "cap1"/"cap10"; a collision here means two grid
 # points silently write to ONE filename and the second overwrites the first.
-for name, vals in (('GAINS', cu_gains), ('REACT_FRACS', cu_rfs),
+for name, vals in (('ACC_GAINS', cu_acc), ('FAN_GAINS', cu_fan),
                    ('TRUE_CAPS', cu_true), ('KPAXCAP_CAPS', cu_kcap)):
     toks = [tok(v) for v in vals]
     if len(set(toks)) != len(set(vals)):

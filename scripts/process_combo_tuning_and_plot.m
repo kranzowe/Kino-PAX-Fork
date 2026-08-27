@@ -93,19 +93,23 @@ deltaSingleCap = [false];
 
 deltaLabel = '3 deltas overlaid';
 
-% COMBO grid - must match PROFILES / GAINS / REACT_FRACS in
-% kinopaxstar_combo_tuning_sweep.cu. Gains are the integer label tokens (100 x the float), exactly
+% COMBO grid - must match ACC_GAINS / FAN_GAINS / REACT_FRAC in
+% kinopaxstar_combo_tuning_sweep.cu. Values are the integer label tokens (100 x the float), exactly
 % as they appear in the filenames. cross_check_combo_grid.py asserts these stay in step; when they
 % drift, MATLAB reports "0 runs" for the orphaned series rather than erroring, which is the failure
 % mode that silently wastes a whole sweep.
-comboProfiles = {'none', 'cov', 'col', 'cst', 'all'};
-comboGains    = [0 100 400 1600];
-comboReact    = [10];
+%
+% COMBO runs TWO shapes: acceptance (which nodes join) and fan-out (where propagation goes).
+% kFan is the headline axis -- kFan = 0 pins both fan-out sigmoids at 0.5, so every node gets the
+% same rep. That is the CleanCost/KinoPaxPlus uniform-fan-out CONTROL ARM, and the direct test of
+% whether shaped fan-out is worth anything at all.
+comboAccGains = [100 400 1600];
+comboFanGains = [0 100 400 1600];
+comboReact    = 10;
 
-% The derived operating point that --single-point selects (COMBO_ALL, gain 4, rf 0.1).
-comboDerivedProfile = 'all';
-comboDerivedGain    = 400;
-comboDerivedRf      = 10;
+% The derived operating point that --single-point selects (kAcc = kFan = 4).
+comboDerivedAcc = 400;
+comboDerivedFan = 400;
 
 % CleanCost baseline point - one series, the well-tuned operating point. Same label format as the
 % cost sweep, so its historical CSVs load here unchanged.
@@ -118,17 +122,17 @@ cleanBaseCap = 3;
 trueCaps    = [3 10];
 kpaxCapCaps = [3 10];
 
-% colour = PROFILE (which metric is live), line style = GAIN (how sharp), width = delta base.
-% Profile is the primary factor here, so it gets the channel the eye reads first.
-%   none - near-black: the control, no metric steering at all
-%   all  - steel blue: inherits the CleanCost ramp's colour, so it reads as the headline series
-profileColors = [0.15 0.15 0.15;    % none (control)
-                 0.13 0.55 0.45;    % cov  - teal
-                 0.60 0.25 0.60;    % col  - purple
-                 0.85 0.45 0.10;    % cst  - orange
-                 0.24 0.45 0.70];   % all  - steel blue
-gainStyles  = {':', '-', '--'};     % gain = 1, 4, 16
-gainMarkers = {'o', 'x', '+'};      % scatter only
+% colour = FAN-OUT GAIN, line style = ACCEPTANCE GAIN, width = delta base.
+% kFan gets the channel the eye reads first because it is the headline axis: the question is
+% whether concentrating propagation beats spreading it.
+%   kFan 0  - near-black: the uniform-fan-out control
+%   rising  - steel ramp, darkening with gain (and with concentration)
+fanColors = [0.15 0.15 0.15;    % kFan 0    (control: uniform rep)
+             0.62 0.76 0.90;    % kFan 1    (barely concentrating)
+             0.24 0.45 0.70;    % kFan 4
+             0.03 0.15 0.31];   % kFan 16   (near-bimodal, KPAX-like sparsity)
+accStyles  = {':', '-', '--'};  % kAcc = 1, 4, 16
+accMarkers = {'o', 'x', '+'};   % scatter only
 
 % CleanCost baseline: crimson, distinct from every COMBO colour, drawn as a reference anchor.
 cleanColor = [0.70 0.15 0.20];
@@ -158,40 +162,35 @@ for di = 1:numel(deltas)
     dTag   = deltaTitles{di};
     dOne   = deltaSingleCap(di);   % this delta ran --single-point: only capDerived exists
 
-    % --- COMBO: profile x gain x reactFrac ---
-    for pi2 = 1:numel(comboProfiles)
-        for gi = 1:numel(comboGains)
-            for ri = 1:numel(comboReact)
-                prof = comboProfiles{pi2};
-                gval = comboGains(gi);
-                rfv  = comboReact(ri);
+    % --- COMBO: acceptance gain x fan-out gain ---
+    for ai = 1:numel(comboAccGains)
+        for fi = 1:numel(comboFanGains)
+            kAcc = comboAccGains(ai);
+            kFan = comboFanGains(fi);
 
-                % Mirror comboSkip() in the benchmark: 'none' owns gain 0 and nothing else, and
-                % every other profile skips gain 0. XOR, one statement, same as the C++ side.
-                if xor(strcmp(prof, 'none'), gval == 0), continue; end
-                if dOne
-                    if ~(strcmp(prof, comboDerivedProfile) && gval == comboDerivedGain), continue; end
-                    if rfv ~= comboDerivedRf, continue; end
-                end
+            % Mirror comboSkip(): the grid is a full factorial, so --single-point is the only skip.
+            if dOne && ~(kAcc == comboDerivedAcc && kFan == comboDerivedFan), continue; end
 
-                plannerNames{end + 1}   = sprintf('KinoPaxSTARCOMBO_%s_g%d_rf%d', ...
-                                                  prof, gval, rfv); %#ok<SAGROW>
-                plannerDisplay{end + 1} = sprintf('COMBO %s g%g rf%g [%s]', prof, ...
-                                                  gval / 100, rfv / 100, dTag); %#ok<SAGROW>
-                plannerColors(end + 1, :) = profileColors(pi2, :);          %#ok<SAGROW>
-                if gval == 0
-                    plannerStyles{end + 1}  = '-';                          %#ok<SAGROW>
-                    plannerMarkers{end + 1} = 's';                          %#ok<SAGROW>
-                    plannerWidths(end + 1)  = dWidth + 0.8;                 %#ok<SAGROW>
-                else
-                    gi2 = find(comboGains(2:end) == gval, 1);
-                    plannerStyles{end + 1}  = gainStyles{gi2};              %#ok<SAGROW>
-                    plannerMarkers{end + 1} = gainMarkers{gi2};             %#ok<SAGROW>
-                    plannerWidths(end + 1)  = dWidth;                       %#ok<SAGROW>
-                end
-                plannerBaseline(end + 1) = false;                           %#ok<SAGROW>
-                plannerDeltaIdx(end + 1) = di;                              %#ok<SAGROW>
+            plannerNames{end + 1}   = sprintf('KinoPaxSTARCOMBO_ka%d_kf%d_rf%d', ...
+                                              kAcc, kFan, comboReact); %#ok<SAGROW>
+            if kFan == 0
+                fanTag = 'uniform';
+            else
+                fanTag = sprintf('kFan%g', kFan / 100);
             end
+            plannerDisplay{end + 1} = sprintf('COMBO kAcc%g %s [%s]', ...
+                                              kAcc / 100, fanTag, dTag); %#ok<SAGROW>
+            plannerColors(end + 1, :) = fanColors(fi, :);         %#ok<SAGROW>
+            plannerStyles{end + 1}    = accStyles{ai};            %#ok<SAGROW>
+            plannerMarkers{end + 1}   = accMarkers{ai};           %#ok<SAGROW>
+            % The uniform-fan-out arm is drawn thicker: it is the reference the rest is read against.
+            if kFan == 0
+                plannerWidths(end + 1) = dWidth + 0.8;            %#ok<SAGROW>
+            else
+                plannerWidths(end + 1) = dWidth;                  %#ok<SAGROW>
+            end
+            plannerBaseline(end + 1) = false;                     %#ok<SAGROW>
+            plannerDeltaIdx(end + 1) = di;                        %#ok<SAGROW>
         end
     end
 
@@ -423,6 +422,43 @@ for ei = 1:numel(environments)
         ylim([0 105]);
         xlabel('Iteration'); ylabel('% of frontier from Part B'); grid on;
         title({'Frontier composition: reactivated / frontier\_size', 'near 100% = the region-best guarantee dominates F'});
+        clickableLegend();
+
+        %% ---------- FIGURE: shape diagnostics ----------
+        % The two checks specific to the split-shape design.
+        %
+        %   mean_shape_fanout SHOULD FALL as kFan rises. That is not a fault -- it is the
+        %   concentration mechanism working. High gain makes the fan-out sigmoid a step, the shape
+        %   goes bimodal {~0, ~1}, and since repTarget divides by this measured mean, a small top
+        %   fraction phi collects 1/phi times the average fan-out at an UNCHANGED sum(rep). A flat
+        %   0.5 line is the kFan = 0 control arm: uniform rep, no concentration at all.
+        %
+        %   blend_w_cost is the normalised COST weight of the acceptance shape. It starts at 0
+        %   (pure coverage) and rises toward 1 as the tree fills. IF IT NEVER APPROACHES 1 the run
+        %   ended before cost ever took over, and h_blendMid_ is the lever -- not the gains.
+        figNum = figNum + 1;
+        figure('Name', sprintf('%s - Shape Diagnostics (%s)', envTitle, costTitle), ...
+               'Position', [180 180 1500 640]);
+
+        subplot(1, 2, 1); hold on;
+        for pi = 1:nPlanner
+            plotMeanIter(R{pi}, @(t) getCol(t, 'mean_shape_fanout'), ...
+                         plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
+        end
+        yline(0.5, 'k--', 'neutral (uniform)', 'LineWidth', 1.2, 'HandleVisibility', 'off');
+        ylim([0 1]); grid on;
+        xlabel('Iteration'); ylabel('mean shape\_fanout');
+        title({'Fan-out concentration: LOWER = more concentrated', ...
+               'flat 0.5 = kFan 0 control (uniform rep)'});
+
+        subplot(1, 2, 2); hold on;
+        for pi = 1:nPlanner
+            plotMeanIter(R{pi}, @(t) getCol(t, 'blend_w_cost'), ...
+                         plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
+        end
+        ylim([0 1]); grid on;
+        xlabel('Iteration'); ylabel('cost weight of the acceptance shape');
+        title({'Coverage -> cost handover', 'never nearing 1 = lower h\_blendMid\_, not the gains'});
         clickableLegend();
 
         %% ---------- Aggregate summary metrics per planner ----------

@@ -253,12 +253,40 @@ acceptance rule runs in `_accept_kernel` after `graph_.updateVertices()`. Two th
 **1. What the probability is a function of.** `weightedAccept(w, vertexScore + fAccept,
 costProbExpGlobal, floor)` becomes `comboShape` (`helper.cuh`):
 
+**TWO shapes, not one** — because one rule was answering two different questions:
+
 ```
-shape = [ σ(-k1·d1) + σ(-k2·d2) + σ(-k3·d3) ] / 3.0        in (0, 1), = 0.5 at the neutral point
-    d1 = (r1Coverage      − exploredMeanCoverage) / exploredMeanCoverage    prefer thin regions
-    d2 = (globalCollFrac  − r1CollisionFrac)      / globalCollFrac          prefer narrow passages
-    d3 = (nodeCost        − r1MeanCost)           / costScale               prefer cheap nodes
+u  = treeSize / MAX_TREE_SIZE            v = u^(ln0.5/ln mid)      wCov = (1-v)^g,  wCst = v^g
+
+shape_accept = ( σ(-kAccCov·d1)·wCov + σ(-kAccCst·d3)·wCst ) / (wCov + wCst)     g = g1
+shape_fanout = ( σ(-kFanCov·d1)·wCov + σ(-kFanCst·d3)·wCst ) / (wCov + wCst)     g = g2
+
+    d1 = (r1Coverage − exploredMeanCoverage) / exploredMeanCoverage   prefer thin regions
+    d3 = (nodeCost   − r1MeanCost)           / costScale              prefer cheap nodes
 ```
+
+Both in (0,1), both exactly **0.5** at the neutral point for every `g`, `mid` and `u`. `shape_accept`
+gates admission; `shape_fanout` sizes `rep`. **Cost belongs in acceptance and is counter-productive
+in fan-out**: cost is cumulative root-to-node, so "cheap" means *shallow*, and weighting fan-out by
+it pours propagation around the root — a density mechanism where KPAX's novelty rule is a reach
+mechanism. That is why COMBO grew a bigger tree than CleanCost while reaching a first solution later.
+
+Each shape **blends coverage into cost as the run progresses**: `mid` sets where the crossover sits,
+`g` how sharply. `g` alone cannot move the crossover (`(1-u)^g` and `u^g` are equal at `u = 0.5` for
+every `g`), hence the separate midpoint. Normalising by `wCov + wCst` rather than by a constant is
+load-bearing: at `g = 1` the weights already partition unity, so a constant divisor of 2 would return
+0.25 at neutral, and at `g ≠ 1` they do not sum to 1 at all, so a constant divisor would let `g`
+rescale the shape instead of only reshaping the transition.
+
+**The collision term is gone** (may return later); `h_globalCollisionFrac_` survives as ν's source.
+
+**How a smooth fan-out shape reproduces KPAX's sparsity.** A shape averaging 0.5 cannot concentrate —
+`rep = repTarget·shape` puts most nodes mid-range. At **high `kFan`** the sigmoid degenerates to a
+step, the shape goes bimodal `{≈0, ≈1}`, and since `repTarget` divides by the *measured* mean shape,
+a top fraction φ collects `1/φ ×` the average — **20× at φ = 0.05, with `Σrep` unchanged**. That is
+KPAX's 15/1 rule with an **adaptive** threshold (relative to the explored mean, recomputed each
+iteration) rather than a hardcoded `< 10`. So `kFan` is the headline tuning axis and *low* gain is
+the failure mode; `kFan = 0` is the uniform-fan-out control arm.
 
 Every `d` is signed so `d > 0` means unfavourable, and every one is divided by a **global**
 reference. Both halves of that are load-bearing. Raw deltas have no usable range: with

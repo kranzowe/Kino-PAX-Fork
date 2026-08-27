@@ -43,19 +43,48 @@ public:
     float h_minCost_;
 
     // ==================================================================================
-    // SHAPE TUNABLES -- WHICH candidates get in. Set by the benchmark before resetPlanner,
-    // which deliberately does not touch them.
+    // SHAPE TUNABLES -- TWO shapes, because one rule was answering two different questions.
+    // Set by the benchmark before resetPlanner, which deliberately does not touch them.
     //
-    //   P = min(pMax, comboShape(...) * pTarget)
+    //   ACCEPTANCE  P   = min(pMax, shape_accept * pTarget)     WHICH nodes join the tree
+    //   FAN-OUT     rep = clamp(repTarget * shape_fanout, ...)  WHERE to spend propagation
     //
-    // comboShape (helper.cuh) is three sigmoids over globally-normalized deltas, renormalized so a
-    // neutral candidate returns exactly COMBO_NEUTRAL_SHAPE (0.5). Each k is a dimensionless GAIN
-    // -- not an exponent -- so 0 pins its term at 0.5 (an exact ablation switch) and larger values
-    // sharpen without moving the midpoint. See helper.cuh for why that distinction matters.
+    // Cost belongs in acceptance -- it is what makes COMBO optimal. It is counter-productive in
+    // fan-out: cost is cumulative root-to-node, so "cheap" means SHALLOW, and weighting fan-out by
+    // cost pours propagation around the root. That is a density mechanism where KPAX's novelty rule
+    // is a reach mechanism, and it is why COMBO grew a bigger tree than CleanCost while reaching a
+    // first solution later. Splitting the shapes is what lets fan-out stay novelty-driven while
+    // acceptance goes cost-driven.
+    //
+    // Each shape blends coverage against cost as the run progresses (see comboShape2 in
+    // helper.cuh): weight moves from coverage to cost as u = treeSize/MAX_TREE_SIZE rises.
+    //
+    // Each k is a dimensionless GAIN in the sigmoid ARGUMENT, not an exponent, so 0 pins its term
+    // at exactly 0.5 -- an ablation switch. With BOTH fan-out gains 0, shape_fanout is the constant
+    // 0.5 and every node gets the same rep: the KinoPaxPlus/CleanCost control arm.
+    //
+    // HIGH FAN-OUT GAIN IS HOW SPARSITY HAPPENS. A shape averaging 0.5 cannot concentrate. At high
+    // gain the sigmoid becomes a step, the shape goes bimodal, and because repTarget divides by the
+    // MEASURED mean shape a top node gets 1/phi times the average -- 20x at phi = 0.05, with
+    // sum(rep) unchanged. That is KPAX's 15/1 with an adaptive threshold, so h_kFan* is the
+    // headline tuning axis and LOW gain is the failure mode.
     // ==================================================================================
-    float h_kCoverage_;    // k1 -- prefer regions covered LESS than the explored average
-    float h_kCollision_;   // k2 -- prefer regions that collide MORE than global (narrow passages)
-    float h_kCost_;        // k3 -- prefer nodes cheaper than their own region's mean
+    float h_kAccCoverage_;   // acceptance: prefer regions covered LESS than the explored average
+    float h_kAccCost_;       // acceptance: prefer nodes cheaper than their own region's mean
+    float h_kFanCoverage_;   // fan-out:    same two signals, independently tuned
+    float h_kFanCost_;
+
+    // Blend controls. mid sets WHERE the coverage->cost crossover happens (u == mid); the two g's
+    // set HOW SHARPLY, independently for the two shapes. g CANNOT move the crossover -- (1-u)^g and
+    // u^g are equal at u = 0.5 for every g -- which is why mid exists separately. At mid = 0.5 the
+    // blend reduces to the plain (1-u), u crossfade.
+    //
+    // NOTE ON mid: u tops out at whatever fraction of MAX_TREE_SIZE a run actually reaches. Under a
+    // wall-clock timeout that can be well under 0.5, in which case the cost term never takes
+    // majority weight at mid = 0.5 -- lower mid is the lever if the sweep shows cost never engaging.
+    float h_blendExpAccept_;   // g1
+    float h_blendExpFanout_;   // g2
+    float h_blendMid_;         // mid, in (0,1)
 
     // ==================================================================================
     // GROWTH-CONTROLLER TUNABLES -- HOW MANY get in. This is what replaces CleanCost's
@@ -120,17 +149,31 @@ public:
     float h_exploredMeanCoverage_;
     float h_globalCoverage_;
 
-    // Mean comboShape over the PREVIOUS iteration's candidates. The controller divides by it.
+    // Mean shape over the PREVIOUS iteration's candidates -- one per shape, because the two are
+    // now different functions with different distributions. Each budget divides by its own.
     //
-    // WHY THIS EXISTS. Both the fan-out and the acceptance roll are gated by the shape, so a
-    // frontier node's expected admitted children scale as shape^2, and E[shape^2] = E[shape]^2 +
-    // Var. comboShape puts a NEUTRAL candidate at exactly COMBO_NEUTRAL_SHAPE, but the deltas are
-    // asymmetric (bounded at +1 on the unfavourable side, unbounded on the favourable side), so the
-    // realised E[shape] is not that value. Measuring it costs one atomic and removes both errors;
-    // deriving it would mean predicting the delta distribution, which is exactly what the k's change.
-    // It is also what makes the planner invariant to COMBO_SHAPE_DIVISOR: rescale every shape and
-    // this scalar rescales with it, so shape*pTarget and repTarget*shape are both unchanged.
-    float h_meanShapePrev_;
+    // WHY THEY EXIST. comboShape2 puts a NEUTRAL candidate at exactly COMBO_NEUTRAL_SHAPE, but the
+    // deltas are asymmetric (bounded at +1 on the unfavourable side, unbounded on the favourable
+    // side), so the realised mean is not that value and the bias would pass straight into the
+    // growth rate. Measuring costs one atomic each; deriving would mean predicting the delta
+    // distribution, which is exactly what the gains change.
+    //
+    // It is also the mechanism behind fan-out concentration: raising h_kFan* makes shape_fanout
+    // bimodal, which DROPS this mean, which RAISES repTarget, which hands the few top nodes a large
+    // multiple of the average -- at an unchanged sum(rep). Watch mean_shape_fanout fall as the gain
+    // rises; that is the concentration working.
+    //
+    // POPULATIONS DIFFER. The accept mean is over ROLLED candidates only -- the population
+    // pTargetAccept is divided across. The fan-out mean is over ALL candidates, exemptions
+    // included, because every accepted node gets a fan-out shape whether it was rolled or exempt.
+    float h_meanShapeAcceptPrev_;
+    float h_meanShapeFanoutPrev_;
+
+    // Blend state for this iteration, logged so the coverage->cost handover is visible in the CSV
+    // rather than inferred. h_blendU_ = treeSize/MAX_TREE_SIZE; h_blendWCost_ = the normalised cost
+    // weight of the ACCEPTANCE shape (the fan-out one differs only by g2).
+    float h_blendU_;
+    float h_blendWCost_;
 
     // The two budget scalars. SEPARATE ON PURPOSE -- one shape, two populations.
     // The gate judges ~1e6 candidates per iteration; Part B judges the whole tree, up to
@@ -169,8 +212,12 @@ public:
     // accepted node splits one unit of credit across the three sigmoid terms in proportion to each
     // term's share of the sum, which is RNG-independent. ACC_SHAPE_SUM is the fixed-point sum of
     // comboShape over every rolled candidate -- NOT a diagnostic, the controller consumes it.
+    // ACC_CREDIT_COL is retained and permanently 0 -- the collision term is gone, but keeping the
+    // slot keeps the CSV schema and the breakdown tooling comparable with earlier data.
+    // ACC_SHAPE_SUM_* are NOT diagnostics: the controller consumes both.
     enum AcceptSlot { ACC_MIN_COST = 0, ACC_SEED, ACC_ROLL, ACC_CREDIT_COV,
-                      ACC_CREDIT_COL, ACC_CREDIT_CST, ACC_SHAPE_SUM, ACC_NUM_SLOTS };
+                      ACC_CREDIT_COL, ACC_CREDIT_CST,
+                      ACC_SHAPE_SUM_ACCEPT, ACC_SHAPE_SUM_FANOUT, ACC_NUM_SLOTS };
     thrust::device_vector<unsigned long long> d_acceptCounts_;
     unsigned long long* d_acceptCounts_ptr_;
     unsigned long long  h_acceptCounts_[ACC_NUM_SLOTS];
@@ -204,15 +251,16 @@ public:
     thrust::device_vector<int> d_treeXR1s_, d_frontierNextXR1s_;
     thrust::device_vector<bool> d_goalSet_;
 
-    // Per unexplored-sample acceptance shape, carried from the accept kernel to Part A of the
+    // Per unexplored-sample FAN-OUT shape, carried from the accept kernel to Part A of the
     // update kernel -- a LATER LAUNCH, so it cannot be recomputed there (it would need a second
     // RNG-free evaluation and every input re-plumbed). Same cross-kernel carry pattern as
     // CleanCost's d_frontierNextFresh_, which this replaces.
     //
+    // IT MUST BE THE FAN-OUT SHAPE, not the acceptance one -- Part A uses it only to size rep.
     // Indexed by UNEXPLORED-SAMPLE SLOT, not by compacted position: the accept kernel writes
     // [activeFrontierNextIdxs[tid]] and Part A must read [x1UnexploredIdx], never [tid].
     // Written before the min-cost early return too, or exempt nodes read a stale shape.
-    thrust::device_vector<float> d_frontierNextAcceptShape_;
+    thrust::device_vector<float> d_frontierNextFanoutShape_;
 
     thrust::device_vector<uint> d_goalSetIdxs_, d_goalSetScanIdx_;
     thrust::device_vector<int> d_iterations_;
@@ -221,7 +269,7 @@ public:
     // --- raw pointers ---
     float *d_unexploredSamples_ptr_, *d_goalSample_ptr_, *d_unexploredSampleCosts_ptr_;
     float *d_minCostsR1_ptr_, *d_sumCostsR1_ptr_, *d_minCost_ptr_;
-    float *d_frontierNextAcceptShape_ptr_;
+    float *d_frontierNextFanoutShape_ptr_;
     int   *d_cntCostsR1_ptr_;
     float *d_pathCosts_ptr_, *d_controlPathsToGoal_ptr_;
     bool *d_frontier_ptr_, *d_frontierNext_ptr_, *d_goalSet_ptr_;
@@ -272,12 +320,13 @@ __global__ void KinoPaxSTARCOMBO_propagateFrontier_kernel2(bool* frontier, uint*
 // Every candidate's shape is recorded for the update kernel's fan-out, exemptions included.
 __global__ void KinoPaxSTARCOMBO_accept_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
-                                               int* counterArray, int* validCounterArray, float* regionCoverage,
+                                               float* regionCoverage,
                                                int* frontierNextXR1s, float* unexploredSampleCosts,
                                                bool* frontierNext, curandState* randomSeeds,
-                                               float* frontierNextAcceptShape,
-                                               float kCoverage, float kCollision, float kCost,
-                                               float costScale, float exploredMeanCoverage, float globalCollisionFrac,
+                                               float* frontierNextFanoutShape,
+                                               float kAccCov, float kAccCst, float kFanCov, float kFanCst,
+                                               float blendU, float blendExpAccept, float blendExpFanout, float blendMid,
+                                               float costScale, float exploredMeanCoverage,
                                                float pTargetAccept, float pMax,
                                                bool countReasons, unsigned long long* acceptCounts);
 
@@ -289,11 +338,12 @@ KinoPaxSTARCOMBO_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint*
                                float* xGoal, int treeSize, float* unexploredSamples, float* treeSamples,
                                int* unexploredSamplesParentIdxs, int* treeSamplesParentIdxs, float* treeSampleCosts,
                                uint* activeFrontierRepeatCount, curandState* randomSeeds,
-                               float* frontierNextAcceptShape,
+                               float* frontierNextFanoutShape,
                                float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
-                               int* counterArray, int* validCounterArray, float* regionCoverage,
-                               float kCoverage, float kCollision, float kCost,
-                               float costScale, float exploredMeanCoverage, float globalCollisionFrac,
+                               float* regionCoverage,
+                               float kAccCov, float kAccCst, float kFanCov, float kFanCst,
+                               float blendU, float blendExpAccept, float blendExpFanout, float blendMid,
+                               float costScale, float exploredMeanCoverage,
                                float pTargetReactivate, float pMax, float repTarget, float repeatMax,
                                int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet,

@@ -92,7 +92,7 @@ KinoPaxSTARCOMBO::KinoPaxSTARCOMBO()
     d_frontierNextXR1s_       = thrust::device_vector<int>(MAX_TREE_SIZE);
     d_unexploredSampleCosts_  = thrust::device_vector<float>(MAX_TREE_SIZE);
     d_goalSet_                = thrust::device_vector<bool>(MAX_TREE_SIZE);
-    d_frontierNextAcceptShape_ = thrust::device_vector<float>(MAX_TREE_SIZE, COMBO_NEUTRAL_SHAPE);
+    d_frontierNextFanoutShape_ = thrust::device_vector<float>(MAX_TREE_SIZE, COMBO_NEUTRAL_SHAPE);
     d_acceptCounts_           = thrust::device_vector<unsigned long long>(ACC_NUM_SLOTS, 0ULL);
     d_goalSetIdxs_            = thrust::device_vector<uint>(MAX_TREE_SIZE);
     d_goalSetScanIdx_         = thrust::device_vector<uint>(MAX_TREE_SIZE);
@@ -122,7 +122,7 @@ KinoPaxSTARCOMBO::KinoPaxSTARCOMBO()
     d_goalSet_ptr_                = thrust::raw_pointer_cast(d_goalSet_.data());
     d_goalSetIdxs_ptr_            = thrust::raw_pointer_cast(d_goalSetIdxs_.data());
     d_goalSetScanIdx_ptr_         = thrust::raw_pointer_cast(d_goalSetScanIdx_.data());
-    d_frontierNextAcceptShape_ptr_ = thrust::raw_pointer_cast(d_frontierNextAcceptShape_.data());
+    d_frontierNextFanoutShape_ptr_ = thrust::raw_pointer_cast(d_frontierNextFanoutShape_.data());
     d_acceptCounts_ptr_           = thrust::raw_pointer_cast(d_acceptCounts_.data());
     d_iterations_ptr_             = thrust::raw_pointer_cast(d_iterations_.data());
     d_pathCosts_ptr_              = thrust::raw_pointer_cast(d_pathCosts_.data());
@@ -138,9 +138,18 @@ KinoPaxSTARCOMBO::KinoPaxSTARCOMBO()
 
     // ---- Shape tunables: WHICH candidates get in. 4.0 is the middle of the swept {1, 4, 16}
     // log grid -- gentle / near-binary / hard threshold on a dimensionless delta. 0 ablates. ----
-    h_kCoverage_  = 4.0f;
-    h_kCollision_ = 4.0f;
-    h_kCost_      = 4.0f;
+    // Acceptance gains. Cost belongs here.
+    h_kAccCoverage_ = 4.0f;
+    h_kAccCost_     = 4.0f;
+    // Fan-out gains. THE headline axis: low gain spreads propagation evenly (max/mean = 2x), high
+    // gain makes the shape bimodal and hands the top fraction a large multiple of the average, at
+    // an unchanged sum(rep). 0 on both = uniform rep, the CleanCost/KinoPaxPlus control arm.
+    h_kFanCoverage_ = 4.0f;
+    h_kFanCost_     = 4.0f;
+    // Blend: g = transition sharpness (per shape), mid = where the crossover sits.
+    h_blendExpAccept_ = 1.0f;
+    h_blendExpFanout_ = 1.0f;
+    h_blendMid_       = 0.5f;
 
     // ---- Growth-controller tunables: HOW MANY get in. See the header comment. ----
     // 120 is the MEASURED candidates-per-admission of a well-tuned CleanCost run (~9e5
@@ -188,7 +197,10 @@ KinoPaxSTARCOMBO::KinoPaxSTARCOMBO()
     h_globalCollisionFrac_  = 0.1f;   // => nu = 0.9, the measured collision-free fraction
     h_exploredMeanCoverage_ = 0.0f;
     h_globalCoverage_       = 0.0f;
-    h_meanShapePrev_        = COMBO_NEUTRAL_SHAPE;   // neutral until the first batch is measured
+    h_meanShapeAcceptPrev_  = COMBO_NEUTRAL_SHAPE;   // neutral until the first batch is measured
+    h_meanShapeFanoutPrev_  = COMBO_NEUTRAL_SHAPE;
+    h_blendU_               = 0.0f;
+    h_blendWCost_           = 0.0f;
     h_pTargetAccept_        = 0.0f;
     h_pTargetReactivate_    = 0.0f;
     h_repTarget_            = 1.0f;
@@ -255,7 +267,7 @@ void KinoPaxSTARCOMBO::resetPlanner(float* h_initial, float* h_goal)
     thrust::fill(d_frontierNextXR1s_.begin(), d_frontierNextXR1s_.end(), 0);
     thrust::fill(d_unexploredSampleCosts_.begin(), d_unexploredSampleCosts_.end(), 0.0f);
     thrust::fill(d_goalSet_.begin(), d_goalSet_.end(), false);
-    thrust::fill(d_frontierNextAcceptShape_.begin(), d_frontierNextAcceptShape_.end(), COMBO_NEUTRAL_SHAPE);
+    thrust::fill(d_frontierNextFanoutShape_.begin(), d_frontierNextFanoutShape_.end(), COMBO_NEUTRAL_SHAPE);
     thrust::fill(d_iterations_.begin(), d_iterations_.end(), 0);
     thrust::fill(d_pathCosts_.begin(), d_pathCosts_.end(), 0.0f);
     thrust::fill(d_controlPathsToGoal_.begin(), d_controlPathsToGoal_.end(), 0.0f);
@@ -289,7 +301,10 @@ void KinoPaxSTARCOMBO::resetPlanner(float* h_initial, float* h_goal)
     h_globalCollisionFrac_  = 0.1f;   // => nu = 0.9 seed
     h_exploredMeanCoverage_ = 0.0f;
     h_globalCoverage_       = 0.0f;
-    h_meanShapePrev_        = COMBO_NEUTRAL_SHAPE;
+    h_meanShapeAcceptPrev_  = COMBO_NEUTRAL_SHAPE;
+    h_meanShapeFanoutPrev_  = COMBO_NEUTRAL_SHAPE;
+    h_blendU_               = 0.0f;
+    h_blendWCost_           = 0.0f;
     h_pTargetAccept_        = 0.0f;
     h_pTargetReactivate_    = 0.0f;
     h_repTarget_            = 1.0f;
@@ -612,12 +627,13 @@ __global__ void KinoPaxSTARCOMBO_propagateFrontier_kernel2(bool* frontier, uint*
 // later launch -- sizes each node's fan-out from it.
 __global__ void KinoPaxSTARCOMBO_accept_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
-                                               int* counterArray, int* validCounterArray, float* regionCoverage,
+                                               float* regionCoverage,
                                                int* frontierNextXR1s, float* unexploredSampleCosts,
                                                bool* frontierNext, curandState* randomSeeds,
-                                               float* frontierNextAcceptShape,
-                                               float kCoverage, float kCollision, float kCost,
-                                               float costScale, float exploredMeanCoverage, float globalCollisionFrac,
+                                               float* frontierNextFanoutShape,
+                                               float kAccCov, float kAccCst, float kFanCov, float kFanCst,
+                                               float blendU, float blendExpAccept, float blendExpFanout, float blendMid,
+                                               float costScale, float exploredMeanCoverage,
                                                float pTargetAccept, float pMax,
                                                bool countReasons, unsigned long long* acceptCounts)
 {
@@ -639,7 +655,18 @@ __global__ void KinoPaxSTARCOMBO_accept_kernel(uint* activeFrontierNextIdxs, uin
             // fan-out; a slot left unwritten holds the shape of whatever candidate occupied it in a
             // previous iteration. NEUTRAL rather than maximum on purpose: exemptions run to ~4.5e3
             // per iteration, and 4.5e3 nodes at repeatMax would be the whole propagation budget.
-            frontierNextAcceptShape[idx] = COMBO_NEUTRAL_SHAPE;
+            // The FAN-OUT shape is computable for an exempt node -- it needs no roll -- so compute
+            // it properly rather than handing out a neutral placeholder. It is also accumulated
+            // into the fan-out mean below, which is what keeps the budget exact once exemptions
+            // start carrying real (and often high) fan-out shapes.
+            float d1e, d3e;
+            int   cnte        = cntCostsR1[xR1];
+            float r1MeanCoste = (cnte > 0) ? sumCostsR1[xR1] / (float)cnte : cost;
+            comboDeltas(cost, r1MeanCoste, costScale, regionCoverage[xR1], exploredMeanCoverage, &d1e, &d3e);
+            float shapeFanE = comboShape2(d1e, d3e, kFanCov, kFanCst, blendU, blendExpFanout, blendMid);
+            frontierNextFanoutShape[idx] = shapeFanE;
+            atomicAdd(&acceptCounts[KinoPaxSTARCOMBO::ACC_SHAPE_SUM_FANOUT],
+                      (unsigned long long)llroundf((float)COMBO_CREDIT_SCALE * shapeFanE));
             atomicAdd(&acceptCounts[KinoPaxSTARCOMBO::ACC_MIN_COST], 1ULL);
             return;
         }
@@ -649,25 +676,32 @@ __global__ void KinoPaxSTARCOMBO_accept_kernel(uint* activeFrontierNextIdxs, uin
     // tree is a single node and these statistics are otherwise meaningless. ---
     int   cnt        = cntCostsR1[xR1];
     float r1MeanCost = (cnt > 0) ? sumCostsR1[xR1] / (float)cnt : cost;
-    int   tot        = counterArray[xR1];
-    float r1CollFrac = (tot > 0) ? (float)(tot - validCounterArray[xR1]) / (float)tot : globalCollisionFrac;
 
-    float t1, t2, t3;
-    comboTerms(cost, r1MeanCost, costScale, regionCoverage[xR1], exploredMeanCoverage,
-               r1CollFrac, globalCollisionFrac, kCoverage, kCollision, kCost, &t1, &t2, &t3);
-    float shape = (t1 + t2 + t3) / COMBO_SHAPE_DIVISOR;
+    // ONE pair of deltas, TWO shapes. The deltas are a property of the candidate; the shapes differ
+    // only in their gains and blend exponent, which is exactly the separation this planner needs:
+    // acceptance may lean on cost while fan-out stays novelty-driven.
+    float d1, d3;
+    comboDeltas(cost, r1MeanCost, costScale, regionCoverage[xR1], exploredMeanCoverage, &d1, &d3);
+    float shapeAcc = comboShape2(d1, d3, kAccCov, kAccCst, blendU, blendExpAccept, blendMid);
+    float shapeFan = comboShape2(d1, d3, kFanCov, kFanCst, blendU, blendExpFanout, blendMid);
 
-    frontierNextAcceptShape[idx] = shape;
+    // The array carries the FAN-OUT shape: Part A reads it only to size rep.
+    frontierNextFanoutShape[idx] = shapeFan;
 
     // --- Mean shape over the rolled candidates. NOT a diagnostic: updateFrontier divides both
     // budget scalars by the previous iteration's value, because the shape gates admission AND
     // fan-out, so per-node yield goes as shape^2 and E[shape] is not 1 for an asymmetric delta
     // distribution. Fixed-point so ~1e6 atomics onto one address commute exactly. Accumulated over
     // ROLLED candidates only, matching the population pTargetAccept is divided across. ---
-    atomicAdd(&acceptCounts[KinoPaxSTARCOMBO::ACC_SHAPE_SUM],
-              (unsigned long long)llroundf((float)COMBO_CREDIT_SCALE * shape));
+    // Two means, two populations. ACCEPT is summed over ROLLED candidates only -- the population
+    // pTargetAccept is divided across. FANOUT is summed over ALL candidates, exemptions included
+    // (see the exempt branch above), because every admitted node gets a fan-out shape either way.
+    atomicAdd(&acceptCounts[KinoPaxSTARCOMBO::ACC_SHAPE_SUM_ACCEPT],
+              (unsigned long long)llroundf((float)COMBO_CREDIT_SCALE * shapeAcc));
+    atomicAdd(&acceptCounts[KinoPaxSTARCOMBO::ACC_SHAPE_SUM_FANOUT],
+              (unsigned long long)llroundf((float)COMBO_CREDIT_SCALE * shapeFan));
 
-    float acceptanceProbability = fminf(shape * pTargetAccept, pMax);
+    float acceptanceProbability = fminf(shapeAcc * pTargetAccept, pMax);
 
     curandState seed = randomSeeds[idx];
     bool accept      = curand_uniform(&seed) < acceptanceProbability;
@@ -683,16 +717,23 @@ __global__ void KinoPaxSTARCOMBO_accept_kernel(uint* activeFrontierNextIdxs, uin
             // independent of the throttle. Gated: 3 extra atomics on hot addresses. ---
             if(countReasons)
                 {
-                    float tot3 = t1 + t2 + t3;
-                    if(tot3 > 0.0f)
+                    // Credit is split across the two terms of the ACCEPTANCE shape, weighted the
+                    // same way the shape weights them -- so it reports not just which signal liked
+                    // the node but how much say that signal had at this point in the blend.
+                    // ACC_CREDIT_COL stays 0: the collision term is gone, the slot is kept so the
+                    // CSV schema matches earlier data.
+                    float wCov, wCst;
+                    comboBlendWeights(blendU, blendExpAccept, blendMid, &wCov, &wCst);
+                    float cCov = (1.0f / (1.0f + __expf(kAccCov * d1))) * wCov;
+                    float cCst = (1.0f / (1.0f + __expf(kAccCst * d3))) * wCst;
+                    float ctot = cCov + cCst;
+                    if(ctot > 0.0f)
                         {
                             const float SC = (float)COMBO_CREDIT_SCALE;
                             atomicAdd(&acceptCounts[KinoPaxSTARCOMBO::ACC_CREDIT_COV],
-                                      (unsigned long long)llroundf(SC * t1 / tot3));
-                            atomicAdd(&acceptCounts[KinoPaxSTARCOMBO::ACC_CREDIT_COL],
-                                      (unsigned long long)llroundf(SC * t2 / tot3));
+                                      (unsigned long long)llroundf(SC * cCov / ctot));
                             atomicAdd(&acceptCounts[KinoPaxSTARCOMBO::ACC_CREDIT_CST],
-                                      (unsigned long long)llroundf(SC * t3 / tot3));
+                                      (unsigned long long)llroundf(SC * cCst / ctot));
                         }
                 }
         }
@@ -714,11 +755,12 @@ KinoPaxSTARCOMBO_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint*
                                float* xGoal, int treeSize, float* unexploredSamples, float* treeSamples,
                                int* unexploredSamplesParentIdxs, int* treeSamplesParentIdxs, float* treeSampleCosts,
                                uint* activeFrontierRepeatCount, curandState* randomSeeds,
-                               float* frontierNextAcceptShape,
+                               float* frontierNextFanoutShape,
                                float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
-                               int* counterArray, int* validCounterArray, float* regionCoverage,
-                               float kCoverage, float kCollision, float kCost,
-                               float costScale, float exploredMeanCoverage, float globalCollisionFrac,
+                               float* regionCoverage,
+                               float kAccCov, float kAccCst, float kFanCov, float kFanCst,
+                               float blendU, float blendExpAccept, float blendExpFanout, float blendMid,
+                               float costScale, float exploredMeanCoverage,
                                float pTargetReactivate, float pMax, float repTarget, float repeatMax,
                                int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet,
@@ -759,7 +801,7 @@ KinoPaxSTARCOMBO_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint*
             // min-cost exemptions, which write a neutral 1.0 before their early return -- so this
             // slot is always fresh.
             activeFrontierRepeatCount[x1TreeIdx] =
-              repeatFromShape(frontierNextAcceptShape[x1UnexploredIdx], repTarget, repeatMax);
+              repeatFromShape(frontierNextFanoutShape[x1UnexploredIdx], repTarget, repeatMax);
 
             // Update best-node index if this is the new region best
             if(cost <= minCostsR1[xR1])
@@ -819,20 +861,22 @@ KinoPaxSTARCOMBO_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint*
 
                     int   cnt        = cntCostsR1[xR1];
                     float r1MeanCost = (cnt > 0) ? sumCostsR1[xR1] / (float)cnt : cost;
-                    int   tot        = counterArray[xR1];
-                    float r1CollFrac = (tot > 0) ? (float)(tot - validCounterArray[xR1]) / (float)tot
-                                                 : globalCollisionFrac;
 
-                    float shape = comboShape(cost, r1MeanCost, costScale, regionCoverage[xR1], exploredMeanCoverage,
-                                             r1CollFrac, globalCollisionFrac, kCoverage, kCollision, kCost);
+                    // Same split as the gate: the ROLL uses the acceptance shape, the fan-out uses
+                    // the fan-out shape. Using one for both is exactly the conflation this planner
+                    // exists to undo.
+                    float d1, d3;
+                    comboDeltas(cost, r1MeanCost, costScale, regionCoverage[xR1], exploredMeanCoverage, &d1, &d3);
+                    float shapeAcc = comboShape2(d1, d3, kAccCov, kAccCst, blendU, blendExpAccept, blendMid);
+                    float shapeFan = comboShape2(d1, d3, kFanCov, kFanCst, blendU, blendExpFanout, blendMid);
 
-                    float reactivationProb = fminf(shape * pTargetReactivate, pMax);
+                    float reactivationProb = fminf(shapeAcc * pTargetReactivate, pMax);
 
                     curandState seed = randomSeeds[treeIdx];
                     if(curand_uniform(&seed) < reactivationProb)
                         {
                             frontier[treeIdx]                  = true;
-                            activeFrontierRepeatCount[treeIdx] = repeatFromShape(shape, repTarget, repeatMax);
+                            activeFrontierRepeatCount[treeIdx] = repeatFromShape(shapeFan, repTarget, repeatMax);
                         }
                     randomSeeds[treeIdx] = seed;
                 }
@@ -977,8 +1021,21 @@ void KinoPaxSTARCOMBO::updateFrontier()
     // +1 on the unfavourable side, unbounded on the favourable side -- so the realised mean is not
     // the neutral value and the bias would otherwise pass straight into the growth rate. Dividing by
     // the MEASURED mean is also what makes the whole planner invariant to COMBO_SHAPE_DIVISOR.
+    // Blend state for this iteration. u is how full the tree is, so the shapes slide from
+    // coverage-driven to cost-driven as the run progresses. Computed here so both kernels and the
+    // CSV see one value, and logged so the handover is visible rather than inferred.
+    h_blendU_ = fminf(1.0f, fmaxf(0.0f, float(h_treeSize_) / float(MAX_TREE_SIZE)));
+    {
+        // Mirrors comboBlendWeights on the host purely for the logged diagnostic.
+        float v = (h_blendMid_ > 0.0f && h_blendMid_ < 1.0f && fabsf(h_blendMid_ - 0.5f) > 1e-6f)
+                    ? powf(h_blendU_, logf(0.5f) / logf(h_blendMid_)) : h_blendU_;
+        float wc = powf(v, h_blendExpAccept_);
+        float wv = powf(1.0f - v, h_blendExpAccept_);
+        h_blendWCost_ = (wc + wv > 0.0f) ? wc / (wc + wv) : 0.5f;
+    }
+
     float rolled = float(h_candidatesPreGate_) - float(h_exemptCount_);
-    float shapeAdj = fmaxf(1e-3f, h_meanShapePrev_);
+    float shapeAdj = fmaxf(1e-3f, h_meanShapeAcceptPrev_);
     h_pTargetAccept_ = (rolled > 0.0f) ? fmaxf(0.0f, wantThisIter - float(h_exemptCount_)) / (rolled * shapeAdj) : 0.0f;
     // DELIBERATELY NOT CLAMPED HERE. pTarget is not a probability -- it is a probability PER UNIT
     // SHAPE, and the candidate's actual probability is min(shape*pTarget, pMax), enforced in the
@@ -1008,11 +1065,12 @@ void KinoPaxSTARCOMBO::updateFrontier()
             KinoPaxSTARCOMBO_accept_kernel<<<iDivUp(h_frontierNextSize_, h_blockSize_), h_blockSize_>>>(
               d_activeFrontierIdxs_ptr_, h_frontierNextSize_,
               d_minCostsR1_ptr_, d_sumCostsR1_ptr_, d_cntCostsR1_ptr_,
-              graph_.d_counterArray_ptr_, graph_.d_validCounterArray_ptr_, graph_.d_regionCoverage_ptr_,
+              graph_.d_regionCoverage_ptr_,
               d_frontierNextXR1s_ptr_, d_unexploredSampleCosts_ptr_,
-              d_frontierNext_ptr_, d_randomSeeds_ptr_, d_frontierNextAcceptShape_ptr_,
-              h_kCoverage_, h_kCollision_, h_kCost_,
-              h_costScale_, h_exploredMeanCoverage_, h_globalCollisionFrac_,
+              d_frontierNext_ptr_, d_randomSeeds_ptr_, d_frontierNextFanoutShape_ptr_,
+              h_kAccCoverage_, h_kAccCost_, h_kFanCoverage_, h_kFanCost_,
+              h_blendU_, h_blendExpAccept_, h_blendExpFanout_, h_blendMid_,
+              h_costScale_, h_exploredMeanCoverage_,
               h_pTargetAccept_, h_pMax_,
               h_countAcceptReasons_, d_acceptCounts_ptr_);
         }
@@ -1024,9 +1082,18 @@ void KinoPaxSTARCOMBO::updateFrontier()
     // barren iteration cannot reset the correction to a meaningless number.
     if(rolled > 0.0f)
         {
-            float shapeSum = float(h_acceptCounts_[ACC_SHAPE_SUM]) / float(COMBO_CREDIT_SCALE);
-            float meanShape = shapeSum / rolled;
-            if(meanShape > 1e-3f) h_meanShapePrev_ = meanShape;
+            float accSum  = float(h_acceptCounts_[ACC_SHAPE_SUM_ACCEPT]) / float(COMBO_CREDIT_SCALE);
+            float meanAcc = accSum / rolled;
+            if(meanAcc > 1e-3f) h_meanShapeAcceptPrev_ = meanAcc;
+        }
+    // The fan-out mean is over ALL candidates -- exemptions included, since they carry a real
+    // fan-out shape too -- so its denominator is the full pre-gate count, not `rolled`.
+    if(h_candidatesPreGate_ > 0)
+        {
+            float fanSum  = float(h_acceptCounts_[ACC_SHAPE_SUM_FANOUT]) / float(COMBO_CREDIT_SCALE);
+            float meanFan = fanSum / float(h_candidatesPreGate_);
+            // A FALLING value here as h_kFan* rises is the concentration working, not a fault.
+            if(meanFan > 1e-3f) h_meanShapeFanoutPrev_ = meanFan;
         }
 
     // --- Re-scan after the accept kernel ---
@@ -1106,7 +1173,9 @@ void KinoPaxSTARCOMBO::updateFrontier()
     // the 0.8 margin in repCeiling absorbs it, and prop_attempted / frontier_repeat_size is logged
     // so the realised value is visible rather than assumed. Measuring it exactly would cost another
     // atomic to answer a question the clamp already contains.
-    float denom = 32.0f * fNext * fmaxf(1e-3f, h_meanShapePrev_);
+    // The FAN-OUT mean, not the acceptance one: this scales sum(rep), and rep is gated by
+    // shape_fanout. Dividing by the acceptance mean here is what would break the split.
+    float denom = 32.0f * fNext * fmaxf(1e-3f, h_meanShapeFanoutPrev_);
     float repWanted  = (h_selectivity_ * wantThisIter / nu) / denom;
     float repCeiling = 0.8f * remaining / denom;
     // repeatMax is NOT applied here, for the same units reason as pMax above: repTarget is a block
@@ -1127,11 +1196,12 @@ void KinoPaxSTARCOMBO::updateFrontier()
       d_frontier_ptr_, d_frontierNext_ptr_, d_activeFrontierIdxs_ptr_, h_frontierNextSize_, d_goalSample_ptr_, h_treeSize_,
       d_unexploredSamples_ptr_, d_treeSamples_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_treeSamplesParentIdxs_ptr_,
       d_treeSampleCosts_ptr_, d_activeFrontierRepeatCount_ptr_, d_randomSeeds_ptr_,
-      d_frontierNextAcceptShape_ptr_,
+      d_frontierNextFanoutShape_ptr_,
       d_minCostsR1_ptr_, d_sumCostsR1_ptr_, d_cntCostsR1_ptr_,
-      graph_.d_counterArray_ptr_, graph_.d_validCounterArray_ptr_, graph_.d_regionCoverage_ptr_,
-      h_kCoverage_, h_kCollision_, h_kCost_,
-      h_costScale_, h_exploredMeanCoverage_, h_globalCollisionFrac_,
+      graph_.d_regionCoverage_ptr_,
+      h_kAccCoverage_, h_kAccCost_, h_kFanCoverage_, h_kFanCost_,
+      h_blendU_, h_blendExpAccept_, h_blendExpFanout_, h_blendMid_,
+      h_costScale_, h_exploredMeanCoverage_,
       h_pTargetReactivate_, h_pMax_, h_repTarget_, h_repeatMax_,
       d_treeXR1s_ptr_, d_frontierNextXR1s_ptr_, d_bestNodeIdxPerR1_ptr_,
       d_minCost_ptr_, d_unexploredSampleCosts_ptr_, d_goalSet_ptr_,

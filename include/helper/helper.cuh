@@ -193,84 +193,114 @@ __device__ __forceinline__ float costProbExpGlobal(float m, float cost, float dG
 }
 
 // ======================================================================================
-// ---- Shape normalisation. Change the divisor here and NOWHERE else. ----
-// Three sigmoids, each in (0,1), so the raw sum spans (0,3). Dividing by 3 puts the shape in
-// (0, 1) with a neutral candidate -- every metric delta zero, so every sigmoid exactly 0.5 -- at
-// 0.5. Read that way, shape is the fraction of maximum desirability a candidate has, and since
-// P_c = shape_c * pTarget with shape_c < 1, pTarget is the probability a PERFECT candidate would
-// get, i.e. a ceiling on the whole batch.
+// ======================================================================================
+// KinoPaxSTARCOMBO shape functions.
 //
-// THE PLANNER'S BEHAVIOUR IS INVARIANT TO THIS DIVISOR. Both consumers divide by the measured mean
-// shape: pTargetAccept = (want-exempt)/(rolled*meanShape) and repTarget = .../(32*F'*meanShape).
-// Halving every shape halves meanShape, so pTarget and repTarget both double, and the products
-// shape*pTarget and repTarget*shape are unchanged. The divisor is a labelling choice, not a tuning
-// knob -- but the NEUTRAL constant below must move with it, or every site that hands out an
-// "average" shape without computing one (the min-cost exemptions, Part B's region best) silently
-// gets the wrong fan-out.
-#define COMBO_SHAPE_DIVISOR 3.0f
-#define COMBO_NEUTRAL_SHAPE (1.5f / COMBO_SHAPE_DIVISOR)
-
-// KinoPaxSTARCOMBO acceptance SHAPE. Three sigmoids, normalised by COMBO_SHAPE_DIVISOR so a
-// neutral candidate returns exactly COMBO_NEUTRAL_SHAPE. Range (0, 3/COMBO_SHAPE_DIVISOR).
+// TWO shapes, not one, and the split is the point. One rule was being asked two different
+// questions:
+//   ACCEPTANCE  which nodes join the tree. Cost belongs here -- it is what makes COMBO optimal.
+//   FAN-OUT     where to spend propagation. Cost is counter-productive here: cost is cumulative
+//               root-to-node, so "cheap" means SHALLOW, and weighting fan-out by cost pours
+//               propagation into the neighbourhood of the root. That is a density mechanism where
+//               KPAX's novelty rule (validVertexCounter < 10 ? 15 : 1) is a REACH mechanism, and
+//               it is why COMBO grew a bigger tree than CleanCost while reaching a first solution
+//               later.
+// Both use the same two deltas and the same blend; they differ only in their gains and their
+// blend exponent, so a caller can make fan-out novelty-driven while acceptance stays cost-driven.
 //
-// This returns the shape ONLY -- no budget, no cap. The caller multiplies by a per-iteration
-// pTarget, which is what lets the admission gate and Part-B reactivation share one rule while
-// carrying different budgets over their genuinely different populations (~1e6 candidates vs the
-// whole tree). Folding the budget in here would force one scalar on both and the reactivation
-// flux, which scales with tree size, would swamp admission late in a run.
+// Each shape BLENDS coverage against cost as the run progresses -- explore first, optimise later:
 //
-// EVERY DELTA IS SIGNED SO d > 0 MEANS UNFAVOURABLE, and every one is divided by a GLOBAL
-// reference. The global scale is load-bearing twice over:
+//     u  = treeSize / MAX_TREE_SIZE                 how full is the tree, in [0,1]
+//     v  = u ^ (ln 0.5 / ln mid)                    remap so v = 0.5 exactly at u = mid
+//     wCov = (1-v)^g      wCst = v^g
+//     shape = (sigma(-kCov*d1)*wCov + sigma(-kCst*d3)*wCst) / (wCov + wCst)
+//
+// NORMALISED BY THE WEIGHT SUM, not by a constant. At g = 1 the weights already partition unity, so
+// a constant divisor of 2 would return 0.25 at the neutral point rather than 0.5; and at g != 1 the
+// raw weights do NOT sum to 1 (at u = 0.5, g = 2 they sum to 0.5), so a constant divisor would let
+// g rescale the whole shape instead of only reshaping the transition. Dividing by the sum pins a
+// neutral candidate at exactly 0.5 for every g, every mid and every u -- which is what lets g be a
+// pure sharpness knob and lets COMBO_NEUTRAL_SHAPE stay a compile-time constant.
+//
+// mid AND g DO DIFFERENT JOBS. mid sets WHERE the crossover happens (wCov == wCst at u == mid); g
+// sets HOW SHARPLY it happens there. g alone cannot move the crossover: (1-u)^g and u^g are equal
+// at u = 0.5 for every g. At mid = 0.5 the remap exponent is 1, v = u, and the whole thing reduces
+// to the plain (1-u), u crossfade.
+//
+// EVERY DELTA IS SIGNED SO d > 0 MEANS UNFAVOURABLE, and each is divided by a GLOBAL reference.
+// The global scale is load-bearing twice over:
 //   - Raw deltas have no usable range. With NUM_R2_PER_R1 = 64 a one-sub-region coverage
-//     difference is 0.0156, and sigmoid(0.0156) = 0.4961 -- T1 would be the constant 0.5 to three
-//     digits. At the other extreme (cost - mean) is in cost units, O(1e2) under COST_MODE 1, so T3
-//     would saturate to a hard step and k3 would be inert. That is exactly the failure
-//     costProbExpGlobal above was written to escape.
+//     difference is 0.0156, and sigmoid(0.0156) = 0.4961 -- the coverage term would be the constant
+//     0.5 to three digits. At the other extreme (cost - mean) is in cost units, O(1e2) under
+//     COST_MODE 1, so the cost term would saturate to a hard step and its gain would be inert.
+//     That is exactly the failure costProbExpGlobal above was written to escape.
 //   - A LOCAL scale (the region's own spread) pins the typical candidate at d ~ 1 in EVERY region
 //     by construction -- see costProbExpGlobal's comment -- which is what made the old k knob inert.
 //
 // k ENTERS THE ARGUMENT, NOT AS AN EXPONENT. sigmoid(x)^k moves the midpoint to 2^-k and its slope
 // actually FALLS past k = 2 (0.250 at k=1 and k=2, 0.188 at k=3, 0.125 at k=4) -- it squashes
-// rather than sharpens. sigmoid(k*x) holds the midpoint at 0.5 for every k with slope k/4, which is
-// both what "sharper" means and what makes the neutral value exact for ALL k rather than
-// only for k = 1.
+// rather than sharpens. sigmoid(k*x) holds the midpoint at 0.5 for every k with slope k/4.
 //
-// k_i = 0 pins term i at 0.5, i.e. an exact ablation switch. The tuning grid uses this.
+// k = 0 pins its term at 0.5 -- an exact ablation switch. With BOTH gains 0 a shape is the constant
+// 0.5, which for fan-out means uniform rep: the KinoPaxPlus/CleanCost control arm.
+//
+// HIGH GAIN IS HOW FAN-OUT CONCENTRATES. A shape averaging 0.5 cannot concentrate -- rep =
+// repTarget*shape puts most nodes in the middle, max/mean = 2x. But at high gain the sigmoid
+// degenerates to a step, the shape goes bimodal {~0, ~1}, and since the planner divides repTarget
+// by the MEASURED mean shape, a top node gets 1/phi times the average where phi is the fraction
+// above the threshold: 20x at phi = 0.05, with sum(rep) unchanged. That is KPAX's 15/1 rule with an
+// ADAPTIVE threshold -- relative to the explored mean, recomputed every iteration -- instead of a
+// hardcoded < 10. So kFan is the headline tuning axis, and LOW kFan is the failure mode.
 //
 // COLD START is the caller's job, because the caller holds the raw arrays: pass
-// r1MeanCost = nodeCost when cntCostsR1[r] == 0, and r1CollisionFrac = globalCollisionFrac when
-// counterArray[r] == 0. Both collapse the delta to 0 (neutral).
+// r1MeanCost = nodeCost when cntCostsR1[r] == 0. That collapses d3 to 0 (neutral).
 // ======================================================================================
-// The three terms individually. Split out from comboShape so the acceptance-credit diagnostic can
-// report WHICH term argued for a node without a second, drifting copy of the delta math.
-__device__ __forceinline__ void comboTerms(float nodeCost, float r1MeanCost, float costScale,
-                                           float r1Coverage, float exploredMeanCoverage,
-                                           float r1CollisionFrac, float globalCollisionFrac,
-                                           float k1, float k2, float k3,
-                                           float* t1, float* t2, float* t3)
-{
-    // T1: prefer regions covered LESS than the explored average -- steer toward the thin places.
-    float d1 = (exploredMeanCoverage > 0.0f) ? (r1Coverage - exploredMeanCoverage) / exploredMeanCoverage : 0.0f;
-    // T2: prefer regions that collide MORE than global -- the narrow-passage drive. The sign is
-    // flipped relative to T1/T3 because the desired direction is inverted. Deliberate, not a typo.
-    float d2 = (globalCollisionFrac > 0.0f) ? (globalCollisionFrac - r1CollisionFrac) / globalCollisionFrac : 0.0f;
-    // T3: prefer nodes cheaper than their OWN region's mean, measured on the GLOBAL cost scale.
-    float d3 = (costScale > 0.0f) ? (nodeCost - r1MeanCost) / costScale : 0.0f;
 
-    *t1 = 1.0f / (1.0f + __expf(k1 * d1));
-    *t2 = 1.0f / (1.0f + __expf(k2 * d2));
-    *t3 = 1.0f / (1.0f + __expf(k3 * d3));
+// A neutral candidate -- every delta zero, so every sigmoid exactly 0.5 -- scores this, for every
+// gain, blend exponent, midpoint and u. Used wherever a node needs an "average" shape without one
+// being computed.
+#define COMBO_NEUTRAL_SHAPE 0.5f
+
+// Blend weights for one shape. Split out so the shapes and the diagnostics share one definition.
+__device__ __forceinline__ void comboBlendWeights(float u, float g, float mid, float* wCov, float* wCst)
+{
+    u = fminf(1.0f, fmaxf(0.0f, u));
+    // Remap so v = 0.5 exactly at u = mid, leaving the endpoints pinned (0 -> 0, 1 -> 1) so
+    // coverage still owns the very start of a run whatever the midpoint is.
+    float v;
+    if(mid > 0.0f && mid < 1.0f && fabsf(mid - 0.5f) > 1e-6f)
+        v = __powf(u, __logf(0.5f) / __logf(mid));
+    else
+        v = u;   // mid == 0.5 (or degenerate): the identity remap, i.e. the plain crossfade
+    *wCov = __powf(1.0f - v, g);
+    *wCst = __powf(v, g);
 }
 
-__device__ __forceinline__ float comboShape(float nodeCost, float r1MeanCost, float costScale,
-                                            float r1Coverage, float exploredMeanCoverage,
-                                            float r1CollisionFrac, float globalCollisionFrac,
-                                            float k1, float k2, float k3)
+// One shape from the two deltas. Returns (0,1), exactly COMBO_NEUTRAL_SHAPE at the neutral point.
+__device__ __forceinline__ float comboShape2(float d1, float d3, float kCov, float kCst,
+                                             float u, float g, float mid)
 {
-    float t1, t2, t3;
-    comboTerms(nodeCost, r1MeanCost, costScale, r1Coverage, exploredMeanCoverage, r1CollisionFrac, globalCollisionFrac,
-               k1, k2, k3, &t1, &t2, &t3);
-    return (t1 + t2 + t3) / COMBO_SHAPE_DIVISOR;
+    float wCov, wCst;
+    comboBlendWeights(u, g, mid, &wCov, &wCst);
+    float tCov = 1.0f / (1.0f + __expf(kCov * d1));
+    float tCst = 1.0f / (1.0f + __expf(kCst * d3));
+    float wSum = wCov + wCst;
+    // wSum can underflow to 0 only if u is exactly 0 or 1 AND g is large enough that the surviving
+    // weight also underflows; fall back to the neutral value rather than dividing by zero.
+    if(!(wSum > 1e-20f)) return COMBO_NEUTRAL_SHAPE;
+    return (tCov * wCov + tCst * wCst) / wSum;
+}
+
+// The two deltas, from the raw region statistics. Shared by both shapes so there is exactly one
+// definition of "how far from average is this candidate".
+__device__ __forceinline__ void comboDeltas(float nodeCost, float r1MeanCost, float costScale,
+                                            float r1Coverage, float exploredMeanCoverage,
+                                            float* d1, float* d3)
+{
+    // d1: prefer regions covered LESS than the explored average -- steer toward the thin places.
+    *d1 = (exploredMeanCoverage > 0.0f) ? (r1Coverage - exploredMeanCoverage) / exploredMeanCoverage : 0.0f;
+    // d3: prefer nodes cheaper than their OWN region's mean, measured on the GLOBAL cost scale.
+    *d3 = (costScale > 0.0f) ? (nodeCost - r1MeanCost) / costScale : 0.0f;
 }
 
 // Fan-out for one node from its acceptance shape. Used at BOTH Part A and Part B, replacing KPAX's
