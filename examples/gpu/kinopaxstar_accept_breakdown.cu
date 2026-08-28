@@ -35,10 +35,30 @@
 //   n_active     regions with samples. Part B re-activates the region best UNCONDITIONALLY, one
 //                per explored region, outside h_reactFrac_ entirely -- so the frontier has a hard
 //                floor at nActive. Since rep >= 1, frontierRepeatSize >= F, and kernel2 is forced
-//                once 32*F > remaining no matter what repTarget does.
+//                once 32*F > remaining. That is now the ONLY route to kernel2.
 //   reactivated  frontier bits among the pre-existing tree, i.e. Part B's actual output.
 //                reactivated / frontier_size near 1 means F is region-best dominated and no
 //                acceptance tuning will move the kernel1 crossover.
+//
+// THE BLOCK IDENTITY IS NOW EXACT AND SHOULD BE ASSERTED ROW BY ROW:
+//
+//   frontier_repeat_size == frontier_size + (rep_hi - 1) * n_fav
+//
+// Every term is counted rather than estimated -- the fan-out is sized in propagateFrontier after
+// findInd, where F and n_fav are both known -- so a mismatch is a real defect (a frontier member
+// missing a count, or a count on a node outside the frontier), not tuning drift.
+//
+// Read the fan-out columns in this order when the boost looks wrong:
+//   block_ceiling  below frontier_size => the rep>=1 floor has already spent the budget and NO
+//                  fan-out rule can concentrate anything. Check n_active / frontier_size.
+//   rep_hi         below h_repeatMax_ (15) => the CEILING is setting fan-out, not N.
+//                  Pinned at 1 => same story as block_ceiling.
+//   fan_sigma      collapsing toward 0 => the scores carry no spread; raise kFan. fan_threshold
+//                  reads -1e38 when this trips, which is the degenerate branch handing every
+//                  frontier node the same count (the uniform control arm).
+//   fan_frac       n_fav / frontier_size. Must be WELL under 0.5: the first fan-out rule measured
+//                  it above 0.5 at every gain, which is what proved it was boosting the majority.
+//                  Expect ~0.10-0.20 at N = 1 and ~0.02-0.05 at N = 2.
 //
 // prop_attempted / frontier_repeat_size is the kernel1 detector: exactly 32 on the kernel1 path,
 // less on kernel2. h_propIterations_ alone is NOT valid for this -- it is only assigned inside the
@@ -66,30 +86,35 @@
 
 // ---- COMBO grid ----
 // Declared locally because this is a standalone binary.
-// COMBO now runs TWO shapes -- acceptance (which nodes join) and fan-out (where propagation goes)
-// -- so the grid crosses phi with the fan-out gain. Mirrors FAN_TOP_FRACS / FAN_GAINS in the sweep,
-// the label format, so a point here and the same point there carry the same name and can be read
-// side by side. scripts/cross_check_combo_grid.py asserts the sweep's copy stays in step.
+// COMBO runs TWO shapes -- acceptance (which nodes join) and fan-out (where propagation goes) -- so
+// the grid crosses the fan-out threshold's sigma multiple with the fan-out gain. Mirrors
+// FAN_SIGMA_N / FAN_GAINS in the sweep, and the label format, so a point here and the same point
+// there carry the same name and can be read side by side.
+// scripts/cross_check_combo_grid.py asserts the sweep's copy stays in step.
 //
-// phi = 1.0 favours every node, which collapses repHi to the uniform mean -- the control arm. It
-// replaced kFan = 0, which no longer works: with both fan-out gains zero every shape is exactly 0.5,
-// so a threshold separates nothing and the feedback loop would oscillate.
-static const float FAN_TOP_FRACS[] = {1.0f, 0.25f, 0.10f, 0.02f};
-static const float FAN_GAINS[]     = {1.0f, 4.0f, 16.0f};
+// N is in STANDARD DEVIATIONS above the frontier's mean fan-out score. N = 0 favours everything
+// above the mean, which for these right-skewed deltas is the MAJORITY -- that is the first fan-out
+// rule's failure mode, kept in the grid so it can be reproduced deliberately rather than argued
+// about. The uniform control arm is now kFan = 0 again: with both fan-out gains zero every score is
+// COMBO_NEUTRAL_SHAPE, sigma is 0, and the planner detects the degenerate spread and hands every
+// frontier node the same block count.
+static const float FAN_SIGMA_N[]   = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f};
+static const float FAN_GAINS[]     = {0.0f, 1.0f, 4.0f, 16.0f};
+static const float DERIVED_SIGMA_N = 1.5f;
 static const float ACC_GAIN        = 4.0f;
 static const float REACT_FRAC      = 0.1f;
 static const float BLEND_EXP_ACCEPT = 1.0f;
 static const float BLEND_EXP_FANOUT = 1.0f;
 static const float BLEND_MID        = 0.5f;
-static const int NUM_FAN_TOP_FRACS = sizeof(FAN_TOP_FRACS) / sizeof(FAN_TOP_FRACS[0]);
+static const int NUM_FAN_SIGMA_N   = sizeof(FAN_SIGMA_N) / sizeof(FAN_SIGMA_N[0]);
 static const int NUM_FAN_GAINS     = sizeof(FAN_GAINS) / sizeof(FAN_GAINS[0]);
 
-// "KinoPaxSTARCOMBO_phi10_kf400_ka400" -- byte-identical to the sweep's comboLabel().
-static std::string comboLabel(float phi, float kFan, float kAcc)
+// "KinoPaxSTARCOMBO_sn150_kf400_ka400" -- byte-identical to the sweep's comboLabel().
+static std::string comboLabel(float sigmaN, float kFan, float kAcc)
 {
     char buf[128];
-    snprintf(buf, sizeof(buf), "KinoPaxSTARCOMBO_phi%d_kf%d_ka%d",
-             (int)lroundf(100.0f * phi), (int)lroundf(100.0f * kFan), (int)lroundf(100.0f * kAcc));
+    snprintf(buf, sizeof(buf), "KinoPaxSTARCOMBO_sn%d_kf%d_ka%d",
+             (int)lroundf(100.0f * sigmaN), (int)lroundf(100.0f * kFan), (int)lroundf(100.0f * kAcc));
     return std::string(buf);
 }
 
@@ -141,13 +166,17 @@ struct IterRow
     float  mean_shape_fanout;    // over ALL candidates; FALLS as kFan rises -- that is concentration
     float  blend_u;              // treeSize/MAX_TREE_SIZE
     float  blend_w_cost;         // normalised cost weight of the acceptance shape
-    float  fan_threshold;        // the fed-back threshold separating the favoured minority
-    float  fan_frac;             // measured fraction above it -- must settle at h_fanTopFrac_
-    float  rep_hi;               // blocks one favoured node gets; 1 means there was no surplus
-    float  surplus_blocks;       // blocks above the rep>=1 floor. Near 0 = nothing to concentrate.
+    // --- fan-out, all MEASURED over the realised frontier in propagateFrontier ---
+    float  fan_mu;               // mean fan-out score over the whole frontier
+    float  fan_sigma;            // its spread. Collapsing toward 0 = the scores carry no signal
+    float  fan_threshold;        // fan_mu + N*fan_sigma. -1e38 flags the degenerate-spread branch
+    float  fan_frac;             // n_fav / frontier_size -- EXACT, not a proxy. Must be well < 0.5
+    int    n_fav;                // nodes counted above the threshold
+    float  rep_hi;               // blocks a favoured node gets. Below h_repeatMax_ = ceiling bit
+    float  block_ceiling;        // blocks the budget allows. Below frontier_size = nothing to give
     float  p_target_accept;
     float  p_target_reactivate;
-    float  rep_target;
+    float  want_this_iter;
     float  global_coverage;
     float  explored_mean_coverage;
     float  global_collision_frac;
@@ -165,13 +194,16 @@ static void blankRow(IterRow& r)
     r.mean_shape_fanout = NAN;
     r.blend_u = NAN;
     r.blend_w_cost = NAN;
+    r.fan_mu = NAN;
+    r.fan_sigma = NAN;
     r.fan_threshold = NAN;
     r.fan_frac = NAN;
+    r.n_fav = -1;
     r.rep_hi = NAN;
-    r.surplus_blocks = NAN;
+    r.block_ceiling = NAN;
     r.p_target_accept = NAN;
     r.p_target_reactivate = NAN;
-    r.rep_target = NAN;
+    r.want_this_iter = NAN;
     r.global_coverage = NAN;
     r.explored_mean_coverage = NAN;
     r.global_collision_frac = NAN;
@@ -181,7 +213,7 @@ static void blankRow(IterRow& r)
 // Run one COMBO grid point and collect its per-iteration rows.
 // ========================================================================
 std::vector<IterRow> runCombo(KinoPaxSTARCOMBO& planner,
-                              float phi, float kFan, float reactFrac,
+                              float sigmaN, float kFan, float reactFrac,
                               float* h_initial, float* h_goal,
                               float* d_obstacles, uint numObstacles,
                               int maxIterations, int& badPartition, int& badCredit)
@@ -191,7 +223,7 @@ std::vector<IterRow> runCombo(KinoPaxSTARCOMBO& planner,
     planner.h_kAccCost_           = ACC_GAIN;
     planner.h_kFanCoverage_       = kFan;
     planner.h_kFanCost_           = kFan;
-    planner.h_fanTopFrac_         = phi;
+    planner.h_fanSigmaN_          = sigmaN;
     planner.h_blendExpAccept_     = BLEND_EXP_ACCEPT;
     planner.h_blendExpFanout_     = BLEND_EXP_FANOUT;
     planner.h_blendMid_           = BLEND_MID;
@@ -259,13 +291,16 @@ std::vector<IterRow> runCombo(KinoPaxSTARCOMBO& planner,
         r.mean_shape_fanout      = planner.h_meanShapeFanoutPrev_;
         r.blend_u                = planner.h_blendU_;
         r.blend_w_cost           = planner.h_blendWCost_;
+        r.fan_mu                 = planner.h_fanMu_;
+        r.fan_sigma              = planner.h_fanSigma_;
         r.fan_threshold          = planner.h_fanThreshold_;
-        r.fan_frac               = planner.h_fanFracPrev_;
+        r.fan_frac               = planner.h_fanFrac_;
+        r.n_fav                  = (int)planner.h_nFav_;
         r.rep_hi                 = planner.h_repHi_;
-        r.surplus_blocks         = planner.h_surplusBlocks_;
+        r.block_ceiling          = planner.h_blockCeiling_;
         r.p_target_accept        = planner.h_pTargetAccept_;
         r.p_target_reactivate    = planner.h_pTargetReactivate_;
-        r.rep_target             = planner.h_repTarget_;
+        r.want_this_iter         = planner.h_wantThisIter_;
         r.global_coverage        = planner.h_globalCoverage_;
         r.explored_mean_coverage = planner.h_exploredMeanCoverage_;
         r.global_collision_frac  = planner.h_globalCollisionFrac_;
@@ -364,8 +399,8 @@ void writeCSV(const std::vector<IterRow>& rows, const std::string& path)
       << "credit_cov,credit_col,credit_cst,"
       << "frontier_repeat_size,exempt_count,n_active,reactivated,"
       << "mean_shape_accept,mean_shape_fanout,blend_u,blend_w_cost,"
-      << "fan_threshold,fan_frac,rep_hi,surplus_blocks,"
-      << "p_target_accept,p_target_reactivate,rep_target,"
+      << "fan_mu,fan_sigma,fan_threshold,fan_frac,n_fav,rep_hi,block_ceiling,"
+      << "p_target_accept,p_target_reactivate,want_this_iter,"
       << "global_coverage,explored_mean_coverage,global_collision_frac\n";
     for(const auto& r : rows)
     {
@@ -384,13 +419,16 @@ void writeCSV(const std::vector<IterRow>& rows, const std::string& path)
           << std::setprecision(6) << r.mean_shape_fanout << ","
           << std::setprecision(6) << r.blend_u << ","
           << std::setprecision(6) << r.blend_w_cost << ","
+          << std::setprecision(6) << r.fan_mu << ","
+          << std::setprecision(6) << r.fan_sigma << ","
           << std::setprecision(6) << r.fan_threshold << ","
           << std::setprecision(6) << r.fan_frac << ","
+          << r.n_fav << ","
           << std::setprecision(3) << r.rep_hi << ","
-          << std::setprecision(1) << r.surplus_blocks << ","
+          << std::setprecision(1) << r.block_ceiling << ","
           << std::scientific << std::setprecision(6) << r.p_target_accept << ","
           << std::scientific << std::setprecision(6) << r.p_target_reactivate << ","
-          << std::fixed << std::setprecision(4) << r.rep_target << ","
+          << std::fixed << std::setprecision(1) << r.want_this_iter << ","
           << std::scientific << std::setprecision(6) << r.global_coverage << ","
           << std::fixed << std::setprecision(6) << r.explored_mean_coverage << ","
           << std::fixed << std::setprecision(6) << r.global_collision_frac << "\n";
@@ -479,18 +517,24 @@ int main(int argc, char* argv[])
     }
 
     // --- The COMBO grid ---
-    for(int pi = 0; pi < NUM_FAN_TOP_FRACS; pi++)
+    for(int pi = 0; pi < NUM_FAN_SIGMA_N; pi++)
     for(int fi = 0; fi < NUM_FAN_GAINS; fi++)
     {
-        const float phi  = FAN_TOP_FRACS[pi];
-        const float kFan = FAN_GAINS[fi];
+        const float sigmaN = FAN_SIGMA_N[pi];
+        const float kFan   = FAN_GAINS[fi];
 
-        const std::string label = comboLabel(phi, kFan, ACC_GAIN);
-        printf("  phi=%.2f%s kFan=%.2f  (%s)\n",
-               phi, (phi >= 1.0f) ? "  [uniform control]" : "", kFan, label.c_str());
+        // At kFan = 0 every score is COMBO_NEUTRAL_SHAPE, so sigma is 0 and the planner takes its
+        // degenerate branch whatever N is -- all five N values would run the identical uniform
+        // control arm. Keep one. Mirrors comboSkip() in kinopaxstar_combo_tuning_sweep.cu.
+        if(fabsf(kFan) <= 1e-6f && fabsf(sigmaN - DERIVED_SIGMA_N) > 1e-6f) continue;
+
+        const std::string label = comboLabel(sigmaN, kFan, ACC_GAIN);
+        printf("  N=%.2f%s kFan=%.2f  (%s)\n",
+               sigmaN, (sigmaN <= 0.0f) ? "  [threshold at the mean -- the known failure mode]" : "",
+               kFan, label.c_str());
 
         KinoPaxSTARCOMBO planner;
-        std::vector<IterRow> rows = runCombo(planner, phi, kFan, REACT_FRAC,
+        std::vector<IterRow> rows = runCombo(planner, sigmaN, kFan, REACT_FRAC,
                                              h_initial, h_goal, d_obstacles, (uint)numObstacles,
                                              MAX_ITERATIONS, badPartition, badCredit);
         std::ostringstream fn;

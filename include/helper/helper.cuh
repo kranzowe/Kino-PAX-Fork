@@ -244,13 +244,14 @@ __device__ __forceinline__ float costProbExpGlobal(float m, float cost, float dG
 // k = 0 pins its term at 0.5 -- an exact ablation switch. With BOTH gains 0 a shape is the constant
 // 0.5, which for fan-out means uniform rep: the KinoPaxPlus/CleanCost control arm.
 //
-// HIGH GAIN IS HOW FAN-OUT CONCENTRATES. A shape averaging 0.5 cannot concentrate -- rep =
-// repTarget*shape puts most nodes in the middle, max/mean = 2x. But at high gain the sigmoid
-// degenerates to a step, the shape goes bimodal {~0, ~1}, and since the planner divides repTarget
-// by the MEASURED mean shape, a top node gets 1/phi times the average where phi is the fraction
-// above the threshold: 20x at phi = 0.05, with sum(rep) unchanged. That is KPAX's 15/1 rule with an
-// ADAPTIVE threshold -- relative to the explored mean, recomputed every iteration -- instead of a
-// hardcoded < 10. So kFan is the headline tuning axis, and LOW kFan is the failure mode.
+// GAIN SETS THE SPREAD THE FAN-OUT THRESHOLD LIVES ON. Fan-out now favours nodes scoring above
+// mu + N*sigma over the frontier's own score distribution, so what kFan controls is sigma. At low
+// gain the shape crowds around 0.5, sigma is small, and mu + N*sigma sits just above the mean --
+// a narrow, arbitrary slice. At high gain the sigmoid degenerates to a step, the shape goes bimodal
+// {~0, ~1}, sigma is large, and the threshold lands squarely between the two modes: exactly the
+// favoured MINORITY that KPAX's 15/1 gets from its hardcoded validVertexCounter < 10, but relative
+// to the explored mean and recomputed every iteration. So kFan is still the headline tuning axis,
+// and LOW kFan is still the failure mode -- but the threshold no longer has to chase it.
 //
 // COLD START is the caller's job, because the caller holds the raw arrays: pass
 // r1MeanCost = nodeCost when cntCostsR1[r] == 0. That collapses d3 to 0 (neutral).
@@ -305,35 +306,40 @@ __device__ __forceinline__ void comboDeltas(float nodeCost, float r1MeanCost, fl
 
 // Two-level fan-out: a node is either in the favoured minority or it is not.
 //
-// REPLACES A PROPORTIONAL RULE THAT COULD NOT CONCENTRATE. The previous form was
+// REPLACES A PROPORTIONAL RULE THAT COULD NOT CONCENTRATE. The first form was
 // rep = clamp(repTarget * shape, 1, repeatMax), and it failed for a structural reason worth
-// recording. The fan-out shape thresholds each candidate against the MEAN of its deltas, and both
-// deltas are right-skewed -- coverage is floored at -1 and unbounded above, cost has a long
-// expensive tail -- so mean > median and MOST candidates land on the favourable side. The measured
-// favoured fraction came out above 0.5 at every gain. Raising the gain only sharpens the step; it
-// cannot move where the step sits, so the "boost" was going to ~70% of the frontier. KPAX's 15/1
-// works precisely because its 15 goes to a shrinking MINORITY of under-sampled regions.
+// recording. It thresholds each candidate against the MEAN of its deltas, and both deltas are
+// right-skewed -- coverage is floored at -1 and unbounded above, cost has a long expensive tail --
+// so mean > median and MOST candidates land on the favourable side. The measured favoured fraction
+// came out above 0.5 at every gain. Raising the gain only sharpens the step; it cannot move where
+// the step sits, so the "boost" was going to ~70% of the frontier. KPAX's 15/1 works precisely
+// because its 15 goes to a shrinking MINORITY of under-sampled regions.
 //
-// So the threshold is now a separate, fed-back quantity aimed at a TARGET FRACTION (see the
-// planner's h_fanTopFrac_), and this function is a plain two-level rule against it.
+// THE FIX IS A SCALE-FREE THRESHOLD, NOT A TRACKED ONE. The second form fed a threshold back toward
+// a target fraction phi, which put the step in the tail but bought a second failure: the fraction
+// driving the feedback was measured in the accept kernel over PRE-GATE candidates against the
+// PREVIOUS threshold, while this function was applied in the update kernel to post-gate survivors
+// plus every Part B node against the NEW one. Different population, different threshold, one
+// iteration apart -- so the block budget was sized for a favoured count that never materialised,
+// repHi pinned at repeatMax, and sum(rep) came uncoupled from the budget it was solved against.
 //
-// THE >= 1 FLOOR IS NOW STRUCTURAL, not a clamp bolted on afterwards. That matters for the budget:
-// sum(rep) = sum(max(1, ...)) is NOT repTarget * sum(shape) once the floor binds, and with a mean
-// rep near 1 it binds for most nodes -- so the old form solved repTarget against a budget the floor
-// had already partly spent. The caller now sizes repHi from the SURPLUS above the floor, which
-// makes sum(rep) = F + surplus exact.
+// Now the caller thresholds at mu + N*sigma over the score distribution of the WHOLE REALISED
+// FRONTIER, measured after the frontier is compacted and therefore complete and countable. That is
+// scale-free: a fixed N picks the tail of a skewed distribution whatever the gains do to its spread,
+// with nothing to track and nothing to lag. See the planner's h_fanSigmaN_.
+//
+// THE >= 1 FLOOR IS STRUCTURAL, and now doubly so: the caller runs this over exactly the compacted
+// frontier, so every frontier member receives a count by construction rather than by a clamp.
 //
 // Why the floor exists at all: repeatInd emits nothing for count 0, and on the kernel1 path the
 // frontier bit is cleared BY THE EXPANDING BLOCK ITSELF -- so a node with no block is never
 // expanded and never cleared. Its frontier bit stays true forever, inflating h_frontierSize_, and
 // Part B cannot rescue it because its reactivation guard is frontier == 0.
-__device__ __forceinline__ unsigned int repeatTwoLevel(float shape, float threshold, float repHi)
+__device__ __forceinline__ unsigned int repeatFromScore(float score, float threshold, unsigned int repHi)
 {
     // NaN-safe: an unordered compare falls through to the unfavoured branch.
-    if(!(shape > threshold)) return 1u;
-    float r = repHi;
-    if(!(r >= 1.0f)) r = 1.0f;
-    return (unsigned int)lroundf(r);
+    if(!(score > threshold)) return 1u;
+    return (repHi >= 1u) ? repHi : 1u;
 }
 
 // Weighted-sum acceptance: P = min(1, w*P_syclop + (1-w)*P_cost + P_floor).

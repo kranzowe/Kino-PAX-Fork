@@ -101,23 +101,29 @@ deltaLabel = '3 deltas overlaid';
 %
 % COMBO runs TWO shapes: acceptance (which nodes join) and fan-out (where propagation goes).
 %
-% phi -- the FAVOURED FRACTION -- is the headline axis, and phi = 1.0 (token 100) is the uniform
-% control arm. It replaced kFan = 0 as the control: with both fan-out gains zero every shape is
-% exactly 0.5, so a threshold cannot separate anything and the feedback loop would oscillate.
+% N -- the SIGMA MULTIPLE -- is the headline axis. A node is favoured, and gets h_repeatMax_ blocks
+% instead of 1, when its fan-out score exceeds mu + N*sigma over the score distribution of the whole
+% realised frontier. So N sets how far into the tail the boost reaches, in units of the
+% distribution's own spread, and kFan decides how much spread there is to reach into.
 %
-% WHY phi EXISTS. The previous rule scaled rep by the shape directly and could not concentrate --
-% its threshold sat at the MEAN of each delta, both deltas are right-skewed, so most candidates
-% landed on the favourable side and the boost reached ~70% of the frontier. Now the threshold is
-% tracked by feedback toward phi, so the favoured fraction is SET rather than discovered, and kFan
-% only decides WHICH nodes rank into it.
-comboFanTopFracs = [100 25 10 2];    % 100 = phi 1.0 = uniform control arm
-comboFanGains    = [100 400 1600];
-comboAccGain     = 400;              % fixed this pass
-comboReact       = 10;
+% WHY SIGMA. Two earlier rules put the step in the wrong place. Thresholding at the MEAN of each
+% delta favoured the MAJORITY -- both deltas are right-skewed, so mean > median and the measured
+% favoured fraction came out above 0.5 at every gain. Feeding a threshold back toward a target
+% fraction phi fixed the placement but sized the block budget against a favoured count measured on
+% the wrong population. mu + N*sigma is scale-free: a fixed N holds its place in the tail whatever
+% the gains do to the spread, with nothing tracked across iterations.
+%
+% N = 0 (token 0) is the threshold-at-the-mean arm, the first failure mode kept reproducible.
+% kFan = 0 (token 0) is the UNIFORM control arm: every score is identical, sigma is 0, and the
+% planner's degenerate branch gives every frontier node the same block count.
+comboFanSigmaN = [0 50 100 150 200];   % 0 = threshold at the mean
+comboFanGains  = [0 100 400 1600];     % 0 = uniform control arm
+comboAccGain   = 400;                  % fixed this pass
+comboReact     = 10;
 
-% The derived operating point that --single-point selects (phi = 0.10, kFan = 4).
-comboDerivedPhi = 10;
-comboDerivedFan = 400;
+% The derived operating point that --single-point selects (N = 1.5, kFan = 4).
+comboDerivedSigmaN = 150;
+comboDerivedFan    = 400;
 
 % CleanCost baseline point - one series, the well-tuned operating point. Same label format as the
 % cost sweep, so its historical CSVs load here unchanged.
@@ -130,17 +136,18 @@ cleanBaseCap = 3;
 trueCaps    = [3 10];
 kpaxCapCaps = [3 10];
 
-% colour = phi (how sparse), line style = kFan (which nodes rank in), width = delta base.
-% phi gets the channel the eye reads first because it is the headline axis: the question is whether
+% colour = N (how far into the tail), line style = kFan (how much spread), width = delta base.
+% N gets the channel the eye reads first because it is the headline axis: the question is whether
 % concentrating propagation on a few nodes beats spreading it.
-%   phi 1.0 - near-black: the uniform control
-%   falling - steel ramp darkening as the favoured set shrinks
-phiColors = [0.15 0.15 0.15;    % phi 1.0   (control: every node favoured = uniform rep)
-             0.62 0.76 0.90;    % phi 0.25
-             0.24 0.45 0.70;    % phi 0.10
-             0.03 0.15 0.31];   % phi 0.02  (most extreme sparsity)
-fanStyles  = {':', '-', '--'};  % kFan = 1, 4, 16
-fanMarkers = {'o', 'x', '+'};   % scatter only
+%   N 0     - near-black: the threshold-at-the-mean arm, which favours the majority
+%   rising  - steel ramp darkening as the favoured set shrinks
+sigmaNColors = [0.15 0.15 0.15;    % N 0.0   (threshold at the mean: the known failure mode)
+                0.62 0.76 0.90;    % N 0.5
+                0.40 0.60 0.82;    % N 1.0
+                0.24 0.45 0.70;    % N 1.5   (the derived operating point)
+                0.03 0.15 0.31];   % N 2.0   (most extreme sparsity)
+fanStyles  = {'-.', ':', '-', '--'};  % kFan = 0 (uniform control), 1, 4, 16
+fanMarkers = {'s', 'o', 'x', '+'};    % scatter only
 
 % CleanCost baseline: crimson, distinct from every COMBO colour, drawn as a reference anchor.
 cleanColor = [0.70 0.15 0.20];
@@ -170,29 +177,31 @@ for di = 1:numel(deltas)
     dTag   = deltaTitles{di};
     dOne   = deltaSingleCap(di);   % this delta ran --single-point: only capDerived exists
 
-    % --- COMBO: favoured fraction x fan-out gain ---
-    for pi2 = 1:numel(comboFanTopFracs)
+    % --- COMBO: sigma multiple x fan-out gain ---
+    for pi2 = 1:numel(comboFanSigmaN)
         for fi = 1:numel(comboFanGains)
-            phi  = comboFanTopFracs(pi2);
-            kFan = comboFanGains(fi);
+            sigmaN = comboFanSigmaN(pi2);
+            kFan   = comboFanGains(fi);
 
-            % Mirror comboSkip(): full factorial, so --single-point is the only skip.
-            if dOne && ~(phi == comboDerivedPhi && kFan == comboDerivedFan), continue; end
+            % Mirror comboSkip(): at kFan = 0 sigma is 0 and every N runs the identical uniform
+            % control arm, so only the derived N is kept there. --single-point is the only other skip.
+            if kFan == 0 && sigmaN ~= comboDerivedSigmaN, continue; end
+            if dOne && ~(sigmaN == comboDerivedSigmaN && kFan == comboDerivedFan), continue; end
 
-            plannerNames{end + 1}   = sprintf('KinoPaxSTARCOMBO_phi%d_kf%d_ka%d', ...
-                                              phi, kFan, comboAccGain); %#ok<SAGROW>
-            if phi >= 100
-                phiTag = 'uniform';
+            plannerNames{end + 1}   = sprintf('KinoPaxSTARCOMBO_sn%d_kf%d_ka%d', ...
+                                              sigmaN, kFan, comboAccGain); %#ok<SAGROW>
+            if kFan == 0
+                sigmaTag = 'uniform';
             else
-                phiTag = sprintf('phi%g%%', phi);
+                sigmaTag = sprintf('N%g', sigmaN / 100);
             end
             plannerDisplay{end + 1} = sprintf('COMBO %s kFan%g [%s]', ...
-                                              phiTag, kFan / 100, dTag); %#ok<SAGROW>
-            plannerColors(end + 1, :) = phiColors(pi2, :);        %#ok<SAGROW>
+                                              sigmaTag, kFan / 100, dTag); %#ok<SAGROW>
+            plannerColors(end + 1, :) = sigmaNColors(pi2, :);     %#ok<SAGROW>
             plannerStyles{end + 1}    = fanStyles{fi};            %#ok<SAGROW>
             plannerMarkers{end + 1}   = fanMarkers{fi};           %#ok<SAGROW>
             % The uniform arm is drawn thicker: it is the reference the rest is read against.
-            if phi >= 100
+            if kFan == 0
                 plannerWidths(end + 1) = dWidth + 0.8;            %#ok<SAGROW>
             else
                 plannerWidths(end + 1) = dWidth;                  %#ok<SAGROW>
@@ -343,8 +352,8 @@ for ei = 1:numel(environments)
         %   p_target_react    an order of magnitude BELOW p_target_accept - it is divided across the
         %                     whole tree, not the candidate list. If the two converge, the
         %                     reactivation flux is about to swamp admission.
-        %   rep_target        flat and selectivity-driven for ~2/3 of the run, then falling to 1 as
-        %                     the kernel1 ceiling takes over.
+        %   want_this_iter    the growth schedule's demand for this iteration. Under growthExp = 2 it
+        %                     is front-loaded, so it falls through the run.
         % Every non-COMBO series lacks these columns; getCol returns [] and plotMeanTime skips it.
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Growth Controller (%s)', envTitle, costTitle), ...
@@ -365,7 +374,7 @@ for ei = 1:numel(environments)
         subplot(1, 2, 2); hold on;
         if tmax > 0
             for pi = 1:nPlanner
-                plotMeanTime(R{pi}, 'rep_target', ct, plannerColors(pi, :), ...
+                plotMeanTime(R{pi}, 'want_this_iter', ct, plannerColors(pi, :), ...
                              plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
             end
         end
@@ -435,11 +444,11 @@ for ei = 1:numel(environments)
         %% ---------- FIGURE: shape diagnostics ----------
         % The two checks specific to the split-shape design.
         %
-        %   mean_shape_fanout SHOULD FALL as kFan rises. That is not a fault -- it is the
-        %   concentration mechanism working. High gain makes the fan-out sigmoid a step, the shape
-        %   goes bimodal {~0, ~1}, and since repTarget divides by this measured mean, a small top
-        %   fraction phi collects 1/phi times the average fan-out at an UNCHANGED sum(rep). A flat
-        %   0.5 line is the kFan = 0 control arm: uniform rep, no concentration at all.
+%   fan_frac = n_fav / frontier_size, the favoured minority, counted EXACTLY over the
+        %   realised frontier rather than proxied. IT MUST SIT WELL UNDER 0.5. The first fan-out
+        %   rule measured it above 0.5 at every gain, which is what proved it was boosting the
+        %   majority rather than an elite. Expect ~0.10-0.20 at N = 1 and ~0.02-0.05 at N = 2, and
+        %   a flat 1.0 for the kFan = 0 control arm (degenerate spread: everyone favoured).
         %
         %   blend_w_cost is the normalised COST weight of the acceptance shape. It starts at 0
         %   (pure coverage) and rises toward 1 as the tree fills. IF IT NEVER APPROACHES 1 the run
@@ -455,8 +464,8 @@ for ei = 1:numel(environments)
         end
         ylim([0 1]); set(gca, 'YScale', 'log'); grid on;
         xlabel('Iteration'); ylabel('measured favoured fraction');
-        title({'Threshold tracking: fan\_frac should settle at phi', ...
-               'oscillating = h\_fanTauRate\_ too high; drifting = too low'});
+        title({'Favoured fraction: n\_fav / frontier\_size', ...
+               'must sit well under 0.5, or the boost is reaching the majority'});
 
         subplot(1, 2, 2); hold on;
         for pi = 1:nPlanner
@@ -471,27 +480,28 @@ for ei = 1:numel(environments)
         %% ---------- FIGURE: fan-out budget ----------
         % WHETHER CONCENTRATION IS EVEN POSSIBLE, and how hard it is hitting.
         %
-        %   surplus_blocks = budgetBlocks - F, the blocks available ABOVE the rep >= 1 floor. Every
-        %   frontier node costs one block no matter what, so this is the only allocatable part of
-        %   the budget. NEAR ZERO MEANS NO FAN-OUT RULE CAN CONCENTRATE ANYTHING -- the floor times
-        %   the frontier has already spent it, and the constraint is the frontier (F >= nActive,
-        %   because Part B reactivates every region's best unconditionally), not the fan-out rule.
+%   fan_sigma, the spread of the fan-out scores over the realised frontier. It is what the
+        %   threshold is measured in, so COLLAPSING TOWARD 0 MEANS THE SCORES CARRY NO SIGNAL and
+        %   no N can separate anything -- raise kFan. A flat 0 is the kFan = 0 control arm.
         %
-        %   rep_hi = 1 + surplus/nFav, what one favoured node actually receives. Should rise sharply
-        %   as phi falls. Pinned at 1 means there was no surplus to hand out.
+        %   rep_hi, the blocks a favoured node receives. h_repeatMax_ (15) is the normal value;
+        %   BELOW IT MEANS THE BLOCK CEILING, NOT N, IS SETTING FAN-OUT. Pinned at 1 means
+        %   block_ceiling has fallen below frontier_size -- the rep >= 1 floor has spent the whole
+        %   budget, and the constraint is the frontier (F >= nActive, because Part B reactivates
+        %   every region's best unconditionally), not the fan-out rule.
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Fan-out Budget (%s)', envTitle, costTitle), ...
                'Position', [200 200 1500 640]);
 
         subplot(1, 2, 1); hold on;
         for pi = 1:nPlanner
-            plotMeanIter(R{pi}, @(t) getCol(t, 'surplus_blocks'), ...
+            plotMeanIter(R{pi}, @(t) getCol(t, 'fan_sigma'), ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
         end
-        yline(0, 'k--', 'no surplus', 'LineWidth', 1.2, 'HandleVisibility', 'off');
+yline(0, 'k--', 'no spread', 'LineWidth', 1.2, 'HandleVisibility', 'off');
         grid on;
-        xlabel('Iteration'); ylabel('surplus blocks above the rep>=1 floor');
-        title({'Is there anything to concentrate?', 'near 0 = the frontier has eaten the whole budget'});
+        xlabel('Iteration'); ylabel('fan\_sigma (spread of the frontier scores)');
+        title({'Is there anything to separate?', 'near 0 = the scores carry no signal; raise kFan'});
 
         subplot(1, 2, 2); hold on;
         for pi = 1:nPlanner
@@ -501,7 +511,7 @@ for ei = 1:numel(environments)
         yline(1, 'k--', 'no boost', 'LineWidth', 1.2, 'HandleVisibility', 'off');
         grid on;
         xlabel('Iteration'); ylabel('rep\_hi (blocks per favoured node)');
-        title({'How hard a favoured node fans out', 'should rise sharply as phi falls'});
+title({'How hard a favoured node fans out', 'below 15 = the block ceiling is setting it, not N'});
         clickableLegend();
 
         %% ---------- Aggregate summary metrics per planner ----------

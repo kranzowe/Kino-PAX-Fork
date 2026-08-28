@@ -280,13 +280,15 @@ rescale the shape instead of only reshaping the transition.
 
 **The collision term is gone** (may return later); `h_globalCollisionFrac_` survives as ν's source.
 
-**How a smooth fan-out shape reproduces KPAX's sparsity.** A shape averaging 0.5 cannot concentrate —
-`rep = repTarget·shape` puts most nodes mid-range. At **high `kFan`** the sigmoid degenerates to a
-step, the shape goes bimodal `{≈0, ≈1}`, and since `repTarget` divides by the *measured* mean shape,
-a top fraction φ collects `1/φ ×` the average — **20× at φ = 0.05, with `Σrep` unchanged**. That is
-KPAX's 15/1 rule with an **adaptive** threshold (relative to the explored mean, recomputed each
-iteration) rather than a hardcoded `< 10`. So `kFan` is the headline tuning axis and *low* gain is
-the failure mode; `kFan = 0` is the uniform-fan-out control arm.
+**How a smooth fan-out shape reproduces KPAX's sparsity.** A node is favoured — 15 blocks instead of
+1 — when its fan-out score exceeds `μ + N·σ` over the score distribution of the **whole realised
+frontier**. `kFan` controls σ: at low gain the shape crowds around 0.5, σ is small, and the threshold
+sits just above the mean of a *right-skewed* distribution, so it favours the **majority**. At high
+gain the sigmoid degenerates to a step, the shape goes bimodal `{≈0, ≈1}`, σ is large, and the
+threshold lands squarely between the two modes — KPAX's 15/1 with an **adaptive** threshold
+(relative to the frontier's own spread, recomputed each iteration) rather than a hardcoded `< 10`.
+So `kFan` is the headline tuning axis alongside `N`, *low* gain is the failure mode, and `kFan = 0`
+is the uniform-fan-out control arm (σ = 0, degenerate branch, every frontier node the same count).
 
 Every `d` is signed so `d > 0` means unfavourable, and every one is divided by a **global**
 reference. Both halves of that are load-bearing. Raw deltas have no usable range: with
@@ -324,30 +326,40 @@ planner needs, a shared scalar would reactivate more nodes per iteration than th
 target and the frontier would run away. The *shape* is shared — that is the CleanCost invariant that
 matters — the budget cannot be.
 
-**Fan-out replaces the binary 15/1 at both sites.** `rep = clamp(repTarget · shape, 1, repeatMax)`,
-where `repTarget` comes from `h_selectivity_` (candidates examined per node kept) and is then
-clamped by the kernel1 ceiling — `frontierRepeatSize · 32 ≤ MAX_TREE_SIZE − treeSize`, at 0.8
-margin. Taking that ceiling as a `min` rather than as the target is deliberate: filling it would
-spend ~0.8× the remaining buffer on propagation every iteration purely because the buffer is empty,
-2–3× the work for the same growth. Because it is enforced, **staying on the kernel1 path is an
-hold for as long as it can hold** — but not forever. `rep ≥ 1` is a correctness clamp so
-`frontierRepeatSize ≥ F`, and Part B's *unconditional* region-best reactivation puts a floor under
-`F` itself (`F ≥ nActive`, up to `NUM_R1_REGIONS`). Kernel2 is therefore forced once `32·F >
-remaining` regardless of `repTarget` — roughly **59%** of the tree in the sweep config, not the
-~88% an earlier draft claimed from a frontier estimate that omitted `nActive`. `fNext` must count
-that region-best term or `repTarget` comes out 2–4× too large and kernel2 fires within a handful of
-iterations; pushing the crossover later means shrinking `F`, i.e. revisiting the region-best
-guarantee or the R1 grid size.
+**Fan-out replaces the binary 15/1 at both sites, and it is decided in `propagateFrontier`, not in
+the update kernel.** Every branch that puts a node in the frontier records the fan-out score it was
+admitted with into a tree-indexed array. Then, immediately after `findInd` has compacted the
+frontier, the planner reduces μ and σ over it, counts `nFav` above `μ + N·σ`, and solves
 
-Using the *shape* rather than P keeps the budget scalar out of the fan-out — `pTarget` swings 5×
-over a run and would drag the mean repeat through the narrow usable band. Per-node yield still goes
-as `shape²`, since the shape gates admission *and* fan-out; `h_meanShapePrev_` (one fixed-point
-atomic in the accept kernel) measures `E[shape]` and both budget scalars divide by it.
+```
+Σrep = F + (repHi − 1)·nFav  ≤  blockCeiling
+blockCeiling = min(selectivity·want/ν, 0.8·remaining) / activeBlockSize
+```
 
-**Knobs.** Shape: `h_kCoverage_` / `h_kCollision_` / `h_kCost_` (default 4.0, 0 = ablate). Budget:
-`h_selectivity_` (120 — the measured candidates-per-admission of a well-tuned CleanCost run),
+for `repHi`, capped at `h_repeatMax_` and floored — never rounded — at 1.
+
+**The placement is the whole point.** At that instant the compacted list *is* the whole proposed
+frontier: Part A admissions, min-cost exemptions, Part B region-bests, Part B reactivations, repair
+arm. So `F` and `nFav` are **counted**, not estimated. Sized in the update kernel they could not be
+— Part B's reactivation rolls have not happened yet there, so `fNext` was an estimate and `nFav` a
+prediction from a fraction measured over *pre-gate candidates against the previous iteration's
+threshold*. Both ran small early in a run, `repHi` pinned at `h_repeatMax_`, and `Σrep` came
+uncoupled from the budget it was solved against — which dropped propagate onto the slow kernel2 path
+sporadically in early iterations. Kernel2 is still forced once `32·F > remaining` (`rep ≥ 1` is a
+correctness floor and the region-best reactivation is unconditional, so `F ≥ nActive`) — roughly
+**59%** of the tree in the sweep config — but that is now the only route to it.
+
+It is also **the only writer** of `activeFrontierRepeatCount`, running over exactly the compacted
+frontier. `rep ≥ 1` therefore holds by construction rather than by clamp, and two traps disappear
+with it: no frontier node can be left blockless (which stranded its bit forever, since kernel1 clears
+the bit from the expanding block), and no node outside the frontier can hold a count (which made
+`repeatInd` emit a slice no thread writes, fathering phantom-parented nodes at cost 0). Goal nodes no
+longer need their count cleared, so Part A's "must stay last" ordering constraint is gone too.
+
+**Knobs.** Shape: `h_kAcc*` / `h_kFan*` (default 4.0, 0 = ablate). Fan-out: `h_fanSigmaN_` (1.5).
+Budget: `h_selectivity_` (120 — the measured candidates-per-admission of a well-tuned CleanCost run),
 `h_reactFrac_` (0.1), `h_growthIters_` / `h_growthExp_` (schedule; `exp = 1` is linear), and the
-clamps `h_repeatMax_` (15) / `h_pMax_` (0.5). **None of them is a scale factor on a probability** —
+limits `h_repeatMax_` (15) / `h_pMax_` (0.5). **None of them is a scale factor on a probability** —
 each describes what you want or is a safety limit.
 
 **R2 seeding is removed outright**, not switched off: `h_r2SeedAccept_`, `d_frontierNextFresh_` and
@@ -357,16 +369,21 @@ buys admission. The `ACC_SEED` counter slot is retained and permanently 0 so the
 comparable with CleanCost's.
 
 **The min-cost exemption is kept** as an unconditional free pass at both acceptance points —
-optimality convergence depends on every region's best staying in the frontier. Exempt nodes get the
-*neutral* shape for fan-out, not the maximum: ~4.5e3 exemptions at `repeatMax` would be the whole
-propagation budget on its own, and there is one region-best per explored region.
+optimality convergence depends on every region's best staying in the frontier. Exempt nodes carry a
+**real** fan-out score, computed by the same function as everyone else's, and compete on the same
+`μ + N·σ` threshold. Cost is what got them in the door and must not also buy them propagation: cost
+is cumulative root-to-node, so "cheap" means *shallow*, and there are ~4.5e3 exemptions per
+iteration plus one region-best per explored region.
 
 **Two bugs fixed relative to CleanCost, both found by auditing the data flow rather than by a run.**
 `activeFrontierRepeatCount` is zeroed wholesale each iteration and Part B's reactivation is gated on
 `frontier[treeIdx] == 0`, so a node that ends an iteration with `frontier == true` and count 0 is
 never expanded (kernel1 clears the bit only from the expanding block) and never re-counted — the bit
 sticks true forever, inflating `h_frontierSize_`, and the same guard rejects it on every future
-iteration. COMBO adds an explicit repair arm. Separately, `resetPlanner` now zeroes
+iteration. COMBO adds an explicit repair arm — now unreachable on the kernel1 path, since the
+fan-out assignment covers the compacted frontier exhaustively, but kept because kernel2 clears
+`frontier[tid]` by *thread* index rather than by the node it expanded. Separately, `resetPlanner`
+now zeroes
 `d_acceptCounts_` / `h_acceptCounts_`, which CleanCost never did — a planner object reused across
 runs carried the previous run's final counts into iteration 1, and here those counts feed the
 controller.

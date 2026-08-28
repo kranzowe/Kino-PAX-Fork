@@ -120,22 +120,28 @@ public:
     float h_growthExp_;
 
     // ==================================================================================
-    // SPARSE FAN-OUT. The favoured fraction is a knob you SET, not an outcome you discover.
+    // SPARSE FAN-OUT -- a fixed number of STANDARD DEVIATIONS above the frontier's mean score.
     //
-    // The previous proportional rule (rep = repTarget*shape) could not concentrate: its threshold
-    // was the MEAN of each delta, both deltas are right-skewed, so most candidates sat on the
-    // favourable side and the measured favoured fraction came out above 0.5 at every gain. The
-    // "boost" reached ~70% of the frontier -- a mild broad lift, not KPAX's sparse 15/1.
+    // Two earlier rules failed, and both failures were about WHERE the threshold sits rather than
+    // how steep it is. rep = repTarget*shape thresholded at the MEAN of each delta; both deltas are
+    // right-skewed, so mean > median and the "boost" reached ~70% of the frontier. Feeding a
+    // threshold back toward a target fraction phi put the step in the tail, but the fraction driving
+    // it was measured over PRE-GATE candidates against the PREVIOUS threshold while the rule was
+    // applied to post-gate survivors plus every Part B node against the NEW one -- so the block
+    // budget was sized for a favoured count that never materialised.
     //
-    // Now a threshold h_fanThreshold_ is tracked by FEEDBACK toward h_fanTopFrac_, and only nodes
-    // above it are boosted. Feedback is the right tool HERE (unlike the acceptance budget, which is
-    // solved algebraically) because the shape distribution cannot be inverted -- there is nothing
-    // to solve, only something to track.
+    // Now: every frontier node carries the fan-out score it was admitted with, and the threshold is
+    // mu + N*sigma over the score distribution of the WHOLE REALISED FRONTIER -- Part A admissions,
+    // min-cost exemptions, Part B region-bests and Part B reactivations alike. It is computed in
+    // propagateFrontier, right after findInd has compacted the frontier, which is the one point in
+    // the loop where that population is complete, counted, and not an estimate. Scale-free by
+    // construction: a fixed N picks the tail whatever the gains do to the spread, so there is
+    // nothing to track and nothing to lag.
     // ==================================================================================
-    float h_fanTopFrac_;   // phi: fraction of candidates to favour. 1.0 = everyone = uniform rep.
-    float h_fanTauRate_;   // eta on the threshold update; ~0.2 gives a ~5-iteration lag.
+    float h_fanSigmaN_;   // N: standard deviations above the frontier mean. Higher = sparser boost.
 
-    // Safety clamp, not tuning surface: the most blocks any one node may receive.
+    // The most blocks a favoured node receives -- now the ACTUAL count, not a clamp on a derived
+    // value. Only the kernel1 ceiling can reduce it below this.
     float h_repeatMax_;
     float h_pMax_;
 
@@ -199,36 +205,44 @@ public:
     float h_pTargetAccept_;
     float h_pTargetReactivate_;
 
-    // Threshold on shape_fanout separating the favoured minority from everyone else, and the
-    // fraction actually measured above it last iteration. h_fanFracPrev_ is what sizes repHi --
-    // using the MEASURED fraction rather than the target keeps the budget exact while the
-    // threshold is still converging.
+    // Fan-out score distribution over the realised frontier, and the threshold derived from it.
+    // ALL THREE ARE MEASURED, none is state carried between iterations: propagateFrontier reduces
+    // them over the compacted frontier every iteration before it assigns a single block.
+    //
+    //   h_fanThreshold_ = h_fanMu_ + h_fanSigmaN_ * h_fanSigma_
+    //
+    // h_fanSigma_ collapsing toward 0 means the scores carry no spread -- raise h_kFan*, because at
+    // sigma = 0 the strict > leaves nobody favoured and fan-out degenerates to a flat 1 block each.
+    float h_fanMu_;
+    float h_fanSigma_;
     float h_fanThreshold_;
-    float h_fanFracPrev_;
 
-    // Blocks available ABOVE the rep >= 1 floor, and what one favoured node therefore gets.
+    // Favoured nodes COUNTED above the threshold, the fraction they represent, and the blocks each
+    // one gets. nFav is a count over the actual frontier, not a prediction, which is what makes the
+    // block total known before the launch:
     //
-    //   surplus = budgetBlocks - F        repHi = 1 + surplus / nFav
+    //   sum(rep) = nFav*repHi + (F - nFav)*1 = F + (repHi - 1)*nFav     EXACTLY
     //
-    // so sum(rep) = nFav*repHi + (F - nFav) = F + surplus = budgetBlocks, EXACTLY. The floor is part
-    // of the arithmetic instead of a clamp that silently invalidates it.
-    //
-    // WATCH h_surplusBlocks_. If it is small or negative, no fan-out rule can concentrate anything:
-    // the rep >= 1 floor times the frontier has already spent the whole budget. F >= nActive because
-    // Part B reactivates every region's best unconditionally, so that is where the constraint would
-    // be, not in the fan-out rule.
-    float h_surplusBlocks_;
+    // h_repHi_ is h_repeatMax_ unless the kernel1 ceiling reduces it. A value below h_repeatMax_
+    // therefore says the CEILING is setting the fan-out, not h_fanSigmaN_; pinned at 1 says the
+    // frontier alone has spent the block budget (check n_active / frontier_size, since Part B
+    // reactivates every region's best unconditionally and F >= nActive).
+    uint  h_nFav_;
+    float h_fanFrac_;
     float h_repHi_;
 
-    // Mean fan-out target. Derived from h_selectivity_, then clamped by the kernel1 ceiling:
-    // propagateFrontier drops onto the slow kernel2 path when frontierRepeatSize * 32 exceeds the
-    // remaining tree buffer, so capping repTarget at 0.8x that bound makes staying on kernel1 an
-    // as long as it CAN be kept there. Not indefinitely: rep >= 1 is a correctness clamp, so
-    // frontierRepeatSize >= F, and the unconditional region-best reactivation puts a floor under F
-    // itself (F >= nActive). Kernel2 is therefore forced once 32*F > remaining regardless of
-    // repTarget -- around 59% of the tree in the sweep config. Shrinking F further is a design
-    // question (the region-best guarantee, or the R1 grid size), not a tuning one.
-    float h_repTarget_;
+    // Block budget the fan-out is solved against, and the growth target that feeds it. Both are
+    // recomputed in propagateFrontier from the CURRENT tree size, so neither lags a generation.
+    //
+    //   blockCeiling = min(selectivity*want/nu, 0.8*remaining) / activeBlockSize
+    //
+    // The 0.8 is the margin against the kernel1 condition (frontierRepeatSize * activeBlockSize <=
+    // MAX_TREE_SIZE - treeSize). Kernel2 still becomes unavoidable once activeBlockSize*F >
+    // remaining, because rep >= 1 is a correctness floor and the unconditional region-best
+    // reactivation puts F >= nActive -- but that is now the ONLY way it can happen, since repHi is
+    // solved against the exact F and the exact nFav rather than an estimate of either.
+    float h_wantThisIter_;
+    float h_blockCeiling_;
 
     // ================== ACCEPTANCE-REASON INSTRUMENTATION ==================
     // A candidate enters through one of two doors here: the region-best exemption or the roll.
@@ -252,6 +266,10 @@ public:
     // ACC_CREDIT_COL is retained and permanently 0 -- the collision term is gone, but keeping the
     // slot keeps the CSV schema and the breakdown tooling comparable with earlier data.
     // ACC_SHAPE_SUM_* are NOT diagnostics: the controller consumes both.
+    // ACC_FAN_ABOVE is now permanently 0 for the same schema reason. Counting candidates above a
+    // threshold in the accept kernel was the fed-back rule's input, and it was the WRONG population
+    // (pre-gate candidates, not the realised frontier). The favoured count is now h_nFav_, counted
+    // in propagateFrontier over the compacted frontier.
     enum AcceptSlot { ACC_MIN_COST = 0, ACC_SEED, ACC_ROLL, ACC_CREDIT_COV,
                       ACC_CREDIT_COL, ACC_CREDIT_CST,
                       ACC_SHAPE_SUM_ACCEPT, ACC_SHAPE_SUM_FANOUT,
@@ -300,6 +318,19 @@ public:
     // Written before the min-cost early return too, or exempt nodes read a stale shape.
     thrust::device_vector<float> d_frontierNextFanoutShape_;
 
+    // The fan-out score a node was admitted with, INDEXED BY TREE INDEX -- the persistent twin of
+    // the array above, and the population propagateFrontier takes mu and sigma over.
+    //
+    // A SECOND ARRAY IS REQUIRED, not a convenience. d_frontierNextFanoutShape_ is indexed by
+    // unexplored-sample SLOT, and propagate reclaims those slots for the next candidate batch, so a
+    // node's shape there is gone by the time the frontier is compacted. This one follows
+    // d_treeXR1s_: allocate MAX_TREE_SIZE, fill on reset, write once per node, never wipe mid-run.
+    //
+    // Every branch that puts a node in the frontier must write it, or that node joins the mu/sigma
+    // reduction carrying a stale score from whichever node last held its tree slot. The update
+    // kernel has four such branches (Part A, Part B region-best, Part B reactivation, repair arm).
+    thrust::device_vector<float> d_frontierFanoutScore_;
+
     thrust::device_vector<uint> d_goalSetIdxs_, d_goalSetScanIdx_;
     thrust::device_vector<int> d_iterations_;
     thrust::device_vector<float> d_pathCosts_, d_controlPathsToGoal_;
@@ -307,7 +338,7 @@ public:
     // --- raw pointers ---
     float *d_unexploredSamples_ptr_, *d_goalSample_ptr_, *d_unexploredSampleCosts_ptr_;
     float *d_minCostsR1_ptr_, *d_sumCostsR1_ptr_, *d_minCost_ptr_;
-    float *d_frontierNextFanoutShape_ptr_;
+    float *d_frontierNextFanoutShape_ptr_, *d_frontierFanoutScore_ptr_;
     int   *d_cntCostsR1_ptr_;
     float *d_pathCosts_ptr_, *d_controlPathsToGoal_ptr_;
     bool *d_frontier_ptr_, *d_frontierNext_ptr_, *d_goalSet_ptr_;
@@ -365,7 +396,7 @@ __global__ void KinoPaxSTARCOMBO_accept_kernel(uint* activeFrontierNextIdxs, uin
                                                float kAccCov, float kAccCst, float kFanCov, float kFanCst,
                                                float blendU, float blendExpAccept, float blendExpFanout, float blendMid,
                                                float costScale, float exploredMeanCoverage,
-                                               float pTargetAccept, float pMax, float fanThreshold,
+                                               float pTargetAccept, float pMax,
                                                bool countReasons, unsigned long long* acceptCounts);
 
 /***************************/
@@ -375,17 +406,31 @@ __global__ void
 KinoPaxSTARCOMBO_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNextIdxs, uint frontierNextSize,
                                float* xGoal, int treeSize, float* unexploredSamples, float* treeSamples,
                                int* unexploredSamplesParentIdxs, int* treeSamplesParentIdxs, float* treeSampleCosts,
-                               uint* activeFrontierRepeatCount, curandState* randomSeeds,
-                               float* frontierNextFanoutShape,
+                               curandState* randomSeeds,
+                               float* frontierNextFanoutShape, float* frontierFanoutScore,
                                float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
                                float* regionCoverage,
                                float kAccCov, float kAccCst, float kFanCov, float kFanCst,
                                float blendU, float blendExpAccept, float blendExpFanout, float blendMid,
                                float costScale, float exploredMeanCoverage,
-                               float pTargetReactivate, float pMax, float fanThreshold, float repHi,
+                               float pTargetReactivate, float pMax,
                                int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet,
                                int* iterations, int iteration);
+
+/***************************/
+/* FAN-OUT ASSIGNMENT KERNEL */
+/***************************/
+// The ONLY writer of activeFrontierRepeatCount, run over exactly the compacted frontier so every
+// member gets a block by construction and nothing outside it gets one. Two levels: a node scoring
+// above mu + N*sigma gets repHi blocks, everyone else gets 1.
+//
+// PREFIXED. CUDA_SEPARABLE_COMPILATION is on and KPAX's kernels are unprefixed globals, so an
+// unprefixed name here is a duplicate-symbol LINK error, not a compile error -- a clean compile
+// would prove nothing.
+__global__ void KinoPaxSTARCOMBO_assignFanout_kernel(uint frontierSize, uint* activeFrontierIdxs,
+                                                     float* frontierFanoutScore, float fanThreshold,
+                                                     unsigned int repHi, uint* activeFrontierRepeatCount);
 
 /***************************/
 /* GET CONTROL PATH TO GOAL KERNEL */
