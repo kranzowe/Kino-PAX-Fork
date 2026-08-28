@@ -57,9 +57,9 @@ delta     = 'large_length';     % delta + cost metric token, as in the filenames
 % COMBO runs TWO shapes: acceptance (which nodes join) and fan-out (where propagation goes).
 % kFan = 0 is the uniform-fan-out control arm -- both fan-out sigmoids pinned at 0.5, so every node
 % gets identical rep, which is CleanCost's and KinoPaxPlus's behaviour.
-comboAccGains = [100 400 1600];
-comboFanGains = [0 100 400 1600];
-comboRf       = 10;
+comboFanTopFracs = [100 25 10 2];    % 100 = phi 1.0 = uniform control arm
+comboFanGains    = [100 400 1600];
+comboAccGain     = 400;
 cleanRef      = [90 100 3];     % [w k cap] tokens -- the low-cap reference run
 
 % Five reasons, one fixed palette, reused in figures 1-3. The three credit slots mean different
@@ -75,11 +75,11 @@ catColors = [0.85 0.33 0.10;    % min-cost   - burnt orange
 
 % Figures 4-8 channels: colour = FAN-OUT gain (the headline axis), style = ACCEPTANCE gain.
 % Matches process_combo_tuning_and_plot.m so the two plots read the same way.
-fanColors = [0.15 0.15 0.15;    % kFan 0    (control: uniform rep)
-             0.62 0.76 0.90;    % kFan 1
-             0.24 0.45 0.70;    % kFan 4
-             0.03 0.15 0.31];   % kFan 16   (near-bimodal, KPAX-like sparsity)
-accStyles  = {':', '-', '--'};  % kAcc = 1, 4, 16
+phiColors = [0.15 0.15 0.15;    % phi 1.0   (control: every node favoured = uniform rep)
+             0.62 0.76 0.90;    % phi 0.25
+             0.24 0.45 0.70;    % phi 0.10
+             0.03 0.15 0.31];   % phi 0.02  (most extreme sparsity)
+fanStyles  = {':', '-', '--'};  % kFan = 1, 4, 16
 cleanColor = [0.70 0.15 0.20];
 
 %% --- Build the flat point list: the reference first, then the COMBO grid ---
@@ -92,21 +92,21 @@ P(end + 1) = struct( ...
     'name',    sprintf('CleanCost w%g k%g cap%g', cleanRef(1)/100, cleanRef(2)/100, cleanRef(3)/100), ...
     'isCombo', false, 'color', cleanColor, 'style', '-', 'width', 2.2);
 
-for ai = 1:numel(comboAccGains)
+for pi = 1:numel(comboFanTopFracs)
     for fi = 1:numel(comboFanGains)
-        kAcc = comboAccGains(ai);
+        phi  = comboFanTopFracs(pi);
         kFan = comboFanGains(fi);
-        if kFan == 0
-            fanTag = 'uniform';
+        if phi >= 100
+            phiTag = 'uniform';
             w = 1.8;              % the control arm, drawn thicker
         else
-            fanTag = sprintf('kFan%g', kFan / 100);
+            phiTag = sprintf('phi%g%%', phi);
             w = 1.2;
         end
         P(end + 1) = struct( ...
-            'label',   sprintf('KinoPaxSTARCOMBO_ka%d_kf%d_rf%d', kAcc, kFan, comboRf), ...
-            'name',    sprintf('COMBO kAcc%g %s', kAcc / 100, fanTag), ...
-            'isCombo', true, 'color', fanColors(fi, :), 'style', accStyles{ai}, ...
+            'label',   sprintf('KinoPaxSTARCOMBO_phi%d_kf%d_ka%d', phi, kFan, comboAccGain), ...
+            'name',    sprintf('COMBO %s kFan%g', phiTag, kFan / 100), ...
+            'isCombo', true, 'color', phiColors(pi, :), 'style', fanStyles{fi}, ...
             'width',   w); %#ok<SAGROW>
     end
 end

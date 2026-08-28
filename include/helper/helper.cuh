@@ -303,20 +303,36 @@ __device__ __forceinline__ void comboDeltas(float nodeCost, float r1MeanCost, fl
     *d3 = (costScale > 0.0f) ? (nodeCost - r1MeanCost) / costScale : 0.0f;
 }
 
-// Fan-out for one node from its acceptance shape. Used at BOTH Part A and Part B, replacing KPAX's
-// binary 15/1. repTarget is the host-side per-iteration budget (see the planner's updateFrontier):
-// keeping the BUDGET scalar out of the repeat -- only the shape enters -- is what stops a 5x swing
-// in pTarget from dragging the mean fan-out through the narrow band the kernel1 ceiling allows.
+// Two-level fan-out: a node is either in the favoured minority or it is not.
 //
-// THE >= 1 CLAMP IS CORRECTNESS, NOT AN OPTIMISATION. repeatInd emits nothing for count 0, and on
-// the kernel1 path the frontier bit is cleared BY THE EXPANDING BLOCK ITSELF -- so a node with no
-// block is never expanded and never cleared. Its frontier bit stays true forever, inflating
-// h_frontierSize_, and Part B cannot rescue it because its reactivation guard is frontier == 0.
-__device__ __forceinline__ unsigned int repeatFromShape(float shape, float repTarget, float repeatMax)
+// REPLACES A PROPORTIONAL RULE THAT COULD NOT CONCENTRATE. The previous form was
+// rep = clamp(repTarget * shape, 1, repeatMax), and it failed for a structural reason worth
+// recording. The fan-out shape thresholds each candidate against the MEAN of its deltas, and both
+// deltas are right-skewed -- coverage is floored at -1 and unbounded above, cost has a long
+// expensive tail -- so mean > median and MOST candidates land on the favourable side. The measured
+// favoured fraction came out above 0.5 at every gain. Raising the gain only sharpens the step; it
+// cannot move where the step sits, so the "boost" was going to ~70% of the frontier. KPAX's 15/1
+// works precisely because its 15 goes to a shrinking MINORITY of under-sampled regions.
+//
+// So the threshold is now a separate, fed-back quantity aimed at a TARGET FRACTION (see the
+// planner's h_fanTopFrac_), and this function is a plain two-level rule against it.
+//
+// THE >= 1 FLOOR IS NOW STRUCTURAL, not a clamp bolted on afterwards. That matters for the budget:
+// sum(rep) = sum(max(1, ...)) is NOT repTarget * sum(shape) once the floor binds, and with a mean
+// rep near 1 it binds for most nodes -- so the old form solved repTarget against a budget the floor
+// had already partly spent. The caller now sizes repHi from the SURPLUS above the floor, which
+// makes sum(rep) = F + surplus exact.
+//
+// Why the floor exists at all: repeatInd emits nothing for count 0, and on the kernel1 path the
+// frontier bit is cleared BY THE EXPANDING BLOCK ITSELF -- so a node with no block is never
+// expanded and never cleared. Its frontier bit stays true forever, inflating h_frontierSize_, and
+// Part B cannot rescue it because its reactivation guard is frontier == 0.
+__device__ __forceinline__ unsigned int repeatTwoLevel(float shape, float threshold, float repHi)
 {
-    float r = repTarget * shape;
-    if(!(r >= 1.0f)) r = 1.0f;   // NaN-safe: an unordered compare falls through to the floor
-    if(r > repeatMax) r = repeatMax;
+    // NaN-safe: an unordered compare falls through to the unfavoured branch.
+    if(!(shape > threshold)) return 1u;
+    float r = repHi;
+    if(!(r >= 1.0f)) r = 1.0f;
     return (unsigned int)lroundf(r);
 }
 

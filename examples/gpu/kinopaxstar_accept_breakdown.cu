@@ -67,28 +67,29 @@
 // ---- COMBO grid ----
 // Declared locally because this is a standalone binary.
 // COMBO now runs TWO shapes -- acceptance (which nodes join) and fan-out (where propagation goes)
-// -- so the grid crosses their gains. Mirrors ACC_GAINS / FAN_GAINS in the tuning sweep, including
+// -- so the grid crosses phi with the fan-out gain. Mirrors FAN_TOP_FRACS / FAN_GAINS in the sweep,
 // the label format, so a point here and the same point there carry the same name and can be read
 // side by side. scripts/cross_check_combo_grid.py asserts the sweep's copy stays in step.
 //
-// kFan = 0 is the UNIFORM FAN-OUT control arm (both fan-out sigmoids pinned at 0.5, so every node
-// gets identical rep) -- CleanCost's and KinoPaxPlus's behaviour, and the direct test of whether
-// shaped fan-out is worth anything.
-static const float ACC_GAINS[] = {1.0f, 4.0f, 16.0f};
-static const float FAN_GAINS[] = {0.0f, 1.0f, 4.0f, 16.0f};
-static const float REACT_FRAC  = 0.1f;
+// phi = 1.0 favours every node, which collapses repHi to the uniform mean -- the control arm. It
+// replaced kFan = 0, which no longer works: with both fan-out gains zero every shape is exactly 0.5,
+// so a threshold separates nothing and the feedback loop would oscillate.
+static const float FAN_TOP_FRACS[] = {1.0f, 0.25f, 0.10f, 0.02f};
+static const float FAN_GAINS[]     = {1.0f, 4.0f, 16.0f};
+static const float ACC_GAIN        = 4.0f;
+static const float REACT_FRAC      = 0.1f;
 static const float BLEND_EXP_ACCEPT = 1.0f;
 static const float BLEND_EXP_FANOUT = 1.0f;
 static const float BLEND_MID        = 0.5f;
-static const int NUM_ACC_GAINS = sizeof(ACC_GAINS) / sizeof(ACC_GAINS[0]);
-static const int NUM_FAN_GAINS = sizeof(FAN_GAINS) / sizeof(FAN_GAINS[0]);
+static const int NUM_FAN_TOP_FRACS = sizeof(FAN_TOP_FRACS) / sizeof(FAN_TOP_FRACS[0]);
+static const int NUM_FAN_GAINS     = sizeof(FAN_GAINS) / sizeof(FAN_GAINS[0]);
 
-// "KinoPaxSTARCOMBO_ka400_kf1600_rf10" -- byte-identical to the sweep's comboLabel().
-static std::string comboLabel(float kAcc, float kFan, float rf)
+// "KinoPaxSTARCOMBO_phi10_kf400_ka400" -- byte-identical to the sweep's comboLabel().
+static std::string comboLabel(float phi, float kFan, float kAcc)
 {
     char buf[128];
-    snprintf(buf, sizeof(buf), "KinoPaxSTARCOMBO_ka%d_kf%d_rf%d",
-             (int)lroundf(100.0f * kAcc), (int)lroundf(100.0f * kFan), (int)lroundf(100.0f * rf));
+    snprintf(buf, sizeof(buf), "KinoPaxSTARCOMBO_phi%d_kf%d_ka%d",
+             (int)lroundf(100.0f * phi), (int)lroundf(100.0f * kFan), (int)lroundf(100.0f * kAcc));
     return std::string(buf);
 }
 
@@ -140,6 +141,10 @@ struct IterRow
     float  mean_shape_fanout;    // over ALL candidates; FALLS as kFan rises -- that is concentration
     float  blend_u;              // treeSize/MAX_TREE_SIZE
     float  blend_w_cost;         // normalised cost weight of the acceptance shape
+    float  fan_threshold;        // the fed-back threshold separating the favoured minority
+    float  fan_frac;             // measured fraction above it -- must settle at h_fanTopFrac_
+    float  rep_hi;               // blocks one favoured node gets; 1 means there was no surplus
+    float  surplus_blocks;       // blocks above the rep>=1 floor. Near 0 = nothing to concentrate.
     float  p_target_accept;
     float  p_target_reactivate;
     float  rep_target;
@@ -160,6 +165,10 @@ static void blankRow(IterRow& r)
     r.mean_shape_fanout = NAN;
     r.blend_u = NAN;
     r.blend_w_cost = NAN;
+    r.fan_threshold = NAN;
+    r.fan_frac = NAN;
+    r.rep_hi = NAN;
+    r.surplus_blocks = NAN;
     r.p_target_accept = NAN;
     r.p_target_reactivate = NAN;
     r.rep_target = NAN;
@@ -172,16 +181,17 @@ static void blankRow(IterRow& r)
 // Run one COMBO grid point and collect its per-iteration rows.
 // ========================================================================
 std::vector<IterRow> runCombo(KinoPaxSTARCOMBO& planner,
-                              float kAcc, float kFan, float reactFrac,
+                              float phi, float kFan, float reactFrac,
                               float* h_initial, float* h_goal,
                               float* d_obstacles, uint numObstacles,
                               int maxIterations, int& badPartition, int& badCredit)
 {
     // Two gains per shape, tied within a shape for this pass (as in the sweep).
-    planner.h_kAccCoverage_       = kAcc;
-    planner.h_kAccCost_           = kAcc;
+    planner.h_kAccCoverage_       = ACC_GAIN;
+    planner.h_kAccCost_           = ACC_GAIN;
     planner.h_kFanCoverage_       = kFan;
     planner.h_kFanCost_           = kFan;
+    planner.h_fanTopFrac_         = phi;
     planner.h_blendExpAccept_     = BLEND_EXP_ACCEPT;
     planner.h_blendExpFanout_     = BLEND_EXP_FANOUT;
     planner.h_blendMid_           = BLEND_MID;
@@ -249,6 +259,10 @@ std::vector<IterRow> runCombo(KinoPaxSTARCOMBO& planner,
         r.mean_shape_fanout      = planner.h_meanShapeFanoutPrev_;
         r.blend_u                = planner.h_blendU_;
         r.blend_w_cost           = planner.h_blendWCost_;
+        r.fan_threshold          = planner.h_fanThreshold_;
+        r.fan_frac               = planner.h_fanFracPrev_;
+        r.rep_hi                 = planner.h_repHi_;
+        r.surplus_blocks         = planner.h_surplusBlocks_;
         r.p_target_accept        = planner.h_pTargetAccept_;
         r.p_target_reactivate    = planner.h_pTargetReactivate_;
         r.rep_target             = planner.h_repTarget_;
@@ -350,6 +364,7 @@ void writeCSV(const std::vector<IterRow>& rows, const std::string& path)
       << "credit_cov,credit_col,credit_cst,"
       << "frontier_repeat_size,exempt_count,n_active,reactivated,"
       << "mean_shape_accept,mean_shape_fanout,blend_u,blend_w_cost,"
+      << "fan_threshold,fan_frac,rep_hi,surplus_blocks,"
       << "p_target_accept,p_target_reactivate,rep_target,"
       << "global_coverage,explored_mean_coverage,global_collision_frac\n";
     for(const auto& r : rows)
@@ -369,6 +384,10 @@ void writeCSV(const std::vector<IterRow>& rows, const std::string& path)
           << std::setprecision(6) << r.mean_shape_fanout << ","
           << std::setprecision(6) << r.blend_u << ","
           << std::setprecision(6) << r.blend_w_cost << ","
+          << std::setprecision(6) << r.fan_threshold << ","
+          << std::setprecision(6) << r.fan_frac << ","
+          << std::setprecision(3) << r.rep_hi << ","
+          << std::setprecision(1) << r.surplus_blocks << ","
           << std::scientific << std::setprecision(6) << r.p_target_accept << ","
           << std::scientific << std::setprecision(6) << r.p_target_reactivate << ","
           << std::fixed << std::setprecision(4) << r.rep_target << ","
@@ -460,18 +479,18 @@ int main(int argc, char* argv[])
     }
 
     // --- The COMBO grid ---
-    for(int ai = 0; ai < NUM_ACC_GAINS; ai++)
+    for(int pi = 0; pi < NUM_FAN_TOP_FRACS; pi++)
     for(int fi = 0; fi < NUM_FAN_GAINS; fi++)
     {
-        const float kAcc = ACC_GAINS[ai];
+        const float phi  = FAN_TOP_FRACS[pi];
         const float kFan = FAN_GAINS[fi];
 
-        const std::string label = comboLabel(kAcc, kFan, REACT_FRAC);
-        printf("  kAcc=%.2f kFan=%.2f%s  (%s)\n",
-               kAcc, kFan, (kFan == 0.0f) ? "  [uniform fan-out control]" : "", label.c_str());
+        const std::string label = comboLabel(phi, kFan, ACC_GAIN);
+        printf("  phi=%.2f%s kFan=%.2f  (%s)\n",
+               phi, (phi >= 1.0f) ? "  [uniform control]" : "", kFan, label.c_str());
 
         KinoPaxSTARCOMBO planner;
-        std::vector<IterRow> rows = runCombo(planner, kAcc, kFan, REACT_FRAC,
+        std::vector<IterRow> rows = runCombo(planner, phi, kFan, REACT_FRAC,
                                              h_initial, h_goal, d_obstacles, (uint)numObstacles,
                                              MAX_ITERATIONS, badPartition, badCredit);
         std::ostringstream fn;

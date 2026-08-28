@@ -96,15 +96,17 @@ def tok(x):
 
 
 # ---------------------------------------------------------------- the C++ side
-# COMBO's grid is now acceptance-gain x fan-out-gain: two shapes, one for "which nodes join" and one
-# for "where propagation goes". kFan = 0 is the uniform-fan-out control arm.
-cu_acc = cu_floats('ACC_GAINS')
+# COMBO's grid is favoured-fraction x fan-out-gain. phi = 1.0 favours every node, which collapses
+# repHi to the uniform mean -- the control arm, replacing the old kFan = 0 (which no longer works,
+# since with both fan-out gains zero every shape is exactly 0.5 and a threshold separates nothing).
+cu_phi = cu_floats('FAN_TOP_FRACS')
 cu_fan = cu_floats('FAN_GAINS')
+cu_acc_gain = cu_scalar('ACC_GAIN')
 cu_rf = cu_scalar('REACT_FRAC')
 cu_true = cu_floats('TRUE_CAPS')
 cu_kcap = cu_floats('KPAXCAP_CAPS')
 cu_cap_derived = cu_scalar('CAP_DERIVED')
-cu_acc_derived = cu_scalar('COMBO_DERIVED_ACC')
+cu_phi_derived = cu_scalar('COMBO_DERIVED_PHI')
 cu_fan_derived = cu_scalar('COMBO_DERIVED_FAN')
 
 cu_clean = {}
@@ -130,30 +132,31 @@ if not any(abs(c - cu_cap_derived) < 1e-6 for c in cu_true):
     problems.append('CAP_DERIVED (%g) is not in TRUE_CAPS %s' % (cu_cap_derived, cu_true))
 if not any(abs(c - cu_cap_derived) < 1e-6 for c in cu_kcap):
     problems.append('CAP_DERIVED (%g) is not in KPAXCAP_CAPS %s' % (cu_cap_derived, cu_kcap))
-if not any(abs(g - cu_acc_derived) < 1e-6 for g in cu_acc):
-    problems.append('COMBO_DERIVED_ACC (%g) is not in ACC_GAINS %s' % (cu_acc_derived, cu_acc))
+if not any(abs(g - cu_phi_derived) < 1e-6 for g in cu_phi):
+    problems.append('COMBO_DERIVED_PHI (%g) is not in FAN_TOP_FRACS %s' % (cu_phi_derived, cu_phi))
 if not any(abs(g - cu_fan_derived) < 1e-6 for g in cu_fan):
     problems.append('COMBO_DERIVED_FAN (%g) is not in FAN_GAINS %s' % (cu_fan_derived, cu_fan))
-# kFan = 0 is the uniform-fan-out control arm and the only direct test of whether shaped fan-out
-# beats CleanCost's behaviour at all. Losing it silently would gut the sweep's headline comparison.
-if not any(abs(g) < 1e-9 for g in cu_fan):
-    problems.append('FAN_GAINS %s has no 0 entry -- the uniform-fan-out control arm is missing' % (cu_fan,))
+# phi = 1.0 favours every node, which collapses repHi to the uniform mean. It is the only direct
+# test of whether sparse fan-out beats spreading it, so losing it would gut the headline comparison.
+if not any(abs(g - 1.0) < 1e-9 for g in cu_phi):
+    problems.append('FAN_TOP_FRACS %s has no 1.0 entry -- the uniform control arm is missing' % (cu_phi,))
 
 
-def combo_skip(kAcc, kFan, single):
+def combo_skip(phi, kFan, single):
     """Mirrors comboSkip() in the benchmark: full factorial, --single-point is the only skip."""
     if not single:
         return False
-    return abs(kAcc - cu_acc_derived) > 1e-6 or abs(kFan - cu_fan_derived) > 1e-6
+    return abs(phi - cu_phi_derived) > 1e-6 or abs(kFan - cu_fan_derived) > 1e-6
 
 
 cu_pairs = set()
 for d, single in zip(sh_deltas, sh_single):
-    for kAcc in cu_acc:
+    for phi in cu_phi:
         for kFan in cu_fan:
-            if combo_skip(kAcc, kFan, single):
+            if combo_skip(phi, kFan, single):
                 continue
-            cu_pairs.add(('KinoPaxSTARCOMBO_ka%d_kf%d_rf%d' % (tok(kAcc), tok(kFan), tok(cu_rf)), d))
+            cu_pairs.add(('KinoPaxSTARCOMBO_phi%d_kf%d_ka%d'
+                          % (tok(phi), tok(kFan), tok(cu_acc_gain)), d))
     cu_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                   % (cu_clean['r2'], cu_clean['w'], cu_clean['k'], cu_clean['cap']), d))
     for c in cu_true:
@@ -168,15 +171,16 @@ for d, single in zip(sh_deltas, sh_single):
     cu_pairs.add(('KinoPaxPlus', d))
 
 # ---------------------------------------------------------------- the MATLAB side
-m_acc = m_ints('comboAccGains')
+m_phi = m_ints('comboFanTopFracs')
 m_fan = m_ints('comboFanGains')
+m_acc_gain = m_scalar_int('comboAccGain')
 m_rf = m_scalar_int('comboReact')
 m_true = m_ints('trueCaps')
 m_kcap = m_ints('kpaxCapCaps')
 m_deltas = m_cellstr('deltas')
 m_single = m_bools('deltaSingleCap')
 m_cap_derived = m_scalar_int('capDerived')
-m_acc_derived = m_scalar_int('comboDerivedAcc')
+m_phi_derived = m_scalar_int('comboDerivedPhi')
 m_fan_derived = m_scalar_int('comboDerivedFan')
 m_clean = {
     'r2': m_str('cleanBaseR2'),
@@ -187,11 +191,11 @@ m_clean = {
 
 m_pairs = set()
 for d, single in zip(m_deltas, m_single):
-    for kAcc in m_acc:
+    for phi in m_phi:
         for kFan in m_fan:
-            if single and not (kAcc == m_acc_derived and kFan == m_fan_derived):
+            if single and not (phi == m_phi_derived and kFan == m_fan_derived):
                 continue
-            m_pairs.add(('KinoPaxSTARCOMBO_ka%d_kf%d_rf%d' % (kAcc, kFan, m_rf), d))
+            m_pairs.add(('KinoPaxSTARCOMBO_phi%d_kf%d_ka%d' % (phi, kFan, m_acc_gain), d))
     m_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                  % (m_clean['r2'], m_clean['w'], m_clean['k'], m_clean['cap']), d))
     for c in m_true:
@@ -218,7 +222,7 @@ if sh_single != m_single:
 # --- Assertion 2: distinct floats must not collapse onto the same round(100x) token.
 # 0.01 and 0.1 both look plausible and both want "cap1"/"cap10"; a collision here means two grid
 # points silently write to ONE filename and the second overwrites the first.
-for name, vals in (('ACC_GAINS', cu_acc), ('FAN_GAINS', cu_fan),
+for name, vals in (('FAN_TOP_FRACS', cu_phi), ('FAN_GAINS', cu_fan),
                    ('TRUE_CAPS', cu_true), ('KPAXCAP_CAPS', cu_kcap)):
     toks = [tok(v) for v in vals]
     if len(set(toks)) != len(set(vals)):

@@ -22,42 +22,39 @@
 static bool        g_dumpViz = false;
 static std::string g_vizDir;
 
-// ---- KinoPaxSTARCOMBO grid: ACCEPTANCE GAIN x FAN-OUT GAIN ----
+// ---- KinoPaxSTARCOMBO grid: FAVOURED FRACTION x FAN-OUT GAIN ----
 //
-// COMBO now runs TWO shapes, because one rule was answering two different questions: which nodes
-// join the tree (acceptance -- cost belongs there) and where to spend propagation (fan-out -- cost
-// is counter-productive there, since cost is cumulative root-to-node so "cheap" means SHALLOW).
-// This grid crosses their gains.
+// phi IS THE HEADLINE AXIS, and it replaces kFan = 0 as the control arm.
 //
-// kFan IS THE HEADLINE AXIS. A shape averaging 0.5 cannot concentrate: rep = repTarget*shape puts
-// most nodes in the middle, max/mean = 2x. At HIGH gain the sigmoid becomes a step, the shape goes
-// bimodal, and because repTarget divides by the MEASURED mean shape, a top node gets 1/phi times
-// the average -- 20x at phi = 0.05 -- with sum(rep) unchanged. That is KPAX's 15/1 rule with an
-// ADAPTIVE threshold instead of a hardcoded < 10. So low gain, not high, is the failure mode here.
+// The previous grid swept kFan with kFan = 0 as "uniform". That control no longer works: with both
+// fan-out gains zero every shape is exactly 0.5, so a threshold cannot separate anything and the
+// feedback loop would just oscillate. phi = 1.0 favours every node, which collapses repHi to the
+// uniform mean -- a proper uniform arm, and one that still exercises the same code path.
 //
-// kFan = 0 IS THE CONTROL ARM: both fan-out sigmoids pin at 0.5, shape_fanout is constant, every
-// node gets identical rep. That is CleanCost's and KinoPaxPlus's behaviour, and it is the direct
-// test of whether shaped fan-out beats uniform fan-out at all.
+// WHY phi EXISTS AT ALL. The previous rule scaled rep by the shape directly, and it could not
+// concentrate: its threshold sat at the MEAN of each delta, both deltas are right-skewed (coverage
+// is floored at -1 and unbounded above; cost has a long expensive tail), so most candidates landed
+// on the favourable side. The measured favoured fraction came out ABOVE 0.5 at every gain -- the
+// "boost" was reaching ~70% of the frontier, a mild broad lift rather than KPAX's sparse 15/1.
+// Raising the gain only sharpens the step; it cannot move where the step sits.
 //
-// Within each shape the two gains (coverage, cost) are TIED for this pass -- kAccCov = kAccCst =
-// kAcc -- to keep the grid at 12 points. All four fields stay independently settable on the
-// planner for a follow-up pass once a corner wins.
-static const float ACC_GAINS[] = {1.0f, 4.0f, 16.0f};
-static const float FAN_GAINS[] = {0.0f, 1.0f, 4.0f, 16.0f};
-static const int NUM_ACC_GAINS = sizeof(ACC_GAINS) / sizeof(ACC_GAINS[0]);
-static const int NUM_FAN_GAINS = sizeof(FAN_GAINS) / sizeof(FAN_GAINS[0]);
+// Now the threshold is tracked by feedback toward phi, so the favoured fraction is SET rather than
+// discovered, and kFan only decides WHICH nodes rank into that fraction.
+static const float FAN_TOP_FRACS[] = {1.0f, 0.25f, 0.10f, 0.02f};   // 1.0 = uniform control arm
+static const float FAN_GAINS[]     = {1.0f, 4.0f, 16.0f};           // ranking quality
+static const float ACC_GAIN        = 4.0f;                          // fixed this pass
+static const float REACT_FRAC      = 0.1f;
+static const int NUM_FAN_TOP_FRACS = sizeof(FAN_TOP_FRACS) / sizeof(FAN_TOP_FRACS[0]);
+static const int NUM_FAN_GAINS     = sizeof(FAN_GAINS) / sizeof(FAN_GAINS[0]);
 
-// Blend controls, FIXED this pass. mid = where the coverage->cost crossover sits (as a fraction of
-// MAX_TREE_SIZE reached); g = how sharply it happens. They become the follow-up axes.
+// Blend controls, FIXED this pass; they become the follow-up axes.
 //
 // WATCH mid IF COST NEVER ENGAGES: u tops out at whatever fraction of MAX_TREE_SIZE a run actually
 // reaches, and under a wall-clock timeout that can be well under 0.5 -- in which case at mid = 0.5
-// the cost term never takes majority weight. blend_u and blend_w_cost are logged per iteration
-// precisely so that is visible rather than guessed at.
+// the cost term never takes majority weight. blend_u and blend_w_cost are logged for exactly this.
 static const float BLEND_EXP_ACCEPT = 1.0f;
 static const float BLEND_EXP_FANOUT = 1.0f;
 static const float BLEND_MID        = 0.5f;
-static const float REACT_FRAC       = 0.1f;
 
 // ---- KinoPaxSTARCleanCost baseline point ----
 // Demoted from a 21-point grid to the single well-tuned operating point, as the reference the
@@ -87,7 +84,7 @@ static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0
 // the operating point so the deltas can be overlaid like with like. Each of these MUST remain a
 // member of its list -- the flag selects BY VALUE, so a derived point outside the grid would run
 // nothing at all. cross_check_combo_grid.py asserts exactly that.
-static const float COMBO_DERIVED_ACC = 4.0f;
+static const float COMBO_DERIVED_PHI = 0.10f;
 static const float COMBO_DERIVED_FAN = 4.0f;
 static const float CAP_DERIVED       = 0.1f;
 
@@ -101,18 +98,18 @@ static bool capSkip(float cap)
 // Single source of truth for the COMBO grid's shape: the runner and the banner both call it, so the
 // printed point count can never drift from the grid actually executed. The grid is a full
 // factorial, so the only skip is --single-point.
-static bool comboSkip(float kAcc, float kFan)
+static bool comboSkip(float phi, float kFan)
 {
     if(!g_singlePoint) return false;
-    return fabsf(kAcc - COMBO_DERIVED_ACC) > 1e-6f || fabsf(kFan - COMBO_DERIVED_FAN) > 1e-6f;
+    return fabsf(phi - COMBO_DERIVED_PHI) > 1e-6f || fabsf(kFan - COMBO_DERIVED_FAN) > 1e-6f;
 }
 
 static int comboPointCount()
 {
     int n = 0;
-    for(int ai = 0; ai < NUM_ACC_GAINS; ai++)
+    for(int pi = 0; pi < NUM_FAN_TOP_FRACS; pi++)
     for(int fi = 0; fi < NUM_FAN_GAINS; fi++)
-        if(!comboSkip(ACC_GAINS[ai], FAN_GAINS[fi])) n++;
+        if(!comboSkip(FAN_TOP_FRACS[pi], FAN_GAINS[fi])) n++;
     return n;
 }
 
@@ -125,14 +122,15 @@ static int capAxisPointCount(const float* caps, int nCaps)
     return n;
 }
 
-// "KinoPaxSTARCOMBO_ka400_kf1600_rf10". MUST start with "KinoPaxSTAR": the plot script's
+// "KinoPaxSTARCOMBO_phi10_kf400_ka400". MUST start with "KinoPaxSTAR": the plot script's
 // loadRuns() dispatches on that prefix and error()s on anything it does not recognise. Tokens are
-// round(100 x float), the same convention as every other label in this family.
-static std::string comboLabel(float kAcc, float kFan, float rf)
+// round(100 x float), the same convention as every other label in this family -- so phi = 1.0
+// (the uniform arm) is phi100 and phi = 0.02 is phi2.
+static std::string comboLabel(float phi, float kFan, float kAcc)
 {
     char buf[128];
-    snprintf(buf, sizeof(buf), "KinoPaxSTARCOMBO_ka%d_kf%d_rf%d",
-             (int)lroundf(100.0f * kAcc), (int)lroundf(100.0f * kFan), (int)lroundf(100.0f * rf));
+    snprintf(buf, sizeof(buf), "KinoPaxSTARCOMBO_phi%d_kf%d_ka%d",
+             (int)lroundf(100.0f * phi), (int)lroundf(100.0f * kFan), (int)lroundf(100.0f * kAcc));
     return std::string(buf);
 }
 
@@ -198,6 +196,14 @@ struct IterationData
     // shape goes bimodal, repTarget divides by a smaller mean, and the top nodes get the surplus.
     float mean_shape_accept;
     float mean_shape_fanout;
+    // Sparse fan-out state. fan_frac must settle at h_fanTopFrac_ within ~10 iterations; rep_hi is
+    // what one favoured node actually receives; surplus_blocks is the blocks available ABOVE the
+    // rep >= 1 floor. surplus_blocks near zero means no fan-out rule can concentrate anything,
+    // because the floor times the frontier has already spent the whole budget.
+    float fan_threshold;
+    float fan_frac;
+    float rep_hi;
+    float surplus_blocks;
     // Blend state: u = treeSize/MAX_TREE_SIZE, and the normalised COST weight of the acceptance
     // shape. Watch blend_w_cost -- if it never gets near 1 the run ended before cost took over.
     float blend_u;
@@ -221,6 +227,10 @@ static void clearComboCols(IterationData& d)
     d.exempt_count = -1;
     d.mean_shape_accept = NAN;
     d.mean_shape_fanout = NAN;
+    d.fan_threshold = NAN;
+    d.fan_frac = NAN;
+    d.rep_hi = NAN;
+    d.surplus_blocks = NAN;
     d.blend_u = NAN;
     d.blend_w_cost = NAN;
     d.p_target_accept = NAN;
@@ -380,6 +390,7 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
          << "score_floor,cost_scale,"
          << "prop_attempted,prop_valid,frontier_repeat_size,exempt_count,"
          << "mean_shape_accept,mean_shape_fanout,blend_u,blend_w_cost,"
+         << "fan_threshold,fan_frac,rep_hi,surplus_blocks,"
          << "p_target_accept,p_target_reactivate,rep_target,"
          << "global_coverage,explored_mean_coverage,global_collision_frac\n";
 
@@ -404,6 +415,10 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
              << std::fixed << std::setprecision(6) << d.mean_shape_fanout << ","
              << std::fixed << std::setprecision(6) << d.blend_u << ","
              << std::fixed << std::setprecision(6) << d.blend_w_cost << ","
+             << std::fixed << std::setprecision(6) << d.fan_threshold << ","
+             << std::fixed << std::setprecision(6) << d.fan_frac << ","
+             << std::fixed << std::setprecision(3) << d.rep_hi << ","
+             << std::fixed << std::setprecision(1) << d.surplus_blocks << ","
              << std::scientific << std::setprecision(6) << d.p_target_accept << ","
              << std::scientific << std::setprecision(6) << d.p_target_reactivate << ","
              << std::fixed << std::setprecision(4) << d.rep_target << ","
@@ -943,7 +958,7 @@ RunResult benchmarkKinoPaxSTARCOMBO(
     uint numObstacles,
     int maxIterations,
     float maxTimeMs,
-    float kAcc,
+    float phi,
     float kFan,
     float reactFrac,
     const std::string& label)
@@ -953,10 +968,12 @@ RunResult benchmarkKinoPaxSTARCOMBO(
     // growth schedule, repeatMax, pMax -- stays at its constructor default: those describe the
     // COMPUTE BUDGET and the target trajectory, not the acceptance shape this grid is sweeping.
     // The two gains within a shape are tied for this pass; the four fields stay independent.
-    planner.h_kAccCoverage_   = kAcc;
-    planner.h_kAccCost_       = kAcc;
+    planner.h_kAccCoverage_   = ACC_GAIN;
+    planner.h_kAccCost_       = ACC_GAIN;
     planner.h_kFanCoverage_   = kFan;
     planner.h_kFanCost_       = kFan;
+    // The favoured fraction: what the threshold's feedback loop aims at.
+    planner.h_fanTopFrac_     = phi;
     planner.h_blendExpAccept_ = BLEND_EXP_ACCEPT;
     planner.h_blendExpFanout_ = BLEND_EXP_FANOUT;
     planner.h_blendMid_       = BLEND_MID;
@@ -1041,6 +1058,10 @@ RunResult benchmarkKinoPaxSTARCOMBO(
         d.mean_shape_fanout      = planner.h_meanShapeFanoutPrev_;
         d.blend_u                = planner.h_blendU_;
         d.blend_w_cost           = planner.h_blendWCost_;
+        d.fan_threshold          = planner.h_fanThreshold_;
+        d.fan_frac               = planner.h_fanFracPrev_;
+        d.rep_hi                 = planner.h_repHi_;
+        d.surplus_blocks         = planner.h_surplusBlocks_;
         d.p_target_accept        = planner.h_pTargetAccept_;
         d.p_target_reactivate    = planner.h_pTargetReactivate_;
         d.rep_target             = planner.h_repTarget_;
@@ -1082,28 +1103,28 @@ void runKinoPaxSTARCOMBOBenchmark(
            environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
     printf("========================================\n");
 
-    for(int ai = 0; ai < NUM_ACC_GAINS; ai++)
+    for(int pi = 0; pi < NUM_FAN_TOP_FRACS; pi++)
     for(int fi = 0; fi < NUM_FAN_GAINS; fi++)
     {
-        const float kAcc = ACC_GAINS[ai];
+        const float phi  = FAN_TOP_FRACS[pi];
         const float kFan = FAN_GAINS[fi];
         const float rf   = REACT_FRAC;
 
-        if(comboSkip(kAcc, kFan)) continue;
+        if(comboSkip(phi, kFan)) continue;
 
-        const std::string label = comboLabel(kAcc, kFan, rf);
+        const std::string label = comboLabel(phi, kFan, ACC_GAIN);
 
-        printf("  --- kAcc = %.2f, kFan = %.2f%s, rf = %.2f (%s) ---\n",
-               kAcc, kFan, (kFan == 0.0f) ? " [uniform fan-out control]" : "", rf, label.c_str());
+        printf("  --- phi = %.2f%s, kFan = %.2f, kAcc = %.2f, rf = %.2f (%s) ---\n",
+               phi, (phi >= 1.0f) ? " [uniform control]" : "", kFan, ACC_GAIN, rf, label.c_str());
         KinoPaxSTARCOMBO planner;
         for(int run = 0; run < numRuns; run++)
         {
             RunResult result = benchmarkKinoPaxSTARCOMBO(planner, deltaLabel, environment_name, run,
                                                  h_initial, h_goal, d_obstacles,
                                                  numObstacles, maxIterations, maxTimeMs,
-                                                 kAcc, kFan, rf, label);
-            printf("  kAcc=%.2f kFan=%.2f rf=%.2f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-                   kAcc, kFan, rf, run + 1, numRuns, result.total_time_seconds, result.total_iterations,
+                                                 phi, kFan, rf, label);
+            printf("  phi=%.2f kFan=%.2f rf=%.2f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                   phi, kFan, rf, run + 1, numRuns, result.total_time_seconds, result.total_iterations,
                    result.final_tree_size, result.first_solution_iteration,
                    result.first_solution_cost, result.final_best_cost);
             writePerIterationCSV(result, outputDir);
@@ -1506,9 +1527,9 @@ int main(int argc, char* argv[])
         // Counted with the same predicate the runner uses, not a closed form -- the previous
         // closed form silently assumed the last WEIGHTS entry was 1.0.
         int comboPoints = comboPointCount();
-        printf("COMBO:          kAcc {1,4,16} x kFan {0,1,4,16} (kFan 0 = uniform fan-out control),"
-               " rf %.2f, blend mid %.2f\n                -> %d points x %d runs = %d runs\n",
-               REACT_FRAC, BLEND_MID, comboPoints, NUM_COMBO_RUNS, comboPoints * NUM_COMBO_RUNS);
+        printf("COMBO:          phi {1.0,0.25,0.10,0.02} (1.0 = uniform control) x kFan {1,4,16},"
+               " kAcc %.2f, rf %.2f\n                -> %d points x %d runs = %d runs\n",
+               ACC_GAIN, REACT_FRAC, comboPoints, NUM_COMBO_RUNS, comboPoints * NUM_COMBO_RUNS);
         printf("CleanCost:      r2 OFF, w %.2f, k %.2f, cap %.2f = 1 point x %d runs = %d runs\n",
                CLEAN_BASE_W, CLEAN_BASE_K, CLEAN_BASE_CAP, NUM_CLEANCOST_RUNS, NUM_CLEANCOST_RUNS);
         int truePoints = capAxisPointCount(TRUE_CAPS, NUM_TRUE_CAPS);

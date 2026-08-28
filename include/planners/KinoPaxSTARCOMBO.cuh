@@ -119,7 +119,23 @@ public:
     int   h_growthIters_;
     float h_growthExp_;
 
-    // Safety clamps, not tuning surface. repeatMax matches the legacy binary rule's `15`.
+    // ==================================================================================
+    // SPARSE FAN-OUT. The favoured fraction is a knob you SET, not an outcome you discover.
+    //
+    // The previous proportional rule (rep = repTarget*shape) could not concentrate: its threshold
+    // was the MEAN of each delta, both deltas are right-skewed, so most candidates sat on the
+    // favourable side and the measured favoured fraction came out above 0.5 at every gain. The
+    // "boost" reached ~70% of the frontier -- a mild broad lift, not KPAX's sparse 15/1.
+    //
+    // Now a threshold h_fanThreshold_ is tracked by FEEDBACK toward h_fanTopFrac_, and only nodes
+    // above it are boosted. Feedback is the right tool HERE (unlike the acceptance budget, which is
+    // solved algebraically) because the shape distribution cannot be inverted -- there is nothing
+    // to solve, only something to track.
+    // ==================================================================================
+    float h_fanTopFrac_;   // phi: fraction of candidates to favour. 1.0 = everyone = uniform rep.
+    float h_fanTauRate_;   // eta on the threshold update; ~0.2 gives a ~5-iteration lag.
+
+    // Safety clamp, not tuning surface: the most blocks any one node may receive.
     float h_repeatMax_;
     float h_pMax_;
 
@@ -183,6 +199,27 @@ public:
     float h_pTargetAccept_;
     float h_pTargetReactivate_;
 
+    // Threshold on shape_fanout separating the favoured minority from everyone else, and the
+    // fraction actually measured above it last iteration. h_fanFracPrev_ is what sizes repHi --
+    // using the MEASURED fraction rather than the target keeps the budget exact while the
+    // threshold is still converging.
+    float h_fanThreshold_;
+    float h_fanFracPrev_;
+
+    // Blocks available ABOVE the rep >= 1 floor, and what one favoured node therefore gets.
+    //
+    //   surplus = budgetBlocks - F        repHi = 1 + surplus / nFav
+    //
+    // so sum(rep) = nFav*repHi + (F - nFav) = F + surplus = budgetBlocks, EXACTLY. The floor is part
+    // of the arithmetic instead of a clamp that silently invalidates it.
+    //
+    // WATCH h_surplusBlocks_. If it is small or negative, no fan-out rule can concentrate anything:
+    // the rep >= 1 floor times the frontier has already spent the whole budget. F >= nActive because
+    // Part B reactivates every region's best unconditionally, so that is where the constraint would
+    // be, not in the fan-out rule.
+    float h_surplusBlocks_;
+    float h_repHi_;
+
     // Mean fan-out target. Derived from h_selectivity_, then clamped by the kernel1 ceiling:
     // propagateFrontier drops onto the slow kernel2 path when frontierRepeatSize * 32 exceeds the
     // remaining tree buffer, so capping repTarget at 0.8x that bound makes staying on kernel1 an
@@ -217,7 +254,8 @@ public:
     // ACC_SHAPE_SUM_* are NOT diagnostics: the controller consumes both.
     enum AcceptSlot { ACC_MIN_COST = 0, ACC_SEED, ACC_ROLL, ACC_CREDIT_COV,
                       ACC_CREDIT_COL, ACC_CREDIT_CST,
-                      ACC_SHAPE_SUM_ACCEPT, ACC_SHAPE_SUM_FANOUT, ACC_NUM_SLOTS };
+                      ACC_SHAPE_SUM_ACCEPT, ACC_SHAPE_SUM_FANOUT,
+                      ACC_FAN_ABOVE, ACC_NUM_SLOTS };
     thrust::device_vector<unsigned long long> d_acceptCounts_;
     unsigned long long* d_acceptCounts_ptr_;
     unsigned long long  h_acceptCounts_[ACC_NUM_SLOTS];
@@ -327,7 +365,7 @@ __global__ void KinoPaxSTARCOMBO_accept_kernel(uint* activeFrontierNextIdxs, uin
                                                float kAccCov, float kAccCst, float kFanCov, float kFanCst,
                                                float blendU, float blendExpAccept, float blendExpFanout, float blendMid,
                                                float costScale, float exploredMeanCoverage,
-                                               float pTargetAccept, float pMax,
+                                               float pTargetAccept, float pMax, float fanThreshold,
                                                bool countReasons, unsigned long long* acceptCounts);
 
 /***************************/
@@ -344,7 +382,7 @@ KinoPaxSTARCOMBO_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint*
                                float kAccCov, float kAccCst, float kFanCov, float kFanCst,
                                float blendU, float blendExpAccept, float blendExpFanout, float blendMid,
                                float costScale, float exploredMeanCoverage,
-                               float pTargetReactivate, float pMax, float repTarget, float repeatMax,
+                               float pTargetReactivate, float pMax, float fanThreshold, float repHi,
                                int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet,
                                int* iterations, int iteration);
