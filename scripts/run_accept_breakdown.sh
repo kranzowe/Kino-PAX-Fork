@@ -23,9 +23,9 @@
 # ONE run per grid point, ONE environment, ONE delta, ONE cost metric -- 21 runs, ~2 minutes, one
 # build. Reports against ITERATION, never wall-clock: the counting atomics distort timing.
 #
-#   grid   COMBO: N {0, 0.5, 1, 1.5, 2} sigma x kFan {0, 1, 4, 16}
-#          = 16 points (not 20: at kFan = 0 every fan-out score is identical, so sigma is 0 and
-#          all five N run the same uniform control arm -- only the derived N = 1.5 is kept there)
+#   grid   COMBO: N {2, 3, 4, 5} sigma x kFan {0, 16, 32, 64}
+#          = 13 points (not 16: at kFan = 0 every fan-out score is identical, so sigma is 0 and
+#          all four N run the same uniform control arm -- only the derived N = 2 is kept there)
 #   env    house
 #   delta  large  (W_R1=10 C_R1=1 V_R1=3 -> 27,000 R1 regions)
 #   metric workspace path length (COST_MODE 0)
@@ -199,7 +199,7 @@ echo "  Acceptance-Reason Breakdown (COMBO grid + CleanCost reference)"
 echo "  Delta: ${DELTA_LABEL} | W_R1=${DELTA_W_R1} C_R1=${DELTA_C_R1} V_R1=${DELTA_V_R1} | Regions=${REGIONS}"
 echo "  Cost metric: ${COST_LABEL} (COST_MODE=${COST_MODE_VAL})"
 echo "  Environments: ${ENV_NAMES[*]}"
-echo "  COMBO: N {0,0.5,1,1.5,2} sigma x kFan {0,1,4,16} x rf 0.1 = 16 points"
+echo "  COMBO: N {2,3,4,5} sigma x kFan {0,16,32,64} x rf 0.1 = 13 points"
 echo "  Reference: CleanCost w 0.9, k 1, cap 0.03 (r2 off) = 1 point"
 echo "  1 run each, reported against ITERATION (counting atomics distort wall-clock)"
 echo "======================================================="

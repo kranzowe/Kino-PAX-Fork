@@ -60,8 +60,8 @@ delta     = 'large_length';     % delta + cost metric token, as in the filenames
 % N is the SIGMA MULTIPLE: a node is favoured when its fan-out score exceeds mu + N*sigma over the
 % realised frontier's score distribution. N = 0 puts the threshold at the mean, which is the first
 % fan-out rule's failure mode, kept reproducible.
-comboFanSigmaN = [0 50 100 150 200];   % 0 = threshold at the mean
-comboFanGains  = [0 100 400 1600];     % 0 = uniform control arm
+comboFanSigmaN = [200 300 400 500];    % both axes moved up: the previous grid won at both edges
+comboFanGains  = [0 1600 3200 6400];   % 0 = uniform control arm
 comboAccGain     = 400;
 cleanRef      = [90 100 3];     % [w k cap] tokens -- the low-cap reference run
 
@@ -78,12 +78,11 @@ catColors = [0.85 0.33 0.10;    % min-cost   - burnt orange
 
 % Figures 4-8 channels: colour = FAN-OUT gain (the headline axis), style = ACCEPTANCE gain.
 % Matches process_combo_tuning_and_plot.m so the two plots read the same way.
-sigmaNColors = [0.15 0.15 0.15;    % N 0.0   (threshold at the mean: the known failure mode)
-                0.62 0.76 0.90;    % N 0.5
-                0.40 0.60 0.82;    % N 1.0
-                0.24 0.45 0.70;    % N 1.5   (the derived operating point)
-                0.03 0.15 0.31];   % N 2.0   (most extreme sparsity)
-fanStyles  = {'-.', ':', '-', '--'};  % kFan = 0 (uniform control), 1, 4, 16
+sigmaNColors = [0.62 0.76 0.90;    % N 2.0   (the derived operating point, previous best)
+                0.40 0.60 0.82;    % N 3.0
+                0.24 0.45 0.70;    % N 4.0
+                0.03 0.15 0.31];   % N 5.0   (most extreme sparsity)
+fanStyles  = {'-.', ':', '-', '--'};  % kFan = 0 (uniform control), 16, 32, 64
 cleanColor = [0.70 0.15 0.20];
 
 %% --- Build the flat point list: the reference first, then the COMBO grid ---
@@ -102,7 +101,7 @@ for pi = 1:numel(comboFanSigmaN)
         kFan   = comboFanGains(fi);
         % At kFan = 0 sigma is 0 and every N runs the identical uniform arm; the runner emits only
         % the derived N there. Mirrors comboSkip() in kinopaxstar_combo_tuning_sweep.cu.
-        if kFan == 0 && sigmaN ~= 150, continue; end
+        if kFan == 0 && sigmaN ~= 200, continue; end
         if kFan == 0
             sigmaTag = 'uniform';
             w = 1.8;              % the control arm, drawn thicker

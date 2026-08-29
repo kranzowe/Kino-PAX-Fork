@@ -39,12 +39,24 @@ static std::string g_vizDir;
 // mu + N*sigma needs neither -- it is scale-free, so a fixed N holds its place in the tail whatever
 // the gains do to the spread, and nothing has to be tracked across iterations.
 //
-// N = 0 is the first failure mode, reproducible on demand: the threshold sits exactly at the mean.
-// The UNIFORM CONTROL ARM is kFan = 0 again -- with both fan-out gains zero every score is
+// THIS PASS MOVES BOTH AXES UP. The previous grid topped out at N = 2 and kFan = 16, and both
+// edges won -- which says the optimum was outside the grid, not that those values are right. The
+// low end is dropped rather than kept: N <= 1.5 and kFan <= 4 were measured and lost.
+//
+// WATCH fan_n_max, BECAUSE THE TWO AXES FIGHT. As kFan rises the shape goes bimodal with mass p at
+// the top, so mu -> p and sigma -> sqrt(p(1-p)), and the largest N that still favours ANYONE is
+// sqrt((1-p)/p): 1.0 at p = 0.5, 2.0 at p = 0.2, 3.0 at p = 0.1. Raising kFan therefore lowers the
+// ceiling on N. Past it nobody clears the threshold, n_fav is 0, rep_hi collapses to 1, and the run
+// silently becomes flat-1-block -- which looks like "the boost did nothing", not like a bad setting.
+// fan_n_max logs that ceiling per iteration so the dead corner of this grid is identifiable rather
+// than merely disappointing.
+//
+// The UNIFORM CONTROL ARM is kFan = 0 -- with both fan-out gains zero every score is
 // COMBO_NEUTRAL_SHAPE, sigma is 0, and the planner detects the degenerate spread and gives every
-// frontier node the same count. That is a real code path, not a special case.
-static const float FAN_SIGMA_N[]   = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f};  // 0.0 = threshold at the mean
-static const float FAN_GAINS[]     = {0.0f, 1.0f, 4.0f, 16.0f};       // 0.0 = uniform control arm
+// frontier node the same count. That is a real code path, not a special case, and it is the anchor
+// the rest of the grid is read against.
+static const float FAN_SIGMA_N[]   = {2.0f, 3.0f, 4.0f, 5.0f};        // previous best was the top edge
+static const float FAN_GAINS[]     = {0.0f, 16.0f, 32.0f, 64.0f};     // 0.0 = uniform control arm
 static const float ACC_GAIN        = 4.0f;                            // fixed this pass
 static const float REACT_FRAC      = 0.1f;
 static const int NUM_FAN_SIGMA_N   = sizeof(FAN_SIGMA_N) / sizeof(FAN_SIGMA_N[0]);
@@ -87,8 +99,8 @@ static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0
 // the operating point so the deltas can be overlaid like with like. Each of these MUST remain a
 // member of its list -- the flag selects BY VALUE, so a derived point outside the grid would run
 // nothing at all. cross_check_combo_grid.py asserts exactly that.
-static const float COMBO_DERIVED_SIGMA_N = 1.5f;
-static const float COMBO_DERIVED_FAN     = 4.0f;
+static const float COMBO_DERIVED_SIGMA_N = 2.0f;
+static const float COMBO_DERIVED_FAN     = 16.0f;
 static const float CAP_DERIVED           = 0.1f;
 
 static bool g_singlePoint = false;
@@ -222,6 +234,7 @@ struct IterationData
     float fan_mu;
     float fan_sigma;
     float fan_threshold;
+    float fan_n_max;
     float fan_frac;
     int   n_fav;
     float rep_hi;
@@ -252,6 +265,7 @@ static void clearComboCols(IterationData& d)
     d.fan_mu = NAN;
     d.fan_sigma = NAN;
     d.fan_threshold = NAN;
+    d.fan_n_max = NAN;
     d.fan_frac = NAN;
     d.n_fav = -1;
     d.rep_hi = NAN;
@@ -415,7 +429,7 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
          << "score_floor,cost_scale,"
          << "prop_attempted,prop_valid,frontier_repeat_size,exempt_count,"
          << "mean_shape_accept,mean_shape_fanout,blend_u,blend_w_cost,"
-         << "fan_mu,fan_sigma,fan_threshold,fan_frac,n_fav,rep_hi,block_ceiling,"
+         << "fan_mu,fan_sigma,fan_threshold,fan_n_max,fan_frac,n_fav,rep_hi,block_ceiling,"
          << "p_target_accept,p_target_reactivate,want_this_iter,"
          << "global_coverage,explored_mean_coverage,global_collision_frac\n";
 
@@ -443,6 +457,7 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
              << std::fixed << std::setprecision(6) << d.fan_mu << ","
              << std::fixed << std::setprecision(6) << d.fan_sigma << ","
              << std::fixed << std::setprecision(6) << d.fan_threshold << ","
+             << std::fixed << std::setprecision(3) << d.fan_n_max << ","
              << std::fixed << std::setprecision(6) << d.fan_frac << ","
              << d.n_fav << ","
              << std::fixed << std::setprecision(3) << d.rep_hi << ","
@@ -1089,6 +1104,7 @@ RunResult benchmarkKinoPaxSTARCOMBO(
         d.fan_mu                 = planner.h_fanMu_;
         d.fan_sigma              = planner.h_fanSigma_;
         d.fan_threshold          = planner.h_fanThreshold_;
+        d.fan_n_max              = planner.h_fanNMax_;
         d.fan_frac               = planner.h_fanFrac_;
         d.n_fav                  = (int)planner.h_nFav_;
         d.rep_hi                 = planner.h_repHi_;
@@ -1559,7 +1575,7 @@ int main(int argc, char* argv[])
         // Counted with the same predicate the runner uses, not a closed form -- the previous
         // closed form silently assumed the last WEIGHTS entry was 1.0.
         int comboPoints = comboPointCount();
-        printf("COMBO:          N {0,0.5,1.0,1.5,2.0} sigma x kFan {0,1,4,16} (kFan 0 = uniform control),"
+        printf("COMBO:          N {2,3,4,5} sigma x kFan {0,16,32,64} (kFan 0 = uniform control),"
                " kAcc %.2f, rf %.2f\n                -> %d points x %d runs = %d runs\n",
                ACC_GAIN, REACT_FRAC, comboPoints, NUM_COMBO_RUNS, comboPoints * NUM_COMBO_RUNS);
         printf("CleanCost:      r2 OFF, w %.2f, k %.2f, cap %.2f = 1 point x %d runs = %d runs\n",

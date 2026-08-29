@@ -92,15 +92,18 @@
 // there carry the same name and can be read side by side.
 // scripts/cross_check_combo_grid.py asserts the sweep's copy stays in step.
 //
-// N is in STANDARD DEVIATIONS above the frontier's mean fan-out score. N = 0 favours everything
-// above the mean, which for these right-skewed deltas is the MAJORITY -- that is the first fan-out
-// rule's failure mode, kept in the grid so it can be reproduced deliberately rather than argued
-// about. The uniform control arm is now kFan = 0 again: with both fan-out gains zero every score is
+// N is in STANDARD DEVIATIONS above the frontier's mean fan-out score. Both axes moved up this
+// pass: the previous grid topped out at N = 2 and kFan = 16 and both edges won, so the optimum was
+// outside it. The uniform control arm is kFan = 0: with both fan-out gains zero every score is
 // COMBO_NEUTRAL_SHAPE, sigma is 0, and the planner detects the degenerate spread and hands every
 // frontier node the same block count.
-static const float FAN_SIGMA_N[]   = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f};
-static const float FAN_GAINS[]     = {0.0f, 1.0f, 4.0f, 16.0f};
-static const float DERIVED_SIGMA_N = 1.5f;
+//
+// Read fan_n_max alongside fan_frac here. Raising kFan lowers the largest N that still favours
+// anyone -- past it n_fav is 0 and the run is flat-1-block -- so the top-right corner of this grid
+// can be dead, and fan_n_max is what says so.
+static const float FAN_SIGMA_N[]   = {2.0f, 3.0f, 4.0f, 5.0f};
+static const float FAN_GAINS[]     = {0.0f, 16.0f, 32.0f, 64.0f};
+static const float DERIVED_SIGMA_N = 2.0f;
 static const float ACC_GAIN        = 4.0f;
 static const float REACT_FRAC      = 0.1f;
 static const float BLEND_EXP_ACCEPT = 1.0f;
@@ -170,6 +173,7 @@ struct IterRow
     float  fan_mu;               // mean fan-out score over the whole frontier
     float  fan_sigma;            // its spread. Collapsing toward 0 = the scores carry no signal
     float  fan_threshold;        // fan_mu + N*fan_sigma. -1e38 flags the degenerate-spread branch
+    float  fan_n_max;            // largest N that still favours anyone. N above this => n_fav = 0
     float  fan_frac;             // n_fav / frontier_size -- EXACT, not a proxy. Must be well < 0.5
     int    n_fav;                // nodes counted above the threshold
     float  rep_hi;               // blocks a favoured node gets. Below h_repeatMax_ = ceiling bit
@@ -197,6 +201,7 @@ static void blankRow(IterRow& r)
     r.fan_mu = NAN;
     r.fan_sigma = NAN;
     r.fan_threshold = NAN;
+    r.fan_n_max = NAN;
     r.fan_frac = NAN;
     r.n_fav = -1;
     r.rep_hi = NAN;
@@ -294,6 +299,7 @@ std::vector<IterRow> runCombo(KinoPaxSTARCOMBO& planner,
         r.fan_mu                 = planner.h_fanMu_;
         r.fan_sigma              = planner.h_fanSigma_;
         r.fan_threshold          = planner.h_fanThreshold_;
+        r.fan_n_max              = planner.h_fanNMax_;
         r.fan_frac               = planner.h_fanFrac_;
         r.n_fav                  = (int)planner.h_nFav_;
         r.rep_hi                 = planner.h_repHi_;
@@ -399,7 +405,7 @@ void writeCSV(const std::vector<IterRow>& rows, const std::string& path)
       << "credit_cov,credit_col,credit_cst,"
       << "frontier_repeat_size,exempt_count,n_active,reactivated,"
       << "mean_shape_accept,mean_shape_fanout,blend_u,blend_w_cost,"
-      << "fan_mu,fan_sigma,fan_threshold,fan_frac,n_fav,rep_hi,block_ceiling,"
+      << "fan_mu,fan_sigma,fan_threshold,fan_n_max,fan_frac,n_fav,rep_hi,block_ceiling,"
       << "p_target_accept,p_target_reactivate,want_this_iter,"
       << "global_coverage,explored_mean_coverage,global_collision_frac\n";
     for(const auto& r : rows)
@@ -422,6 +428,7 @@ void writeCSV(const std::vector<IterRow>& rows, const std::string& path)
           << std::setprecision(6) << r.fan_mu << ","
           << std::setprecision(6) << r.fan_sigma << ","
           << std::setprecision(6) << r.fan_threshold << ","
+          << std::setprecision(3) << r.fan_n_max << ","
           << std::setprecision(6) << r.fan_frac << ","
           << r.n_fav << ","
           << std::setprecision(3) << r.rep_hi << ","

@@ -113,17 +113,21 @@ deltaLabel = '3 deltas overlaid';
 % the wrong population. mu + N*sigma is scale-free: a fixed N holds its place in the tail whatever
 % the gains do to the spread, with nothing tracked across iterations.
 %
-% N = 0 (token 0) is the threshold-at-the-mean arm, the first failure mode kept reproducible.
+% THE TWO AXES FIGHT AT THE TOP. Raising kFan drives the shape bimodal with mass p at the top, so
+% mu -> p, sigma -> sqrt(p(1-p)), and the largest N that still favours anyone is sqrt((1-p)/p). Past
+% it n_fav is 0 and the run is flat-1-block, which reads as "the boost did nothing". The fan_n_max
+% column logs that ceiling per iteration, so plot it whenever a high-N/high-kFan point looks inert.
+%
 % kFan = 0 (token 0) is the UNIFORM control arm: every score is identical, sigma is 0, and the
 % planner's degenerate branch gives every frontier node the same block count.
-comboFanSigmaN = [0 50 100 150 200];   % 0 = threshold at the mean
-comboFanGains  = [0 100 400 1600];     % 0 = uniform control arm
+comboFanSigmaN = [200 300 400 500];    % both axes moved up: the previous grid won at both edges
+comboFanGains  = [0 1600 3200 6400];   % 0 = uniform control arm
 comboAccGain   = 400;                  % fixed this pass
 comboReact     = 10;
 
 % The derived operating point that --single-point selects (N = 1.5, kFan = 4).
-comboDerivedSigmaN = 150;
-comboDerivedFan    = 400;
+comboDerivedSigmaN = 200;
+comboDerivedFan    = 1600;
 
 % CleanCost baseline point - one series, the well-tuned operating point. Same label format as the
 % cost sweep, so its historical CSVs load here unchanged.
@@ -141,12 +145,11 @@ kpaxCapCaps = [3 10];
 % concentrating propagation on a few nodes beats spreading it.
 %   N 0     - near-black: the threshold-at-the-mean arm, which favours the majority
 %   rising  - steel ramp darkening as the favoured set shrinks
-sigmaNColors = [0.15 0.15 0.15;    % N 0.0   (threshold at the mean: the known failure mode)
-                0.62 0.76 0.90;    % N 0.5
-                0.40 0.60 0.82;    % N 1.0
-                0.24 0.45 0.70;    % N 1.5   (the derived operating point)
-                0.03 0.15 0.31];   % N 2.0   (most extreme sparsity)
-fanStyles  = {'-.', ':', '-', '--'};  % kFan = 0 (uniform control), 1, 4, 16
+sigmaNColors = [0.62 0.76 0.90;    % N 2.0   (the derived operating point, previous best)
+                0.40 0.60 0.82;    % N 3.0
+                0.24 0.45 0.70;    % N 4.0
+                0.03 0.15 0.31];   % N 5.0   (most extreme sparsity)
+fanStyles  = {'-.', ':', '-', '--'};  % kFan = 0 (uniform control), 16, 32, 64
 fanMarkers = {'s', 'o', 'x', '+'};    % scatter only
 
 % CleanCost baseline: crimson, distinct from every COMBO colour, drawn as a reference anchor.

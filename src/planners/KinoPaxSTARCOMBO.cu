@@ -194,11 +194,14 @@ KinoPaxSTARCOMBO::KinoPaxSTARCOMBO()
     // a right-skewed distribution without needing to know its shape, and the gains can change the
     // spread freely without moving where the step sits relative to it.
     //
-    // 1.5 is the default because it is roughly the old phi = 0.10 for a right-skewed bounded score:
-    // expect ~10-20% favoured at N = 1 and ~2-5% at N = 2. N = 0 favours everything above the mean,
-    // which is the majority for these deltas -- that is the failure mode the first rule had, kept
-    // reachable so the sweep can reproduce it deliberately.
-    h_fanSigmaN_ = 1.5f;
+    // 2.0 is the measured best from the first N sweep, which ran {0, 0.5, 1, 1.5, 2} and won at the
+    // top edge -- so treat it as a lower bound on the optimum, not the optimum. N = 0 favours
+    // everything above the mean, which is the majority for these right-skewed deltas: the failure
+    // mode the first fan-out rule had.
+    //
+    // THERE IS A CEILING, AND kFan SETS IT. Past (maxScore - mu)/sigma nobody clears the threshold,
+    // n_fav is 0 and every node falls back to one block. That quantity is logged as fan_n_max.
+    h_fanSigmaN_ = 2.0f;
 
     // Blocks a FAVOURED node receives. NO ALIGNMENT CONSTRAINT: rep is a COUNT OF BLOCKS, not a
     // stride or a memory offset -- repeatInd writes rep integer entries and kernel1 launches one
@@ -234,6 +237,7 @@ KinoPaxSTARCOMBO::KinoPaxSTARCOMBO()
     h_fanMu_                = COMBO_NEUTRAL_SHAPE;
     h_fanSigma_             = 0.0f;
     h_fanThreshold_         = COMBO_NEUTRAL_SHAPE;
+    h_fanNMax_              = 0.0f;
     h_nFav_                 = 0;
     h_fanFrac_              = 0.0f;
     h_repHi_                = 1.0f;
@@ -353,6 +357,7 @@ void KinoPaxSTARCOMBO::resetPlanner(float* h_initial, float* h_goal)
     h_fanMu_                = COMBO_NEUTRAL_SHAPE;
     h_fanSigma_             = 0.0f;
     h_fanThreshold_         = COMBO_NEUTRAL_SHAPE;
+    h_fanNMax_              = 0.0f;
     h_nFav_                 = 0;
     h_fanFrac_              = 0.0f;
     h_repHi_                = 1.0f;
@@ -584,6 +589,7 @@ void KinoPaxSTARCOMBO::propagateFrontier(float* d_obstacles_ptr, uint h_obstacle
                 {
                     h_fanThreshold_ = -MAX_FLOAT;
                     h_nFav_         = h_frontierSize_;
+                    h_fanNMax_      = 0.0f;
                 }
             else
                 {
@@ -591,6 +597,20 @@ void KinoPaxSTARCOMBO::propagateFrontier(float* d_obstacles_ptr, uint h_obstacle
                     KinoPaxSTARCOMBO_ScoreAbove above{d_frontierFanoutScore_ptr_, h_fanThreshold_};
                     h_nFav_ = (uint)thrust::count_if(d_activeFrontierIdxs_.begin(),
                                                      d_activeFrontierIdxs_.begin() + h_frontierSize_, above);
+
+                    // HOW MUCH ROOM N HAS LEFT, in the same units N is set in: the best node on the
+                    // frontier sits this many sigma above the mean, so any N above it favours
+                    // NOBODY and fan-out silently collapses to a flat 1 block each.
+                    //
+                    // This is not hypothetical at high kFan. As the gain rises the shape goes
+                    // bimodal with mass p at the top, so mu -> p and sigma -> sqrt(p(1-p)), and the
+                    // largest usable N is sqrt((1-p)/p) -- 1.0 at p = 0.5, 2.0 at p = 0.2, 3.0 at
+                    // p = 0.1. Raising kFan therefore TIGHTENS the ceiling on N, which is exactly
+                    // the combination a sweep pushing both axes up will walk into.
+                    double maxS = thrust::transform_reduce(d_activeFrontierIdxs_.begin(),
+                                                           d_activeFrontierIdxs_.begin() + h_frontierSize_,
+                                                           scoreOf, 0.0, thrust::maximum<double>());
+                    h_fanNMax_ = float((maxS - mu) / double(h_fanSigma_));
                 }
             h_fanFrac_ = float(h_nFav_) / float(h_frontierSize_);
 

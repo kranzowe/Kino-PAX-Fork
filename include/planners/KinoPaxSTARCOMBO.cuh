@@ -217,6 +217,16 @@ public:
     float h_fanSigma_;
     float h_fanThreshold_;
 
+    // The largest N that would still favour at least one node: (maxScore - mu) / sigma over the
+    // same frontier. THE CEILING ON h_fanSigmaN_, measured rather than guessed -- set N above this
+    // and nFav is 0, repHi collapses to 1, and every node gets a flat single block.
+    //
+    // It TIGHTENS as kFan rises. At high gain the shape goes bimodal with mass p at the top, so
+    // mu -> p, sigma -> sqrt(p(1-p)), and this lands at sqrt((1-p)/p): 1.0 at p = 0.5, 2.0 at
+    // p = 0.2, 3.0 at p = 0.1. Pushing N and kFan up together therefore runs into it from both
+    // sides, which is why it is logged next to fan_frac rather than left to be inferred.
+    float h_fanNMax_;
+
     // Favoured nodes COUNTED above the threshold, the fraction they represent, and the blocks each
     // one gets. nFav is a count over the actual frontier, not a prediction, which is what makes the
     // block total known before the launch:

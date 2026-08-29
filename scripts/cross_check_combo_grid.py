@@ -142,11 +142,12 @@ if not any(abs(g - cu_fan_derived) < 1e-6 for g in cu_fan):
 # would gut the headline comparison.
 if not any(abs(g) < 1e-9 for g in cu_fan):
     problems.append('FAN_GAINS %s has no 0.0 entry -- the uniform control arm is missing' % (cu_fan,))
-# N = 0 puts the threshold exactly at the mean, which is the first fan-out rule's failure mode.
-# Keeping it in the grid is what makes "the boost reached the majority" reproducible rather than
-# remembered.
-if not any(abs(g) < 1e-9 for g in cu_sn):
-    problems.append('FAN_SIGMA_N %s has no 0.0 entry -- the threshold-at-the-mean arm is missing'
+# N is measured in sigma, so 0 is meaningful (threshold at the mean) but not required -- that arm
+# was swept, lost, and is documented rather than re-run every pass. What IS required is that the
+# grid stay positive: a negative N would put the threshold BELOW the mean and favour the majority by
+# construction, which is the one setting known to be wrong.
+if any(g < 0.0 for g in cu_sn):
+    problems.append('FAN_SIGMA_N %s has a negative entry -- that favours the majority by construction'
                     % (cu_sn,))
 
 
