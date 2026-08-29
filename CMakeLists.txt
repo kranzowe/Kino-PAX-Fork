@@ -33,6 +33,7 @@ set(SOURCE_FILES
     src/planners/KinoPaxSTARWeightedCost.cu
     src/planners/KinoPaxSTARCleanCost.cu
     src/planners/KinoPaxSTARCOMBO.cu
+    src/planners/CountingStars.cu
     src/planners/KinoPaxSTARTrue.cu
     src/planners/KinoPaxSTARTrueWeightedCost.cu
     src/planners/KinoPaxSTARcostprunenoseed.cu
@@ -227,6 +228,17 @@ target_link_libraries(KinoPaxStarComboTuningSweep
     Python3::NumPy
 )
 
+add_executable(CountingStarsSweep examples/gpu/countingstars_sweep.cu)
+target_link_libraries(CountingStarsSweep
+    PUBLIC KPAX_lib
+    ${CUDA_LIBRARIES}
+    ${Boost_LIBRARIES}
+    ${EIGEN3_LIBRARIES}
+    yaml-cpp
+    Python3::Python
+    Python3::NumPy
+)
+
 add_executable(KinoPaxStarComparison examples/gpu/kinopaxstar_comparison.cu)
 target_link_libraries(KinoPaxStarComparison
     PUBLIC KPAX_lib
@@ -276,6 +288,7 @@ set_target_properties(KinoPaxStarLargeBenchmark PROPERTIES CUDA_SEPARABLE_COMPIL
 set_target_properties(KinoPaxStarCostBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(KinoPaxStarCostTuningSweep PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(KinoPaxStarComboTuningSweep PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(CountingStarsSweep PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(KinoPaxStarComparison PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(KinoPaxStarAcceptBreakdown PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(TreeGrowthDump PROPERTIES CUDA_SEPARABLE_COMPILATION ON)

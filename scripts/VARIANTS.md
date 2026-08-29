@@ -510,6 +510,92 @@ runs both over the same `(cap, exp)` grid and labels the noseed points
 `KinoPaxSTARcostprune_noseed_cap{0,40,100}[_exp{50,75}]`. Isolates how much of the cost gate's
 benefit depends on seeding still supplying coverage underneath it.
 
+### CountingStars  *(new)*
+
+Derived from KinoPaxSTARCOMBO, on branch `CountingStarsAlgorithm`. **Replaces the acceptance
+probability with per-region counts.** COMBO stays as the comparison arm.
+
+**Why the probability had to go.** COMBO admitted with `P = min(pMax, shape · pTargetAccept)`, where
+`pTargetAccept` was solved so the *expected* admission count hit a growth target. Two properties
+follow, and together they make the rule unable to do the job it existed for:
+
+1. The shape is a normalised blend of sigmoids — neutral 0.5, ceiling 1.0 — so the best candidate is
+   at most **2×** as likely to enter as an average one.
+2. `pTargetAccept = (want − exempt)/(rolled · meanShape)` divides by the *measured* mean. Sharpen the
+   shape, the mean falls, `pTarget` rises to compensate, and the gain is handed straight back.
+
+Acceptance was a **reallocation** mechanism at a fixed total. It could not concentrate, so nodes came
+out dense everywhere instead of sparse where it mattered.
+
+**Three counts, three doors.** Probability survives only as the way a counted quota is filled *inside
+one region* — never as a global normalised score.
+
+| Door | Rule | v1 quota |
+|---|---|---|
+| **Cost** | `cost <= minCostsR1[r]` | `cost_count`, **1** — exactly what the `atomicMin` in propagate already computes, so the door is free |
+| **Explore** | won `atomicCAS` on a virgin R2 cell, then `rand() < explore_count / novelCounts[r]` | `explore_count`, 5 → 10 |
+| **Reactivate** | uniform over the tree at `p = react_count / treeSize` | global cap on **F** |
+
+Cost takes precedence, so a candidate that is both its region's best and a novel claimant does not
+also consume an explore slot.
+
+**The R2 claim is now exclusive, and that is a deliberate departure from KPAX.** KPAX reads the cell
+and then `atomicExch`es it, discarding the return — so *every* thread landing in a virgin cell reads
+itself as novel, and [its own comment calls that intentional](src/planners/KinoPaxSTARCleanCost.cu:454).
+That is fatal to a quota: 50 candidates in one cell would all be eligible, and a region's explore
+slots would go to 50 nodes in the **same** sub-region instead of 50 different ones. With
+`atomicCAS(&cell, 0, 1) == 0`, `novelCounts[r]` is the number of **distinct** cells claimed — which
+is the thing the quota should be rationing. The marking still happens either way, so coverage is
+unaffected.
+
+**`react_count` is the most important knob, because it sets `F`.** KinoPaxPlus divides the whole
+budget over a frontier its parent-chain pruning keeps tiny — `bf = MAX_TREE_SIZE/(F·32)`, so **40,000
+propagations per node at F = 10**. COMBO's frontier was pinned at `F ≥ nActive` by an *unconditional*
+region-best reactivation, putting it near **32**. Three orders of magnitude, and no fan-out weighting
+closes that; only a smaller `F` does. So the unconditional guarantee is gone: the region best is
+still admitted the moment it is created (the cost door) and still drawn like anything else, but the
+guarantee is now statistical rather than absolute. `react_count = 0` is legal and interesting — the
+frontier is then exactly this iteration's admissions.
+
+**Fan-out is geometric, and decided at admission.**
+
+```
+REACTIVATE  ->  1
+EXPLORE     ->  max(maxBlocks >> (ordinal / halfLife), 1)     ordinal = the node's position in its region's history
+COST        ->  max(maxBlocks / (novelThisIter[r] + 1), 1)    a quiet region optimises hard
+```
+
+A *linear* ramp `max(maxBlocks − ordinal, 1)` would spend 65 blocks on a region's first five nodes;
+halving spends 27, with almost everything on the first two. That is closer to what KPAX actually
+does: its `validVertexCounter < 10 ? 15 : 1` counter is **cumulative** and gains ~32 per frontier node
+per iteration, so a region crosses the threshold almost immediately and the ×15 is a **one-shot
+burst**, not a ramp. `propagateFrontier` only totals the frontier's demand and scales the *boost*
+(never the `rep ≥ 1` floor) to fit `blockCeiling = 0.8·remaining/activeBlockSize`, which keeps it the
+single writer of `activeFrontierRepeatCount`.
+
+**It carries a corrected R2 mapping, and only it does.** `getRegion` encodes
+`r1 = wRegion·C_R1_LENGTH^C_DIM·V_R1_LENGTH^V_DIM + aRegion·V_R1_LENGTH^V_DIM + vRegion`, but
+`Graph.cu`'s `initializeRegions_kernel` decodes it with the **digit order reversed** *and* with
+hardcoded exponents `C_R1_LENGTH²` / `V_R1_LENGTH¹` where the encode uses `C_DIM` / `V_DIM`. The
+collapse factor is `C_R1_LENGTH^(C_DIM−2) · V_R1_LENGTH^(V_DIM−1)` — **8× at the checked-in config,
+and worse at a finer discretisation**. Since `d_minValueInRegion_` is consumed only by
+`getSubRegion`, R1 statistics are fine and every R2 identity is wrong. That would be fatal here
+because the explore door *is* the R2 novelty test, so CountingStars carries its own corrected corner
+table; `Graph.cu` is left alone so existing baselines stay comparable, which does mean COMBO's
+coverage delta and KPAX's seeding door keep reading the scrambled signal.
+`scripts/check_region_math.py` proves the corrected decode is a bijection and measures the shared
+one's collapse.
+
+**Knobs.** `h_exploreCount0_/1_` (5 → 10), `h_costCount0_/1_` (1 → 1), `h_reactCount0_/1_` (swept),
+`h_maxBlocks_` (15), `h_fanHalfLife_` (1). Each count ramps linearly in `u = treeSize/MAX_TREE_SIZE`,
+and `countingStarsRamp()` is the growth controller's seat: deriving the counts from a per-iteration
+target instead of a schedule is a change to that one function.
+
+**Removed outright:** the whole shape apparatus (`comboShape2`, `comboDeltas`, `comboBlendWeights`,
+μ+N·σ, every `h_kAcc*`/`h_kFan*`/`h_blend*`), both budget scalars, `h_selectivity_`, the growth
+schedule, and every statistic that existed only to feed them.
+
+
 ## Quick comparison
 | Variant | Explore | Seeding (pSeed) | Cost-aware | Pruning | Spatial hash |
 |---|---|---|---|---|---|
@@ -529,3 +615,4 @@ benefit depends on seeding still supplying coverage underneath it.
 | KinoPaxSTARnoseed | ✔ | 0 | ✔ | — | ✔ |
 | KinoPaxSTARsparsefill | ✔ | ramp 0→1 | ✔ | — | ✔ |
 | KinoPaxSTARcostprunenoseed | capped (`h_acceptCap_`) | 0 (`h_pSeed_`) | ✔ | cost | ✔ |
+| CountingStars | per-region COUNTS: novelty quota on an exclusive virgin-R2 claim, no probability across regions | n/a (novelty is the door, not a free pass) | ✔ | — | ✔ |
