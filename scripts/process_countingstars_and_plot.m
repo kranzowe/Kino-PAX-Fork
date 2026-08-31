@@ -387,10 +387,13 @@ for ei = 1:numel(environments)
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
             plotMeanIter(R{pi}, @(t) getCol(t, 'reactivated_count'), ...
                          plannerColors(pi, :), ':', max(0.5, plannerWidths(pi) - 0.6), '');
+            plotMeanIter(R{pi}, @(t) getCol(t, 'reactivated_best'), ...
+                         plannerColors(pi, :), '-.', max(0.5, plannerWidths(pi) - 0.3), '');
         end
         set(gca, 'YScale', 'log'); grid on;
         xlabel('Iteration'); ylabel('nodes');
-        title('admitted\_cost (solid) and reactivated\_count (dotted)');
+        title({'admitted\_cost (solid), reactivated\_count (dotted), reactivated\_best (dash-dot)', ...
+               'best tracking frontier\_size = the guarantee IS the frontier'});
 
         %% ---------- FIGURE: budget invariants ----------
         % Three checks that decide whether a tuning conclusion from this run is trustworthy at all.

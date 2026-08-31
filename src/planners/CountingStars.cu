@@ -92,6 +92,7 @@ CountingStars::CountingStars()
     d_unexploredSampleCosts_  = thrust::device_vector<float>(MAX_TREE_SIZE);
     d_goalSet_                = thrust::device_vector<bool>(MAX_TREE_SIZE);
     d_doorCounts_             = thrust::device_vector<unsigned long long>(CS_NUM_DOOR_SLOTS, 0ULL);
+    d_touchedR2Count_         = thrust::device_vector<uint>(1, 0u);
 
     // CountingStars' OWN min-corner table -- see the header for why Graph.cu's is not usable.
     d_minCornerCS_            = thrust::device_vector<float>(NUM_R1_REGIONS * STATE_DIM);
@@ -137,6 +138,7 @@ CountingStars::CountingStars()
     d_goalSetIdxs_ptr_            = thrust::raw_pointer_cast(d_goalSetIdxs_.data());
     d_goalSetScanIdx_ptr_         = thrust::raw_pointer_cast(d_goalSetScanIdx_.data());
     d_doorCounts_ptr_             = thrust::raw_pointer_cast(d_doorCounts_.data());
+    d_touchedR2Count_ptr_         = thrust::raw_pointer_cast(d_touchedR2Count_.data());
     d_minCornerCS_ptr_            = thrust::raw_pointer_cast(d_minCornerCS_.data());
     d_novelCounts_ptr_            = thrust::raw_pointer_cast(d_novelCounts_.data());
     d_candCounts_ptr_             = thrust::raw_pointer_cast(d_candCounts_.data());
@@ -205,9 +207,11 @@ CountingStars::CountingStars()
     h_admittedExplore_     = 0;
     h_admittedCost_        = 0;
     h_reactivated_         = 0;
+    h_reactivatedBest_     = 0;
     h_blockCeiling_        = 0.0f;
     h_blockScale_          = 1.0f;
     h_globalCollisionFrac_ = 0.1f;
+    h_touchedR2_           = 0;
     h_propAttempted_       = 0;
     h_candidatesPreGate_   = 0;
     for(int i = 0; i < CS_NUM_DOOR_SLOTS; i++) h_doorCounts_[i] = 0ULL;
@@ -307,12 +311,15 @@ void CountingStars::resetPlanner(float* h_initial, float* h_goal)
     h_frontierNextSize_     = 0;
     h_frontierRepeatSize_   = 0;
     h_globalCollisionFrac_  = 0.1f;
+    thrust::fill(d_touchedR2Count_.begin(), d_touchedR2Count_.end(), 0u);
+    h_touchedR2_            = 0;
     h_exploreCount_         = h_exploreCount0_;
     h_costCount_            = h_costCount0_;
     h_reactCount_           = h_reactCount0_;
     h_admittedExplore_      = 0;
     h_admittedCost_         = 0;
     h_reactivated_          = 0;
+    h_reactivatedBest_      = 0;
     h_blockCeiling_         = 0.0f;
     h_blockScale_           = 1.0f;
 
@@ -340,7 +347,6 @@ void CountingStars::plan(float* h_initial, float* h_goal, float* d_obstacles_ptr
         {
             h_itr_++;
             propagateFrontier(d_obstacles_ptr, h_obstaclesCount);
-            graph_.updateVertices();
             updateFrontier();
 
             // Run to MAX_ITER / tree-full, continuing to improve minCost (no first-solution break).
@@ -369,7 +375,6 @@ void CountingStars::planBench(float* h_initial, float* h_goal, float* d_obstacle
             h_itr_++;
             printf("Iteration: %d, Tree Size: %d, Frontier Size: %d\n", h_itr_, h_treeSize_, h_frontierSize_);
             propagateFrontier(d_obstacles_ptr, h_obstaclesCount);
-            graph_.updateVertices();
             updateFrontier();
 
             if(h_propIterations_ == 0) break;
@@ -397,7 +402,6 @@ float CountingStars::planOptimize(float* h_initial, float* h_goal, float* d_obst
         {
             h_itr_++;
             propagateFrontier(d_obstacles_ptr, h_obstaclesCount);
-            graph_.updateVertices();
             updateFrontier();
             if(h_propIterations_ == 0) break;
             if(h_treeSize_ >= MAX_TREE_SIZE - 1) break;
@@ -544,7 +548,7 @@ void CountingStars::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCo
               h_propIterations_, d_minCornerCS_ptr_,
               d_treeSampleCosts_ptr_, d_minCostsR1_ptr_, d_sumCostsR1_ptr_, d_cntCostsR1_ptr_,
               d_frontierNextXR1s_ptr_, d_candNovel_ptr_, d_candDoor_ptr_,
-              d_novelCounts_ptr_, d_candCounts_ptr_,
+              d_novelCounts_ptr_, d_candCounts_ptr_, d_touchedR2Count_ptr_,
               d_unexploredSampleCosts_ptr_, h_spatialHashGrid_);
 
             // kernel2 launches h_frontierRepeatSize_ * h_propIterations_ threads, one candidate each.
@@ -559,7 +563,7 @@ void CountingStars::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCo
               d_minCornerCS_ptr_,
               d_treeSampleCosts_ptr_, d_minCostsR1_ptr_, d_sumCostsR1_ptr_, d_cntCostsR1_ptr_,
               d_frontierNextXR1s_ptr_, d_candNovel_ptr_, d_candDoor_ptr_,
-              d_novelCounts_ptr_, d_candCounts_ptr_,
+              d_novelCounts_ptr_, d_candCounts_ptr_, d_touchedR2Count_ptr_,
               d_unexploredSampleCosts_ptr_, h_spatialHashGrid_);
 
             // kernel1 launches one block of h_activeBlockSize_ threads per repeat entry.
@@ -656,7 +660,7 @@ __global__ void CountingStars_propagateFrontier_kernel1(bool* frontier, uint* ac
                                                    int* vertexCounter, int* validVertexCounter, float* minCorner,
                                                    float* treeSampleCosts, float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
                                                    int* frontierNextXR1s, bool* candNovel, int* candDoor,
-                                                   int* novelCounts, int* candCounts,
+                                                   int* novelCounts, int* candCounts, uint* touchedR2Count,
                                                    float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid)
 {
     if(blockIdx.x >= frontierSize) return;
@@ -719,7 +723,13 @@ __global__ void CountingStars_propagateFrontier_kernel1(bool* frontier, uint* ac
             // The marking happens either way, so r2_coverage_pct and the graph's coverage are
             // unaffected; the CAS just also says who did it. ---
             bool novel = (atomicCAS(&activeSubVertices[x1SubVertex], 0, 1) == 0);
-            if(novel) atomicAdd(&novelCounts[x1Vertex], 1);
+            if(novel)
+                {
+                    atomicAdd(&novelCounts[x1Vertex], 1);
+                    // Running total for r2_coverage_pct. Free: this branch already exists, and the
+                    // CAS is what makes it exact -- one increment per cell, ever.
+                    atomicAdd(touchedR2Count, 1u);
+                }
 
             // --- Record the candidate. No admission decision, no RNG draw. The door is CLEARED
             // rather than left alone: these slots are reused every iteration, and a stale door from
@@ -746,7 +756,7 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
                                                    float* minCorner,
                                                    float* treeSampleCosts, float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
                                                    int* frontierNextXR1s, bool* candNovel, int* candDoor,
-                                                   int* novelCounts, int* candCounts,
+                                                   int* novelCounts, int* candCounts, uint* touchedR2Count,
                                                    float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid)
 {
     int tid       = blockIdx.x * blockDim.x + threadIdx.x;
@@ -786,7 +796,13 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
 
             // --- EXCLUSIVE R2 CLAIM, exactly one winner per cell (see kernel 1). ---
             bool novel = (atomicCAS(&activeSubVertices[x1SubVertex], 0, 1) == 0);
-            if(novel) atomicAdd(&novelCounts[x1Vertex], 1);
+            if(novel)
+                {
+                    atomicAdd(&novelCounts[x1Vertex], 1);
+                    // Running total for r2_coverage_pct. Free: this branch already exists, and the
+                    // CAS is what makes it exact -- one increment per cell, ever.
+                    atomicAdd(touchedR2Count, 1u);
+                }
 
             // --- Record the candidate (see kernel 1 for why the door is cleared here). ---
             candNovel[tid]             = novel;
@@ -996,21 +1012,52 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
             if(goalSet[treeIdx]) return;
             if(frontier[treeIdx]) return;   // already in the frontier; nothing to draw for
 
-            // --- UNIFORM over the whole tree, at p = reactCount / treeSize, so the EXPECTED number
-            // added is exactly reactCount whatever the tree size.
+            int xR1 = treeXR1s[treeIdx];
+
+            // --- THE REGION-BEST GUARANTEE. Unconditional: no roll, no budget, ahead of the draw.
             //
-            // THIS REPLACED AN UNCONDITIONAL PER-REGION GUARANTEE, and that is the single most
-            // consequential change in the planner. COMBO reactivated every region's best with no
-            // roll and no budget, which pinned F >= nActive -- and F is what sets
-            // propagations-per-node. KinoPaxPlus divides the whole budget over a frontier it prunes
-            // down to a handful of nodes and gets ~40,000 propagations each; a frontier pinned at
-            // ~32k regions gets ~32. No fan-out weighting closes a gap like that. Only a smaller F
-            // does, and reactCount is the knob that sets it.
+            // This is KinoPaxPlus's invariant and the reason a region's cheapest node keeps getting
+            // expanded until it stops being cheapest. Without it a region's best sits in the frontier
+            // only by luck, its subtree goes many iterations without improvement, and FINAL COST
+            // STALLS -- which is exactly the symptom that brought it back.
             //
-            // The cost of losing the guarantee is that a region's best node is no longer certain to
-            // be in the frontier every iteration. It is still admitted the moment it is created (the
-            // COST door), and it is still drawn here like anything else -- the guarantee is now
-            // statistical rather than absolute. Watch first-solution cost for the consequence.
+            // WHAT IT COSTS, stated so nobody has to rediscover it: F >= nActive again, and F is what
+            // sets propagations-per-node. Once nActive exceeds blockCeiling the rep >= 1 floor alone
+            // spends the whole block budget, h_blockScale_ collapses toward 0, and fan-out flattens to
+            // one block each regardless of maxBlocks or halfLife. Watch block_scale against
+            // frontier_size. The precedented mitigation is hysteresis, not removal: KinoPaxPlus
+            // un-prunes a region best only after ~5 idle iterations, capping re-entry at nActive/5.
+            //
+            // bestNodeIdxPerR1 is written in Part A under `cost <= minCostsR1[xR1]` with an
+            // atomicExch, so ties resolve arbitrarily -- exactly one node per region, which is what
+            // this arm wants.
+            if(treeIdx == bestNodeIdxPerR1[xR1])
+                {
+                    frontier[treeIdx] = true;
+                    nodeDoor[treeIdx] = CS_DOOR_BEST;
+                    // The COST-door block rule, not a flat 1. A region best IS a cost node, and a
+                    // quiet region should optimise hard while a busy one does not double-spend.
+                    // Giving it one block would restore the guarantee in name only: in the frontier,
+                    // barely expanded, which is the current failure with extra steps.
+                    int novel = novelCounts[xR1];
+                    int blocks = maxBlocks / (novel + 1);
+                    nodeBlocks[treeIdx] = (blocks > 1) ? blocks : 1;
+                    atomicAdd(&doorCounts[CountingStars::CS_SLOT_BEST], 1ULL);
+                    return;
+                }
+
+            // --- THE PROBABILISTIC HALF. Uniform over the rest of the tree at
+            // p = reactCount / treeSize, so the EXPECTED number added by the draw is exactly
+            // reactCount whatever the tree size.
+            //
+            // It runs on what the guarantee above did NOT take, and it exists for a different job.
+            // The guarantee keeps every region's best expandable, which is an OPTIMALITY mechanism.
+            // This keeps a thin random sample of ordinary nodes alive, which is a REACH mechanism --
+            // without it the only nodes ever re-expanded would be region bests, and the tree would
+            // only ever deepen along its own cheapest paths.
+            //
+            // reactCount therefore no longer caps F on its own: F >= nActive from the guarantee,
+            // plus roughly reactCount from here, plus this iteration's admissions.
             //
             // Uniform is the simplest thing that hits the count exactly. Top-K by cost, by recency,
             // or a mix all slot in HERE and nowhere else. ---
@@ -1124,6 +1171,8 @@ void CountingStars::updateFrontier()
     h_admittedExplore_ = (uint)h_doorCounts_[CS_SLOT_EXPLORE];
     h_admittedCost_    = (uint)h_doorCounts_[CS_SLOT_COST];
     h_reactivated_     = (uint)h_doorCounts_[CS_SLOT_REACT];
+    h_reactivatedBest_ = (uint)h_doorCounts_[CS_SLOT_BEST];
+    cudaMemcpy(&h_touchedR2_, d_touchedR2Count_ptr_, sizeof(uint), cudaMemcpyDeviceToHost);
 
     // --- Sync goal state ---
     cudaMemcpy(&h_minCost_, d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);

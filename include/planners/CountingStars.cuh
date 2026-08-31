@@ -14,7 +14,8 @@
 static const int CS_DOOR_NONE    = 0;
 static const int CS_DOOR_COST    = 1;   // region best: cost <= minCostsR1[r]
 static const int CS_DOOR_EXPLORE = 2;   // claimed a virgin R2 cell and won the region's quota
-static const int CS_DOOR_REACT   = 3;   // existing tree node put back in the frontier
+static const int CS_DOOR_REACT   = 3;   // existing tree node put back in the frontier by the draw
+static const int CS_DOOR_BEST    = 4;   // existing tree node put back because it is its region's best
 
 class CountingStars : public Planner
 {
@@ -69,10 +70,13 @@ public:
     // per-region top-K, which does not exist in this repo yet; see the .cu for what that would take.
     float h_costCount0_, h_costCount1_;
 
-    // GLOBAL cap on how many EXISTING tree nodes are put back in the frontier this iteration, on top
-    // of the nodes admitted this iteration. Every non-goal tree node outside the frontier is drawn
-    // with p = reactCount / treeSize, so the expected number added is exactly reactCount, whatever
-    // the tree size.
+    // GLOBAL budget for the PROBABILISTIC half of reactivation. Every non-goal tree node outside the
+    // frontier, and not already taken by the region-best guarantee, is drawn with
+    // p = reactCount / treeSize, so the expected number added by the draw is exactly reactCount.
+    //
+    // IT IS NO LONGER THE WHOLE FRONTIER CAP. The region bests come back unconditionally and sit
+    // OUTSIDE this budget, so F >= nActive again -- see the guarantee in Part B for why that is
+    // deliberate and what it costs.
     //
     // THIS IS THE MOST IMPORTANT KNOB IN THE PLANNER, because it sets F, and F sets
     // propagations-per-node. KinoPaxPlus wins by dividing the whole budget over a TINY frontier --
@@ -116,11 +120,11 @@ public:
     // Admissions by door this iteration, counted exactly on the device and copied back once.
     // h_reactivated_ is the realised Part B output, which should track h_reactCount_ in expectation
     // -- a persistent gap means the draw is not seeing the population it should.
-    enum DoorSlot { CS_SLOT_EXPLORE = 0, CS_SLOT_COST, CS_SLOT_REACT, CS_NUM_DOOR_SLOTS };
+    enum DoorSlot { CS_SLOT_EXPLORE = 0, CS_SLOT_COST, CS_SLOT_REACT, CS_SLOT_BEST, CS_NUM_DOOR_SLOTS };
     thrust::device_vector<unsigned long long> d_doorCounts_;
     unsigned long long* d_doorCounts_ptr_;
     unsigned long long  h_doorCounts_[CS_NUM_DOOR_SLOTS];
-    uint h_admittedExplore_, h_admittedCost_, h_reactivated_;
+    uint h_admittedExplore_, h_admittedCost_, h_reactivated_, h_reactivatedBest_;
 
     // Blocks the buffer allows, and the scale applied to make the frontier fit inside it.
     //
@@ -138,6 +142,18 @@ public:
     // Collision-free fraction, kept purely as the diagnostic window into propagation efficiency now
     // that nothing consumes it. Reduced from the graph's cumulative counter arrays.
     float h_globalCollisionFrac_;
+
+    // R2 sub-cells claimed so far, as a RUNNING TOTAL rather than a swept count.
+    //
+    // r2_coverage_pct used to come from a thrust::count over d_activeSubVertices_ every iteration --
+    // O(NUM_R2_REGIONS), which is 2.1M elements at the coarse delta and 37.9M at `tiny`. But the
+    // atomicCAS in propagate already returns TRUE for exactly the one thread that claims a cell, and
+    // the explore door already branches on it. One more atomicAdd on that branch makes the count
+    // incremental and the metric O(1), with an identical value. The extra atomic fires only on novel
+    // claims, not per candidate.
+    thrust::device_vector<uint> d_touchedR2Count_;
+    uint* d_touchedR2Count_ptr_;
+    uint  h_touchedR2_;
 
     // Two denominators the planner already knows and would otherwise discard.
     //   h_propAttempted_     propagation attempts this iteration, INCLUDING collisions
@@ -257,7 +273,7 @@ __global__ void CountingStars_propagateFrontier_kernel1(bool* frontier, uint* ac
                                                    int* vertexCounter, int* validVertexCounter, float* minCorner,
                                                    float* treeSampleCosts, float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
                                                    int* frontierNextXR1s, bool* candNovel, int* candDoor,
-                                                   int* novelCounts, int* candCounts,
+                                                   int* novelCounts, int* candCounts, uint* touchedR2Count,
                                                    float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid);
 
 /***************************/
@@ -271,7 +287,7 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
                                                    float* minCorner,
                                                    float* treeSampleCosts, float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
                                                    int* frontierNextXR1s, bool* candNovel, int* candDoor,
-                                                   int* novelCounts, int* candCounts,
+                                                   int* novelCounts, int* candCounts, uint* touchedR2Count,
                                                    float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid);
 
 /***************************/

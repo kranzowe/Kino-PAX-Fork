@@ -209,6 +209,9 @@ struct IterationData
     int   admitted_explore;
     int   admitted_cost;
     int   reactivated_count;
+    // reactivated_best / frontier_size approaching 1 means the region-best guarantee IS the
+    // frontier -- KinoPaxPlus's regime. Read it together with best_cost before deciding that is bad.
+    int   reactivated_best;
     // Fan-out budget. block_scale < 1 means the buffer, not the fan-out rule, is setting how hard
     // nodes expand; block_scale near 0 with a large frontier means F itself has eaten the budget,
     // which is a react_count problem and not a half_life one.
@@ -231,6 +234,7 @@ static void clearCountingStarsCols(IterationData& d)
     d.admitted_explore = -1;
     d.admitted_cost = -1;
     d.reactivated_count = -1;
+    d.reactivated_best = -1;
     d.block_ceiling = NAN;
     d.block_scale = NAN;
     d.global_collision_frac = NAN;
@@ -389,7 +393,7 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
          << "score_floor,cost_scale,"
          << "prop_attempted,prop_valid,frontier_repeat_size,"
          << "explore_count,cost_count,react_count,"
-         << "admitted_explore,admitted_cost,reactivated_count,"
+         << "admitted_explore,admitted_cost,reactivated_count,reactivated_best,"
          << "block_ceiling,block_scale,global_collision_frac\n";
 
     for(const auto& d : result.per_iteration)
@@ -414,6 +418,7 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
              << d.admitted_explore << ","
              << d.admitted_cost << ","
              << d.reactivated_count << ","
+             << d.reactivated_best << ","
              << std::fixed << std::setprecision(1) << d.block_ceiling << ","
              << std::fixed << std::setprecision(4) << d.block_scale << ","
              << std::fixed << std::setprecision(6) << d.global_collision_frac << "\n";
@@ -998,7 +1003,10 @@ RunResult benchmarkCountingStars(
 
         cudaEventRecord(iterStart);
         planner.propagateFrontier(d_obstacles, numObstacles);
-        planner.graph_.updateVertices();
+        // NO graph_.updateVertices() HERE. CountingStars consumes nothing it produces -- no
+        // vertexScores, no scoreFloor, no nActive, no regionCoverage -- and it is not cheap: a
+        // kernel over NUM_R1_REGIONS doing NUM_R2_PER_R1 reads each, plus a reduce and a count_if,
+        // every iteration. The other planners still call it because they genuinely use it.
         int oldTreeSize = planner.h_treeSize_;   // nodes before this iter's additions
         planner.updateFrontier();
         cudaEventRecord(iterStop);
@@ -1022,12 +1030,12 @@ RunResult benchmarkCountingStars(
         // independently and should agree, which is a free check on the draw.
         int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
                                              planner.d_frontier_.begin() + oldTreeSize, true);
-        int inactiveR2 = (int)thrust::count(planner.graph_.d_activeSubVertices_.begin(),
-                                            planner.graph_.d_activeSubVertices_.end(), 0);
-        float r2CoveragePct = 100.0f * float(NUM_R2_REGIONS - inactiveR2) / float(NUM_R2_REGIONS);
-        float scoreSum  = thrust::reduce(planner.graph_.d_vertexScoreArray_.begin(),
-                                         planner.graph_.d_vertexScoreArray_.end(), 0.0f);
-        float meanScore = scoreSum / float(NUM_R1_REGIONS);
+        // r2_coverage_pct from the planner's RUNNING COUNTER, not a sweep of d_activeSubVertices_.
+        // Identical value; the old thrust::count was O(NUM_R2_REGIONS) EVERY ITERATION -- 2.1M
+        // elements at the coarse delta and 37.9M at `tiny`.
+        float r2CoveragePct = 100.0f * float(planner.h_touchedR2_) / float(NUM_R2_REGIONS);
+        // NaN, not 0. A zero would read as "the scores collapsed"; there are no scores.
+        float meanScore = NAN;
 
         IterationData d;
         clearCountingStarsCols(d);
@@ -1040,7 +1048,7 @@ RunResult benchmarkCountingStars(
         d.r2_coverage_pct   = r2CoveragePct;
         d.mean_vertex_score = meanScore;
         d.reactivated       = reactivated;
-        d.score_floor       = planner.graph_.h_scoreFloor_;
+        d.score_floor       = NAN;   // no Syclop score, so no floor
         d.cost_scale        = NAN;
         // CountingStars readout.
         d.prop_attempted       = (int)planner.h_propAttempted_;
@@ -1052,6 +1060,7 @@ RunResult benchmarkCountingStars(
         d.admitted_explore     = (int)planner.h_admittedExplore_;
         d.admitted_cost        = (int)planner.h_admittedCost_;
         d.reactivated_count    = (int)planner.h_reactivated_;
+        d.reactivated_best     = (int)planner.h_reactivatedBest_;
         d.block_ceiling        = planner.h_blockCeiling_;
         d.block_scale          = planner.h_blockScale_;
         d.global_collision_frac = planner.h_globalCollisionFrac_;
