@@ -8,9 +8,14 @@
 # own sweep still exists; TrueStar answers a cap question this planner does not ask.
 #
 # Per (environment, cost metric) at the COARSE delta:
-#   CountingStars   react {0, 1e3, 1e4} x halfLife {1, 2} x explore {3, 5, 10}, cost pinned at 1
-#                   = 8 points (a CROSS, not a full factorial: react x halfLife at the derived
-#                   explore, plus explore swept at the derived react/halfLife) x 3 runs = 24 runs
+#   CountingStars   maxBlocks {12, 32} x react {1e3, 1e5} x halfLife {1, 4} x explore {1, 10}
+#                   = 16 points (FULL FACTORIAL: maxBlocks and halfLife are the height and width of
+#                   the same fan-out ramp, so their corners have to be visited) x 3 runs = 48 runs
+#
+#                   cost_count is FIXED AT 1 and deliberately NOT an axis. It is ramped and logged
+#                   but never passed to the accept kernel -- the cost door is `cost <= minCostsR1[r]`
+#                   regardless -- so sweeping it would double the grid and write identical runs
+#                   under different filenames.
 #   CleanCost       r2 OFF, w 0.9, k 1, cap 0.03            = 1 point  x 3 runs
 #   KPAXCap         cap {0.03, 0.1}                         = 2 points x 5 runs
 #   KPAX                                                    = 1 point  x 5 runs
@@ -56,9 +61,13 @@
 # nothing at all. The control-side refinement rides on V_R1.
 #
 # Deltas (Model 1: W_DIM=3, C_DIM=0, V_DIM=3):
-#   large         W_R1=10  C_R1=1  V_R1=3  ->  10^3 * 3^3 =  27,000   (full sweep)
-#   fine          W_R1=20  C_R1=1  V_R1=3  ->  20^3 * 3^3 = 216,000   (KinoPaxPlus only)
-#   fine_control  W_R1=10  C_R1=1  V_R1=6  ->  10^3 * 6^3 = 216,000   (KinoPaxPlus only)
+#   large   W_R1=10  C_R1=1  V_R1=3  ->  10^3 * 3^3 =  27,000   (full sweep)
+#   fine    W_R1=20  C_R1=1  V_R1=3  ->  20^3 * 3^3 = 216,000   (KinoPaxPlus only)
+#   tiny    W_R1=14  C_R1=1  V_R1=6  ->  14^3 * 6^3 = 592,704   (KinoPaxPlus only)
+#
+# "tiny" names the CELL, not the count: it is the FINEST of the three at 592,704 regions. Watch it
+# for the per-region arrays -- every NUM_R1_REGIONS allocation and every full-array fill scales with
+# this, and graph_.updateVertices() runs a kernel over all of them with 64 sub-vertex reads each.
 #
 # Original config.h is backed up and restored on exit/error.
 #
@@ -81,8 +90,8 @@ BUILD_DIR="$PROJECT_DIR/build"
 # Deltas: parallel arrays of label / W_R1 / C_R1 / V_R1.
 # Index 0 runs the full sweep; every later index runs KinoPaxPlus only. One build per (delta, cost
 # metric), cached, so restoring or trimming the list changes only the loop bounds.
-DELTA_LABELS=("large" "fine" "fine_control")
-DELTA_W_R1S=(10 20 10)
+DELTA_LABELS=("large" "fine" "tiny")
+DELTA_W_R1S=(10 20 14)
 DELTA_C_R1S=(1  1  1)   # inert for Model 1 (C_DIM 0); control refinement rides on V_R1
 DELTA_V_R1S=(3  3  6)
 # Index 0 runs the FULL sweep -- CountingStars grid, KPAX, KPAXCap, KinoPaxPlus, CleanCost.
@@ -100,8 +109,8 @@ DELTA_EXTRA_ARGS=("" "--only-kinopaxplus" "--only-kinopaxplus")
 # DELTA_EXTRA_ARGS=("")
 
 # Cost metric axis: label + COST_MODE  (0 = workspace distance, 1 = control effort)
-COST_LABELS=("length" "effort")
-COST_MODES=(0 1)
+COST_LABELS=("length")
+COST_MODES=(0)
 
 # Environments (obstacles already in [0,1]^3 for Model 1). Each gets its own output subfolder.
 # narrowPassage is a wall at x in [0.3, 0.5] spanning all z, split by a gap at y in [0.49, 0.51] --
@@ -115,9 +124,8 @@ COST_MODES=(0 1)
 # 0.02 wide against an agent diameter of 0.01 (AGENT_RADIUS 0.005). Expect low success rates there,
 # and read the success-rate subplot alongside the cost bars: unsolved runs are dropped from the cost
 # mean rather than penalised, so a config that solved once cheaply can look best.
-ENV_NAMES=("zigzag" "narrowPassage")
-ENV_OBSTACLES=("../include/config/obstacles/zigzag/obstacles.csv"
-               "../include/config/obstacles/narrowPassage/obstacles.csv")
+ENV_NAMES=("house")
+ENV_OBSTACLES=("../include/config/obstacles/house/obstacles.csv")
 
 # --- Full environment set (uncomment to restore; comment out the block above) ---
 # ENV_NAMES=("house" "zigzag" "narrowPassage")
@@ -280,21 +288,28 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  CountingStars:  react {0,1e3,1e4} x halfLife {1,2} x explore {3,5,10}, cost 1 = 8 points"
+echo "  CountingStars:  maxBlocks {12,32} x react {1e3,1e5} x halfLife {1,4} x explore {1,10} = 16 points"
+echo "                  cost_count FIXED at 1 -- not consumed by the accept kernel, so sweeping"
+echo "                  it would duplicate runs under different names."
 echo "                  PER-REGION COUNTS, not a global acceptance probability. Three doors:"
 echo "                    COST     cost <= minCostsR1[r]    quota 1, exactly the region best"
 echo "                    EXPLORE  won the atomicCAS on a virgin R2 cell, then the region quota"
 echo "                    REACT    uniform over the tree at p = react_count / treeSize"
 echo "                  react_count is the headline axis because it caps the frontier, and"
 echo "                  frontier size is what sets propagations-per-node -- the quantity"
-echo "                  KinoPaxPlus wins on. react 0 means the frontier is exactly this"
-echo "                  iteration's admissions."
+echo "                  KinoPaxPlus wins on. 1e3 vs 1e5 is a 100x span in F, so if the two"
+echo "                  arms land on the same first-solution time, F is not the lever."
+echo "                  maxBlocks is the HEIGHT of the fan-out ramp and halfLife its WIDTH;"
+echo "                  they only mean anything together, which is why this grid is a"
+echo "                  full factorial rather than a cross."
 echo "                  WATCH prop_attempted/frontier_size against KinoPaxPlus's bf: if it"
 echo "                  stays in the tens, react_count is not doing its job and no other knob"
 echo "                  on this grid matters."
 echo "  CleanCost:      r2 OFF, w 0.9, k 1, cap 0.03 = 1 point (baseline)"
-echo "  KPAXCap:        cap {0.03, 0.1} = 2 points"
-echo "  Score floor:    dynamic 1/N_active for KPAXCap/CleanCost/CountingStars; legacy EPSILON for KPAX"
+echo "  KPAXCap:        cap {0.03} = 1 point"
+echo "  Score floor:    dynamic 1/N_active for KPAXCap/CleanCost; legacy EPSILON for KPAX."
+echo "                  COUNTINGSTARS HAS NO SCORE FLOOR AND USES NO EPSILON: it never reads"
+echo "                  vertexScores, h_scoreFloor_, h_nActive_ or regionCoverage in any decision."
 echo "  Baselines: KPAX (coarse delta), KinoPaxPlus (ALL THREE deltas -- the point of having them)"
 echo "======================================================="
 

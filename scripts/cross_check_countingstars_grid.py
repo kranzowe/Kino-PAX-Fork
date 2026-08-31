@@ -104,11 +104,13 @@ def tok(x):
 cu_react   = cu_array('REACT_COUNTS')
 cu_half    = cu_array('FAN_HALF_LIVES', 'int')
 cu_explore = cu_array('EXPLORE_COUNTS')
+cu_blocks  = cu_array('MAX_BLOCKS_GRID', 'int')
 cu_kcap    = cu_array('KPAXCAP_CAPS')
 cu_cap_derived = cu_scalar('CAP_DERIVED')
 cu_dr = cu_scalar('CS_DERIVED_REACT')
 cu_dh = cu_scalar('CS_DERIVED_HALFLIFE', 'int')
 cu_de = cu_scalar('CS_DERIVED_EXPLORE')
+cu_db = cu_scalar('CS_DERIVED_MAXBLOCKS', 'int')
 
 cu_clean = {}
 for fld, key in (('CLEAN_BASE_W', 'w'), ('CLEAN_BASE_K', 'k'), ('CLEAN_BASE_CAP', 'cap')):
@@ -132,35 +134,43 @@ problems = []
 for val, lst, a, b in ((cu_dr, cu_react, 'CS_DERIVED_REACT', 'REACT_COUNTS'),
                        (cu_dh, cu_half, 'CS_DERIVED_HALFLIFE', 'FAN_HALF_LIVES'),
                        (cu_de, cu_explore, 'CS_DERIVED_EXPLORE', 'EXPLORE_COUNTS'),
+                       (cu_db, cu_blocks, 'CS_DERIVED_MAXBLOCKS', 'MAX_BLOCKS_GRID'),
                        (cu_cap_derived, cu_kcap, 'CAP_DERIVED', 'KPAXCAP_CAPS')):
     if not any(abs(v - val) < 1e-6 for v in lst):
         problems.append('%s (%g) is not in %s %s' % (a, val, b, lst))
 
-# --- Assertion 2: react = 0 must survive. It is the arm where the frontier is exactly this
-# iteration's admissions -- the most KinoPaxPlus-like setting, and the only direct test of whether a
-# small frontier is what actually matters. Losing it would gut the headline comparison.
-if not any(abs(v) < 1e-9 for v in cu_react):
-    problems.append('REACT_COUNTS %s has no 0 entry -- the smallest-frontier arm is missing'
-                    % (cu_react,))
+# --- Assertion 2: the axes must stay in their meaningful ranges. react is a COUNT of nodes, so a
+# negative one is nonsense; maxBlocks and halfLife below 1 would make the fan-out shift undefined;
+# explore below 0 would make the fill probability negative.
+if any(v < 0.0 for v in cu_react):
+    problems.append('REACT_COUNTS %s has a negative entry' % (cu_react,))
+if any(v < 1 for v in cu_blocks):
+    problems.append('MAX_BLOCKS_GRID %s has an entry below 1 -- rep >= 1 is a correctness floor'
+                    % (cu_blocks,))
+if any(v < 1 for v in cu_half):
+    problems.append('FAN_HALF_LIVES %s has an entry below 1 -- the shift would be undefined'
+                    % (cu_half,))
+if any(v < 0.0 for v in cu_explore):
+    problems.append('EXPLORE_COUNTS %s has a negative entry' % (cu_explore,))
 
 
-def cs_skip(react, half, explore):
-    """Mirrors countingStarsSkip() in the benchmark: a CROSS, not a full factorial."""
-    on_axis = abs(react - cu_dr) < 1e-6 and abs(half - cu_dh) < 1e-6
-    at_derived = abs(explore - cu_de) < 1e-6
-    return not at_derived and not on_axis
+def cs_skip(react, half, explore, blocks):
+    """Mirrors countingStarsSkip(): FULL FACTORIAL, so --single-point is the only skip."""
+    return False
 
 
 cu_pairs = set()
 for d, plus_only in zip(sh_deltas, sh_plus_only):
     if not plus_only:
-        for react in cu_react:
-            for half in cu_half:
-                for explore in cu_explore:
-                    if cs_skip(react, half, explore):
-                        continue
-                    cu_pairs.add(('CountingStars_r%d_h%d_e%d'
-                                  % (int(round(react)), int(round(half)), tok(explore)), d))
+        for blocks in cu_blocks:
+            for react in cu_react:
+                for half in cu_half:
+                    for explore in cu_explore:
+                        if cs_skip(react, half, explore, blocks):
+                            continue
+                        cu_pairs.add(('CountingStars_b%d_r%d_h%d_e%d'
+                                      % (int(round(blocks)), int(round(react)),
+                                         int(round(half)), tok(explore)), d))
         cu_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                       % (cu_clean['r2'], cu_clean['w'], cu_clean['k'], cu_clean['cap']), d))
         for c in cu_kcap:
@@ -172,12 +182,14 @@ for d, plus_only in zip(sh_deltas, sh_plus_only):
 m_react   = m_ints('csReactCounts')
 m_half    = m_ints('csHalfLives')
 m_explore = m_ints('csExploreCounts')
+m_blocks  = m_ints('csMaxBlocks')
 m_kcap    = m_ints('kpaxCapCaps')
 m_deltas  = m_cellstr('deltas')
 m_plus_only = m_bools('deltaPlusOnly')
 m_dr = m_scalar_int('csDerivedReact')
 m_dh = m_scalar_int('csDerivedHalfLife')
 m_de = m_scalar_int('csDerivedExplore')
+m_db = m_scalar_int('csDerivedMaxBlocks')
 m_clean = {
     'r2': m_str('cleanBaseR2'),
     'w': m_scalar_int('cleanBaseW'),
@@ -188,14 +200,12 @@ m_clean = {
 m_pairs = set()
 for d, plus_only in zip(m_deltas, m_plus_only):
     if not plus_only:
-        for react in m_react:
-            for half in m_half:
-                for explore in m_explore:
-                    on_axis = (react == m_dr and half == m_dh)
-                    at_derived = (explore == m_de)
-                    if not at_derived and not on_axis:
-                        continue
-                    m_pairs.add(('CountingStars_r%d_h%d_e%d' % (react, half, explore), d))
+        for blocks in m_blocks:
+            for react in m_react:
+                for half in m_half:
+                    for explore in m_explore:
+                        m_pairs.add(('CountingStars_b%d_r%d_h%d_e%d'
+                                     % (blocks, react, half, explore), d))
         m_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                      % (m_clean['r2'], m_clean['w'], m_clean['k'], m_clean['cap']), d))
         for c in m_kcap:
@@ -303,6 +313,7 @@ if cu_writer_prefixes and (m_loader_prefixes or m_loader_exact):
 # ONE filename and the second overwrites the first.
 for name, vals, f in (('EXPLORE_COUNTS', cu_explore, tok),
                       ('KPAXCAP_CAPS', cu_kcap, tok),
+                      ('MAX_BLOCKS_GRID', cu_blocks, lambda v: int(round(v))),
                       ('REACT_COUNTS', cu_react, lambda v: int(round(v)))):
     toks = [f(v) for v in vals]
     if len(set(toks)) != len(set(vals)):

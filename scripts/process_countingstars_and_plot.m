@@ -63,19 +63,19 @@ dataDir = '';   % '' = current directory (run this from Data/Benchmarks/Counting
 % ONE PER RUN -- each environment writes to its own subfolder, so set this to match the folder you
 % cd'd into and re-run for the other.
 %   'zigzag' -> 'Zigzag Corridor',  'narrowPassage' -> 'Narrow Passage',  'house' -> 'House'
-environments = {'zigzag'};
-envTitles    = {'Zigzag Corridor'};
+environments = {'house'};
+envTitles    = {'House'};
 % environments = {'narrowPassage'};   envTitles = {'Narrow Passage'};
 
 % Cost metric axis — one build each, so one set of figures each.
-metrics      = {'effort', 'length'};
-metricTitles = {'Control Effort', 'Workspace Path Length'};
-metricYLabels = {'Path Cost (control effort)', 'Path Cost (workspace path length)'};
+metrics      = {'length'};
+metricTitles = {'Workspace Path Length'};
+metricYLabels = {'Path Cost (workspace path length)'};
 
 % Delta axis — OVERLAID inside each figure, encoded as line WIDTH. The filename token is
 % sprintf('%s_%s', delta, metric), e.g. 'fine_control_length'.
-deltas      = {'large', 'fine', 'fine_control'};
-deltaTitles = {'27k', '216k W-refined', '216k V-refined'};
+deltas      = {'large', 'fine', 'tiny'};
+deltaTitles = {'27k', '216k W-refined', '593k V-refined'};
 deltaWidths = [1.0, 1.8, 2.6];
 
 % WHICH ARMS EXIST AT EACH DELTA. Index 0 runs the full sweep; the two finer deltas run
@@ -90,7 +90,7 @@ deltaWidths = [1.0, 1.8, 2.6];
 % cross_check_countingstars_grid.py asserts it.
 deltaPlusOnly = [false, true, true];
 
-capDerived     = 10;      % label token for cap = 0.1 (CAP_DERIVED in the benchmark)
+capDerived     = 3;       % label token for cap = 0.03 (CAP_DERIVED in the benchmark)
 % --single-point is not used by this sweep, so any delta that runs an arm runs its full axis.
 deltaSingleCap = [false, false, false];
 
@@ -119,14 +119,16 @@ deltaLabel = '3 deltas overlaid';
 % cross_check_countingstars_grid.py asserts these stay in step with the .cu and the .sh; when they
 % drift, MATLAB reports "0 runs" for the orphaned series rather than erroring, which is the failure
 % mode that silently wastes a whole sweep.
-csReactCounts = [0 1000 10000];
-csHalfLives   = [1 2];
-csExploreCounts = [300 500 1000];
+csReactCounts   = [1000 100000];
+csHalfLives     = [1 4];
+csExploreCounts = [100 1000];
+csMaxBlocks     = [12 32];
 
 % The derived operating point that --single-point selects.
-csDerivedReact   = 0;
-csDerivedHalfLife = 1;
-csDerivedExplore = 500;
+csDerivedReact     = 1000;
+csDerivedHalfLife  = 1;
+csDerivedExplore   = 100;
+csDerivedMaxBlocks = 12;
 
 % CleanCost baseline point - one series, the well-tuned operating point. Same label format as the
 % cost sweep, so its historical CSVs load here unchanged.
@@ -136,16 +138,21 @@ cleanBaseK   = 100;
 cleanBaseCap = 3;
 
 % TrueStar and KPAXCap cap sweeps - must match TRUE_CAPS / KPAXCAP_CAPS in the benchmark.
-kpaxCapCaps = [3 10];
+kpaxCapCaps = [3];
 
 % colour = react_count (frontier size, the headline axis), line style = halfLife, marker =
 % explore_count. react gets the channel the eye reads first because F is what the whole design turns
 % on: near-black is react 0, the arm where the frontier is only this iteration's admissions.
-reactColors = [0.15 0.15 0.15;    % react 0     (frontier = admissions only; most KinoPaxPlus-like)
-               0.24 0.45 0.70;    % react 1e3
-               0.62 0.76 0.90];   % react 1e4   (largest frontier, least focused)
-halfStyles = {'-', '--'};         % halfLife = 1 (sharp), 2 (stretched)
-exploreMarkers = {'o', 'x', '+'};     % explore 3, 5, 10 -- scatter only
+% FOUR axes, three style channels, so colour carries the pair that actually interacts: react
+% (frontier size) x maxBlocks (ramp height). Darker = smaller frontier, which is the direction the
+% whole design is pushing.
+%   rows: (react 1e3, b12) (react 1e3, b32) (react 1e5, b12) (react 1e5, b32)
+reactBlockColors = [0.10 0.10 0.10;    % react 1e3, maxBlocks 12  (smallest frontier, shortest ramp)
+                    0.16 0.38 0.63;    % react 1e3, maxBlocks 32
+                    0.55 0.42 0.20;    % react 1e5, maxBlocks 12
+                    0.75 0.72 0.80];   % react 1e5, maxBlocks 32  (largest frontier, tallest ramp)
+halfStyles = {'-', '--'};         % halfLife = 1 (sharp), 4 (stretched)
+exploreMarkers = {'o', '+'};          % explore 1, 10 -- scatter only
 
 % CleanCost baseline: crimson, distinct from every COMBO colour, drawn as a reference anchor.
 cleanColor = [0.70 0.15 0.20];
@@ -179,35 +186,39 @@ for di = 1:numel(deltas)
     if ~dPlus
 
     % --- CountingStars: react x halfLife x explore, as a cross ---
-    for ri = 1:numel(csReactCounts)
-        for hi = 1:numel(csHalfLives)
-            for ei = 1:numel(csExploreCounts)
-                react   = csReactCounts(ri);
-                half    = csHalfLives(hi);
-                explore = csExploreCounts(ei);
+    for bi = 1:numel(csMaxBlocks)
+        for ri = 1:numel(csReactCounts)
+            for hi = 1:numel(csHalfLives)
+                for ei = 1:numel(csExploreCounts)
+                    maxB    = csMaxBlocks(bi);
+                    react   = csReactCounts(ri);
+                    half    = csHalfLives(hi);
+                    explore = csExploreCounts(ei);
 
-                % Mirror countingStarsSkip(): a CROSS, not a full factorial. react x halfLife runs
-                % at the derived explore; explore runs only at the derived react/halfLife.
-                onExploreAxis    = (react == csDerivedReact) && (half == csDerivedHalfLife);
-                atDerivedExplore = (explore == csDerivedExplore);
-                if ~atDerivedExplore && ~onExploreAxis, continue; end
-                if dOne && ~(atDerivedExplore && onExploreAxis), continue; end
+                    % Mirror countingStarsSkip(): FULL FACTORIAL, so --single-point is the only skip.
+                    if dOne && ~(react == csDerivedReact && half == csDerivedHalfLife && ...
+                                 explore == csDerivedExplore && maxB == csDerivedMaxBlocks)
+                        continue;
+                    end
 
-                plannerNames{end + 1}   = sprintf('CountingStars_r%d_h%d_e%d', ...
-                                                  react, half, explore); %#ok<SAGROW>
-                plannerDisplay{end + 1} = sprintf('CS react%g h%d e%g [%s]', ...
-                                                  react, half, explore / 100, dTag); %#ok<SAGROW>
-                plannerColors(end + 1, :) = reactColors(ri, :);        %#ok<SAGROW>
-                plannerStyles{end + 1}    = halfStyles{hi};            %#ok<SAGROW>
-                plannerMarkers{end + 1}   = exploreMarkers{ei};        %#ok<SAGROW>
-                % The react 0 arm is drawn thicker: it is the reference the rest is read against.
-                if react == 0
-                    plannerWidths(end + 1) = dWidth + 0.8;             %#ok<SAGROW>
-                else
-                    plannerWidths(end + 1) = dWidth;                   %#ok<SAGROW>
+                    plannerNames{end + 1}   = sprintf('CountingStars_b%d_r%d_h%d_e%d', ...
+                                                      maxB, react, half, explore); %#ok<SAGROW>
+                    plannerDisplay{end + 1} = sprintf('CS b%d react%g h%d e%g [%s]', ...
+                                                      maxB, react, half, explore / 100, dTag); %#ok<SAGROW>
+                    % Colour index over the (react, maxBlocks) pair -- see reactBlockColors.
+                    plannerColors(end + 1, :) = reactBlockColors((ri - 1) * numel(csMaxBlocks) + bi, :); %#ok<SAGROW>
+                    plannerStyles{end + 1}    = halfStyles{hi};        %#ok<SAGROW>
+                    plannerMarkers{end + 1}   = exploreMarkers{ei};    %#ok<SAGROW>
+                    % The smallest-frontier arm is drawn thicker: it is the reference the rest is
+                    % read against, and the one closest to KinoPaxPlus's regime.
+                    if react == min(csReactCounts)
+                        plannerWidths(end + 1) = dWidth + 0.8;         %#ok<SAGROW>
+                    else
+                        plannerWidths(end + 1) = dWidth;               %#ok<SAGROW>
+                    end
+                    plannerBaseline(end + 1) = false;                  %#ok<SAGROW>
+                    plannerDeltaIdx(end + 1) = di;                     %#ok<SAGROW>
                 end
-                plannerBaseline(end + 1) = false;                      %#ok<SAGROW>
-                plannerDeltaIdx(end + 1) = di;                         %#ok<SAGROW>
             end
         end
     end

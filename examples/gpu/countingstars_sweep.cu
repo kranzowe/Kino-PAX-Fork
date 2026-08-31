@@ -31,22 +31,32 @@ static std::string g_vizDir;
 //
 // 0 is a real and interesting setting, not a degenerate one: the frontier is then EXACTLY this
 // iteration's admissions, which is the closest this planner gets to KinoPaxPlus's regime.
-static const float REACT_COUNTS[] = {0.0f, 1000.0f, 10000.0f};
-static const int NUM_REACT_COUNTS = sizeof(REACT_COUNTS) / sizeof(REACT_COUNTS[0]);
+static const float REACT_COUNTS[]   = {1000.0f, 100000.0f};
+static const int NUM_REACT_COUNTS   = sizeof(REACT_COUNTS) / sizeof(REACT_COUNTS[0]);
+
+// Blocks a favoured node receives. NEW AXIS this pass. 15 was KPAX's number and was never swept;
+// 12 and 32 bracket it. maxBlocks is the HEIGHT of the fan-out ramp and halfLife is its WIDTH, so
+// the two only mean something together -- which is why this grid is a factorial and not a cross.
+static const int MAX_BLOCKS_GRID[]  = {12, 32};
+static const int NUM_MAX_BLOCKS     = sizeof(MAX_BLOCKS_GRID) / sizeof(MAX_BLOCKS_GRID[0]);
 
 // Fan-out decay for the explore door: blocks = max(maxBlocks >> (ordinal / halfLife), 1).
-// 1 halves at every ordinal (15, 7, 3, 1 ...), which is the sparsest and the closest to KPAX's
-// realised one-shot burst; 2 stretches it (15, 15, 7, 7, 3, 3 ...).
-static const int FAN_HALF_LIVES[] = {1, 2};
+// 1 halves at every ordinal (32, 16, 8, 4 ...), the sparsest setting and the closest to KPAX's
+// realised one-shot burst; 4 holds each level for four nodes before halving.
+static const int FAN_HALF_LIVES[]   = {1, 4};
 static const int NUM_FAN_HALF_LIVES = sizeof(FAN_HALF_LIVES) / sizeof(FAN_HALF_LIVES[0]);
 
-// Novelty admissions per region per iteration, at an empty tree. Swept only at the derived
-// react/halfLife point -- it is the least uncertain of the three, and the door self-limits anyway.
-static const float EXPLORE_COUNTS[] = {3.0f, 5.0f, 10.0f};
+// Novelty admissions per R1 region per iteration, at an empty tree. 1 is the sparsest this planner
+// can admit -- one new node per region per iteration -- and 10 is an order up.
+static const float EXPLORE_COUNTS[] = {1.0f, 10.0f};
 static const int NUM_EXPLORE_COUNTS = sizeof(EXPLORE_COUNTS) / sizeof(EXPLORE_COUNTS[0]);
 
-// Fixed this pass. cost_count stays 1 -- it is exactly the region-best rule the atomicMin already
-// computes, and anything above 1 needs a per-region top-K this repo has no primitive for.
+// FIXED AT 1, AND DELIBERATELY NOT SWEPT. cost_count is ramped and logged by the planner but is
+// NOT passed to the accept kernel -- the cost door is `cost <= minCostsR1[r]`, full stop, which
+// admits exactly the region best whatever the count says. Sweeping it today would double the grid
+// and produce IDENTICAL runs under different filenames, which is worse than not sweeping it.
+// Making it mean something needs a per-region top-K and this repo has no primitive for one: no
+// sort, no CUB, no per-region multi-slot storage.
 static const float COST_COUNT = 1.0f;
 
 // ---- KinoPaxSTARCleanCost baseline point ----
@@ -61,7 +71,7 @@ static const float CLEAN_BASE_CAP = 0.03f;
 // ---- KPAXCap cap sweep ----
 // Stock KPAX with a cap multiplier, which makes it the control arm for the cap itself -- the thing
 // CountingStars replaces -- a swept cap is exactly the thing a count replaces.
-static const float KPAXCAP_CAPS[] = {0.03f, 0.1f};
+static const float KPAXCAP_CAPS[] = {0.03f};
 static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0]);
 
 // ---- The derived operating points ----
@@ -69,10 +79,11 @@ static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0
 // the operating point so the deltas can be overlaid like with like. Each of these MUST remain a
 // member of its list -- the flag selects BY VALUE, so a derived point outside the grid would run
 // nothing at all. cross_check_combo_grid.py asserts exactly that.
-static const float CS_DERIVED_REACT   = 0.0f;
-static const int   CS_DERIVED_HALFLIFE = 1;
-static const float CS_DERIVED_EXPLORE = 5.0f;
-static const float CAP_DERIVED           = 0.1f;
+static const float CS_DERIVED_REACT     = 1000.0f;
+static const int   CS_DERIVED_HALFLIFE  = 1;
+static const float CS_DERIVED_EXPLORE   = 1.0f;
+static const int   CS_DERIVED_MAXBLOCKS = 12;
+static const float CAP_DERIVED          = 0.03f;
 
 static bool g_singlePoint = false;
 
@@ -90,22 +101,28 @@ static bool capSkip(float cap)
 // The grid is a CROSS, not a full factorial: react x halfLife is swept with explore pinned at its
 // derived value, and explore is swept only at the derived react/halfLife. A full factorial would be
 // 18 points to answer a question the cross answers in 8, and reactCount is the axis that matters.
-static bool countingStarsSkip(float react, int halfLife, float explore)
+static bool countingStarsSkip(float react, int halfLife, float explore, int maxBlocks)
 {
-    bool onExploreAxis = (fabsf(react - CS_DERIVED_REACT) < 1e-6f) && (halfLife == CS_DERIVED_HALFLIFE);
-    bool atDerivedExplore = fabsf(explore - CS_DERIVED_EXPLORE) < 1e-6f;
-    if(!atDerivedExplore && !onExploreAxis) return true;
+    // FULL FACTORIAL over the four live axes -- 2^4 = 16 points. The previous grid was a cross
+    // because react was the only axis anyone trusted; maxBlocks and halfLife are the height and
+    // width of the same ramp, so their corners have to be visited rather than inferred.
+    // --single-point is the only skip.
     if(!g_singlePoint) return false;
-    return !(atDerivedExplore && onExploreAxis);
+    return fabsf(react - CS_DERIVED_REACT) > 1e-6f
+        || halfLife != CS_DERIVED_HALFLIFE
+        || fabsf(explore - CS_DERIVED_EXPLORE) > 1e-6f
+        || maxBlocks != CS_DERIVED_MAXBLOCKS;
 }
 
 static int countingStarsPointCount()
 {
     int n = 0;
+    for(int bi = 0; bi < NUM_MAX_BLOCKS; bi++)
     for(int ri = 0; ri < NUM_REACT_COUNTS; ri++)
     for(int hi = 0; hi < NUM_FAN_HALF_LIVES; hi++)
     for(int ei = 0; ei < NUM_EXPLORE_COUNTS; ei++)
-        if(!countingStarsSkip(REACT_COUNTS[ri], FAN_HALF_LIVES[hi], EXPLORE_COUNTS[ei])) n++;
+        if(!countingStarsSkip(REACT_COUNTS[ri], FAN_HALF_LIVES[hi], EXPLORE_COUNTS[ei],
+                              MAX_BLOCKS_GRID[bi])) n++;
     return n;
 }
 
@@ -118,14 +135,14 @@ static int capAxisPointCount(const float* caps, int nCaps)
     return n;
 }
 
-// "CountingStars_r0_h1_e500". MUST start with a name the plot script's loadRuns() dispatches on.
-// Tokens are round(100 x float) for the float axes and the plain integer for halfLife, the same
+// "CountingStars_b12_r1000_h1_e100". MUST start with a name loadRuns() dispatches on. Tokens are
+// the plain integer for maxBlocks / react / halfLife and round(100 x float) for explore, the same
 // convention as every other label in this family.
-static std::string countingStarsLabel(float react, int halfLife, float explore)
+static std::string countingStarsLabel(int maxBlocks, float react, int halfLife, float explore)
 {
     char buf[128];
-    snprintf(buf, sizeof(buf), "CountingStars_r%d_h%d_e%d",
-             (int)lroundf(react), halfLife, (int)lroundf(100.0f * explore));
+    snprintf(buf, sizeof(buf), "CountingStars_b%d_r%d_h%d_e%d",
+             maxBlocks, (int)lroundf(react), halfLife, (int)lroundf(100.0f * explore));
     return std::string(buf);
 }
 
@@ -936,6 +953,7 @@ RunResult benchmarkCountingStars(
     float reactCount,
     int halfLife,
     float exploreCount,
+    int maxBlocks,
     const std::string& label)
 {
     // Override the planner's defaults for this run. resetPlanner (called below) does not touch the
@@ -952,6 +970,7 @@ RunResult benchmarkCountingStars(
     planner.h_reactCount0_   = reactCount;
     planner.h_reactCount1_   = reactCount;
     planner.h_fanHalfLife_   = halfLife;
+    planner.h_maxBlocks_     = maxBlocks;
 
     RunResult result;
     result.delta_label = label;
@@ -1071,31 +1090,32 @@ void runCountingStarsBenchmark(
            environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
     printf("========================================\n");
 
+    for(int bi = 0; bi < NUM_MAX_BLOCKS; bi++)
     for(int ri = 0; ri < NUM_REACT_COUNTS; ri++)
     for(int hi = 0; hi < NUM_FAN_HALF_LIVES; hi++)
     for(int ei = 0; ei < NUM_EXPLORE_COUNTS; ei++)
     {
-        const float react   = REACT_COUNTS[ri];
-        const int   half    = FAN_HALF_LIVES[hi];
-        const float explore = EXPLORE_COUNTS[ei];
+        const int   maxBlocks = MAX_BLOCKS_GRID[bi];
+        const float react     = REACT_COUNTS[ri];
+        const int   half      = FAN_HALF_LIVES[hi];
+        const float explore   = EXPLORE_COUNTS[ei];
 
-        if(countingStarsSkip(react, half, explore)) continue;
+        if(countingStarsSkip(react, half, explore, maxBlocks)) continue;
 
-        const std::string label = countingStarsLabel(react, half, explore);
+        const std::string label = countingStarsLabel(maxBlocks, react, half, explore);
 
-        printf("  --- react = %.0f%s, halfLife = %d, explore = %.1f (%s) ---\n",
-               react, (react <= 0.0f) ? " [frontier = this iteration's admissions only]" : "",
-               half, explore, label.c_str());
+        printf("  --- maxBlocks = %d, react = %.0f, halfLife = %d, explore = %.1f (%s) ---\n",
+               maxBlocks, react, half, explore, label.c_str());
         CountingStars planner;
         for(int run = 0; run < numRuns; run++)
         {
             RunResult result = benchmarkCountingStars(planner, deltaLabel, environment_name, run,
                                                  h_initial, h_goal, d_obstacles,
                                                  numObstacles, maxIterations, maxTimeMs,
-                                                 react, half, explore, label);
-            printf("  react=%.0f h=%d e=%.1f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-                   react, half, explore, run + 1, numRuns, result.total_time_seconds, result.total_iterations,
-                   result.final_tree_size, result.first_solution_iteration,
+                                                 react, half, explore, maxBlocks, label);
+            printf("  b=%d react=%.0f h=%d e=%.1f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                   maxBlocks, react, half, explore, run + 1, numRuns, result.total_time_seconds,
+                   result.total_iterations, result.final_tree_size, result.first_solution_iteration,
                    result.first_solution_cost, result.final_best_cost);
             writePerIterationCSV(result, outputDir);
             if(g_dumpViz && run == 0)
@@ -1341,8 +1361,10 @@ int main(int argc, char* argv[])
         // Counted with the same predicate the runner uses, not a closed form -- the previous
         // closed form silently assumed the last WEIGHTS entry was 1.0.
         int csPoints = countingStarsPointCount();
-        printf("CountingStars:  react {0,1e3,1e4} x halfLife {1,2} x explore {3,5,10}, cost 1\n"
-               "                react is the headline axis: it sets F, and F sets propagations/node.\n"
+        printf("CountingStars:  maxBlocks {12,32} x react {1e3,1e5} x halfLife {1,4} x explore {1,10}\n"
+               "                cost_count FIXED at 1: it is not consumed by the accept kernel, so\n"
+               "                sweeping it would duplicate runs under different names.\n"
+               "                react caps the frontier, and frontier size sets propagations/node.\n"
                "                -> %d points x %d runs = %d runs\n",
                csPoints, NUM_CS_RUNS, csPoints * NUM_CS_RUNS);
         printf("CleanCost:      r2 OFF, w %.2f, k %.2f, cap %.2f = 1 point x %d runs = %d runs\n",
