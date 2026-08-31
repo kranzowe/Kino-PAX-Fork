@@ -353,7 +353,11 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
     if(result.delta_label == "KPAX")
         filename << outputDir << "/" << result.environment << "_KPAX_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
-    else if(result.delta_label.rfind("KinoPaxSTAR", 0) == 0 || result.delta_label.rfind("KPAXCap", 0) == 0)
+    // COUNTINGSTARS MUST BE IN THIS ARM. Falling through to the KinoPaxPlus branch below is not a
+    // cosmetic naming problem: that branch keys on the DELTA and omits build_delta entirely, so the
+    // length and effort builds write the SAME path and the second silently overwrites the first.
+    else if(result.delta_label.rfind("CountingStars", 0) == 0 ||
+            result.delta_label.rfind("KinoPaxSTAR", 0) == 0 || result.delta_label.rfind("KPAXCap", 0) == 0)
         filename << outputDir << "/" << result.environment << "_" << result.delta_label << "_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
     else

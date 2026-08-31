@@ -213,29 +213,90 @@ if sh_plus_only != m_plus_only:
     problems.append('--only-kinopaxplus flags %s (%s) != deltaPlusOnly %s (%s)'
                     % (sh_plus_only, SH, m_plus_only, M))
 
-# --- Assertion 3: every label the plot script builds must be one its OWN loader accepts.
+# --- Assertion 3: THE FILENAMES MUST MATCH END TO END.
 #
-# loadRuns() dispatches on the planner label -- a couple of exact `case` arms, then a whitelist of
-# startsWith() prefixes, then error(). Matching label SETS between the .cu and the .m is not enough:
-# both sides can agree perfectly on a name the loader then refuses, which is a hard error at plot
-# time after the sweep has already run. That is exactly what happened when CountingStars' labels
-# were added and the whitelist still only knew KinoPaxSTAR and KPAXCap.
-mo = re.search(r'function runs = loadRuns\(.*?\n(.*?)\nend\n', m, re.S)
-if not mo:
-    problems.append('loadRuns() not found in %s -- cannot verify the label whitelist' % M)
+# Matching label SETS is not enough, and this is the assertion that would have caught the two bugs
+# that actually shipped. Both sides agreed perfectly on the label `CountingStars_r0_h1_e300` while:
+#
+#   * writePerIterationCSV()'s planner-name whitelist did not know it, so it fell through to the
+#     KinoPaxPlus arm -- which keys on the DELTA and omits build_delta entirely. The length and
+#     effort builds then wrote the SAME path, and the second overwrote the first.
+#   * loadRuns()'s whitelist did not know it either, so the plot script error()d on it.
+#
+# So model both filename constructions from their real source, and diff the resulting PATHS.
+
+# Parse the benchmark's writer whitelist rather than restating it.
+wmo = re.search(r'void writePerIterationCSV\(.*?\n\}', cu, re.S)
+if not wmo:
+    problems.append('writePerIterationCSV() not found in %s' % CU)
+    cu_writer_prefixes = []
 else:
-    loader = mo.group(1)
-    exact = set(re.findall(r"case\s+'([^']+)'", loader))
-    prefixes = set(re.findall(r"startsWith\(planner,\s*'([^']+)'\)", loader))
-    if not prefixes and not exact:
-        problems.append('loadRuns() exposes no case/startsWith arms -- the parser needs updating')
-    for lbl, _d in sorted(m_pairs):
-        if lbl in exact:
+    cu_writer_prefixes = re.findall(r'delta_label\.rfind\("([^"]+)",\s*0\)\s*==\s*0', wmo.group(0))
+    if not cu_writer_prefixes:
+        problems.append('writePerIterationCSV() exposes no rfind() prefixes -- parser needs updating')
+
+# Parse the plot script's loader whitelist the same way.
+lmo = re.search(r'function runs = loadRuns\(.*?\nend\n', m, re.S)
+if not lmo:
+    problems.append('loadRuns() not found in %s' % M)
+    m_loader_exact, m_loader_prefixes = set(), []
+else:
+    loader = lmo.group(0)
+    m_loader_exact = set(re.findall(r"case\s+'([^']+)'", loader))
+    m_loader_prefixes = re.findall(r"startsWith\(planner,\s*'([^']+)'\)", loader)
+    if not m_loader_prefixes and not m_loader_exact:
+        problems.append('loadRuns() exposes no case/startsWith arms -- parser needs updating')
+
+
+def cu_filename(label, delta_metric, run):
+    """Mirrors writePerIterationCSV() in the benchmark.
+
+    The dispatch is on RunResult::delta_label, which is not always the series name. KinoPaxPlus sets
+    delta_label to the BUILD TOKEN (benchmarkKinoPaxPlus: `result.delta_label = deltaLabel`), which
+    is what routes it to the delta-keyed arm and keeps its two discretisations in separate files.
+    Every other arm sets delta_label to its series label.
+    """
+    if label == 'KPAX':
+        return 'ENV_KPAX_delta%s_run%d.csv' % (delta_metric, run)
+    effective = delta_metric if label == 'KinoPaxPlus' else label
+    if cu_writer_prefixes and effective.startswith(tuple(cu_writer_prefixes)):
+        return 'ENV_%s_delta%s_run%d.csv' % (effective, delta_metric, run)
+    return 'ENV_delta%s_run%d.csv' % (effective, run)
+
+
+def m_filename(label, delta_metric, run):
+    """Mirrors loadRuns() in the plot script. None where it would error()."""
+    if label == 'KinoPaxPlus':
+        return 'ENV_delta%s_run%d.csv' % (delta_metric, run)
+    if label == 'KPAX':
+        return 'ENV_KPAX_delta%s_run%d.csv' % (delta_metric, run)
+    if m_loader_prefixes and label.startswith(tuple(m_loader_prefixes)):
+        return 'ENV_%s_delta%s_run%d.csv' % (label, delta_metric, run)
+    return None
+
+
+if cu_writer_prefixes and (m_loader_prefixes or m_loader_exact):
+    for lbl, d in sorted(m_pairs):
+        dm = '%s_%s' % (d, sh_metrics[0])
+        written = cu_filename(lbl, dm, 0)
+        wanted = m_filename(lbl, dm, 0)
+        if wanted is None:
+            problems.append('loadRuns() would ERROR on "%s" -- no case arm and no matching prefix '
+                            'in %s' % (lbl, sorted(set(m_loader_prefixes))))
+        elif written != wanted:
+            problems.append('FILENAME MISMATCH for "%s" [%s]: benchmark writes %s but plot script '
+                            'wants %s' % (lbl, dm, written, wanted))
+
+    # A label routed to the delta-keyed arm omits build_delta, so every cost metric collides on one
+    # path and the second build silently overwrites the first. KinoPaxPlus is exempt: it keys on the
+    # delta BY DESIGN, and the delta token already carries the metric.
+    for lbl, d in sorted(m_pairs):
+        if lbl == 'KinoPaxPlus':
             continue
-        if any(lbl.startswith(p) for p in prefixes):
-            continue
-        problems.append('loadRuns() would error on "%s": not an exact case %s and matches no '
-                        'prefix in %s' % (lbl, sorted(exact), sorted(prefixes)))
+        names = {cu_filename(lbl, '%s_%s' % (d, mt), 0) for mt in sh_metrics}
+        if len(names) < len(sh_metrics):
+            problems.append('COST-METRIC COLLISION for "%s" [%s]: every metric writes %s, so the '
+                            'second build overwrites the first' % (lbl, d, names.pop()))
 
 # --- Assertion 4: distinct floats must not collapse onto the same label token. 0.01 and 0.1 both
 # look plausible and both want "cap1"/"cap10"; a collision means two grid points silently write to
