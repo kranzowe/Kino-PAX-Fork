@@ -46,16 +46,16 @@
 % deliberately omitted throughout; the scatter shows run means only.
 %
 % USAGE: cd into the data directory, then call the script BY NAME, not via run():
-%   cd build/Data/Benchmarks/KinoPaxStarComboTuning/zigzag     % or .../house
+%   cd build/Data/Benchmarks/CountingStars/zigzag     % or .../narrowPassage
 %   addpath('<repo>/scripts')
-%   process_combo_tuning_and_plot
-% run('<abs path>/process_combo_tuning_and_plot.m') would cd to the scripts folder
+%   process_countingstars_and_plot
+% run('<abs path>/process_countingstars_and_plot.m') would cd to the scripts folder
 % first, and dataDir below ('' = current folder) would then find nothing.
 
 clear; clc; close all;
 
 %% --- Configuration ---
-dataDir = '';   % '' = current directory (run this from Data/Benchmarks/KinoPaxStarComboTuning)
+dataDir = '';   % '' = current directory (run this from Data/Benchmarks/CountingStars/<env>)
 
 % One environment per run — must match the subfolder you cd'd into.
 %   'zigzag' -> 'Zigzag Corridor',  'house' -> 'House'
@@ -621,7 +621,12 @@ function runs = loadRuns(dataDir, env, planner, delta, numRuns)
                 % STAR variants and KPAXCap use their planner label directly as the filename
                 % token. The 'KPAX' arm above is an exact switch case, so it cannot swallow
                 % 'KPAXCap_*'.
-                if startsWith(planner, 'KinoPaxSTAR') || startsWith(planner, 'KPAXCap')
+                % CountingStars first: its labels are CountingStars_r<react>_h<half>_e<explore>.
+                % The list is a WHITELIST on purpose -- an unrecognised label is a typo or a grid
+                % that drifted, and erroring here is far better than silently loading nothing and
+                % reporting "0 runs" for a series that was actually written.
+                if startsWith(planner, 'CountingStars') || startsWith(planner, 'KinoPaxSTAR') ...
+                        || startsWith(planner, 'KPAXCap')
                     fn = sprintf('%s_%s_delta%s_run%d.csv', env, planner, delta, ri);
                 else
                     error('unknown planner %s', planner);

@@ -412,7 +412,7 @@ void writeSummaryCSV(const std::vector<RunResult>& results, const std::string& o
     timestamp << std::put_time(std::localtime(&time), "%Y%m%d_%H%M%S");
 
     std::ostringstream filename;
-    filename << outputDir << "/combo_tuning_sweep_" << timestamp.str() << "_summary.csv";
+    filename << outputDir << "/countingstars_sweep_" << timestamp.str() << "_summary.csv";
 
     std::ofstream file(filename.str());
     file << "environment,delta_label,num_regions,run,total_time_s,first_sol_iteration,"

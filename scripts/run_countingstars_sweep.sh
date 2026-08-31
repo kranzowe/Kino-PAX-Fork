@@ -1,82 +1,52 @@
 #!/bin/bash
 # =============================================================================
-# KinoPaxSTAR COMBO Tuning Sweep Runner
+# CountingStars Sweep Runner
 #
-# Tuning sweep for KinoPaxSTARCleanCost, plus KinoPaxSTARTrue / KPAXCap cap sweeps and the
-# KPAX / KinoPaxPlus baselines, on both environments:
+# CountingStars (per-region COUNTS in place of a global acceptance probability), against the
+# baselines it has to beat: KPAX, KPAXCap, KinoPaxPlus, and one tuned KinoPaxSTARCleanCost point.
+# COMBO and TrueStar are deliberately NOT in this sweep -- COMBO is the thing being replaced and its
+# own sweep still exists; TrueStar answers a cap question this planner does not ask.
 #
+# Per (environment, cost metric) at the COARSE delta:
+#   CountingStars   react {0, 1e3, 1e4} x halfLife {1, 2} x explore {3, 5, 10}, cost pinned at 1
+#                   = 8 points (a CROSS, not a full factorial: react x halfLife at the derived
+#                   explore, plus explore swept at the derived react/halfLife) x 3 runs = 24 runs
+#   CleanCost       r2 OFF, w 0.9, k 1, cap 0.03            = 1 point  x 3 runs
+#   KPAXCap         cap {0.03, 0.1}                         = 2 points x 5 runs
+#   KPAX                                                    = 1 point  x 5 runs
+#   KinoPaxPlus                                             = 1 point  x 5 runs
 #
-# Per (environment, cost metric, delta):
-#   KinoPaxSTARCleanCost   r2 OFF (fixed) x w {0.9, 0.95, 1.0} x k {0.25, 1, 16}
-#                          x cap {0.03, 0.1, 1.0}
-#                          = 21 points x 3 runs = 63 runs
-#                          (21, not 3*3*3 = 27: at w = 1 the cost term vanishes from
-#                           weightedAccept, so only k = 1 runs there -- the other six points would
-#                           be the same rule differing only by RNG stream)
-#   KinoPaxSTARTrue        cap {0.03, 0.1} = 2 points x 3 runs =  6 runs
-#   KPAXCap                cap {0.03, 0.1} = 2 points x 5 runs = 10 runs
-#   KPAX                   baseline, 5 runs  -- KEEPS THE LEGACY EPSILON SCORE FLOOR
-#   KinoPaxPlus            baseline, 5 runs
-#   => 89 runs per (environment, cost metric)
+# react_count IS THE HEADLINE AXIS, and it is worth being explicit about why. KinoPaxPlus divides
+# the whole propagation budget over a frontier its parent-chain pruning keeps tiny --
+# bf = MAX_TREE_SIZE/(F*32), so 40,000 propagations per node at F = 10. COMBO's frontier was pinned
+# at F >= nActive by an unconditional region-best reactivation, which put it near 32. Three orders
+# of magnitude, and no fan-out weighting closes that; only a smaller F does. react_count is the cap
+# on F, so it is the knob the whole design turns on. react 0 means the frontier is exactly this
+# iteration's admissions.
 #
-# r2 IS THE R2 SUB-REGION SEEDING FREE PASS, now FIXED OFF for CleanCost. On (KPAX's behaviour) a
-# candidate claiming a virgin R2 sub-region is admitted unconditionally, bypassing the weighted
-# roll; off, it takes the same roll as everything else -- the KinoPaxSTARnoseed condition
-# (pSeed = 0). Both arms were measured and off is now permanent, so admission is steered only by the
-# Syclop score and the cost term. Propagate still marks activeSubVertices, so r2_coverage_pct
-# remains valid and stays comparable with the earlier two-arm data.
+# READ prop_attempted / frontier_size FIRST in the output. That is the direct comparison against
+# KinoPaxPlus's bf. If it stays in the tens across every react setting, react_count is not doing its
+# job and nothing else on this grid matters.
 #
-# TWO NORMALIZATION FIXES land in this pass, which is why k and cap are both re-opened:
-#   * Graph's Syclop floor becomes 1/N_active (the mean share) instead of a fixed EPSILON = 1e-2,
-#     which exceeded the score it floored by ~270x and capped the number of discriminated regions
-#     at 1/EPSILON = 100 at ANY grid size. OPT-IN: KPAXCap / TrueStar / CleanCost take it, KPAX
-#     deliberately does not, so KPAX remains an unmodified baseline.
-#   * CleanCost drops P_floor and switches to costProbExpGlobal -- the region's own minimum stays
-#     the reference, but the SCALE is global, so a cost excess means the same thing everywhere
-#     instead of being pinned at x ~ 1 in every region by construction.
-# Both scales are now logged per iteration as score_floor / cost_scale.
+# THE TWO FINER DELTAS RUN KINOPAXPLUS ONLY (--only-kinopaxplus), and that is the point of having
+# them: KinoPaxPlus is the planner whose whole advantage is a tiny frontier at a fine
+# discretisation, so it is the one baseline that must be measured at all three. Re-running the
+# CountingStars grid there would triple the sweep to answer a question the coarse delta already
+# answers.
 #
-# All three capped planners sweep the SAME cap values, so a cap reads across CleanCost / TrueStar /
-# KPAXCap directly.
-#
-# cap = 0.03 IS THE DERIVED OPERATING POINT. After the acceptance fold, each frontier node offers
-# repeat * h_activeBlockSize_ candidates to one rule, so the per-node branching factor carries a
-# blockSize term; holding it near 1 gives cap ~ 1/blockSize = 1/32 = 0.03125, of which 0.03 is the
-# exact-label neighbour. The finer deltas run ONLY that point (--single-point): the cap sweep proper
-# happens at "large", and the finer ones measure the derived value so the deltas overlay at a
-# matched cap.
-#
-# CleanCost makes exactly ONE acceptance decision, in the accept kernel:
-#
-#     P = cap * min(1, w*(vertexScore + fAccept) + (1-w)*costProbExp(k) + P_floor)
-#
-# with region-best and fresh-R2-sub-region candidates exempt. Its predecessor
-# KinoPaxSTARWeightedCost also ran a propagate-time filter capped at 0.1 that sat silently upstream
-# of w; folding that away is what this sweep is retuning for. cap is the explicit replacement
-# throttle and is applied at BOTH the accept kernel and Part-B reactivation.
-#
-# TrueStar keeps the plain KPAX Syclop roll but scales the region score by cap at both acceptance
-# points (fAccept unscaled), with the guarded stale-best cost prune fixed on.
-#
-# KPAXCap is stock KPAX with that SAME cap and nothing else -- the control arm for the cap. CleanCost
-# at w = 1 is NOT KPAX: it applies the cap AND decides after graph_.updateVertices(), reading scores
-# already penalised for the batch being judged (computeVertexScores_kernel divides by
-# 1 + counterArray^2, cumulative over the run). KPAXCap still decides inside propagate on pre-jump
-# scores, so KPAX / KPAXCap / CleanCost-at-w=1 separates the cap's effect from the boundary's.
-# Its caps are matched to TrueStar's so the two sweeps line up point-for-point.
-#
-# Algorithm-vs-algorithm comparison lives in run_comparison_benchmark.sh; this script is the
-# tuning surface.
-#
-# Runs on BOTH environments (house and zigzag), each written to its own subfolder under
+# Runs on BOTH environments, each written to its own subfolder under
 # Data/Benchmarks/CountingStars/<env>/ so they can be plotted independently.
 #
-# This pass: 89 runs per (environment, cost metric); 2 envs x 2 metrics = 356 runs total.
-# At the 6 s per-run cap that is ~9 min per (env, metric), ~36 min overall, plus 2 builds.
+# NUM_R1_REGIONS and COST_MODE are both COMPILE-TIME (config.h, and a #if inside edgeCost), so
+# neither can vary within one binary. This script therefore borrows run_delta_benchmark.sh's
+# build-cache pattern: write config.h and build once per (delta, cost metric), caching each binary
+# under a suffixed name, then run them in a second pass. Both labels ride into every output filename
+# as the argv[1] delta label (large_length / large_effort / fine_length / ...).
 #
-# THREE DISCRETIZATIONS, ALL RUNNING THE FULL PLANNER SET. NUM_R1_REGIONS is compile-time
-# (config.h), so each needs its own binary: this script builds the delta x cost-metric matrix
-# (6 binaries) and runs the two finer deltas with --single-point.
+# It builds ONLY the CountingStarsSweep target. That still compiles KPAX_lib, which is the
+# monolithic library holding every planner in the repo -- so warnings from unrelated sources
+# (ReKino and friends) scroll past on every build. They are pre-existing and unavoidable without
+# splitting the library.
 #
 # "fine" and "fine_control" are a CONTROLLED PAIR: identical 216,000 region count, refined in
 # different subspaces -- workspace (W_R1 10 -> 20) vs velocity (V_R1 3 -> 6).
@@ -85,23 +55,20 @@
 # C_DIM 0, so getRegion / getSubRegion skip the C dimension entirely -- raising C_R1 would change
 # nothing at all. The control-side refinement rides on V_R1.
 #
-# COST_MODE is a compile-time #if inside edgeCost (include/helper/helper.cuh), so
-# the cost metric cannot vary within one binary. This script therefore borrows
-# run_delta_benchmark.sh's build-cache pattern: it writes config.h and builds once
-# per (delta, cost metric), caching each binary under a suffixed name, then runs
-# them in a second pass. Both labels ride into every output filename as the
-# argv[1] delta label (large_length / large_effort / fine_length / fine_effort).
-#
 # Deltas (Model 1: W_DIM=3, C_DIM=0, V_DIM=3):
-#   large         W_R1=10  C_R1=1  V_R1=3  ->  10^3 * 3^3 =  27,000
-#   fine          W_R1=20  C_R1=1  V_R1=3  ->  20^3 * 3^3 = 216,000  (workspace-refined)
-#   fine_control  W_R1=10  C_R1=1  V_R1=6  ->  10^3 * 6^3 = 216,000  (velocity-refined)
+#   large         W_R1=10  C_R1=1  V_R1=3  ->  10^3 * 3^3 =  27,000   (full sweep)
+#   fine          W_R1=20  C_R1=1  V_R1=3  ->  20^3 * 3^3 = 216,000   (KinoPaxPlus only)
+#   fine_control  W_R1=10  C_R1=1  V_R1=6  ->  10^3 * 6^3 = 216,000   (KinoPaxPlus only)
 #
 # Original config.h is backed up and restored on exit/error.
 #
+# RUN scripts/cross_check_countingstars_grid.py BEFORE A SWEEP. When the grid in this file, the .cu
+# and the .m drift apart, MATLAB does not error -- loadRuns() silently finds no files and reports
+# "0 runs" for the orphaned series, so the plot just looks sparse. That has cost whole sweeps.
+#
 # Usage:
-#   cd scripts && bash run_combo_tuning_sweep.sh
-#   cd scripts && bash run_combo_tuning_sweep.sh --skip-build   # run only (cached binaries)
+#   cd scripts && bash run_countingstars_sweep.sh
+#   cd scripts && bash run_countingstars_sweep.sh --skip-build   # run only (cached binaries)
 # =============================================================================
 set -euo pipefail
 
@@ -300,7 +267,7 @@ CONFIGEOF
 
 echo ""
 echo "======================================================="
-echo "  KinoPaxSTAR COMBO Tuning Sweep"
+echo "  CountingStars Sweep"
 echo "  Model: 1 (6D Double Integrator)"
 echo "  Environments: ${ENV_NAMES[*]}  (separate output subfolders)"
 for i in "${!DELTA_LABELS[@]}"; do
@@ -313,22 +280,22 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  COMBO:          N {2,3,4,5} sigma x kFan {0,16,32,64} x rf 0.1 = 13 points"
-echo "                  TWO shapes: acceptance (which nodes join) and fan-out (where propagation"
-echo "                  goes). A node is favoured -- 15 blocks instead of 1 -- when its fan-out"
-echo "                  score exceeds mu + N*sigma over the realised frontier's score"
-echo "                  distribution. N sets how far into the tail; kFan sets how much spread"
-echo "                  there is to reach into. kFan 0 is the UNIFORM control arm"
-echo "                  (CleanCost/KinoPaxPlus behaviour). Both axes moved up this pass: the"
-echo "                  previous grid topped out at N 2 / kFan 16 and won at both edges."
-echo "                  WATCH fan_n_max -- raising kFan lowers the largest N that favours"
-echo "                  anyone, so the top-right corner of this grid may be inert."
+echo "  CountingStars:  react {0,1e3,1e4} x halfLife {1,2} x explore {3,5,10}, cost 1 = 8 points"
+echo "                  PER-REGION COUNTS, not a global acceptance probability. Three doors:"
+echo "                    COST     cost <= minCostsR1[r]    quota 1, exactly the region best"
+echo "                    EXPLORE  won the atomicCAS on a virgin R2 cell, then the region quota"
+echo "                    REACT    uniform over the tree at p = react_count / treeSize"
+echo "                  react_count is the headline axis because it caps the frontier, and"
+echo "                  frontier size is what sets propagations-per-node -- the quantity"
+echo "                  KinoPaxPlus wins on. react 0 means the frontier is exactly this"
+echo "                  iteration's admissions."
+echo "                  WATCH prop_attempted/frontier_size against KinoPaxPlus's bf: if it"
+echo "                  stays in the tens, react_count is not doing its job and no other knob"
+echo "                  on this grid matters."
 echo "  CleanCost:      r2 OFF, w 0.9, k 1, cap 0.03 = 1 point (baseline)"
-echo "  TrueStar:       cap {0.03, 0.1} = 2 points"
 echo "  KPAXCap:        cap {0.03, 0.1} = 2 points"
-echo "  Score floor:    dynamic 1/N_active for KPAXCap/TrueStar/CleanCost/COMBO; legacy EPSILON for KPAX"
-echo "  Any finer delta added back runs only the derived operating point via --single-point"
-echo "  Baselines: KPAX, KinoPaxPlus (large + fine)"
+echo "  Score floor:    dynamic 1/N_active for KPAXCap/CleanCost/CountingStars; legacy EPSILON for KPAX"
+echo "  Baselines: KPAX (coarse delta), KinoPaxPlus (ALL THREE deltas -- the point of having them)"
 echo "======================================================="
 
 # =============================================================================
@@ -378,7 +345,7 @@ fi
 # =============================================================================
 # --dump-viz writes run-0's full tree per variant (+ meta.csv) for the tree-growth /
 # R1-density visualization. OFF by default here: 25 variants x 2 builds x 2 envs would dump 100 full
-# trees of up to MAX_TREE_SIZE nodes each. Enable with DUMP_VIZ=1 bash run_combo_tuning_sweep.sh
+# trees of up to MAX_TREE_SIZE nodes each. Enable with DUMP_VIZ=1 bash run_countingstars_sweep.sh
 VIZ_FLAG=""
 if [ "${DUMP_VIZ:-0}" != "0" ]; then
     VIZ_FLAG="--dump-viz"
@@ -411,14 +378,14 @@ cd "$PROJECT_DIR"
 
 echo ""
 echo "======================================================="
-echo "  COMBO TUNING SWEEP COMPLETE"
+echo "  COUNTINGSTARS SWEEP COMPLETE"
 echo "======================================================="
 for EN in "${ENV_NAMES[@]}"; do
     echo "Results in: $BUILD_DIR/Data/Benchmarks/CountingStars/${EN}/"
 done
 echo "Plot each environment separately: cd into its folder, set envName at the top of"
-echo "scripts/process_combo_tuning_and_plot.m to match, then run it by name."
-echo "Plot with:  scripts/process_combo_tuning_and_plot.m (run it from that directory)"
+echo "scripts/process_countingstars_and_plot.m to match, then run it by name."
+echo "Plot with:  scripts/process_countingstars_and_plot.m (run it from that directory)"
 if [ "${DUMP_VIZ:-0}" != "0" ]; then
     echo "Viz dumps:  $BUILD_DIR/Data/Benchmarks/CountingStars/viz/  (visualize with scripts/visualize_tree_growth.m)"
 fi

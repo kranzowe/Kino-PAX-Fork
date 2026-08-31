@@ -213,7 +213,31 @@ if sh_plus_only != m_plus_only:
     problems.append('--only-kinopaxplus flags %s (%s) != deltaPlusOnly %s (%s)'
                     % (sh_plus_only, SH, m_plus_only, M))
 
-# --- Assertion 3: distinct floats must not collapse onto the same label token. 0.01 and 0.1 both
+# --- Assertion 3: every label the plot script builds must be one its OWN loader accepts.
+#
+# loadRuns() dispatches on the planner label -- a couple of exact `case` arms, then a whitelist of
+# startsWith() prefixes, then error(). Matching label SETS between the .cu and the .m is not enough:
+# both sides can agree perfectly on a name the loader then refuses, which is a hard error at plot
+# time after the sweep has already run. That is exactly what happened when CountingStars' labels
+# were added and the whitelist still only knew KinoPaxSTAR and KPAXCap.
+mo = re.search(r'function runs = loadRuns\(.*?\n(.*?)\nend\n', m, re.S)
+if not mo:
+    problems.append('loadRuns() not found in %s -- cannot verify the label whitelist' % M)
+else:
+    loader = mo.group(1)
+    exact = set(re.findall(r"case\s+'([^']+)'", loader))
+    prefixes = set(re.findall(r"startsWith\(planner,\s*'([^']+)'\)", loader))
+    if not prefixes and not exact:
+        problems.append('loadRuns() exposes no case/startsWith arms -- the parser needs updating')
+    for lbl, _d in sorted(m_pairs):
+        if lbl in exact:
+            continue
+        if any(lbl.startswith(p) for p in prefixes):
+            continue
+        problems.append('loadRuns() would error on "%s": not an exact case %s and matches no '
+                        'prefix in %s' % (lbl, sorted(exact), sorted(prefixes)))
+
+# --- Assertion 4: distinct floats must not collapse onto the same label token. 0.01 and 0.1 both
 # look plausible and both want "cap1"/"cap10"; a collision means two grid points silently write to
 # ONE filename and the second overwrites the first.
 for name, vals, f in (('EXPLORE_COUNTS', cu_explore, tok),
