@@ -63,13 +63,15 @@ def check(path):
         # --- string / char literals ---
         if c in '"\'':
             quote, start_line = c, line
+            raw_newline = False
             i += 1
             while i < n:
                 if src[i] == '\\':
                     i += 2
                     continue
                 if src[i] == '\n':
-                    line += 1          # a raw newline in a literal is its own problem; keep counting
+                    line += 1
+                    raw_newline = True
                 if src[i] == quote:
                     break
                 i += 1
@@ -77,6 +79,14 @@ def check(path):
                 problems.append('%s: unterminated %s literal opened at line %d'
                                 % (rel(path), 'string' if quote == '"' else 'char', start_line))
                 return problems
+            # A RAW newline inside a literal is a compile error in C/C++, and it is the signature of
+            # an escape that got un-escaped somewhere upstream -- a `\n` that a regex replacement or
+            # a template engine turned into a real newline. It reads perfectly in a diff, which is
+            # why it needs a checker rather than an eye.
+            if raw_newline:
+                problems.append('%s:%d: raw newline inside a %s literal (an escaped \\n that lost '
+                                'its backslash?)'
+                                % (rel(path), start_line, 'string' if quote == '"' else 'char'))
             i += 1
             continue
 

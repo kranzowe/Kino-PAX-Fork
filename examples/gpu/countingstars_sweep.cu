@@ -1337,12 +1337,9 @@ int main(int argc, char* argv[])
         // Counted with the same predicate the runner uses, not a closed form -- the previous
         // closed form silently assumed the last WEIGHTS entry was 1.0.
         int csPoints = countingStarsPointCount();
-        printf("CountingStars:  react {0,1e3,1e4} x halfLife {1,2} x explore {3,5,10}, cost 1
-"
-               "                react is the headline axis: it sets F, and F sets propagations/node.
-"
-               "                -> %d points x %d runs = %d runs
-",
+        printf("CountingStars:  react {0,1e3,1e4} x halfLife {1,2} x explore {3,5,10}, cost 1\n"
+               "                react is the headline axis: it sets F, and F sets propagations/node.\n"
+               "                -> %d points x %d runs = %d runs\n",
                csPoints, NUM_CS_RUNS, csPoints * NUM_CS_RUNS);
         printf("CleanCost:      r2 OFF, w %.2f, k %.2f, cap %.2f = 1 point x %d runs = %d runs\n",
                CLEAN_BASE_W, CLEAN_BASE_K, CLEAN_BASE_CAP, NUM_CLEANCOST_RUNS, NUM_CLEANCOST_RUNS);
