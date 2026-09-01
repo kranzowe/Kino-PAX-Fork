@@ -96,39 +96,30 @@ deltaSingleCap = [false, false, false];
 
 deltaLabel = '3 deltas overlaid';
 
-% COMBO grid - must match ACC_GAINS / FAN_GAINS / REACT_FRAC in
-% kinopaxstar_combo_tuning_sweep.cu. Values are the integer label tokens (100 x the float), exactly
-% as they appear in the filenames. cross_check_combo_grid.py asserts these stay in step; when they
-% drift, MATLAB reports "0 runs" for the orphaned series rather than erroring, which is the failure
-% mode that silently wastes a whole sweep.
-%
-% COMBO runs TWO shapes: acceptance (which nodes join) and fan-out (where propagation goes).
-%
-% react_count -- the GLOBAL FRONTIER CAP -- is the headline axis, because it sets F and F sets
-% propagations-per-node. KinoPaxPlus divides the whole budget over a frontier its pruning keeps
-% tiny (bf = MAX_TREE_SIZE/(F*32), 40,000 propagations per node at F = 10); COMBO's frontier was
-% pinned at F >= nActive and got ~32. No fan-out weighting closes a gap like that -- only a smaller
-% F does. react 0 means the frontier is exactly this iteration's admissions.
-%
-% halfLife is the fan-out decay for the explore door: blocks = max(maxBlocks >> (ordinal/halfLife), 1),
-% so 1 gives 15, 7, 3, 1 ... and 2 stretches it. explore_count is the novelty quota per region.
-%
-% The grid is a CROSS, not a full factorial: react x halfLife at the derived explore, plus explore
-% swept at the derived react/halfLife. Values are the label tokens exactly as they appear in the
-% filenames -- react and halfLife plain, explore as round(100 x float).
+% CountingStars v2 grid - must match GOAL_FRONTIER_SIZES / EXPLORE_FRACS in
+% countingstars_sweep.cu. Values are the label tokens exactly as they appear in the filenames:
+% goal_frontier_size plain, explore_frac as round(100 x float).
 % cross_check_countingstars_grid.py asserts these stay in step with the .cu and the .sh; when they
 % drift, MATLAB reports "0 runs" for the orphaned series rather than erroring, which is the failure
 % mode that silently wastes a whole sweep.
-csReactCounts   = [1000 100000];
-csHalfLives     = [1 4];
-csExploreCounts = [100 1000];
-csMaxBlocks     = [12 32];
+%
+% goal_frontier_size B IS THE HEADLINE AXIS, and it is a different object from v1's react_count.
+% react_count was a CAP that F happened to land under; B is the TARGET the doors fill in priority
+% order -- optimal (uncapped), then explore_frac of what is left to the freshest regions, then the
+% region-best guarantee, then a uniform draw. F is met by construction, so B is the input and
+% propagations-per-node is the output. KinoPaxPlus divides the whole budget over a frontier its
+% pruning keeps tiny (bf = MAX_TREE_SIZE/(F*32), 40,000 propagations per node at F = 10), which is
+% the number prop_attempted/frontier_size is read against.
+%
+% B = 2000 and 10000 are BELOW NUM_R1_REGIONS (27,000 at the coarse delta), and the optimal door is
+% uncapped, so at those points the budget is a SOFT target and budget_used may run over B. That is
+% deliberate: it is the direct read on how much of the frontier the optimal door alone accounts for.
+csGoalFrontierSizes = [2000 10000 50000];
+csExploreFracs      = [5 10 25];
 
 % The derived operating point that --single-point selects.
-csDerivedReact     = 1000;
-csDerivedHalfLife  = 1;
-csDerivedExplore   = 100;
-csDerivedMaxBlocks = 12;
+csDerivedGoalFrontier = 10000;
+csDerivedExploreFrac  = 10;
 
 % CleanCost baseline point - one series, the well-tuned operating point. Same label format as the
 % cost sweep, so its historical CSVs load here unchanged.
@@ -140,19 +131,15 @@ cleanBaseCap = 3;
 % TrueStar and KPAXCap cap sweeps - must match TRUE_CAPS / KPAXCAP_CAPS in the benchmark.
 kpaxCapCaps = [3];
 
-% colour = react_count (frontier size, the headline axis), line style = halfLife, marker =
-% explore_count. react gets the channel the eye reads first because F is what the whole design turns
-% on: near-black is react 0, the arm where the frontier is only this iteration's admissions.
-% FOUR axes, three style channels, so colour carries the pair that actually interacts: react
-% (frontier size) x maxBlocks (ramp height). Darker = smaller frontier, which is the direction the
-% whole design is pushing.
-%   rows: (react 1e3, b12) (react 1e3, b32) (react 1e5, b12) (react 1e5, b32)
-reactBlockColors = [0.10 0.10 0.10;    % react 1e3, maxBlocks 12  (smallest frontier, shortest ramp)
-                    0.16 0.38 0.63;    % react 1e3, maxBlocks 32
-                    0.55 0.42 0.20;    % react 1e5, maxBlocks 12
-                    0.75 0.72 0.80];   % react 1e5, maxBlocks 32  (largest frontier, tallest ramp)
-halfStyles = {'-', '--'};         % halfLife = 1 (sharp), 4 (stretched)
-exploreMarkers = {'o', '+'};          % explore 1, 10 -- scatter only
+% TWO axes, so they get the two channels the eye reads first and nothing has to double up.
+% colour = goal_frontier_size, because B is what the whole design turns on; DARKER IS A SMALLER
+% BUDGET, which is the direction the design is pushing. line style = explore_frac.
+%   rows: B 2000, B 10000, B 50000
+budgetColors = [0.10 0.10 0.10;    % B 2000   (smallest frontier, most propagations per node)
+                0.16 0.38 0.63;    % B 10000
+                0.62 0.55 0.72];   % B 50000  (largest frontier, fewest propagations per node)
+fracStyles   = {'-', '--', ':'};   % explore_frac = 0.05, 0.10, 0.25
+fracMarkers  = {'o', '+', 'x'};    % explore_frac -- scatter only
 
 % CleanCost baseline: crimson, distinct from every COMBO colour, drawn as a reference anchor.
 cleanColor = [0.70 0.15 0.20];
@@ -176,6 +163,11 @@ plannerMarkers  = {};
 plannerWidths   = [];
 plannerBaseline = [];   % logical: drawn as a thick reference anchor / large scatter marker
 plannerDeltaIdx = [];   % index into `deltas`
+% Each series' goal_frontier_size, NaN for anything that is not a CountingStars arm. The budget
+% figure divides budget_used by it, so it has to travel WITH the series rather than be re-derived:
+% B is not in the CSV (it is a per-run setting, not a per-iteration measurement), and re-parsing it
+% out of the label would put a second copy of the token convention in the plot script.
+plannerGoalFrontier = [];
 
 for di = 1:numel(deltas)
     dWidth = deltaWidths(di);
@@ -185,41 +177,33 @@ for di = 1:numel(deltas)
 
     if ~dPlus
 
-    % --- CountingStars: react x halfLife x explore, as a cross ---
-    for bi = 1:numel(csMaxBlocks)
-        for ri = 1:numel(csReactCounts)
-            for hi = 1:numel(csHalfLives)
-                for ei = 1:numel(csExploreCounts)
-                    maxB    = csMaxBlocks(bi);
-                    react   = csReactCounts(ri);
-                    half    = csHalfLives(hi);
-                    explore = csExploreCounts(ei);
+    % --- CountingStars: goal_frontier_size x explore_frac, a full factorial ---
+    for bi = 1:numel(csGoalFrontierSizes)
+        for ei = 1:numel(csExploreFracs)
+            goalF = csGoalFrontierSizes(bi);
+            eFrac = csExploreFracs(ei);
 
-                    % Mirror countingStarsSkip(): FULL FACTORIAL, so --single-point is the only skip.
-                    if dOne && ~(react == csDerivedReact && half == csDerivedHalfLife && ...
-                                 explore == csDerivedExplore && maxB == csDerivedMaxBlocks)
-                        continue;
-                    end
-
-                    plannerNames{end + 1}   = sprintf('CountingStars_b%d_r%d_h%d_e%d', ...
-                                                      maxB, react, half, explore); %#ok<SAGROW>
-                    plannerDisplay{end + 1} = sprintf('CS b%d react%g h%d e%g [%s]', ...
-                                                      maxB, react, half, explore / 100, dTag); %#ok<SAGROW>
-                    % Colour index over the (react, maxBlocks) pair -- see reactBlockColors.
-                    plannerColors(end + 1, :) = reactBlockColors((ri - 1) * numel(csMaxBlocks) + bi, :); %#ok<SAGROW>
-                    plannerStyles{end + 1}    = halfStyles{hi};        %#ok<SAGROW>
-                    plannerMarkers{end + 1}   = exploreMarkers{ei};    %#ok<SAGROW>
-                    % The smallest-frontier arm is drawn thicker: it is the reference the rest is
-                    % read against, and the one closest to KinoPaxPlus's regime.
-                    if react == min(csReactCounts)
-                        plannerWidths(end + 1) = dWidth + 0.8;         %#ok<SAGROW>
-                    else
-                        plannerWidths(end + 1) = dWidth;               %#ok<SAGROW>
-                    end
-                    plannerBaseline(end + 1) = false;                  %#ok<SAGROW>
-                    plannerDeltaIdx(end + 1) = di;                     %#ok<SAGROW>
-                end
+            % Mirror countingStarsSkip(): FULL FACTORIAL, so --single-point is the only skip.
+            if dOne && ~(goalF == csDerivedGoalFrontier && eFrac == csDerivedExploreFrac)
+                continue;
             end
+
+            plannerNames{end + 1}   = sprintf('CountingStars_B%d_e%d', goalF, eFrac); %#ok<SAGROW>
+            plannerDisplay{end + 1} = sprintf('CS B%d frac%g [%s]', ...
+                                              goalF, eFrac / 100, dTag); %#ok<SAGROW>
+            plannerColors(end + 1, :) = budgetColors(bi, :);   %#ok<SAGROW>
+            plannerStyles{end + 1}    = fracStyles{ei};        %#ok<SAGROW>
+            plannerMarkers{end + 1}   = fracMarkers{ei};       %#ok<SAGROW>
+            % The smallest-budget arm is drawn thicker: it is the reference the rest is read
+            % against, and the one closest to KinoPaxPlus's regime.
+            if goalF == min(csGoalFrontierSizes)
+                plannerWidths(end + 1) = dWidth + 0.8;         %#ok<SAGROW>
+            else
+                plannerWidths(end + 1) = dWidth;               %#ok<SAGROW>
+            end
+            plannerBaseline(end + 1) = false;                  %#ok<SAGROW>
+            plannerDeltaIdx(end + 1) = di;                     %#ok<SAGROW>
+            plannerGoalFrontier(end + 1) = goalF;              %#ok<SAGROW>
         end
     end
 
@@ -234,6 +218,7 @@ for di = 1:numel(deltas)
     plannerWidths(end + 1)    = dWidth + 0.6;    %#ok<SAGROW>
     plannerBaseline(end + 1)  = true;            %#ok<SAGROW>
     plannerDeltaIdx(end + 1)  = di;              %#ok<SAGROW>
+    plannerGoalFrontier(end + 1) = NaN;          %#ok<SAGROW>
 
     % --- TrueStar ---
     % --- KPAXCap ---
@@ -247,6 +232,7 @@ for di = 1:numel(deltas)
         plannerWidths(end + 1)    = dWidth + 0.6;       %#ok<SAGROW>
         plannerBaseline(end + 1)  = true;               %#ok<SAGROW>
         plannerDeltaIdx(end + 1)  = di;                 %#ok<SAGROW>
+        plannerGoalFrontier(end + 1) = NaN;             %#ok<SAGROW>
     end
 
     % --- KPAX baseline. Gated with the rest: a --only-kinopaxplus delta does not run it. ---
@@ -258,6 +244,7 @@ for di = 1:numel(deltas)
     plannerWidths   = [plannerWidths,  dWidth + 1.1];                                     %#ok<AGROW>
     plannerBaseline = [plannerBaseline, true];                                            %#ok<AGROW>
     plannerDeltaIdx = [plannerDeltaIdx, di];                                              %#ok<AGROW>
+    plannerGoalFrontier = [plannerGoalFrontier, NaN];                                     %#ok<AGROW>
 
     end   % ~dPlus
 
@@ -272,6 +259,7 @@ for di = 1:numel(deltas)
     plannerWidths   = [plannerWidths,  dWidth + 1.1];                                     %#ok<AGROW>
     plannerBaseline = [plannerBaseline, true];                                            %#ok<AGROW>
     plannerDeltaIdx = [plannerDeltaIdx, di];                                              %#ok<AGROW>
+    plannerGoalFrontier = [plannerGoalFrontier, NaN];                                     %#ok<AGROW>
 end
 
 numRunsPer = 50 * ones(1, numel(plannerNames));   % max runs searched (missing files skipped)
@@ -354,46 +342,107 @@ for ei = 1:numel(environments)
             end
         end
         xlabel('Elapsed Time (ms)'); ylabel('D\_global (global mean cost - global min cost)'); grid on;
-        title('cost\_scale: the costProbExpGlobal denominator (CleanCost only)');
+        title('cost\_scale: CleanCost''s costProbExpGlobal denominator, CountingStars'' distance denominator');
         clickableLegend();
 
-        %% ---------- FIGURE: which door built the tree ----------
-        % THE FIRST QUESTION THIS PLANNER EXISTS TO ANSWER. COMBO admitted with one global
-        % probability and could not say why a node got in; here every node came through a named
-        % door and the counts are exact.
+        %% ---------- FIGURE: IS THE BUDGET MET ----------
+        % THE CLAIM THE WHOLE DESIGN RESTS ON, and therefore the first figure to read. B is an
+        % INPUT, not a cap: the doors fill it in priority order and F is supposed to come out at B
+        % by construction. Everything else on this grid is a tuning question; this one is a
+        % correctness question.
         %
-        %   admitted_explore  novelty. Collapsing toward zero early means the R2 cells are
-        %                     saturating and explore_count is not the binding constraint -- the
-        %                     discretisation is. That is a delta question, not a tuning one.
-        %   admitted_cost     region bests. Pinned near nActive is expected and healthy.
-        %   reactivated_count Part B. Should track react_count in expectation; a persistent gap
-        %                     means the uniform draw is not seeing the population it should.
+        %   budget_used / B == 1   the budget is met. This is the expected picture at B = 50000.
+        %   budget_used / B  < 1   SHORTFALL -- a door is not filling its share. Read the door panel
+        %                          on the right to see which one ran dry.
+        %   budget_used / B  > 1   OVERSHOOT -- the two uncapped doors (optimal, guarantee) already
+        %                          exceeded B on their own. EXPECTED wherever B <= NUM_R1_REGIONS,
+        %                          because both are bounded by the region count and not by B: one
+        %                          node per region can be a region best, one per uncovered region
+        %                          can be guaranteed. B binds only above NUM_R1_REGIONS, which is
+        %                          exactly why the low-B points are on the grid -- the gap measures
+        %                          how much of the frontier the priority doors take before the draw
+        %                          is offered anything.
+        %
+        % The ratio, not the raw count, because B differs by series -- one yline at 1 then reads for
+        % every arm at once.
         figNum = figNum + 1;
-        figure('Name', sprintf('%s - Admission Doors (%s)', envTitle, costTitle), ...
+        figure('Name', sprintf('%s - Budget vs Doors (%s)', envTitle, costTitle), ...
                'Position', [120 120 1400 620]);
         subplot(1, 2, 1); hold on;
         for pi = 1:nPlanner
-            plotMeanIter(R{pi}, @(t) getCol(t, 'admitted_explore'), ...
+            B = plannerGoalFrontier(pi);
+            if isnan(B), continue; end   % not a CountingStars series: no budget to check
+            plotMeanIter(R{pi}, @(t) getCol(t, 'budget_used') / B, ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
         end
         set(gca, 'YScale', 'log'); grid on;
-        xlabel('Iteration'); ylabel('nodes admitted by the explore door');
-        title({'Novelty admissions', 'falling to zero = R2 cells saturated, not a tuning limit'});
+        yline(1, 'k--', 'budget met', 'LineWidth', 1.4, 'HandleVisibility', 'off');
+        xlabel('Iteration'); ylabel('budget\_used / goal\_frontier\_size');
+        title({'Is the budget met?', 'below 1 = a door ran dry; above 1 = the optimal door alone overran B'});
         clickableLegend();
 
+        % --- Which door filled it. Every node came through a named door and the counts are exact,
+        % so a shortfall on the left has an address here.
+        %
+        %   optimal_count      the top door, uncapped, first claim every iteration.
+        %   admitted_explore   the freshness door, spending explore_frac of what optimal left.
+        %   reactivated_best   the guarantee, realised. Compare with guaranteed_react (the PLANNED
+        %                      count that set the draw's probability): the gap is the guaranteed
+        %                      nodes Part B skipped for already being in the frontier.
+        %   reactivated_count  the uniform draw, filling the remainder.
         subplot(1, 2, 2); hold on;
         for pi = 1:nPlanner
-            plotMeanIter(R{pi}, @(t) getCol(t, 'admitted_cost'), ...
+            plotMeanIter(R{pi}, @(t) getCol(t, 'optimal_count'), ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
-            plotMeanIter(R{pi}, @(t) getCol(t, 'reactivated_count'), ...
-                         plannerColors(pi, :), ':', max(0.5, plannerWidths(pi) - 0.6), '');
+            plotMeanIter(R{pi}, @(t) getCol(t, 'admitted_explore'), ...
+                         plannerColors(pi, :), '--', max(0.5, plannerWidths(pi) - 0.6), '');
             plotMeanIter(R{pi}, @(t) getCol(t, 'reactivated_best'), ...
                          plannerColors(pi, :), '-.', max(0.5, plannerWidths(pi) - 0.3), '');
+            plotMeanIter(R{pi}, @(t) getCol(t, 'reactivated_count'), ...
+                         plannerColors(pi, :), ':', max(0.5, plannerWidths(pi) - 0.6), '');
         end
         set(gca, 'YScale', 'log'); grid on;
         xlabel('Iteration'); ylabel('nodes');
-        title({'admitted\_cost (solid), reactivated\_count (dotted), reactivated\_best (dash-dot)', ...
-               'best tracking frontier\_size = the guarantee IS the frontier'});
+        title({'optimal (solid), explore (dashed), guarantee (dash-dot), draw (dotted)', ...
+               'the four doors, in the order they are offered the budget'});
+
+        %% ---------- FIGURE: is freshness still scarce ----------
+        % ord_cutoff is the freshness threshold the remaining budget bought this iteration: a
+        % candidate is admitted by the freshness door when its REGION's population is below it.
+        %
+        %   RISING over a run   expected. Regions fill, so buying the same number of nodes costs a
+        %                       looser threshold every iteration.
+        %   PINNED AT 0         no non-optimal candidate is ever fresh enough, and explore_frac is
+        %                       doing nothing. Either the optimal door is taking the whole budget
+        %                       (check optimal_count against B on the previous figure) or every
+        %                       region is already populated.
+        %   AT 256              saturated: the whole candidate pool is fresher than X demands, so
+        %                       every non-optimal candidate is admitted. explore_frac is not binding.
+        figNum = figNum + 1;
+        figure('Name', sprintf('%s - Freshness Cutoff and Cost Scale (%s)', envTitle, costTitle), ...
+               'Position', [140 140 1400 620]);
+        subplot(1, 2, 1); hold on;
+        for pi = 1:nPlanner
+            plotMeanIter(R{pi}, @(t) getCol(t, 'ord_cutoff'), ...
+                         plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
+        end
+        grid on;
+        yline(256, 'k--', 'saturated (all fresh)', 'LineWidth', 1.2, 'HandleVisibility', 'off');
+        xlabel('Iteration'); ylabel('ord\_cutoff (region population)');
+        title({'Freshness cutoff', 'rising = regions filling; 0 = explore\_frac inert; 256 = not binding'});
+        clickableLegend();
+
+        % --- The denominator of the top door's test. distance = (cost - regionMin) / cost_scale,
+        % and distance 0 is what the optimal door admits -- so a cost_scale collapsing toward 0 is
+        % the one way that test could go degenerate without anything else looking wrong.
+        subplot(1, 2, 2); hold on;
+        for pi = 1:nPlanner
+            plotMeanIter(R{pi}, @(t) getCol(t, 'cost_scale'), ...
+                         plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
+        end
+        grid on;
+        xlabel('Iteration'); ylabel('D\_global (global mean cost - global min cost)');
+        title({'cost\_scale: the distance denominator', 'collapsing toward 0 would make distance 0 degenerate'});
 
         %% ---------- FIGURE: budget invariants ----------
         % Three checks that decide whether a tuning conclusion from this run is trustworthy at all.
@@ -437,12 +486,12 @@ for ei = 1:numel(environments)
         % `reactivated` counts frontier bits among the PRE-EXISTING tree, i.e. exactly Part B's
         % output, so this is the share of the frontier that is re-expansion rather than new nodes.
         %
-        % READ THIS PANEL FIRST WHEN KERNEL1 FAILS EARLY. Part B's region-best branch is
-        % UNCONDITIONAL -- one node per explored region, up to NUM_R1_REGIONS, outside h_reactFrac_
-        % entirely -- so F has a floor at nActive. Since rep >= 1, frontierRepeatSize >= F, and
-        % kernel2 is forced once 32*F > remaining no matter what repTarget does. A curve pinned near
-        % 100% here means F is region-best dominated and no acceptance tuning will move the kernel1
-        % crossover; the levers are the guarantee itself or the R1 grid size.
+        % READ THIS PANEL FIRST WHEN KERNEL1 FAILS EARLY. Part B's guarantee is unconditional for
+        % an UNCOVERED region, so F has a floor at the number of regions the optimal door missed.
+        % Since rep >= 1, frontierRepeatSize >= F, and kernel2 is forced once 32*F > remaining
+        % whatever the budget says. A curve pinned near 100% means F is reactivation-dominated: the
+        % admissions are a rounding error next to the guarantee and the draw, and B is being met by
+        % re-expansion rather than by new ground.
         subplot(1, 3, 3); hold on;
         for pi = 1:nPlanner
             plotMeanIter(R{pi}, @(t) 100 * safeRatio(getCol(t, 'reactivated'), ...
@@ -460,9 +509,9 @@ for ei = 1:numel(environments)
         % reaches 40,000 propagations per node at F = 10. A frontier pinned near nActive gets ~32.
         % No fan-out weighting closes three orders of magnitude -- only a smaller F does.
         %
-        % prop_per_node = prop_attempted / frontier_size IS THE DIRECT COMPARISON. If it stays in
-        % the tens across every react setting, react_count is not doing its job and no other knob
-        % on this grid matters.
+        % prop_per_node = prop_attempted / frontier_size IS THE DIRECT COMPARISON, AND THE POINT OF
+        % CONTROLLING F IS CONTROLLING IT. If it does not move across the 25x span in B, B is not
+        % the lever and no other knob on this grid matters.
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Frontier Size and Focus (%s)', envTitle, costTitle), ...
                'Position', [180 180 1500 640]);
@@ -474,7 +523,7 @@ for ei = 1:numel(environments)
         end
         set(gca, 'YScale', 'log'); grid on;
         xlabel('Iteration'); ylabel('frontier size F');
-        title({'Frontier size', 'react\_count is the knob; everything else follows from F'});
+        title({'Frontier size', 'goal\_frontier\_size is the input; everything else follows from F'});
 
         subplot(1, 2, 2); hold on;
         for pi = 1:nPlanner
@@ -485,17 +534,19 @@ for ei = 1:numel(environments)
         set(gca, 'YScale', 'log'); grid on;
         yline(32, 'k--', 'one block', 'LineWidth', 1.2, 'HandleVisibility', 'off');
         xlabel('Iteration'); ylabel('propagations per frontier node');
-        title({'Focus: prop\_attempted / frontier\_size', 'compare against KinoPaxPlus bf; tens = not focused'});
+        title({'Focus: prop\_attempted / frontier\_size', 'must move with B; compare against KinoPaxPlus bf'});
         clickableLegend();
 
         %% ---------- FIGURE: fan-out budget ----------
         % block_scale is the fraction of each node's requested BOOST that survived the buffer
         % ceiling; the rep >= 1 floor is never scaled, so no frontier node is ever left blockless.
         %
-        %   block_scale = 1     the ceiling never bound; halfLife alone is setting fan-out.
+        %   block_scale = 1     the buffer ceiling never bound; the design budget alone is setting
+        %                       fan-out (blockBudget = maxBlocks * B, split at admission).
         %   block_scale < 1     the BUFFER is setting it, not the rule.
-        %   block_scale near 0  F itself has eaten the budget. That is a react_count problem, and
-        %                       no halfLife or explore_count setting will move it.
+        %   block_scale near 0  the rep >= 1 floor ate the budget and the fan-out split is inert.
+        %                       That is a goal_frontier_size problem, and explore_frac will not
+        %                       move it.
         %
         % block_ceiling below frontier_size is the same story stated in absolute terms.
         figNum = figNum + 1;
@@ -510,7 +561,7 @@ for ei = 1:numel(environments)
         ylim([0 1.05]); grid on;
         yline(1, 'k--', 'ceiling not binding', 'LineWidth', 1.2, 'HandleVisibility', 'off');
         xlabel('Iteration'); ylabel('block\_scale');
-        title({'Did the buffer cap the boost?', 'near 0 = the frontier ate the budget (a react\_count problem)'});
+        title({'Did the buffer cap the boost?', 'near 0 = the frontier ate the budget (a B problem)'});
 
         subplot(1, 2, 2); hold on;
         for pi = 1:nPlanner
@@ -635,7 +686,7 @@ function runs = loadRuns(dataDir, env, planner, delta, numRuns)
                 % STAR variants and KPAXCap use their planner label directly as the filename
                 % token. The 'KPAX' arm above is an exact switch case, so it cannot swallow
                 % 'KPAXCap_*'.
-                % CountingStars first: its labels are CountingStars_r<react>_h<half>_e<explore>.
+                % CountingStars first: its labels are CountingStars_B<budget>_e<exploreFrac>.
                 % The list is a WHITELIST on purpose -- an unrecognised label is a typo or a grid
                 % that drifted, and erroring here is far better than silently loading nothing and
                 % reporting "0 runs" for a series that was actually written.

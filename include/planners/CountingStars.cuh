@@ -4,7 +4,7 @@
 #include "collisionCheck/spatialHash.cuh"
 
 // Which door a candidate/node came in by. Stored per node so the CSV can answer "what built this
-// tree", and consumed by the fan-out rule, which gives each door a different block count.
+// tree", and consumed by the fan-out rule, which gives the optimal door a different block count.
 //
 // PREFIXED, and the prefix is load-bearing. These are FILE-SCOPE names in a header, and the sweep
 // pulls several planner headers into ONE translation unit -- an unprefixed copy is a redefinition
@@ -12,10 +12,18 @@
 // prefixes, different mechanism: kernels collide at LINK time under CUDA_SEPARABLE_COMPILATION,
 // header constants collide at COMPILE time.
 static const int CS_DOOR_NONE    = 0;
-static const int CS_DOOR_COST    = 1;   // region best: cost <= minCostsR1[r]
-static const int CS_DOOR_EXPLORE = 2;   // claimed a virgin R2 cell and won the region's quota
+static const int CS_DOOR_COST    = 1;   // OPTIMAL: distance 0, i.e. cost <= minCostsR1[r]
+static const int CS_DOOR_EXPLORE = 2;   // freshest: from a region whose ordinality beat the cutoff
 static const int CS_DOOR_REACT   = 3;   // existing tree node put back in the frontier by the draw
 static const int CS_DOOR_BEST    = 4;   // existing tree node put back because it is its region's best
+
+// Ordinality buckets in the freshness histogram. A candidate's ordinality is its REGION's node
+// count, clamped into [0, CS_ORD_BUCKETS): "how full is the region this candidate landed in".
+// 256 is chosen because it is the point past which the answer stops mattering -- a region holding
+// 255 nodes is not fresh by any reading, and every such region shares the top bucket. The histogram
+// plus an exclusive scan then gives the exact top-X cutoff in two O(n) passes, with no sort and no
+// rank; see the .cu for why a rank was never needed.
+static const int CS_ORD_BUCKETS = 256;
 
 class CountingStars : public Planner
 {
@@ -41,85 +49,95 @@ public:
     float h_minCost_;
 
     // ==================================================================================
-    // THE THREE COUNTS. This is the whole tuning surface, and the whole extension surface.
+    // THE BUDGET. This is the whole tuning surface, and it is TWO numbers.
     //
-    // COMBO admitted nodes with one global probability, min(pMax, shape * pTargetAccept), with
-    // pTargetAccept solved so the EXPECTED admission count hit a growth target. That normalisation
-    // is what this planner exists to remove. The shape is a normalised blend of sigmoids -- neutral
-    // 0.5, ceiling 1.0 -- so it can multiply acceptance by at most 2x; and pTargetAccept divides by
-    // the measured mean shape, so sharpening the shape lowers the mean, raises pTarget, and hands
-    // the gain straight back. Acceptance was a REALLOCATION mechanism at a fixed total. It could not
-    // concentrate, so nodes came out dense everywhere instead of sparse where it mattered.
+    // v1 admitted by PER-REGION QUOTAS (explore_count, cost_count, react_count) and the global
+    // frontier size was whatever those happened to produce. That is backwards for the thing that
+    // actually matters: GPU throughput is a function of frontier size, so frontier size should be
+    // the INPUT.
     //
-    // Here a count says how many nodes come in by each door. Probability survives ONLY as the way a
-    // counted quota is filled inside one region -- never as a global normalised score.
+    // v2 inverts it. goal_frontier_size is the PRIMITIVE, tunable to whatever this GPU is fast at,
+    // and the doors fill it in priority order. The budget is then met BY CONSTRUCTION, not tracked
+    // -- the same discipline that already makes the block ceiling work, where F and the frontier's
+    // block demand are both counted before the launch so the total is known.
     //
-    // Each count ramps linearly in u = treeSize / MAX_TREE_SIZE, from its *0 value to its *1 value.
-    // That ramp is the growth controller's seat: replacing these six numbers with values derived
-    // from a per-iteration target is a change to ONE function, updateCounts().
+    // This also retires the pattern that has failed three times in this line: steering a GLOBAL
+    // quantity through PER-REGION knobs with feedback. COMBO fed back its fan-out threshold, COMBO
+    // fed back its surplus repHi, and a throughput controller over v1's counts would have been the
+    // third. None of them could concentrate, because each handed the gain straight back through its
+    // own normalisation.
     // ==================================================================================
 
-    // Nodes per R1 region per iteration admitted for NOVELTY. A candidate is eligible only if it won
-    // the atomic claim on a virgin R2 sub-region; this caps how many of those winners are taken.
-    // Self-limiting even before the cap: there are only NUM_R2_PER_R1 cells in a region, ever.
-    float h_exploreCount0_, h_exploreCount1_;
-
-    // Nodes per R1 region per iteration admitted for COST. Pinned at 1 in v1, where it is exactly
-    // the region-best rule the atomicMin on minCostsR1 already computes -- zero new machinery.
-    // Rises FASTER than explore: optimality matters more as the tree fills. Anything above 1 needs a
-    // per-region top-K, which does not exist in this repo yet; see the .cu for what that would take.
-    float h_costCount0_, h_costCount1_;
-
-    // GLOBAL budget for the PROBABILISTIC half of reactivation. Every non-goal tree node outside the
-    // frontier, and not already taken by the region-best guarantee, is drawn with
-    // p = reactCount / treeSize, so the expected number added by the draw is exactly reactCount.
+    // B -- the node budget for ONE iteration's frontier. Set it where the GPU is fast; everything
+    // else in this planner is downstream of it. The doors fill it in priority order:
     //
-    // IT IS NO LONGER THE WHOLE FRONTIER CAP. The region bests come back unconditionally and sit
-    // OUTSIDE this budget, so F >= nActive again -- see the guarantee in Part B for why that is
-    // deliberate and what it costs.
+    //   1. OPTIMAL      every candidate at distance 0 from its region's best. UNCAPPED.
+    //   2. FRESHEST     explore_frac of what is LEFT, taken from the least-populated regions.
+    //   3. GUARANTEE    each active region's best node, if no optimal admission covered it.
+    //   4. DRAW         uniform over the rest of the tree, filling whatever the budget has left.
     //
-    // THIS IS THE MOST IMPORTANT KNOB IN THE PLANNER, because it sets F, and F sets
-    // propagations-per-node. KinoPaxPlus wins by dividing the whole budget over a TINY frontier --
-    // bf = MAX_TREE_SIZE/(F*32), so 40,000 propagations per node at F = 10. COMBO's frontier was
-    // pinned at F >= nActive by an unconditional region-best reactivation, which put it near 32
-    // propagations per node: three orders of magnitude adrift, and no fan-out weighting closes that
-    // gap. Only shrinking F does. 0 is legal and interesting -- the frontier is then exactly this
-    // iteration's admissions.
-    float h_reactCount0_, h_reactCount1_;
+    // DOORS 1 AND 3 ARE BOTH UNCAPPED, AND BOTH ARE BOUNDED BY NUM_R1_REGIONS -- one node per region
+    // can be a region best in an iteration, and one node per uncovered region can be guaranteed. So
+    // B ONLY BINDS WHILE B > NUM_R1_REGIONS. Below that the budget is a SOFT TARGET -- still no cap,
+    // deliberately -- and budget_used runs over B, held near the active-region count by the
+    // guarantee. That is a legitimate operating point and the sweep visits it on purpose: the gap
+    // between budget_used and B is the direct measurement of how much of the frontier the priority
+    // doors account for before the draw is offered anything at all.
+    int h_goalFrontierSize_;
+
+    // Share of the REMAINING budget (B - optimalCount) handed to freshness. The one place novelty
+    // still costs something: at 0 the frontier is optimal nodes plus reactivations and nothing
+    // else, at 1 the freshness door takes everything the optimal door left.
+    float h_exploreFrac_;
 
     // ==================================================================================
     // FAN-OUT. Blocks are decided AT ADMISSION and stored per node; propagateFrontier only reads
     // them, so it stays the single writer of activeFrontierRepeatCount.
     //
-    //   REACTIVATE  1
-    //   EXPLORE     max(maxBlocks >> (ordinal / halfLife), 1)   ordinal = the node's position in its
-    //                                                            region's history, cumulative
-    //   COST        max(maxBlocks / (novelThisIter[r] + 1), 1)   quiet region -> optimise hard
+    //   blockBudget   = maxBlocks * B                                  the DESIGN budget
+    //   OPTIMAL       -> maxBlocks each
+    //   everyone else -> floor((blockBudget - maxBlocks * optimalCount) / otherCount), >= 1
     //
-    // GEOMETRIC, NOT LINEAR, and deliberately so. A linear ramp max(maxBlocks - ordinal, 1) spends
-    // 15+14+13+12+11 = 65 blocks on a region's first five nodes. KPAX's realised behaviour is far
-    // sparser than its own rule reads: validVertexCounter is CUMULATIVE and gains ~32 per frontier
-    // node per iteration, so a region crosses `< 10` almost immediately and the x15 is a ONE-SHOT
-    // BURST, not a ramp. Halving gives 15, 7, 3, 1, 1 ... -- 27 blocks over the same five nodes,
-    // with almost everything on the first two.
+    // The split is NON-BINDING while the frontier lands at or under B -- otherCount is then
+    // B - optimalCount and everyone gets maxBlocks. It bites exactly when the frontier OVERSHOOTS,
+    // which is the case it exists for: the optimal door keeps its full boost and the overshoot is
+    // paid for by everyone else.
     //
-    // halfLife is the one knob spanning both: 1 is the burst, large is near-flat.
+    // THE GEOMETRIC RAMP IS GONE with the explore door that indexed it. Ordinality is now a
+    // SELECTION signal (which candidates are fresh enough to be admitted at all) rather than a
+    // WEIGHTING one, and running it as both would double-count the same fact.
     // ==================================================================================
     int h_maxBlocks_;
-    int h_fanHalfLife_;
 
     // ==================================================================================
     // DERIVED PER-ITERATION SCALARS -- measured, never set by a caller, all logged so the planner
     // can be audited from the CSV rather than trusted.
     // ==================================================================================
 
-    // This iteration's counts, after the ramp. Logged because they are the interface every later
-    // extension replaces.
-    float h_exploreCount_, h_costCount_, h_reactCount_;
+    // Candidates at distance 0 this iteration, counted exactly on the device by accept pass 1. This
+    // is what the host divides the budget against, so it is on the critical path, not a diagnostic.
+    uint h_optimalCount_;
+
+    // The freshness cutoff and its boundary probability, solved on the host from the ordinality
+    // histogram. A candidate is admitted by the freshness door when its region's ordinality is
+    // BELOW the cutoff, or EQUAL to it and it wins the boundary roll.
+    //
+    // RISING over a run is expected: regions fill, so freshness gets scarce. PINNED AT 0 means no
+    // non-optimal candidate is ever fresh enough and explore_frac is doing nothing.
+    int   h_ordCutoff_;
+    float h_pBoundary_;
+
+    // The guarantee's PLANNED size: active regions whose best node no optimal admission covered.
+    // Read against reactivated_best, which is the REALISED count -- the gap is the guaranteed nodes
+    // Part B skipped because they were already in the frontier or had reached the goal.
+    uint h_guaranteedReact_;
+
+    // What the doors actually committed this iteration: admissions + guarantee + draw. THE NUMBER
+    // TO READ AGAINST goal_frontier_size, in the same row rather than shifted by an iteration the
+    // way frontier_size is (frontier_size is measured at the top of the NEXT propagateFrontier).
+    uint h_budgetUsed_;
 
     // Admissions by door this iteration, counted exactly on the device and copied back once.
-    // h_reactivated_ is the realised Part B output, which should track h_reactCount_ in expectation
-    // -- a persistent gap means the draw is not seeing the population it should.
     enum DoorSlot { CS_SLOT_EXPLORE = 0, CS_SLOT_COST, CS_SLOT_REACT, CS_SLOT_BEST, CS_NUM_DOOR_SLOTS };
     thrust::device_vector<unsigned long long> d_doorCounts_;
     unsigned long long* d_doorCounts_ptr_;
@@ -130,12 +148,11 @@ public:
     //
     //   blockCeiling = 0.8 * remaining / activeBlockSize
     //
-    // The 0.8 is the margin against the kernel1 condition (frontierRepeatSize * activeBlockSize <=
-    // MAX_TREE_SIZE - treeSize). h_blockScale_ < 1 means the ceiling bound and every node's boost
-    // was shrunk proportionally ABOVE THE rep >= 1 FLOOR, so sum(rep) fits exactly.
-    //
-    // Kernel2 is still forced once activeBlockSize * F > remaining, since rep >= 1 is a correctness
-    // floor -- but that is a property of F, and F is what h_reactCount_ controls.
+    // A DIFFERENT CONSTRAINT FROM blockBudget ABOVE, and both must hold: blockBudget is the design
+    // budget, this is the buffer bound. The 0.8 is the margin against the kernel1 condition
+    // (frontierRepeatSize * activeBlockSize <= MAX_TREE_SIZE - treeSize). h_blockScale_ < 1 means
+    // the ceiling bound and every node's boost was shrunk proportionally ABOVE THE rep >= 1 FLOOR,
+    // so sum(rep) fits exactly.
     float h_blockCeiling_;
     float h_blockScale_;
 
@@ -143,21 +160,26 @@ public:
     // that nothing consumes it. Reduced from the graph's cumulative counter arrays.
     float h_globalCollisionFrac_;
 
+    // CleanCost's global cost scale: (mean cost over all valid samples) - (min over regions). It is
+    // the DENOMINATOR of a candidate's distance, so it is what makes "distance 0" a scale-free
+    // statement rather than one in raw cost units. Logged, because the distance test is the top
+    // door and a collapsed scale would otherwise be invisible.
+    float h_costScale_;
+
     // R2 sub-cells claimed so far, as a RUNNING TOTAL rather than a swept count.
     //
-    // r2_coverage_pct used to come from a thrust::count over d_activeSubVertices_ every iteration --
-    // O(NUM_R2_REGIONS), which is 2.1M elements at the coarse delta and 37.9M at `tiny`. But the
-    // atomicCAS in propagate already returns TRUE for exactly the one thread that claims a cell, and
-    // the explore door already branches on it. One more atomicAdd on that branch makes the count
-    // incremental and the metric O(1), with an identical value. The extra atomic fires only on novel
-    // claims, not per candidate.
+    // THE R2 DOOR IS GONE; THE R2 MARKING SURVIVES. Novelty is ordinality now, so nothing in the
+    // admission path reads a sub-cell. The claim is kept purely so r2_coverage_pct stays comparable
+    // with the KPAX-family baselines, and it is kept in THIS form -- read-then-CAS, one increment
+    // per cell ever -- because the alternative is a thrust::count over d_activeSubVertices_ every
+    // iteration, which is O(NUM_R2_REGIONS): 2.1M elements at the coarse delta, 37.9M at `tiny`.
     thrust::device_vector<uint> d_touchedR2Count_;
     uint* d_touchedR2Count_ptr_;
     uint  h_touchedR2_;
 
     // Two denominators the planner already knows and would otherwise discard.
     //   h_propAttempted_     propagation attempts this iteration, INCLUDING collisions
-    //   h_candidatesPreGate_ collision-free candidates the accept kernel judges, captured before the
+    //   h_candidatesPreGate_ collision-free candidates the accept passes judge, captured before the
     //                        post-gate re-scan overwrites h_frontierNextSize_. Exact on both
     //                        propagate paths, unlike any reconstruction from h_propAttempted_
     //                        (whose formula differs by branch).
@@ -193,8 +215,9 @@ public:
     // 8x at the checked-in config, and it GROWS with a finer discretisation.
     //
     // So the corner belongs to a different region than the index names, getSubRegion's clamps pin
-    // the offset to an edge cell, and every R2 identity is wrong. Nothing fails; the signal is just
-    // scrambled -- which would be fatal here, because the explore door IS the R2 novelty test.
+    // the offset to an edge cell, and every R2 identity is wrong. It no longer decides anything here
+    // -- v2's doors never read a sub-cell -- but r2_coverage_pct is only comparable with the
+    // baselines if the cells being counted are the right ones, so the corrected table stays.
     //
     // Graph.cu is deliberately left alone: every existing baseline was measured against it. This
     // planner carries a corrected copy and passes it wherever the others pass
@@ -202,27 +225,48 @@ public:
     // bijection and measures the shared one's collapse.
     thrust::device_vector<float> d_minCornerCS_;
 
-    // --- per-R1, RESET EVERY ITERATION. The repo has no other per-iteration per-region array; every
-    // other NUM_R1_REGIONS array is cumulative or a full recompute. ---
-    //   d_novelCounts_  distinct virgin R2 cells claimed in this region this iteration. THE
-    //                   DENOMINATOR of the explore door's per-region fill probability, and the
-    //                   divisor of the cost door's block count.
-    //   d_candCounts_   collision-free candidates in this region. Diagnostic only.
-    thrust::device_vector<int> d_novelCounts_, d_candCounts_;
+    // --- per-R1, RESET EVERY ITERATION ---
+    //   d_regionCovered_  did an OPTIMAL admission land in this region this iteration? The
+    //                     guarantee in Part B is deduplicated against it, so a region whose best
+    //                     was already re-admitted through the top door does not also spend a
+    //                     guarantee slot on the older node it superseded.
+    //   d_candCounts_     collision-free candidates in this region. Diagnostic only.
+    thrust::device_vector<bool> d_regionCovered_;
+    thrust::device_vector<int>  d_candCounts_;
 
-    // --- per-R1, CUMULATIVE. atomicAdd's RETURN VALUE gives a node its ordinal within its region,
-    // which is what the geometric fan-out ramp indexes. The only other place in this repo that uses
-    // an atomic's return value is spatialHash.cu's cell insertion. ---
+    // --- per-R1, CUMULATIVE. THE ORDINALITY SOURCE, and the reason freshness costs nothing.
+    //
+    // ORDINALITY IS PER-REGION, NOT PER-CANDIDATE. Every candidate in region r shares
+    // regionNodeCount[r], so "freshest" means "from the least-populated region" -- which is the
+    // novelty signal we want, and it is a single read with no per-candidate counter behind it. Ties
+    // break arbitrarily, which is exactly what the boundary roll is there to resolve. ---
     thrust::device_vector<int> d_regionNodeCount_;
+
+    // --- the freshness histogram, and the optimal count that sizes the budget it spends.
+    //
+    // NEITHER SELECTION NEEDS A RANK, which is why there is no sort here. distance 0 is a
+    // THRESHOLD, not an order. Top-X-freshest IS an order, but ordinality is a small non-negative
+    // integer, so a histogram plus an exclusive scan gives the exact cutoff in two O(n) atomic
+    // passes -- cheaper than a sort, and it reuses atomics that are already everywhere in this
+    // file. ---
+    thrust::device_vector<int>  d_ordHistogram_;
+    thrust::device_vector<uint> d_optimalCount_;
+    int h_ordHistogram_[CS_ORD_BUCKETS];
 
     // --- per-node, TREE-INDEXED, written once at admission ---
     thrust::device_vector<int> d_nodeBlocks_, d_nodeDoor_;
 
-    // --- per-candidate, UNEXPLORED-SAMPLE-SLOT indexed. Carries propagate's findings to the accept
-    // kernel, and the accept kernel's verdict to Part A. NOT interchangeable with the tree-indexed
-    // arrays above: propagate reclaims these slots for the next candidate batch every iteration. ---
-    thrust::device_vector<bool> d_candNovel_;
-    thrust::device_vector<int>  d_candDoor_;
+    // --- per-candidate, UNEXPLORED-SAMPLE-SLOT indexed. Carries accept pass 1's findings to accept
+    // pass 2, and pass 2's verdict to Part A. NOT interchangeable with the tree-indexed arrays
+    // above: propagate reclaims these slots for the next candidate batch every iteration.
+    //
+    //   d_candDistance_  (cost - minCostsR1[r]) / costScale, and 0 IS THE OPTIMAL MARK. Written by
+    //                    pass 1 over the compacted candidate list and read by pass 2 over the same
+    //                    list, so every slot pass 2 touches was written this iteration.
+    //   d_candDoor_      pass 2's verdict, and pass 2 is its ONLY writer among the accept passes --
+    //                    which is what keeps the door counters free of double counting. ---
+    thrust::device_vector<float> d_candDistance_;
+    thrust::device_vector<int>   d_candDoor_;
 
     thrust::device_vector<uint> d_goalSetIdxs_, d_goalSetScanIdx_;
     thrust::device_vector<int> d_iterations_;
@@ -233,9 +277,11 @@ public:
     float *d_minCostsR1_ptr_, *d_sumCostsR1_ptr_, *d_minCost_ptr_;
     float *d_minCornerCS_ptr_;
     int   *d_cntCostsR1_ptr_;
-    int   *d_novelCounts_ptr_, *d_candCounts_ptr_, *d_regionNodeCount_ptr_;
+    int   *d_candCounts_ptr_, *d_regionNodeCount_ptr_, *d_ordHistogram_ptr_;
+    uint  *d_optimalCount_ptr_;
+    bool  *d_regionCovered_ptr_;
     int   *d_nodeBlocks_ptr_, *d_nodeDoor_ptr_, *d_candDoor_ptr_;
-    bool  *d_candNovel_ptr_;
+    float *d_candDistance_ptr_;
     float *d_pathCosts_ptr_, *d_controlPathsToGoal_ptr_;
     bool *d_frontier_ptr_, *d_frontierNext_ptr_, *d_goalSet_ptr_;
     uint *d_activeFrontierIdxs_ptr_, *d_frontierScanIdx_ptr_, *d_activeFrontierRepeatCount_ptr_,
@@ -261,19 +307,19 @@ __global__ void CountingStars_initializeRegions_kernel(float* minCorner);
 /***************************/
 /* PROPAGATE FRONTIER KERNEL 1 */
 /***************************/
-// Pure candidate producer plus COUNTING. It records every collision-free propagation, claims R2
-// cells exclusively, and accumulates the per-region counts the accept kernel divides by -- but makes
-// no admission decision. Counting with atomics is exact and order-independent, so it does not
-// violate the invariant that put the decision after propagate: that rule is about cost STATISTICS
-// being mid-flight, and minCostsR1 is still only read afterwards.
+// Pure candidate producer plus COUNTING. It records every collision-free propagation, marks R2 cells
+// for the coverage metric, and accumulates the per-region cost statistics the accept passes divide
+// by -- but makes no admission decision. Counting with atomics is exact and order-independent, so it
+// does not violate the invariant that put the decision after propagate: that rule is about cost
+// STATISTICS being mid-flight, and minCostsR1 is still only read afterwards.
 __global__ void CountingStars_propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
                                                    float* unexploredSamples, uint frontierSize, curandState* randomSeeds,
                                                    int* unexploredSamplesParentIdxs, float* obstacles, int obstaclesCount,
                                                    int* activeSubVertices, bool* frontierNext,
                                                    int* vertexCounter, int* validVertexCounter, float* minCorner,
                                                    float* treeSampleCosts, float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
-                                                   int* frontierNextXR1s, bool* candNovel, int* candDoor,
-                                                   int* novelCounts, int* candCounts, uint* touchedR2Count,
+                                                   int* frontierNextXR1s, int* candDoor,
+                                                   int* candCounts, uint* touchedR2Count,
                                                    float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid);
 
 /***************************/
@@ -286,35 +332,52 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
                                                    int* vertexCounter, int* validVertexCounter, int iterations,
                                                    float* minCorner,
                                                    float* treeSampleCosts, float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
-                                                   int* frontierNextXR1s, bool* candNovel, int* candDoor,
-                                                   int* novelCounts, int* candCounts, uint* touchedR2Count,
+                                                   int* frontierNextXR1s, int* candDoor,
+                                                   int* candCounts, uint* touchedR2Count,
                                                    float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid);
 
 /***************************/
-/* ACCEPT KERNEL — the ONLY admission decision */
+/* ACCEPT PASS 1 - measure, do not decide */
 /***************************/
-// Two doors, both counted. COST takes precedence, so a candidate that is both its region's best and
-// a novel claimant is recorded as COST and does not consume an explore slot.
+// One thread per candidate. Computes the two quantities the budget is spent against and NOTHING
+// else: the candidate's scale-free distance from its region's best, and -- for the ones that are not
+// already optimal -- a vote in the ordinality histogram.
 //
-//   COST     cost <= minCostsR1[r]                          quota costCount, == 1 in v1
-//   EXPLORE  candNovel and rand() < exploreCount / novelCounts[r]
+// IT STAMPS NO DOOR. The cutoff is not known until this launch has finished and the host has scanned
+// the histogram, so a door written here would be a decision taken without the number that decides
+// it. Two launches, both O(candidates), and the split is what makes the budget exact.
+__global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
+                                                 float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
+                                                 int* regionNodeCount, float costScale,
+                                                 float* candDistance, int* ordHistogram, uint* optimalCount);
+
+/***************************/
+/* ACCEPT PASS 2 - the ONLY admission decision */
+/***************************/
+// Admits in priority order against the cutoff the host solved from pass 1's histogram:
 //
-// The explore fill is a PER-REGION, COUNT-CALIBRATED probability: expected admissions per region are
-// exactly exploreCount, and when novelCounts <= exploreCount the probability is >= 1 and all are
-// taken. That is a different object from the global normalised score this planner replaced -- it
-// carries no cross-region normalisation at all.
-__global__ void CountingStars_accept_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
-                                            float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
-                                            bool* frontierNext, bool* candNovel, int* candDoor,
-                                            curandState* randomSeeds,
-                                            int* novelCounts, float exploreCount,
-                                            unsigned long long* doorCounts);
+//   OPTIMAL   distance == 0                                      door = COST     (uncapped)
+//   FRESHEST  ordinality <  cutoff                               door = EXPLORE
+//             ordinality == cutoff, with probability pBoundary   door = EXPLORE
+//
+// The boundary roll is what makes the count EXACT rather than approximately right: the X-th freshest
+// node almost never falls on a bucket edge, and admitting the whole boundary bucket would overshoot
+// the budget by up to one bucket's width -- which, at a coarse ordinality, is most of the frontier.
+//
+// Also marks regionCovered for every optimal admission, which is what Part B's guarantee is
+// deduplicated against.
+__global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
+                                                 int* frontierNextXR1s, int* regionNodeCount,
+                                                 float* candDistance, bool* frontierNext, int* candDoor,
+                                                 bool* regionCovered, curandState* randomSeeds,
+                                                 int ordCutoff, float pBoundary,
+                                                 unsigned long long* doorCounts);
 
 /***************************/
 /* FRONTIER UPDATE KERNEL */
 /***************************/
-// Part A inserts admitted candidates, stamps each with its region ordinal and its block count.
-// Part B draws reactivations uniformly over the tree at p = reactCount/treeSize.
+// Part A inserts admitted candidates and stamps each with its block count. Part B fills what the
+// budget has left: the region-best guarantee first, then a uniform draw at pReactivate.
 //
 // EVERY BRANCH THAT SETS frontier[i] = true MUST WRITE nodeBlocks[i]. A missed one leaves the node
 // carrying whatever block count the previous occupant of its tree slot had.
@@ -324,11 +387,11 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
                                int* unexploredSamplesParentIdxs, int* treeSamplesParentIdxs, float* treeSampleCosts,
                                curandState* randomSeeds,
                                int* candDoor, int* nodeDoor, int* nodeBlocks,
-                               int* regionNodeCount, int* novelCounts,
+                               int* regionNodeCount, bool* regionCovered,
                                float* minCostsR1, int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet,
                                int* iterations, int iteration,
-                               float pReactivate, int maxBlocks, int fanHalfLife,
+                               float pReactivate, int maxBlocks, int otherBlocks,
                                unsigned long long* doorCounts);
 
 /***************************/

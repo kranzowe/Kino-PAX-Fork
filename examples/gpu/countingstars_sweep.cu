@@ -21,43 +21,35 @@
 static bool        g_dumpViz = false;
 static std::string g_vizDir;
 
-// ---- CountingStars grid: FRONTIER CAP x FAN-OUT DECAY x EXPLORE QUOTA ----
+// ---- CountingStars v2 grid: NODE BUDGET x FRESHNESS SHARE ----
 //
-// reactCount IS THE HEADLINE AXIS, because it sets F and F sets propagations-per-node.
-// KinoPaxPlus divides the whole budget over a frontier its pruning keeps tiny --
-// bf = MAX_TREE_SIZE/(F*32), so 40,000 propagations per node at F = 10. COMBO's frontier was pinned
-// at F >= nActive by an unconditional region-best reactivation, which put it near 32 propagations
-// per node. Three orders of magnitude, and no fan-out weighting closes that; only a smaller F does.
+// goal_frontier_size IS THE HEADLINE AXIS, and it is the headline axis for a different reason than
+// v1's react_count was. react_count was a CAP that F happened to land under; B is the TARGET F is
+// built to hit, so sweeping it is the whole experiment: its purpose is finding where this GPU is
+// fast, and nothing else in the planner is upstream of it.
 //
-// 0 is a real and interesting setting, not a degenerate one: the frontier is then EXACTLY this
-// iteration's admissions, which is the closest this planner gets to KinoPaxPlus's regime.
-static const float REACT_COUNTS[]   = {1000.0f, 100000.0f};
-static const int NUM_REACT_COUNTS   = sizeof(REACT_COUNTS) / sizeof(REACT_COUNTS[0]);
+// SWEEP IT WIDE. 2000 -> 50000 is a 25x span in F, which is a 25x span in propagations-per-node at
+// a fixed block budget. If first-solution time does not move across that span, B is not the lever
+// and no other knob on this grid matters.
+//
+// NOTE 2000 AND 10000 ARE BELOW NUM_R1_REGIONS (27,000 at the coarse delta). The optimal door is
+// uncapped and NUM_R1_REGIONS bounds how many nodes can be a region best in one iteration, so at
+// those two points B is a SOFT TARGET -- budget_used may run over it. That is deliberate and worth
+// measuring: it is the direct read on how much of the frontier the optimal door alone accounts for.
+static const int GOAL_FRONTIER_SIZES[] = {2000, 10000, 50000};
+static const int NUM_GOAL_FRONTIER_SIZES = sizeof(GOAL_FRONTIER_SIZES) / sizeof(GOAL_FRONTIER_SIZES[0]);
 
-// Blocks a favoured node receives. NEW AXIS this pass. 15 was KPAX's number and was never swept;
-// 12 and 32 bracket it. maxBlocks is the HEIGHT of the fan-out ramp and halfLife is its WIDTH, so
-// the two only mean something together -- which is why this grid is a factorial and not a cross.
-static const int MAX_BLOCKS_GRID[]  = {12, 32};
-static const int NUM_MAX_BLOCKS     = sizeof(MAX_BLOCKS_GRID) / sizeof(MAX_BLOCKS_GRID[0]);
+// Share of the REMAINING budget (B - optimalCount) handed to the freshness door. The rest goes to
+// the region-best guarantee and the uniform draw. 0.05 -> 0.25 is a 5x span in how much of the
+// frontier is bought with novelty rather than optimality or reach.
+static const float EXPLORE_FRACS[] = {0.05f, 0.10f, 0.25f};
+static const int NUM_EXPLORE_FRACS = sizeof(EXPLORE_FRACS) / sizeof(EXPLORE_FRACS[0]);
 
-// Fan-out decay for the explore door: blocks = max(maxBlocks >> (ordinal / halfLife), 1).
-// 1 halves at every ordinal (32, 16, 8, 4 ...), the sparsest setting and the closest to KPAX's
-// realised one-shot burst; 4 holds each level for four nodes before halving.
-static const int FAN_HALF_LIVES[]   = {1, 4};
-static const int NUM_FAN_HALF_LIVES = sizeof(FAN_HALF_LIVES) / sizeof(FAN_HALF_LIVES[0]);
-
-// Novelty admissions per R1 region per iteration, at an empty tree. 1 is the sparsest this planner
-// can admit -- one new node per region per iteration -- and 10 is an order up.
-static const float EXPLORE_COUNTS[] = {1.0f, 10.0f};
-static const int NUM_EXPLORE_COUNTS = sizeof(EXPLORE_COUNTS) / sizeof(EXPLORE_COUNTS[0]);
-
-// FIXED AT 1, AND DELIBERATELY NOT SWEPT. cost_count is ramped and logged by the planner but is
-// NOT passed to the accept kernel -- the cost door is `cost <= minCostsR1[r]`, full stop, which
-// admits exactly the region best whatever the count says. Sweeping it today would double the grid
-// and produce IDENTICAL runs under different filenames, which is worse than not sweeping it.
-// Making it mean something needs a per-region top-K and this repo has no primitive for one: no
-// sort, no CUB, no per-region multi-slot storage.
-static const float COST_COUNT = 1.0f;
+// maxBlocks is NO LONGER AN AXIS. In v1 it was the height of a geometric fan-out ramp and had to be
+// swept against the ramp's width; v2 has no ramp -- blockBudget = maxBlocks * B, optimal nodes take
+// maxBlocks each and everyone else splits the rest -- so maxBlocks and B are the same knob seen
+// twice. B is the one with the operational meaning, so B is the one that moves.
+static const int CS_MAX_BLOCKS = 15;
 
 // ---- KinoPaxSTARCleanCost baseline point ----
 // Demoted from a 21-point grid to the single well-tuned operating point, as the reference the
@@ -79,11 +71,9 @@ static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0
 // the operating point so the deltas can be overlaid like with like. Each of these MUST remain a
 // member of its list -- the flag selects BY VALUE, so a derived point outside the grid would run
 // nothing at all. cross_check_combo_grid.py asserts exactly that.
-static const float CS_DERIVED_REACT     = 1000.0f;
-static const int   CS_DERIVED_HALFLIFE  = 1;
-static const float CS_DERIVED_EXPLORE   = 1.0f;
-static const int   CS_DERIVED_MAXBLOCKS = 12;
-static const float CAP_DERIVED          = 0.03f;
+static const int   CS_DERIVED_GOAL_FRONTIER = 10000;
+static const float CS_DERIVED_EXPLORE_FRAC  = 0.10f;
+static const float CAP_DERIVED              = 0.03f;
 
 static bool g_singlePoint = false;
 
@@ -97,32 +87,20 @@ static bool capSkip(float cap)
 // factorial, so the only skip is --single-point.
 // Single source of truth for the CountingStars grid's shape: the runner and the banner both call
 // it, so the printed point count can never drift from the grid actually executed.
-//
-// The grid is a CROSS, not a full factorial: react x halfLife is swept with explore pinned at its
-// derived value, and explore is swept only at the derived react/halfLife. A full factorial would be
-// 18 points to answer a question the cross answers in 8, and reactCount is the axis that matters.
-static bool countingStarsSkip(float react, int halfLife, float explore, int maxBlocks)
+static bool countingStarsSkip(int goalFrontier, float exploreFrac)
 {
-    // FULL FACTORIAL over the four live axes -- 2^4 = 16 points. The previous grid was a cross
-    // because react was the only axis anyone trusted; maxBlocks and halfLife are the height and
-    // width of the same ramp, so their corners have to be visited rather than inferred.
-    // --single-point is the only skip.
+    // FULL FACTORIAL over the two live axes -- 3 x 3 = 9 points. --single-point is the only skip.
     if(!g_singlePoint) return false;
-    return fabsf(react - CS_DERIVED_REACT) > 1e-6f
-        || halfLife != CS_DERIVED_HALFLIFE
-        || fabsf(explore - CS_DERIVED_EXPLORE) > 1e-6f
-        || maxBlocks != CS_DERIVED_MAXBLOCKS;
+    return goalFrontier != CS_DERIVED_GOAL_FRONTIER
+        || fabsf(exploreFrac - CS_DERIVED_EXPLORE_FRAC) > 1e-6f;
 }
 
 static int countingStarsPointCount()
 {
     int n = 0;
-    for(int bi = 0; bi < NUM_MAX_BLOCKS; bi++)
-    for(int ri = 0; ri < NUM_REACT_COUNTS; ri++)
-    for(int hi = 0; hi < NUM_FAN_HALF_LIVES; hi++)
-    for(int ei = 0; ei < NUM_EXPLORE_COUNTS; ei++)
-        if(!countingStarsSkip(REACT_COUNTS[ri], FAN_HALF_LIVES[hi], EXPLORE_COUNTS[ei],
-                              MAX_BLOCKS_GRID[bi])) n++;
+    for(int bi = 0; bi < NUM_GOAL_FRONTIER_SIZES; bi++)
+    for(int ei = 0; ei < NUM_EXPLORE_FRACS; ei++)
+        if(!countingStarsSkip(GOAL_FRONTIER_SIZES[bi], EXPLORE_FRACS[ei])) n++;
     return n;
 }
 
@@ -135,14 +113,14 @@ static int capAxisPointCount(const float* caps, int nCaps)
     return n;
 }
 
-// "CountingStars_b12_r1000_h1_e100". MUST start with a name loadRuns() dispatches on. Tokens are
-// the plain integer for maxBlocks / react / halfLife and round(100 x float) for explore, the same
-// convention as every other label in this family.
-static std::string countingStarsLabel(int maxBlocks, float react, int halfLife, float explore)
+// "CountingStars_B10000_e10". MUST start with a name loadRuns() dispatches on. Tokens are the plain
+// integer for the node budget and round(100 x float) for the freshness share, the same convention as
+// every other label in this family.
+static std::string countingStarsLabel(int goalFrontier, float exploreFrac)
 {
     char buf[128];
-    snprintf(buf, sizeof(buf), "CountingStars_b%d_r%d_h%d_e%d",
-             maxBlocks, (int)lroundf(react), halfLife, (int)lroundf(100.0f * explore));
+    snprintf(buf, sizeof(buf), "CountingStars_B%d_e%d",
+             goalFrontier, (int)lroundf(100.0f * exploreFrac));
     return std::string(buf);
 }
 
@@ -185,26 +163,36 @@ struct IterationData
 
     // --- CountingStars diagnostics (NaN / -1 for every other planner) ---
     //
-    // Read them in this order. The first two answer the questions this planner exists to settle;
-    // the third is a correctness assertion, not a tuning signal.
+    // Read them in this order. The first answers the claim the whole design rests on; the rest are
+    // how you find out which door broke it.
     //
-    //   1. WHICH DOOR BUILT THE TREE. admitted_explore / admitted_cost / reactivated. Explore
-    //      collapsing toward zero early means the R2 cells are saturating and explore_count is not
-    //      the binding constraint -- the discretisation is.
-    //   2. IS THE FRONTIER SMALL. frontier_size, and prop_per_node = prop_attempted / frontier_size.
-    //      THIS IS THE NUMBER TO COMPARE AGAINST KinoPaxPlus, whose bf reaches 40,000 at F = 10. If
-    //      it stays in the tens, react_count is not doing its job and nothing else matters.
-    //   3. BLOCK IDENTITY. frontier_repeat_size must equal the sum of the frontier's admission-time
+    //   1. IS THE BUDGET MET. budget_used against the series' goal_frontier_size, every iteration.
+    //      A persistent SHORTFALL means a door is not filling its share; an OVERSHOOT means the
+    //      optimal count exceeded B, which is expected wherever B <= NUM_R1_REGIONS and is exactly
+    //      why the low-B points are on the grid. frontier_size says the same thing one iteration
+    //      later (it is measured at the top of the next propagateFrontier).
+    //   2. IS THE FRONTIER DOING MORE WORK. prop_per_node = prop_attempted / frontier_size, against
+    //      KinoPaxPlus's bf, which reaches 40,000 at F = 10. THE POINT OF CONTROLLING F IS
+    //      CONTROLLING THIS. If it does not move with B, B is not the lever.
+    //   3. WHICH DOOR BUILT THE TREE. optimal_count / admitted_explore / admitted_cost /
+    //      reactivated_best / reactivated_count, plus ord_cutoff. A cutoff RISING over a run is
+    //      expected -- regions fill, freshness gets scarce. Pinned at 0 means no non-optimal
+    //      candidate is ever fresh enough and explore_frac is doing nothing.
+    //   4. BLOCK IDENTITY. frontier_repeat_size must equal the sum of the frontier's admission-time
     //      block counts after scaling, and prop_attempted / frontier_repeat_size must be EXACTLY 32
     //      on every iteration. Kernel1 is retained by construction, so below 32 is a defect.
     int   prop_attempted;         // propagations launched this iteration, collisions included
-    int   prop_valid;             // collision-free candidates the accept kernel judged
+    int   prop_valid;             // collision-free candidates the accept passes judged
     int   frontier_repeat_size;   // sum of the per-node block counts; x32 is the kernel1 attempt count
-    // The three counts as applied THIS iteration, after the ramp. Logged because they are the
-    // interface every later extension replaces -- a growth controller changes these and nothing else.
-    float explore_count;
-    float cost_count;
-    float react_count;
+    // The budget's own arithmetic, as applied THIS iteration. optimal_count is what the top door
+    // took off the budget before anything else was offered any of it; ord_cutoff is the freshness
+    // threshold the remainder bought; guaranteed_react is the guarantee's PLANNED size (active
+    // regions no optimal admission covered), which is what set the draw's probability -- read it
+    // against reactivated_best, the realised count, to see how many the kernel skipped.
+    int   optimal_count;
+    int   ord_cutoff;
+    int   guaranteed_react;
+    int   budget_used;
     // Admissions by door, counted exactly on the device.
     int   admitted_explore;
     int   admitted_cost;
@@ -212,9 +200,9 @@ struct IterationData
     // reactivated_best / frontier_size approaching 1 means the region-best guarantee IS the
     // frontier -- KinoPaxPlus's regime. Read it together with best_cost before deciding that is bad.
     int   reactivated_best;
-    // Fan-out budget. block_scale < 1 means the buffer, not the fan-out rule, is setting how hard
-    // nodes expand; block_scale near 0 with a large frontier means F itself has eaten the budget,
-    // which is a react_count problem and not a half_life one.
+    // Fan-out budget. block_scale < 1 means the BUFFER, not the fan-out rule, is setting how hard
+    // nodes expand; block_scale near 0 means the rep >= 1 floor ate the budget and the fan-out split
+    // is inert, which is a goal_frontier_size problem and no other knob will move it.
     float block_ceiling;
     float block_scale;
     float global_collision_frac;
@@ -228,9 +216,10 @@ static void clearCountingStarsCols(IterationData& d)
     d.prop_attempted = -1;
     d.prop_valid = -1;
     d.frontier_repeat_size = -1;
-    d.explore_count = NAN;
-    d.cost_count = NAN;
-    d.react_count = NAN;
+    d.optimal_count = -1;
+    d.ord_cutoff = -1;
+    d.guaranteed_react = -1;
+    d.budget_used = -1;
     d.admitted_explore = -1;
     d.admitted_cost = -1;
     d.reactivated_count = -1;
@@ -363,7 +352,7 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
     // don't overwrite each other:
     //   KPAX baseline: {env}_KPAX_delta{build}_run{n}.csv
     //   STAR variants: {env}_{planner label}_delta{build}_run{n}.csv
-    //                  e.g. KinoPaxSTARCleanCost_w90_k400_cap5, CountingStars_r0_h1_e500
+    //                  e.g. KinoPaxSTARCleanCost_w90_k400_cap5, CountingStars_B10000_e10
     //   KPAXCap:       same planner-label form (KPAXCap_cap5). The "KPAX" arm above is an EXACT
     //                  match, so it cannot swallow these.
     //   KinoPaxPlus:   {env}_delta{label}_run{n}.csv
@@ -392,7 +381,7 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
          << "num_regions,r2_coverage_pct,mean_vertex_score,reactivated,"
          << "score_floor,cost_scale,"
          << "prop_attempted,prop_valid,frontier_repeat_size,"
-         << "explore_count,cost_count,react_count,"
+         << "optimal_count,ord_cutoff,guaranteed_react,budget_used,"
          << "admitted_explore,admitted_cost,reactivated_count,reactivated_best,"
          << "block_ceiling,block_scale,global_collision_frac\n";
 
@@ -412,9 +401,10 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
              << d.prop_attempted << ","
              << d.prop_valid << ","
              << d.frontier_repeat_size << ","
-             << std::fixed << std::setprecision(3) << d.explore_count << ","
-             << std::fixed << std::setprecision(3) << d.cost_count << ","
-             << std::fixed << std::setprecision(1) << d.react_count << ","
+             << d.optimal_count << ","
+             << d.ord_cutoff << ","
+             << d.guaranteed_react << ","
+             << d.budget_used << ","
              << d.admitted_explore << ","
              << d.admitted_cost << ","
              << d.reactivated_count << ","
@@ -941,8 +931,9 @@ void runKPAXCapBenchmark(
 }
 
 // ========================================================================
-// KinoPaxSTARCleanCost benchmark + runner.
-// Single acceptance decision: cap * min(1, w*P_syclop + (1-w)*P_cost + P_floor).
+// CountingStars v2 benchmark + runner.
+// ONE GLOBAL NODE BUDGET, filled in priority order: optimal (uncapped), then explore_frac of what
+// is left to the freshest regions, then the region-best guarantee, then a uniform draw.
 // ========================================================================
 RunResult benchmarkCountingStars(
     CountingStars& planner,
@@ -955,27 +946,19 @@ RunResult benchmarkCountingStars(
     uint numObstacles,
     int maxIterations,
     float maxTimeMs,
-    float reactCount,
-    int halfLife,
-    float exploreCount,
-    int maxBlocks,
+    int goalFrontier,
+    float exploreFrac,
     const std::string& label)
 {
     // Override the planner's defaults for this run. resetPlanner (called below) does not touch the
     // tunables, so setting them at entry holds for the whole run.
     //
-    // Both endpoints of each ramp are set, not just the start: the ramp is the growth controller's
-    // seat, and pinning both ends is what makes this pass a FIXED SCHEDULE rather than a schedule
-    // with an unswept slope hiding in it. explore rises 2x across a run, cost stays at 1 (anything
-    // above it needs a per-region top-K), react is flat at its swept value.
-    planner.h_exploreCount0_ = exploreCount;
-    planner.h_exploreCount1_ = exploreCount * 2.0f;
-    planner.h_costCount0_    = COST_COUNT;
-    planner.h_costCount1_    = COST_COUNT;
-    planner.h_reactCount0_   = reactCount;
-    planner.h_reactCount1_   = reactCount;
-    planner.h_fanHalfLife_   = halfLife;
-    planner.h_maxBlocks_     = maxBlocks;
+    // NO RAMP ENDPOINTS TO SET. v1's three counts each had a *0 / *1 pair and an unswept slope
+    // hiding between them; v2's budget is a flat scalar, so what the sweep sets is exactly what the
+    // planner applies on every iteration. maxBlocks is pinned rather than swept -- see CS_MAX_BLOCKS.
+    planner.h_goalFrontierSize_ = goalFrontier;
+    planner.h_exploreFrac_      = exploreFrac;
+    planner.h_maxBlocks_        = CS_MAX_BLOCKS;
 
     RunResult result;
     result.delta_label = label;
@@ -1049,14 +1032,18 @@ RunResult benchmarkCountingStars(
         d.mean_vertex_score = meanScore;
         d.reactivated       = reactivated;
         d.score_floor       = NAN;   // no Syclop score, so no floor
-        d.cost_scale        = NAN;
+        // NOT NaN any more, and that is a real column here rather than a courtesy: costScale is the
+        // DENOMINATOR of a candidate's distance, and distance 0 is the top door. A scale collapsing
+        // toward 0 would make the top door's test degenerate, and this is the only place that shows.
+        d.cost_scale        = planner.h_costScale_;
         // CountingStars readout.
         d.prop_attempted       = (int)planner.h_propAttempted_;
         d.prop_valid           = (int)planner.h_candidatesPreGate_;
         d.frontier_repeat_size = (int)planner.h_frontierRepeatSize_;
-        d.explore_count        = planner.h_exploreCount_;
-        d.cost_count           = planner.h_costCount_;
-        d.react_count          = planner.h_reactCount_;
+        d.optimal_count        = (int)planner.h_optimalCount_;
+        d.ord_cutoff           = planner.h_ordCutoff_;
+        d.guaranteed_react     = (int)planner.h_guaranteedReact_;
+        d.budget_used          = (int)planner.h_budgetUsed_;
         d.admitted_explore     = (int)planner.h_admittedExplore_;
         d.admitted_cost        = (int)planner.h_admittedCost_;
         d.reactivated_count    = (int)planner.h_reactivated_;
@@ -1099,31 +1086,27 @@ void runCountingStarsBenchmark(
            environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
     printf("========================================\n");
 
-    for(int bi = 0; bi < NUM_MAX_BLOCKS; bi++)
-    for(int ri = 0; ri < NUM_REACT_COUNTS; ri++)
-    for(int hi = 0; hi < NUM_FAN_HALF_LIVES; hi++)
-    for(int ei = 0; ei < NUM_EXPLORE_COUNTS; ei++)
+    for(int bi = 0; bi < NUM_GOAL_FRONTIER_SIZES; bi++)
+    for(int ei = 0; ei < NUM_EXPLORE_FRACS; ei++)
     {
-        const int   maxBlocks = MAX_BLOCKS_GRID[bi];
-        const float react     = REACT_COUNTS[ri];
-        const int   half      = FAN_HALF_LIVES[hi];
-        const float explore   = EXPLORE_COUNTS[ei];
+        const int   goalFrontier = GOAL_FRONTIER_SIZES[bi];
+        const float exploreFrac  = EXPLORE_FRACS[ei];
 
-        if(countingStarsSkip(react, half, explore, maxBlocks)) continue;
+        if(countingStarsSkip(goalFrontier, exploreFrac)) continue;
 
-        const std::string label = countingStarsLabel(maxBlocks, react, half, explore);
+        const std::string label = countingStarsLabel(goalFrontier, exploreFrac);
 
-        printf("  --- maxBlocks = %d, react = %.0f, halfLife = %d, explore = %.1f (%s) ---\n",
-               maxBlocks, react, half, explore, label.c_str());
+        printf("  --- goal_frontier_size = %d, explore_frac = %.2f (%s) ---\n",
+               goalFrontier, exploreFrac, label.c_str());
         CountingStars planner;
         for(int run = 0; run < numRuns; run++)
         {
             RunResult result = benchmarkCountingStars(planner, deltaLabel, environment_name, run,
                                                  h_initial, h_goal, d_obstacles,
                                                  numObstacles, maxIterations, maxTimeMs,
-                                                 react, half, explore, maxBlocks, label);
-            printf("  b=%d react=%.0f h=%d e=%.1f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-                   maxBlocks, react, half, explore, run + 1, numRuns, result.total_time_seconds,
+                                                 goalFrontier, exploreFrac, label);
+            printf("  B=%d e=%.2f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                   goalFrontier, exploreFrac, run + 1, numRuns, result.total_time_seconds,
                    result.total_iterations, result.final_tree_size, result.first_solution_iteration,
                    result.first_solution_cost, result.final_best_cost);
             writePerIterationCSV(result, outputDir);
@@ -1315,8 +1298,9 @@ int main(int argc, char* argv[])
     // tree-growth visualization (Data/Benchmarks/KinoPaxStarCostTuning/viz/).
     //
     // --single-point restricts every axis to its derived operating point (CountingStars at
-    // cap 0.1). The finer discretizations use it: the grid proper happens at the coarse delta, and
-    // the finer ones only need the operating point so the deltas can be overlaid like with like.
+    // B 10000, explore_frac 0.10). The finer discretizations use it: the grid proper happens at the
+    // coarse delta, and the finer ones only need the operating point so the deltas can be overlaid
+    // like with like.
     //
     // --only-kinopaxplus runs the KinoPaxPlus series and nothing else. The discretization is a
     // compile-time property (NUM_R1_REGIONS via config.h), so the only way to get KinoPaxPlus at a
@@ -1370,12 +1354,14 @@ int main(int argc, char* argv[])
         // Counted with the same predicate the runner uses, not a closed form -- the previous
         // closed form silently assumed the last WEIGHTS entry was 1.0.
         int csPoints = countingStarsPointCount();
-        printf("CountingStars:  maxBlocks {12,32} x react {1e3,1e5} x halfLife {1,4} x explore {1,10}\n"
-               "                cost_count FIXED at 1: it is not consumed by the accept kernel, so\n"
-               "                sweeping it would duplicate runs under different names.\n"
-               "                react caps the frontier, and frontier size sets propagations/node.\n"
+        printf("CountingStars:  goal_frontier_size {2000,10000,50000} x explore_frac {0.05,0.10,0.25}\n"
+               "                B is the PRIMITIVE, not a cap: the doors fill it in priority order and\n"
+               "                the budget is met by construction. maxBlocks FIXED at %d -- with the\n"
+               "                geometric ramp gone it is the same knob as B seen twice.\n"
+               "                B < NUM_R1_REGIONS (%d) makes the budget a SOFT target, because the\n"
+               "                optimal door is uncapped; the two low points are there on purpose.\n"
                "                -> %d points x %d runs = %d runs\n",
-               csPoints, NUM_CS_RUNS, csPoints * NUM_CS_RUNS);
+               CS_MAX_BLOCKS, NUM_R1_REGIONS, csPoints, NUM_CS_RUNS, csPoints * NUM_CS_RUNS);
         printf("CleanCost:      r2 OFF, w %.2f, k %.2f, cap %.2f = 1 point x %d runs = %d runs\n",
                CLEAN_BASE_W, CLEAN_BASE_K, CLEAN_BASE_CAP, NUM_CLEANCOST_RUNS, NUM_CLEANCOST_RUNS);
         int kcapPoints = capAxisPointCount(KPAXCAP_CAPS, NUM_KPAXCAP_CAPS);
@@ -1428,7 +1414,7 @@ int main(int argc, char* argv[])
 
     if(!onlyKinoPaxPlus)
     {
-        // --- CountingStars: react x halfLife x explore grid (the point of this sweep) ---
+        // --- CountingStars: goal_frontier_size x explore_frac grid (the point of this sweep) ---
         runCountingStarsBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
                                 all_results, outputDir, deltaLabel, NUM_CS_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
 

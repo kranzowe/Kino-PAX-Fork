@@ -1,37 +1,50 @@
 #!/bin/bash
 # =============================================================================
-# CountingStars Sweep Runner
+# CountingStars v2 Sweep Runner
 #
-# CountingStars (per-region COUNTS in place of a global acceptance probability), against the
-# baselines it has to beat: KPAX, KPAXCap, KinoPaxPlus, and one tuned KinoPaxSTARCleanCost point.
-# COMBO and TrueStar are deliberately NOT in this sweep -- COMBO is the thing being replaced and its
-# own sweep still exists; TrueStar answers a cap question this planner does not ask.
+# CountingStars v2 (ONE GLOBAL NODE BUDGET, filled in priority order), against the baselines it has
+# to beat: KPAX, KPAXCap, KinoPaxPlus, and one tuned KinoPaxSTARCleanCost point. COMBO and TrueStar
+# are deliberately NOT in this sweep -- COMBO is the thing being replaced and its own sweep still
+# exists; TrueStar answers a cap question this planner does not ask.
 #
 # Per (environment, cost metric) at the COARSE delta:
-#   CountingStars   maxBlocks {12, 32} x react {1e3, 1e5} x halfLife {1, 4} x explore {1, 10}
-#                   = 16 points (FULL FACTORIAL: maxBlocks and halfLife are the height and width of
-#                   the same fan-out ramp, so their corners have to be visited) x 3 runs = 48 runs
+#   CountingStars   goal_frontier_size {2000, 10000, 50000} x explore_frac {0.05, 0.10, 0.25}
+#                   = 9 points (FULL FACTORIAL) x 3 runs = 27 runs
 #
-#                   cost_count is FIXED AT 1 and deliberately NOT an axis. It is ramped and logged
-#                   but never passed to the accept kernel -- the cost door is `cost <= minCostsR1[r]`
-#                   regardless -- so sweeping it would double the grid and write identical runs
-#                   under different filenames.
+#                   maxBlocks is FIXED AT 15 and deliberately NOT an axis. In v1 it was the height
+#                   of a geometric fan-out ramp and had to be swept against the ramp's width; v2 has
+#                   no ramp -- blockBudget = maxBlocks * B, optimal nodes take maxBlocks each and
+#                   everyone else splits the rest -- so maxBlocks and B are the same knob twice.
 #   CleanCost       r2 OFF, w 0.9, k 1, cap 0.03            = 1 point  x 3 runs
-#   KPAXCap         cap {0.03, 0.1}                         = 2 points x 5 runs
+#   KPAXCap         cap {0.03}                              = 1 point  x 5 runs
 #   KPAX                                                    = 1 point  x 5 runs
 #   KinoPaxPlus                                             = 1 point  x 5 runs
 #
-# react_count IS THE HEADLINE AXIS, and it is worth being explicit about why. KinoPaxPlus divides
-# the whole propagation budget over a frontier its parent-chain pruning keeps tiny --
-# bf = MAX_TREE_SIZE/(F*32), so 40,000 propagations per node at F = 10. COMBO's frontier was pinned
-# at F >= nActive by an unconditional region-best reactivation, which put it near 32. Three orders
-# of magnitude, and no fan-out weighting closes that; only a smaller F does. react_count is the cap
-# on F, so it is the knob the whole design turns on. react 0 means the frontier is exactly this
-# iteration's admissions.
+# goal_frontier_size IS THE HEADLINE AXIS, and it is a different object from v1's react_count.
+# react_count was a CAP that F happened to land under; B is the TARGET the doors fill in priority
+# order -- optimal (uncapped), then explore_frac of what is left to the freshest regions, then the
+# region-best guarantee, then a uniform draw -- so F is an INPUT and propagations-per-node is the
+# output. That inversion is the whole point of v2: GPU throughput is a function of frontier size, so
+# frontier size is what should be tunable.
 #
-# READ prop_attempted / frontier_size FIRST in the output. That is the direct comparison against
-# KinoPaxPlus's bf. If it stays in the tens across every react setting, react_count is not doing its
-# job and nothing else on this grid matters.
+# KinoPaxPlus divides the whole propagation budget over a frontier its parent-chain pruning keeps
+# tiny -- bf = MAX_TREE_SIZE/(F*32), so 40,000 propagations per node at F = 10. That is the number
+# prop_attempted/frontier_size is read against.
+#
+# NOTE 2000 AND 10000 ARE BELOW NUM_R1_REGIONS (27,000 at the coarse delta). The optimal door is
+# uncapped and NUM_R1_REGIONS bounds how many nodes can be a region best in one iteration, so at
+# those two points B is a SOFT target and budget_used may run over it. That is deliberate, and it is
+# the direct read on how much of the frontier the optimal door alone accounts for.
+#
+# READ IN THIS ORDER:
+#   1. budget_used vs goal_frontier_size. THE CLAIM THE WHOLE DESIGN RESTS ON. A persistent
+#      shortfall means a door is not filling its share; an overshoot means the optimal count
+#      exceeded B.
+#   2. prop_attempted / frontier_size against KinoPaxPlus's bf. The point of controlling F is
+#      controlling this. If it does not move across the 25x span in B, B is not the lever and
+#      nothing else on this grid matters.
+#   3. ord_cutoff over the run. Rising means regions are filling and freshness is getting scarce,
+#      which is expected. Pinned at 0 means explore_frac is doing nothing.
 #
 # THE TWO FINER DELTAS RUN KINOPAXPLUS ONLY (--only-kinopaxplus), and that is the point of having
 # them: KinoPaxPlus is the planner whose whole advantage is a tiny frontier at a fine
@@ -288,23 +301,24 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  CountingStars:  maxBlocks {12,32} x react {1e3,1e5} x halfLife {1,4} x explore {1,10} = 16 points"
-echo "                  cost_count FIXED at 1 -- not consumed by the accept kernel, so sweeping"
-echo "                  it would duplicate runs under different names."
-echo "                  PER-REGION COUNTS, not a global acceptance probability. Three doors:"
-echo "                    COST     cost <= minCostsR1[r]    quota 1, exactly the region best"
-echo "                    EXPLORE  won the atomicCAS on a virgin R2 cell, then the region quota"
-echo "                    REACT    uniform over the tree at p = react_count / treeSize"
-echo "                  react_count is the headline axis because it caps the frontier, and"
-echo "                  frontier size is what sets propagations-per-node -- the quantity"
-echo "                  KinoPaxPlus wins on. 1e3 vs 1e5 is a 100x span in F, so if the two"
-echo "                  arms land on the same first-solution time, F is not the lever."
-echo "                  maxBlocks is the HEIGHT of the fan-out ramp and halfLife its WIDTH;"
-echo "                  they only mean anything together, which is why this grid is a"
-echo "                  full factorial rather than a cross."
-echo "                  WATCH prop_attempted/frontier_size against KinoPaxPlus's bf: if it"
-echo "                  stays in the tens, react_count is not doing its job and no other knob"
-echo "                  on this grid matters."
+echo "  CountingStars:  goal_frontier_size {2000,10000,50000} x explore_frac {0.05,0.10,0.25} = 9 points"
+echo "                  maxBlocks FIXED at 15 -- with the geometric ramp gone it is the same"
+echo "                  knob as B seen twice, so sweeping it would duplicate the axis."
+echo "                  ONE GLOBAL NODE BUDGET, filled in priority order. Four doors:"
+echo "                    OPTIMAL    distance 0, i.e. cost <= minCostsR1[r].  UNCAPPED, first claim"
+echo "                    FRESHEST   explore_frac of what is LEFT, to the least-populated regions"
+echo "                    GUARANTEE  each active region's best, if OPTIMAL did not already cover it"
+echo "                    DRAW       uniform over the rest, filling whatever the budget has left"
+echo "                  B is the PRIMITIVE, not a cap: F is met by construction, so B is the"
+echo "                  INPUT and propagations-per-node is the OUTPUT. 2000 vs 50000 is a 25x"
+echo "                  span in F; if first-solution time does not move across it, B is not"
+echo "                  the lever and no other knob on this grid matters."
+echo "                  B < NUM_R1_REGIONS (27,000 at the coarse delta) makes the budget a SOFT"
+echo "                  target, because the optimal door is uncapped and NUM_R1_REGIONS bounds"
+echo "                  how many nodes can be a region best in one iteration. The two low"
+echo "                  points are on the grid to measure exactly that."
+echo "                  READ FIRST: budget_used vs goal_frontier_size, then"
+echo "                  prop_attempted/frontier_size against KinoPaxPlus's bf, then ord_cutoff."
 echo "  CleanCost:      r2 OFF, w 0.9, k 1, cap 0.03 = 1 point (baseline)"
 echo "  KPAXCap:        cap {0.03} = 1 point"
 echo "  Score floor:    dynamic 1/N_active for KPAXCap/CleanCost; legacy EPSILON for KPAX."
@@ -359,8 +373,9 @@ fi
 # RUN — one pass per cost metric, using the cached binaries
 # =============================================================================
 # --dump-viz writes run-0's full tree per variant (+ meta.csv) for the tree-growth /
-# R1-density visualization. OFF by default here: 25 variants x 2 builds x 2 envs would dump 100 full
-# trees of up to MAX_TREE_SIZE nodes each. Enable with DUMP_VIZ=1 bash run_countingstars_sweep.sh
+# R1-density visualization. OFF by default here: every variant dumps a full tree of up to
+# MAX_TREE_SIZE nodes, and the count multiplies by builds and environments.
+# Enable with DUMP_VIZ=1 bash run_countingstars_sweep.sh
 VIZ_FLAG=""
 if [ "${DUMP_VIZ:-0}" != "0" ]; then
     VIZ_FLAG="--dump-viz"
