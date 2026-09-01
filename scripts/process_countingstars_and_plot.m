@@ -6,34 +6,70 @@
 % only for the tuned arms; the two finer deltas run KinoPaxPlus alone (see deltaPlusOnly below and
 % DELTA_EXTRA_ARGS in run_countingstars_sweep.sh):
 %
-%   CountingStars         goal_frontier_size {2000, 10000, 50000, 100000}
-%                         x explore_frac {0.01, 0.05, 0.25}                        = 12
+%   CountingStars         goal_frontier_size {2000, 10000, 50000} x maxBlocks {16, 32}
+%                         x cost_accept ON  x explore_frac {0.1, 0.5 }
+%                           cost_accept OFF x explore_frac {0.8, 0.99}             = 24
 %   KinoPaxSTARCleanCost  r2 OFF, w 0.9, k 1, cap 0.03  (one tuned reference point) =  1
 %   KPAXCap               cap {0.03}                                               =  1
 %   KPAX, KinoPaxPlus                                                              =  2
 %                                                                                  -----
-%                                                              at the coarse delta    16
+%                                                              at the coarse delta    28
 %   KinoPaxPlus at the two finer deltas                                            +  2
+%                                                                                  -----
+%                                                                                     30
+%
+% THE GRID IS CONDITIONAL: explore_frac depends on cost_accept, so it is 3 x 2 x (2 + 2) = 24 and
+% NOT 3 x 2 x 4 x 2 = 48. Pairing every frac with every mode here would expect 24 series the sweep
+% never writes. cross_check_countingstars_grid.py asserts the two sides pair them the same way.
 %
 % WHAT THIS SWEEP IS ASKING. v2 makes goal_frontier_size B the PRIMITIVE: four doors fill it in
 % priority order -- OPTIMAL (distance 0, uncapped), FRESHEST (explore_frac of what is left, taken
 % from the least-populated regions), GUARANTEE (each active region's best, if OPTIMAL did not
 % already cover it), then a uniform DRAW. F is met by construction, so B is the INPUT and
-% propagations-per-node is the OUTPUT. Read the figures in that order:
+% propagations-per-node is the OUTPUT.
 %
-%   1. budget_used / B          the claim the design rests on. See the note on where B binds.
-%   2. prop_attempted / F       against KinoPaxPlus's bf (MAX_TREE_SIZE/(F*32), 40,000 at F = 10).
-%                               If it does not move across the 50x span in B, B is not the lever.
-%   3. ord_cutoff               rising = regions filling, freshness getting scarce. 0 = explore_frac
+% THE HEADLINE QUESTION THIS PASS IS cost_accept. Time to first solution is the sticking point, and
+% the suspicion is that too many nodes are admitted per iteration. cost_accept = off removes BOTH
+% cost-driven doors -- OPTIMAL and the Part B GUARANTEE -- which are the only two that are UNCAPPED
+% and the only reason budget_used can overrun B. With them off the frontier is freshness + draw and
+% budget_used <= B holds BY CONSTRUCTION.
+%
+% EXPECT A TRADE. With cost acceptance off nothing preferentially expands cheap nodes, so a faster
+% first solution should come at a worse final cost. THE SCATTER PANEL (time to first solution vs
+% final cost) IS WHERE THIS SWEEP IS READ -- neither axis alone answers it. If the OFF arm is
+% faster AND no worse on cost, the cost doors were pure overhead.
+%
+% Read the figures in this order:
+%
+%   1. budget_used / B          the claim the design rests on. On the OFF arm it must be <= 1 and
+%                               should sit AT 1; above 1 means a cost path survived the toggle.
+%   2. optimal_count            must be EXACTLY 0 on every OFF row. Free assertion that both accept
+%                               passes are gated, not just pass 2.
+%   3. time to first solution   ON vs OFF at matched B and maxBlocks -- the actual question.
+%   4. prop_attempted / F       against KinoPaxPlus's bf (MAX_TREE_SIZE/(F*32), 40,000 at F = 10).
+%                               Should now move with maxBlocks INDEPENDENTLY of B: B sets frontier
+%                               size, maxBlocks sets propagations per node (32 x maxBlocks).
+%   5. ord_cutoff               rising = regions filling, freshness getting scarce. 0 = explore_frac
 %                               inert; 256 = saturated, so explore_frac is not binding either.
-%   4. block_scale              near 0 = the rep >= 1 floor ate the budget, fan-out split is inert.
+%   6. block_scale              near 0 = the rep >= 1 floor ate the budget, fan-out split is inert.
 %
-% WHERE B BINDS. Two doors are uncapped and BOTH are bounded by NUM_R1_REGIONS rather than by B:
-% OPTIMAL (at most one region best per region per iteration) and GUARANTEE (at most one node per
-% uncovered region). So B binds only ABOVE that count -- 27,000 at the coarse delta. B = 2000 and
-% 10000 therefore sit in the SOFT regime and budget_used reads pinned near the active-region count;
-% B = 50000 and 100000 are the points that actually test the budget. The gap at the low points is
-% not a defect, it is the measurement.
+% A SHORTFALL ON THE OFF ARM MAY BE SUPPLY, NOT A BROKEN DOOR. At explore_frac 0.99 the freshness
+% door wants 0.99*B nodes but can only admit collision-free candidates that were actually produced.
+% If prop_valid < that, the cutoff saturates, everything non-optimal is admitted, and budget_used
+% lands below B. Read prop_valid before blaming a door.
+%
+% WHERE B BINDS -- AND WHY THE TOGGLE CHANGES THE ANSWER. On the ON arm two doors are uncapped and
+% BOTH are bounded by NUM_R1_REGIONS rather than by B: OPTIMAL (at most one region best per region
+% per iteration) and GUARANTEE (at most one node per uncovered region). So on that arm B binds only
+% ABOVE that count -- 27,000 at the coarse delta -- and B = 2000 / 10000 sit in the SOFT regime with
+% budget_used pinned near the active-region count. Expect those two to converge on one
+% frontier_size curve.
+%
+% ON THE OFF ARM BOTH UNCAPPED DOORS ARE GONE, so B binds at every setting including 2000. That is
+% the cleanest read available on whether B is the lever at all: if the OFF arm's frontier_size
+% tracks B across the full 25x span while the ON arm's does not, the guarantee was the thing
+% holding F up, and capping it (KinoPaxPlus's hysteresis is the precedent) is the next move for the
+% ON arm.
 %
 % SCORE FLOOR. Graph's Syclop floor is 1/N_active (the mean share) rather than a fixed
 % EPSILON = 1e-2, which exceeded the score it floored by ~270x and capped the number of
@@ -117,18 +153,27 @@ deltaLabel = '3 deltas overlaid';
 % pruning keeps tiny (bf = MAX_TREE_SIZE/(F*32), 40,000 propagations per node at F = 10), which is
 % the number prop_attempted/frontier_size is read against.
 %
-% THE GRID STRADDLES NUM_R1_REGIONS (27,000 at the coarse delta) on purpose. Two doors are
-% uncapped and both are bounded by the region count rather than by B -- OPTIMAL (one region best
-% per region) and GUARANTEE (one node per uncovered region) -- so B binds only ABOVE it.
-%   2000, 10000    below: B is a SOFT target, budget_used runs over it. The gap is the measurement.
-%   50000, 100000  above: B genuinely binds. These test the design claim.
-csGoalFrontierSizes = [2000 10000 50000 100000];
-csExploreFracs      = [1 5 25];
+% csExploreFracs* ARE round(1000 x frac) TOKENS, not 100x -- see countingStarsLabel() in the
+% benchmark. The 1000x convention arrived when the grid reached 0.001 (which rounds to 0 at 100x)
+% and is KEPT now that it is gone, because switching back would make `_f100` ambiguous against the
+% CSVs already labelled that way. The filename letter is `f` to match.
+%
+% THE FRAC AXIS IS PAIRED WITH cost_accept, not crossed with it. With the cost doors ON the
+% freshness door competes with them for the budget, so a small share is the interesting range; with
+% them OFF the draw would otherwise fill almost the whole frontier with re-expansion, so the share
+% is pushed high to actually get "explore the newest nodes".
+csGoalFrontierSizes  = [2000 10000 50000];
+csMaxBlocks          = [16 32];
+csExploreFracsCostOn  = [100 500];
+csExploreFracsCostOff = [800 990];
 
-% The derived operating point that --single-point selects. BOTH MUST BE MEMBERS of the lists above:
-% the flag selects BY VALUE, so a derived point outside the grid would run nothing at all.
+% The derived operating point that --single-point selects. EVERY component must be a member of its
+% list -- and the frac must be a member of the arm csDerivedCostAccept selects -- because the flag
+% selects BY VALUE, so a derived point outside the grid would run nothing at all.
 csDerivedGoalFrontier = 10000;
-csDerivedExploreFrac  = 5;
+csDerivedMaxBlocks    = 16;
+csDerivedCostAccept   = 'on';
+csDerivedExploreFracOn = 100;       % explore_frac 0.1 -> round(1000 * 0.1)
 
 % CleanCost baseline point - one series, the well-tuned operating point. Same label format as the
 % cost sweep, so its historical CSVs load here unchanged.
@@ -141,18 +186,21 @@ cleanBaseCap = 3;
 % (100 x the float), exactly as they appear in the filenames.
 kpaxCapCaps = [3];
 
-% TWO axes, so they get the two channels the eye reads first and nothing has to double up.
-% colour = goal_frontier_size, because B is what the whole design turns on; DARKER IS A SMALLER
-% BUDGET, which is the direction the design is pushing. line style = explore_frac.
-% The ramp also encodes where B sits relative to NUM_R1_REGIONS: the two dark rows are the SOFT
-% points (B below the region count), the two light rows are the ones where B genuinely binds.
-%   rows: B 2000, B 10000, B 50000, B 100000
-budgetColors = [0.10 0.10 0.10;    % B 2000    (smallest frontier, most propagations per node)
-                0.13 0.33 0.55;    % B 10000
-                0.36 0.52 0.70;    % B 50000
-                0.66 0.62 0.76];   % B 100000  (largest frontier, fewest propagations per node)
-fracStyles   = {'-', '--', ':'};   % explore_frac = 0.01, 0.05, 0.25
-fracMarkers  = {'o', '+', 'x'};    % explore_frac -- scatter only
+% FOUR axes, three style channels, so COLOUR CARRIES THE PAIR THAT MATTERS: cost_accept x B.
+% cost_accept is the headline question, so it gets a whole hue family each -- COOL = cost ON,
+% WARM = cost OFF -- which makes the on/off contrast the first thing the eye resolves on every
+% panel. Within a family, DARKER IS A SMALLER BUDGET.
+%   costOnColors rows:  B 2000, B 10000, B 50000
+%   costOffColors rows: B 2000, B 10000, B 50000
+costOnColors  = [0.09 0.16 0.28;    % B 2000   cost ON  (darkest, smallest frontier)
+                 0.16 0.38 0.63;    % B 10000  cost ON
+                 0.45 0.64 0.82];   % B 50000  cost ON  (lightest)
+costOffColors = [0.40 0.14 0.03;    % B 2000   cost OFF (darkest)
+                 0.72 0.35 0.06;    % B 10000  cost OFF
+                 0.93 0.62 0.30];   % B 50000  cost OFF (lightest)
+% Line style = the arm's LOW/HIGH frac (0.1/0.5 on, 0.8/0.99 off), marker = maxBlocks.
+fracStyles   = {'-', '--'};        % index into the arm's own two-entry frac list
+blockMarkers = {'o', 's'};         % maxBlocks = 16, 32 -- scatter only
 
 % CleanCost baseline: crimson, distinct from every budget colour, drawn as a reference anchor.
 cleanColor = [0.70 0.15 0.20];
@@ -187,33 +235,50 @@ for di = 1:numel(deltas)
 
     if ~dPlus
 
-    % --- CountingStars: goal_frontier_size x explore_frac, a full factorial ---
+    % --- CountingStars: B x maxBlocks x (cost_accept, explore_frac) ---
+    % The frac loop is INSIDE the cost_accept loop and draws its list from that arm, which is what
+    % makes the grid CONDITIONAL. Crossing them instead would expect 48 series where the sweep
+    % writes 24, and MATLAB would silently report "0 runs" for the 24 that do not exist.
     for bi = 1:numel(csGoalFrontierSizes)
-        for ei = 1:numel(csExploreFracs)
-            goalF = csGoalFrontierSizes(bi);
-            eFrac = csExploreFracs(ei);
+        for mi = 1:numel(csMaxBlocks)
+            for ci = 1:2
+                if ci == 1
+                    caStr = 'on';   caFracs = csExploreFracsCostOn;   caCols = costOnColors;
+                else
+                    caStr = 'off';  caFracs = csExploreFracsCostOff;  caCols = costOffColors;
+                end
 
-            % Mirror countingStarsSkip(): FULL FACTORIAL, so --single-point is the only skip.
-            if dOne && ~(goalF == csDerivedGoalFrontier && eFrac == csDerivedExploreFrac)
-                continue;
-            end
+                for ei = 1:numel(caFracs)
+                    goalF = csGoalFrontierSizes(bi);
+                    maxB  = csMaxBlocks(mi);
+                    eFrac = caFracs(ei);
 
-            plannerNames{end + 1}   = sprintf('CountingStars_B%d_e%d', goalF, eFrac); %#ok<SAGROW>
-            plannerDisplay{end + 1} = sprintf('CS B%d frac%g [%s]', ...
-                                              goalF, eFrac / 100, dTag); %#ok<SAGROW>
-            plannerColors(end + 1, :) = budgetColors(bi, :);   %#ok<SAGROW>
-            plannerStyles{end + 1}    = fracStyles{ei};        %#ok<SAGROW>
-            plannerMarkers{end + 1}   = fracMarkers{ei};       %#ok<SAGROW>
-            % The smallest-budget arm is drawn thicker: it is the reference the rest is read
-            % against, and the one closest to KinoPaxPlus's regime.
-            if goalF == min(csGoalFrontierSizes)
-                plannerWidths(end + 1) = dWidth + 0.8;         %#ok<SAGROW>
-            else
-                plannerWidths(end + 1) = dWidth;               %#ok<SAGROW>
+                    % Mirror countingStarsSkip(): --single-point is the only skip.
+                    if dOne && ~(goalF == csDerivedGoalFrontier && maxB == csDerivedMaxBlocks ...
+                                 && strcmp(caStr, csDerivedCostAccept) ...
+                                 && eFrac == csDerivedExploreFracOn)
+                        continue;
+                    end
+
+                    plannerNames{end + 1}   = sprintf('CountingStars_B%d_f%d_mb%d_ca%s', ...
+                                                      goalF, eFrac, maxB, caStr); %#ok<SAGROW>
+                    plannerDisplay{end + 1} = sprintf('CS B%d f%g mb%d cost-%s [%s]', ...
+                                                      goalF, eFrac / 1000, maxB, caStr, dTag); %#ok<SAGROW>
+                    plannerColors(end + 1, :) = caCols(bi, :);         %#ok<SAGROW>
+                    plannerStyles{end + 1}    = fracStyles{ei};        %#ok<SAGROW>
+                    plannerMarkers{end + 1}   = blockMarkers{mi};      %#ok<SAGROW>
+                    % The cost-OFF arm is drawn thicker: it is the hypothesis under test, and the
+                    % one that should be read first on every panel.
+                    if strcmp(caStr, 'off')
+                        plannerWidths(end + 1) = dWidth + 0.8;         %#ok<SAGROW>
+                    else
+                        plannerWidths(end + 1) = dWidth;               %#ok<SAGROW>
+                    end
+                    plannerBaseline(end + 1) = false;                  %#ok<SAGROW>
+                    plannerDeltaIdx(end + 1) = di;                     %#ok<SAGROW>
+                    plannerGoalFrontier(end + 1) = goalF;              %#ok<SAGROW>
+                end
             end
-            plannerBaseline(end + 1) = false;                  %#ok<SAGROW>
-            plannerDeltaIdx(end + 1) = di;                     %#ok<SAGROW>
-            plannerGoalFrontier(end + 1) = goalF;              %#ok<SAGROW>
         end
     end
 
@@ -365,13 +430,15 @@ for ei = 1:numel(environments)
         %   budget_used / B  < 1   SHORTFALL -- a door is not filling its share. Read the door panel
         %                          on the right to see which one ran dry.
         %   budget_used / B  > 1   OVERSHOOT -- the two uncapped doors (optimal, guarantee) already
-        %                          exceeded B on their own. EXPECTED wherever B <= NUM_R1_REGIONS,
-        %                          because both are bounded by the region count and not by B: one
-        %                          node per region can be a region best, one per uncovered region
-        %                          can be guaranteed. B binds only above NUM_R1_REGIONS, which is
-        %                          exactly why the low-B points are on the grid -- the gap measures
-        %                          how much of the frontier the priority doors take before the draw
-        %                          is offered anything.
+        %                          exceeded B on their own. EXPECTED on the cost-ON arm wherever
+        %                          B <= NUM_R1_REGIONS, because both are bounded by the region count
+        %                          and not by B.
+        %
+        % ON THE COST-OFF ARM THIS PANEL IS A CORRECTNESS CHECK, NOT A TUNING SIGNAL. Both uncapped
+        % doors are gone, so budget_used <= B must hold at every setting and the curve should sit AT
+        % 1. Anything above 1 means a cost path survived the toggle. Anything well below 1 is most
+        % likely a CANDIDATE-SUPPLY limit at explore_frac 0.99 rather than a broken door -- check
+        % prop_valid against 0.99*B before concluding otherwise.
         %
         % The ratio, not the raw count, because B differs by series -- one yline at 1 then reads for
         % every arm at once.
@@ -683,9 +750,9 @@ for ei = 1:numel(environments)
         grid on;
         clickableLegend();
         title(sprintf(['Tuning Tradeoff: Time to First Solution vs Final Cost \x2014 %s, %s\n' ...
-                       'lower-left is better (fast and cheap); ' ...
-                       '\x25cb/+/\x00d7 CountingStars, \x2606 CleanCost, \x25bd KPAXCap, ' ...
-                       '\x25a1 KPAX, \x25c7 KinoPaxPlus'], ...
+                       'lower-left is better (fast and cheap); cool = cost ON, warm = cost OFF; ' ...
+                       '\x25cb/\x25a1 CountingStars (mb16/mb32), \x2606 CleanCost, ' ...
+                       '\x25bd KPAXCap, \x25a1 KPAX, \x25c7 KinoPaxPlus'], ...
                        envTitle, costTitle), 'FontWeight', 'bold');
     end   % cost metric loop
 end  % environment loop

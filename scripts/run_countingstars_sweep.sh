@@ -8,9 +8,11 @@
 # exists; TrueStar answers a cap question this planner does not ask.
 #
 # Per (environment, cost metric) at the COARSE delta:
-#   CountingStars   goal_frontier_size {2000, 10000, 50000, 100000}
-#                   x explore_frac {0.01, 0.05, 0.25}
-#                   = 12 points (FULL FACTORIAL) x 3 runs = 36 runs
+#   CountingStars   goal_frontier_size {2000, 10000, 50000} x maxBlocks {16, 32}
+#                   x cost_accept ON  x explore_frac {0.1, 0.5 }
+#                     cost_accept OFF x explore_frac {0.8, 0.99}
+#                   = 24 points (CONDITIONAL: the frac arm depends on cost_accept, so it is
+#                   3 x 2 x (2 + 2) and NOT 3 x 2 x 4 x 2) x 3 runs = 72 runs
 #
 #                   maxBlocks is FIXED AT 15 and deliberately NOT an axis. In v1 it was the height
 #                   of a geometric fan-out ramp and had to be swept against the ramp's width; v2 has
@@ -21,12 +23,24 @@
 #   KPAX                                                    = 1 point  x 5 runs
 #   KinoPaxPlus                                             = 1 point  x 5 runs
 #
-# goal_frontier_size IS THE HEADLINE AXIS, and it is a different object from v1's react_count.
-# react_count was a CAP that F happened to land under; B is the TARGET the doors fill in priority
-# order -- optimal (uncapped), then explore_frac of what is left to the freshest regions, then the
-# region-best guarantee, then a uniform draw -- so F is an INPUT and propagations-per-node is the
-# output. That inversion is the whole point of v2: GPU throughput is a function of frontier size, so
-# frontier size is what should be tunable.
+# cost_accept IS THE HEADLINE AXIS THIS PASS. Time to first solution is the sticking point, and the
+# suspicion is that too many nodes are admitted per iteration. Two doors are UNCAPPED -- OPTIMAL
+# (accept pass 2) and the Part B region-best GUARANTEE -- and both are bounded by NUM_R1_REGIONS
+# rather than by B, which is the only reason budget_used can overrun B at all. cost_accept = off
+# removes BOTH, leaving a frontier of freshness admissions plus the uniform draw.
+#
+# IT HAS TO BE BOTH. regionCovered is written only by the OPTIMAL door, so disabling that door
+# alone would leave every active region reading as uncovered, fire the guarantee for all of them,
+# and make the frontier BIGGER -- the opposite of the experiment.
+#
+# EXPECT A TRADE: with the cost doors off nothing preferentially expands cheap nodes, so a faster
+# first solution should cost a worse final path. Read the time-to-first-solution vs final-cost
+# scatter, not either axis alone.
+#
+# goal_frontier_size remains the design's primitive: B is the TARGET the doors fill in priority
+# order, so F is an INPUT and propagations-per-node is the output. maxBlocks is the OTHER half of
+# that -- B sets frontier size, maxBlocks sets propagations per node (32 x maxBlocks while the
+# fan-out split is loose). They are independent knobs, not one knob twice.
 #
 # KinoPaxPlus divides the whole propagation budget over a frontier its parent-chain pruning keeps
 # tiny -- bf = MAX_TREE_SIZE/(F*32), so 40,000 propagations per node at F = 10. That is the number
@@ -37,22 +51,32 @@
 # OPTIMAL door (at most one region best per region per iteration) and the GUARANTEE (at most one
 # node per uncovered region). So B binds only ABOVE that count.
 #
-#   2000, 10000    BELOW  -- B is a SOFT target; budget_used runs over it, held near the
-#                            active-region count by the guarantee. Deliberate: the gap is the
-#                            direct read on how much of the frontier the priority doors take
-#                            before the draw is offered anything at all.
-#   50000, 100000  ABOVE  -- B genuinely binds. These are the points that test the design claim.
+#   2000, 10000   BELOW -- on the cost-ON arm B is a SOFT target and budget_used runs over it,
+#                           held near the active-region count by the guarantee. Expect the two to
+#                           converge on one frontier_size curve.
+#   50000         ABOVE -- B genuinely binds on both arms.
+#
+# ON THE COST-OFF ARM BOTH UNCAPPED DOORS ARE GONE, so B binds at every setting including 2000.
+# That is the cleanest read available on whether B is the lever: if the OFF arm's frontier_size
+# tracks B across the full 25x span while the ON arm's does not, the guarantee was what held F up.
 #
 # READ IN THIS ORDER:
 #   1. budget_used vs goal_frontier_size. THE CLAIM THE WHOLE DESIGN RESTS ON. A persistent
 #      shortfall means a door is not filling its share; an overshoot means the two uncapped doors
 #      already exceeded B on their own -- expected at the two low points, not at the two high ones.
-#   2. prop_attempted / frontier_size against KinoPaxPlus's bf. The point of controlling F is
-#      controlling this. If it does not move across the 50x span in B, B is not the lever and
-#      nothing else on this grid matters.
-#   3. ord_cutoff over the run. Rising means regions are filling and freshness is getting scarce,
+#   2. optimal_count MUST BE EXACTLY 0 on every cost-OFF row. Free assertion that both accept
+#      passes are gated, not just pass 2.
+#   3. Time to first solution, cost ON vs OFF, at matched B and maxBlocks -- the actual question.
+#   4. prop_attempted / frontier_size against KinoPaxPlus's bf. Should now move with maxBlocks
+#      INDEPENDENTLY of B.
+#   5. ord_cutoff over the run. Rising means regions are filling and freshness is getting scarce,
 #      which is expected. Pinned at 0 means explore_frac is doing nothing; pinned at 256 means the
 #      whole candidate pool is fresh enough and explore_frac is not binding either.
+#
+# A SHORTFALL ON THE OFF ARM MAY BE SUPPLY, NOT A BROKEN DOOR. At explore_frac 0.99 the freshness
+# door wants 0.99*B nodes but can only admit collision-free candidates that were actually produced.
+# If prop_valid is below that, the cutoff saturates, everything non-optimal is admitted, and
+# budget_used lands under B. Check prop_valid before blaming a door.
 #
 # THE TWO FINER DELTAS RUN KINOPAXPLUS ONLY (--only-kinopaxplus), and that is the point of having
 # them: KinoPaxPlus is the planner whose whole advantage is a tiny frontier at a fine
@@ -309,8 +333,16 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  CountingStars:  goal_frontier_size {2000,10000,50000,100000}"
-echo "                  x explore_frac {0.01,0.05,0.25} = 12 points"
+echo "  CountingStars:  goal_frontier_size {2000,10000,50000} x maxBlocks {16,32}"
+echo "                  x cost_accept ON  x explore_frac {0.1,0.5}"
+echo "                    cost_accept OFF x explore_frac {0.8,0.99}   = 24 points"
+echo "                  CONDITIONAL: the frac arm depends on cost_accept, so it is"
+echo "                  3 x 2 x (2+2) = 24 and NOT 3 x 2 x 4 x 2 = 48."
+echo "                  Filenames: _B<budget>_f<round(1000*frac)>_mb<maxBlocks>_ca<on|off>,"
+echo "                  e.g. CountingStars_B10000_f100_mb16_caon."
+echo "                  _mb AND _ca ARE NEW TOKENS. Clear or move any CSVs from an earlier"
+echo "                  grid out of the output folder first -- they will not match and will"
+echo "                  simply be skipped, but they clutter the folder."
 echo "                  maxBlocks FIXED at 15 -- with the geometric ramp gone it is the same"
 echo "                  knob as B seen twice, so sweeping it would duplicate the axis."
 echo "                  ONE GLOBAL NODE BUDGET, filled in priority order. Four doors:"
@@ -318,17 +350,22 @@ echo "                    OPTIMAL    distance 0, i.e. cost <= minCostsR1[r].  UN
 echo "                    FRESHEST   explore_frac of what is LEFT, to the least-populated regions"
 echo "                    GUARANTEE  each active region's best, if OPTIMAL did not already cover it"
 echo "                    DRAW       uniform over the rest, filling whatever the budget has left"
-echo "                  B is the PRIMITIVE, not a cap: F is met by construction, so B is the"
-echo "                  INPUT and propagations-per-node is the OUTPUT. 2000 vs 100000 is a 50x"
-echo "                  span in F; if first-solution time does not move across it, B is not"
-echo "                  the lever and no other knob on this grid matters."
-echo "                  TWO DOORS ARE UNCAPPED -- OPTIMAL and GUARANTEE -- and both are bounded"
-echo "                  by NUM_R1_REGIONS (27,000 at the coarse delta) rather than by B, so B"
-echo "                  binds only ABOVE that count. 2000 and 10000 are SOFT points where"
-echo "                  budget_used runs over B; 50000 and 100000 are where B genuinely binds."
-echo "                  The grid straddles the threshold on purpose."
-echo "                  READ FIRST: budget_used vs goal_frontier_size, then"
-echo "                  prop_attempted/frontier_size against KinoPaxPlus's bf, then ord_cutoff."
+echo "                  cost_accept OFF removes BOTH cost-driven doors -- OPTIMAL and the"
+echo "                  Part B region-best GUARANTEE. Those two are the ONLY uncapped doors,"
+echo "                  and both are bounded by NUM_R1_REGIONS (27,000 at the coarse delta)"
+echo "                  rather than by B, so with them off budget_used <= B holds BY"
+echo "                  CONSTRUCTION and B binds for the first time at every setting."
+echo "                  It has to be BOTH: regionCovered is written only by the OPTIMAL door,"
+echo "                  so disabling that alone would fire the guarantee for every active"
+echo "                  region and make the frontier BIGGER."
+echo "                  EXPECT A TRADE -- nothing expands cheap nodes with the toggle off, so"
+echo "                  a faster first solution should cost a worse final path. Read the"
+echo "                  time-to-first-solution vs final-cost scatter, not either alone."
+echo "                  maxBlocks is INDEPENDENT of B: B sets frontier size, maxBlocks sets"
+echo "                  propagations per node (32 x maxBlocks while the split is loose)."
+echo "                  READ FIRST: budget_used/B (must be <=1 and should sit AT 1 on the OFF"
+echo "                  arm), then optimal_count == 0 on every OFF row, then time to first"
+echo "                  solution ON vs OFF at matched B and maxBlocks."
 echo "  CleanCost:      r2 OFF, w 0.9, k 1, cap 0.03 = 1 point (baseline)"
 echo "  KPAXCap:        cap {0.03} = 1 point"
 echo "  Score floor:    dynamic 1/N_active for KPAXCap/CleanCost; legacy EPSILON for KPAX."

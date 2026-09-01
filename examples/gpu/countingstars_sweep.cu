@@ -21,42 +21,66 @@
 static bool        g_dumpViz = false;
 static std::string g_vizDir;
 
-// ---- CountingStars v2 grid: NODE BUDGET x FRESHNESS SHARE ----
+// ---- CountingStars v2 grid: NODE BUDGET x FRESHNESS SHARE x FAN-OUT x COST ACCEPTANCE ----
 //
-// goal_frontier_size IS THE HEADLINE AXIS, and it is the headline axis for a different reason than
-// v1's react_count was. react_count was a CAP that F happened to land under; B is the TARGET F is
-// built to hit, so sweeping it is the whole experiment: its purpose is finding where this GPU is
-// fast, and nothing else in the planner is upstream of it.
+// THE HEADLINE QUESTION THIS PASS IS cost_accept. Time to first solution has been the sticking
+// point, and the suspicion is that too many nodes are admitted per iteration. Two doors are
+// UNCAPPED -- OPTIMAL (accept pass 2) and GUARANTEE (Part B) -- and both are bounded by
+// NUM_R1_REGIONS rather than by B, which is the only reason budget_used can overrun B at all.
+// cost_accept = off removes BOTH, leaving a frontier of freshness admissions plus the uniform
+// draw, and budget_used <= B then holds BY CONSTRUCTION.
 //
-// SWEEP IT WIDE. 2000 -> 100000 is a 50x span in F, which is a 50x span in propagations-per-node
-// at a fixed block budget. If first-solution time does not move across that span, B is not the
-// lever and no other knob on this grid matters.
+// EXPECT A TRADE, and read the time-to-first-solution vs final-cost scatter rather than either
+// axis alone: with the toggle off nothing preferentially expands cheap nodes, so a faster first
+// solution should come at a worse final cost. If it does not, the cost doors were pure overhead.
 //
-// THE GRID STRADDLES NUM_R1_REGIONS (27,000 at the coarse delta), and that is the point of its
-// shape. TWO doors are uncapped and both are bounded by the region count, not by B: the OPTIMAL
-// door (at most one region best per region per iteration) and the GUARANTEE (at most one node per
-// uncovered region). So B binds only ABOVE that count.
-//
-//   2000, 10000    BELOW  -- B is a SOFT target; budget_used runs over it, held near the
-//                            active-region count by the guarantee. Deliberate: the gap is the
-//                            direct read on how much of the frontier the priority doors take
-//                            before the draw is offered anything at all.
-//   50000, 100000  ABOVE  -- B genuinely binds. These are the points that test the design claim.
-static const int GOAL_FRONTIER_SIZES[] = {2000, 10000, 50000, 100000};
+// THE GRID IS CONDITIONAL, NOT A FULL FACTORIAL: explore_frac depends on cost_accept. With the
+// cost doors on, the freshness door is competing with them for the budget, so a small share is the
+// interesting range. With them off, the draw would otherwise fill almost the whole frontier with
+// re-expansion, so the share is pushed high to actually get "explore the newest nodes".
+static const int GOAL_FRONTIER_SIZES[] = {2000, 10000, 50000};
 static const int NUM_GOAL_FRONTIER_SIZES = sizeof(GOAL_FRONTIER_SIZES) / sizeof(GOAL_FRONTIER_SIZES[0]);
 
-// Share of the REMAINING budget (B - optimalCount) handed to the freshness door. The rest goes to
-// the region-best guarantee and the uniform draw. 0.01 -> 0.25 is a 25x span in how much of the
-// frontier is bought with novelty rather than optimality or reach; 0.01 is close enough to zero to
-// answer whether the freshness door earns its place at all.
-static const float EXPLORE_FRACS[] = {0.01f, 0.05f, 0.25f};
-static const int NUM_EXPLORE_FRACS = sizeof(EXPLORE_FRACS) / sizeof(EXPLORE_FRACS[0]);
+// Share of the REMAINING budget (B - optimalCount) handed to the freshness door; the rest goes to
+// the guarantee and the draw. PAIRED WITH cost_accept -- see countingStarsFracs() below.
+//
+// The label token is round(1000 x frac), NOT 100x -- see countingStarsLabel().
+static const float EXPLORE_FRACS_COST_ON[]  = {0.1f, 0.5f};
+static const int NUM_EXPLORE_FRACS_COST_ON  = sizeof(EXPLORE_FRACS_COST_ON) / sizeof(EXPLORE_FRACS_COST_ON[0]);
 
-// maxBlocks is NO LONGER AN AXIS. In v1 it was the height of a geometric fan-out ramp and had to be
-// swept against the ramp's width; v2 has no ramp -- blockBudget = maxBlocks * B, optimal nodes take
-// maxBlocks each and everyone else splits the rest -- so maxBlocks and B are the same knob seen
-// twice. B is the one with the operational meaning, so B is the one that moves.
-static const int CS_MAX_BLOCKS = 15;
+// With the cost doors off, reactBudget = B - admitted, so anything the freshness door does not take
+// is filled by the uniform draw. 0.99 leaves the draw ~1% of the frontier, which is as close to
+// "newest nodes only" as this planner gets without a second mode.
+//
+// WATCH FOR A SUPPLY LIMIT HERE. The freshness door wants explore_frac * B nodes but can only admit
+// collision-free candidates that were actually produced. If prop_valid < X the cutoff saturates at
+// CS_ORD_BUCKETS, every non-optimal candidate is admitted, and budget_used lands BELOW B. That is a
+// candidate-supply shortfall, not a broken door -- read prop_valid before blaming the budget.
+static const float EXPLORE_FRACS_COST_OFF[] = {0.8f, 0.99f};
+static const int NUM_EXPLORE_FRACS_COST_OFF = sizeof(EXPLORE_FRACS_COST_OFF) / sizeof(EXPLORE_FRACS_COST_OFF[0]);
+
+// Blocks an OPTIMAL node receives, and -- while the fan-out split is non-binding -- what EVERY
+// frontier node receives, since otherBlocks then equals maxBlocks.
+//
+// BACK AS A REAL AXIS, and the comment that used to sit here calling it "the same knob as B seen
+// twice" was WRONG. Every frontier node gets 32 * maxBlocks propagations, so B sets the frontier's
+// SIZE and maxBlocks sets propagations PER NODE. They are independent until the buffer ceiling
+// binds, which makes them the two halves of the throughput question rather than one knob.
+static const int MAX_BLOCKS_GRID[] = {16, 32};
+static const int NUM_MAX_BLOCKS = sizeof(MAX_BLOCKS_GRID) / sizeof(MAX_BLOCKS_GRID[0]);
+
+// Cost acceptance on/off. Index 0 is the reference arm.
+static const bool COST_ACCEPT_MODES[] = {true, false};
+static const int NUM_COST_ACCEPT_MODES = sizeof(COST_ACCEPT_MODES) / sizeof(COST_ACCEPT_MODES[0]);
+
+// The frac arm that goes with a cost_accept setting. SINGLE SOURCE OF TRUTH for the conditional
+// pairing -- the runner, the point count and the banner all go through it, so none of them can
+// pair a frac with the wrong arm.
+static inline const float* countingStarsFracs(bool costAccept, int* n)
+{
+    if(costAccept) { *n = NUM_EXPLORE_FRACS_COST_ON;  return EXPLORE_FRACS_COST_ON;  }
+    *n = NUM_EXPLORE_FRACS_COST_OFF;                  return EXPLORE_FRACS_COST_OFF;
+}
 
 // ---- KinoPaxSTARCleanCost baseline point ----
 // Demoted from a 21-point grid to the single well-tuned operating point, as the reference the
@@ -78,9 +102,12 @@ static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0
 // the operating point so the deltas can be overlaid like with like. Each of these MUST remain a
 // member of its list -- the flag selects BY VALUE, so a derived point outside the grid would run
 // nothing at all. cross_check_countingstars_grid.py asserts exactly that.
-static const int   CS_DERIVED_GOAL_FRONTIER = 10000;
-static const float CS_DERIVED_EXPLORE_FRAC  = 0.05f;
-static const float CAP_DERIVED              = 0.03f;
+static const int   CS_DERIVED_GOAL_FRONTIER   = 10000;
+static const int   CS_DERIVED_MAX_BLOCKS      = 16;
+static const bool  CS_DERIVED_COST_ACCEPT     = true;
+// MUST be a member of the arm CS_DERIVED_COST_ACCEPT selects -- the ON arm here.
+static const float CS_DERIVED_EXPLORE_FRAC_ON = 0.1f;
+static const float CAP_DERIVED                = 0.03f;
 
 static bool g_singlePoint = false;
 
@@ -94,20 +121,31 @@ static bool capSkip(float cap)
 // factorial, so the only skip is --single-point.
 // Single source of truth for the CountingStars grid's shape: the runner and the banner both call
 // it, so the printed point count can never drift from the grid actually executed.
-static bool countingStarsSkip(int goalFrontier, float exploreFrac)
+static bool countingStarsSkip(int goalFrontier, float exploreFrac, int maxBlocks, bool costAccept)
 {
-    // FULL FACTORIAL over the two live axes -- 3 x 3 = 9 points. --single-point is the only skip.
+    // CONDITIONAL grid: 3 budgets x 2 maxBlocks x (2 fracs on + 2 fracs off) = 24 points. The
+    // conditional pairing is enforced by the loop shape (countingStarsFracs), not here;
+    // --single-point is the only skip.
     if(!g_singlePoint) return false;
     return goalFrontier != CS_DERIVED_GOAL_FRONTIER
-        || fabsf(exploreFrac - CS_DERIVED_EXPLORE_FRAC) > 1e-6f;
+        || maxBlocks != CS_DERIVED_MAX_BLOCKS
+        || costAccept != CS_DERIVED_COST_ACCEPT
+        || fabsf(exploreFrac - CS_DERIVED_EXPLORE_FRAC_ON) > 1e-6f;
 }
 
 static int countingStarsPointCount()
 {
     int n = 0;
     for(int bi = 0; bi < NUM_GOAL_FRONTIER_SIZES; bi++)
-    for(int ei = 0; ei < NUM_EXPLORE_FRACS; ei++)
-        if(!countingStarsSkip(GOAL_FRONTIER_SIZES[bi], EXPLORE_FRACS[ei])) n++;
+    for(int mi = 0; mi < NUM_MAX_BLOCKS; mi++)
+    for(int ci = 0; ci < NUM_COST_ACCEPT_MODES; ci++)
+    {
+        int nf;
+        const float* fracs = countingStarsFracs(COST_ACCEPT_MODES[ci], &nf);
+        for(int ei = 0; ei < nf; ei++)
+            if(!countingStarsSkip(GOAL_FRONTIER_SIZES[bi], fracs[ei],
+                                  MAX_BLOCKS_GRID[mi], COST_ACCEPT_MODES[ci])) n++;
+    }
     return n;
 }
 
@@ -120,14 +158,26 @@ static int capAxisPointCount(const float* caps, int nCaps)
     return n;
 }
 
-// "CountingStars_B10000_e10". MUST start with a name loadRuns() dispatches on. Tokens are the plain
-// integer for the node budget and round(100 x float) for the freshness share, the same convention as
-// every other label in this family.
-static std::string countingStarsLabel(int goalFrontier, float exploreFrac)
+// "CountingStars_B10000_f100_mb16_caon". MUST start with a name loadRuns() dispatches on.
+//
+//   B    node budget, plain integer
+//   f    freshness share, round(1000 x float)
+//   mb   maxBlocks, plain integer
+//   ca   cost acceptance, "on" / "off"  (follows cleanLabel()'s existing r2on/r2off precedent)
+//
+// THE `_f` TOKEN IS 1000x, NOT THE 100x `_e` USED ELSEWHERE IN THIS FAMILY. It was introduced when
+// the grid reached explore_frac 0.001, which rounds to the token 0 at 100x -- unreadable, and
+// indistinguishable from a genuine explore_frac of 0. It is KEPT at 1000x now that 0.001 is gone,
+// because changing back would make `_f100` ambiguous against the CSVs already labelled that way.
+//
+// `_mb` AND NOT `_b` FOR maxBlocks: `B` is already the budget, and a case-only distinction between
+// two integer tokens in the same filename is a misread waiting to happen.
+static std::string countingStarsLabel(int goalFrontier, float exploreFrac, int maxBlocks, bool costAccept)
 {
-    char buf[128];
-    snprintf(buf, sizeof(buf), "CountingStars_B%d_e%d",
-             goalFrontier, (int)lroundf(100.0f * exploreFrac));
+    char buf[160];
+    snprintf(buf, sizeof(buf), "CountingStars_B%d_f%d_mb%d_ca%s",
+             goalFrontier, (int)lroundf(1000.0f * exploreFrac), maxBlocks,
+             costAccept ? "on" : "off");
     return std::string(buf);
 }
 
@@ -200,6 +250,11 @@ struct IterationData
     int   ord_cutoff;
     int   guaranteed_react;
     int   budget_used;
+    // The two swept axes that are settings rather than measurements. In the data so every axis of
+    // the grid is filterable without parsing filenames, and so the fan-out panel can be read
+    // against the maxBlocks that produced it. cost_accept is 0/1; -1 for non-CountingStars rows.
+    int   cost_accept;
+    int   max_blocks;
     // Admissions by door, counted exactly on the device.
     int   admitted_explore;
     int   admitted_cost;
@@ -227,6 +282,8 @@ static void clearCountingStarsCols(IterationData& d)
     d.ord_cutoff = -1;
     d.guaranteed_react = -1;
     d.budget_used = -1;
+    d.cost_accept = -1;
+    d.max_blocks = -1;
     d.admitted_explore = -1;
     d.admitted_cost = -1;
     d.reactivated_count = -1;
@@ -388,7 +445,7 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
          << "num_regions,r2_coverage_pct,mean_vertex_score,reactivated,"
          << "score_floor,cost_scale,"
          << "prop_attempted,prop_valid,frontier_repeat_size,"
-         << "optimal_count,ord_cutoff,guaranteed_react,budget_used,"
+         << "optimal_count,ord_cutoff,guaranteed_react,budget_used,cost_accept,max_blocks,"
          << "admitted_explore,admitted_cost,reactivated_count,reactivated_best,"
          << "block_ceiling,block_scale,global_collision_frac\n";
 
@@ -412,6 +469,8 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
              << d.ord_cutoff << ","
              << d.guaranteed_react << ","
              << d.budget_used << ","
+             << d.cost_accept << ","
+             << d.max_blocks << ","
              << d.admitted_explore << ","
              << d.admitted_cost << ","
              << d.reactivated_count << ","
@@ -955,6 +1014,8 @@ RunResult benchmarkCountingStars(
     float maxTimeMs,
     int goalFrontier,
     float exploreFrac,
+    int maxBlocks,
+    bool costAccept,
     const std::string& label)
 {
     // Override the planner's defaults for this run. resetPlanner (called below) does not touch the
@@ -962,10 +1023,11 @@ RunResult benchmarkCountingStars(
     //
     // NO RAMP ENDPOINTS TO SET. v1's three counts each had a *0 / *1 pair and an unswept slope
     // hiding between them; v2's budget is a flat scalar, so what the sweep sets is exactly what the
-    // planner applies on every iteration. maxBlocks is pinned rather than swept -- see CS_MAX_BLOCKS.
+    // planner applies on every iteration.
     planner.h_goalFrontierSize_ = goalFrontier;
     planner.h_exploreFrac_      = exploreFrac;
-    planner.h_maxBlocks_        = CS_MAX_BLOCKS;
+    planner.h_maxBlocks_        = maxBlocks;
+    planner.h_costAccept_       = costAccept;
 
     RunResult result;
     result.delta_label = label;
@@ -1055,6 +1117,8 @@ RunResult benchmarkCountingStars(
         d.ord_cutoff           = planner.h_ordCutoff_;
         d.guaranteed_react     = (int)planner.h_guaranteedReact_;
         d.budget_used          = (int)planner.h_budgetUsed_;
+        d.cost_accept          = planner.h_costAccept_ ? 1 : 0;
+        d.max_blocks           = planner.h_maxBlocks_;
         d.admitted_explore     = (int)planner.h_admittedExplore_;
         d.admitted_cost        = (int)planner.h_admittedCost_;
         d.reactivated_count    = (int)planner.h_reactivated_;
@@ -1097,38 +1161,51 @@ void runCountingStarsBenchmark(
            environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
     printf("========================================\n");
 
+    // The frac loop is INSIDE the cost_accept loop and draws its bounds from countingStarsFracs(),
+    // which is what makes the grid conditional rather than a full factorial. Pairing a frac with
+    // the wrong arm is impossible by construction here.
     for(int bi = 0; bi < NUM_GOAL_FRONTIER_SIZES; bi++)
-    for(int ei = 0; ei < NUM_EXPLORE_FRACS; ei++)
+    for(int mi = 0; mi < NUM_MAX_BLOCKS; mi++)
+    for(int ci = 0; ci < NUM_COST_ACCEPT_MODES; ci++)
     {
-        const int   goalFrontier = GOAL_FRONTIER_SIZES[bi];
-        const float exploreFrac  = EXPLORE_FRACS[ei];
+        const bool costAccept = COST_ACCEPT_MODES[ci];
+        int nf;
+        const float* fracs = countingStarsFracs(costAccept, &nf);
 
-        if(countingStarsSkip(goalFrontier, exploreFrac)) continue;
-
-        const std::string label = countingStarsLabel(goalFrontier, exploreFrac);
-
-        printf("  --- goal_frontier_size = %d, explore_frac = %.2f (%s) ---\n",
-               goalFrontier, exploreFrac, label.c_str());
-        CountingStars planner;
-        for(int run = 0; run < numRuns; run++)
+        for(int ei = 0; ei < nf; ei++)
         {
-            RunResult result = benchmarkCountingStars(planner, deltaLabel, environment_name, run,
-                                                 h_initial, h_goal, d_obstacles,
-                                                 numObstacles, maxIterations, maxTimeMs,
-                                                 goalFrontier, exploreFrac, label);
-            printf("  B=%d e=%.2f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-                   goalFrontier, exploreFrac, run + 1, numRuns, result.total_time_seconds,
-                   result.total_iterations, result.final_tree_size, result.first_solution_iteration,
-                   result.first_solution_cost, result.final_best_cost);
-            writePerIterationCSV(result, outputDir);
-            if(g_dumpViz && run == 0)
-                dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
-                            planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
-                            vizTreePath(g_vizDir, environment_name, label));
-            all_results.push_back(result);
+            const int   goalFrontier = GOAL_FRONTIER_SIZES[bi];
+            const int   maxBlocks    = MAX_BLOCKS_GRID[mi];
+            const float exploreFrac  = fracs[ei];
 
-            if(run < numRuns - 1)
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            if(countingStarsSkip(goalFrontier, exploreFrac, maxBlocks, costAccept)) continue;
+
+            const std::string label = countingStarsLabel(goalFrontier, exploreFrac, maxBlocks, costAccept);
+
+            printf("  --- B = %d, explore_frac = %.3f, maxBlocks = %d, cost_accept = %s (%s) ---\n",
+                   goalFrontier, exploreFrac, maxBlocks, costAccept ? "ON" : "OFF", label.c_str());
+            CountingStars planner;
+            for(int run = 0; run < numRuns; run++)
+            {
+                RunResult result = benchmarkCountingStars(planner, deltaLabel, environment_name, run,
+                                                     h_initial, h_goal, d_obstacles,
+                                                     numObstacles, maxIterations, maxTimeMs,
+                                                     goalFrontier, exploreFrac, maxBlocks, costAccept, label);
+                printf("  B=%d f=%.3f mb=%d ca=%s Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                       goalFrontier, exploreFrac, maxBlocks, costAccept ? "on" : "off",
+                       run + 1, numRuns, result.total_time_seconds,
+                       result.total_iterations, result.final_tree_size, result.first_solution_iteration,
+                       result.first_solution_cost, result.final_best_cost);
+                writePerIterationCSV(result, outputDir);
+                if(g_dumpViz && run == 0)
+                    dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
+                                planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
+                                vizTreePath(g_vizDir, environment_name, label));
+                all_results.push_back(result);
+
+                if(run < numRuns - 1)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
         }
     }
 }
@@ -1370,22 +1447,30 @@ int main(int argc, char* argv[])
         printf("CountingStars:  goal_frontier_size {");
         for(int i = 0; i < NUM_GOAL_FRONTIER_SIZES; i++)
             printf("%s%d", i ? ", " : "", GOAL_FRONTIER_SIZES[i]);
-        printf("} x explore_frac {");
-        for(int i = 0; i < NUM_EXPLORE_FRACS; i++)
-            printf("%s%.2f", i ? ", " : "", EXPLORE_FRACS[i]);
+        printf("} x maxBlocks {");
+        for(int i = 0; i < NUM_MAX_BLOCKS; i++)
+            printf("%s%d", i ? ", " : "", MAX_BLOCKS_GRID[i]);
         printf("}\n");
-        printf("                B is the PRIMITIVE, not a cap: the doors fill it in priority order\n"
-               "                and the budget is met by construction. maxBlocks FIXED at %d --\n"
-               "                with the geometric ramp gone it is the same knob as B seen twice.\n"
-               "                TWO DOORS ARE UNCAPPED and both are bounded by NUM_R1_REGIONS (%d),\n"
-               "                not by B: the OPTIMAL door (one region best per region) and the\n"
-               "                GUARANTEE (one node per uncovered region). So B binds only ABOVE\n"
-               "                that count; below it budget_used runs over B, which is exactly what\n"
-               "                the low points are on the grid to measure.\n"
-               "                READ FIRST: budget_used vs goal_frontier_size, then\n"
-               "                prop_attempted/frontier_size against KinoPaxPlus bf, then ord_cutoff.\n"
+        printf("                cost_accept ON  x explore_frac {");
+        for(int i = 0; i < NUM_EXPLORE_FRACS_COST_ON; i++)
+            printf("%s%.3f", i ? ", " : "", EXPLORE_FRACS_COST_ON[i]);
+        printf("}\n                cost_accept OFF x explore_frac {");
+        for(int i = 0; i < NUM_EXPLORE_FRACS_COST_OFF; i++)
+            printf("%s%.3f", i ? ", " : "", EXPLORE_FRACS_COST_OFF[i]);
+        printf("}   (CONDITIONAL: the frac arm depends on cost_accept)\n");
+        printf("                cost_accept OFF removes BOTH cost-driven doors -- the OPTIMAL door\n"
+               "                and the Part B region-best GUARANTEE. Those two are the only\n"
+               "                UNCAPPED doors and both are bounded by NUM_R1_REGIONS (%d) rather\n"
+               "                than by B, so with them off budget_used <= B holds BY CONSTRUCTION\n"
+               "                and B binds for the first time at every setting.\n"
+               "                CHECK optimal_count == 0 on every OFF row: it is a free assertion\n"
+               "                that both accept passes are gated.\n"
+               "                maxBlocks is INDEPENDENT of B: B sets frontier size, maxBlocks sets\n"
+               "                propagations per node (32 x maxBlocks while the split is loose).\n"
+               "                READ FIRST: budget_used vs goal_frontier_size, then time to first\n"
+               "                solution ON vs OFF at matched B and maxBlocks.\n"
                "                -> %d points x %d runs = %d runs\n",
-               CS_MAX_BLOCKS, NUM_R1_REGIONS, csPoints, NUM_CS_RUNS, csPoints * NUM_CS_RUNS);
+               NUM_R1_REGIONS, csPoints, NUM_CS_RUNS, csPoints * NUM_CS_RUNS);
         printf("CleanCost:      r2 OFF, w %.2f, k %.2f, cap %.2f = 1 point x %d runs = %d runs\n",
                CLEAN_BASE_W, CLEAN_BASE_K, CLEAN_BASE_CAP, NUM_CLEANCOST_RUNS, NUM_CLEANCOST_RUNS);
         int kcapPoints = capAxisPointCount(KPAXCAP_CAPS, NUM_KPAXCAP_CAPS);

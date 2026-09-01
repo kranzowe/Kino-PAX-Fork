@@ -96,17 +96,43 @@ def m_bools(name):
 
 
 def tok(x):
-    """The label token convention: round(100 x float) for the fractional axes."""
+    """The label token convention for most fractional axes: round(100 x float)."""
     return int(round(100.0 * x))
 
 
+def ftok(x):
+    """explore_frac's token: round(1000 x float), and the filename letter is `f` not `e`.
+
+    1000x because the grid reaches 0.001, which rounds to the token 0 at 100x -- unreadable, and
+    indistinguishable from a genuine explore_frac of 0. The LETTER changes with it so a stale CSV
+    from a 100x `_e` grid cannot be silently loaded as the wrong series: under 100x `_e10` was
+    frac 0.10, under 1000x it is frac 0.01.
+    """
+    return int(round(1000.0 * x))
+
+
 # ---------------------------------------------------------------- the C++ side
-cu_goalf   = cu_array('GOAL_FRONTIER_SIZES', 'int')
-cu_efrac   = cu_array('EXPLORE_FRACS')
-cu_kcap    = cu_array('KPAXCAP_CAPS')
+cu_goalf    = cu_array('GOAL_FRONTIER_SIZES', 'int')
+cu_efrac_on = cu_array('EXPLORE_FRACS_COST_ON')
+cu_efrac_off = cu_array('EXPLORE_FRACS_COST_OFF')
+cu_blocks   = cu_array('MAX_BLOCKS_GRID', 'int')
+cu_kcap     = cu_array('KPAXCAP_CAPS')
 cu_cap_derived = cu_scalar('CAP_DERIVED')
 cu_dgf = cu_scalar('CS_DERIVED_GOAL_FRONTIER', 'int')
-cu_def = cu_scalar('CS_DERIVED_EXPLORE_FRAC')
+cu_dmb = cu_scalar('CS_DERIVED_MAX_BLOCKS', 'int')
+cu_def = cu_scalar('CS_DERIVED_EXPLORE_FRAC_ON')
+# The derived cost_accept arm. bool, so it needs its own tiny parse.
+_camo = re.search(r'static const bool\s+CS_DERIVED_COST_ACCEPT\s*=\s*(true|false)', cu)
+if not _camo:
+    sys.exit('FATAL: CS_DERIVED_COST_ACCEPT not found in %s' % CU)
+cu_dca = (_camo.group(1) == 'true')
+
+# THE CONDITIONAL PAIRING, mirrored from countingStarsFracs() in the benchmark. This is the one
+# structural thing this file has to get right: the grid is NOT a full factorial over
+# (frac x cost_accept). Pairing every frac with every mode would produce 48 CountingStars labels
+# where the sweep writes 24, and the diff below would report 24 phantom "never written" series --
+# or, worse, agree with a .m that made the same mistake and hide the drift entirely.
+CS_ARMS = ((True, cu_efrac_on), (False, cu_efrac_off))
 
 cu_clean = {}
 for fld, key in (('CLEAN_BASE_W', 'w'), ('CLEAN_BASE_K', 'k'), ('CLEAN_BASE_CAP', 'cap')):
@@ -127,8 +153,14 @@ problems = []
 
 # --- Assertion 1: every derived point must be a member of its own list. --single-point selects BY
 # VALUE, so a derived point outside the grid means that pass runs nothing at all.
+_derived_frac_arm = cu_efrac_on if cu_dca else cu_efrac_off
 for val, lst, a, b in ((cu_dgf, cu_goalf, 'CS_DERIVED_GOAL_FRONTIER', 'GOAL_FRONTIER_SIZES'),
-                       (cu_def, cu_efrac, 'CS_DERIVED_EXPLORE_FRAC', 'EXPLORE_FRACS'),
+                       (cu_dmb, cu_blocks, 'CS_DERIVED_MAX_BLOCKS', 'MAX_BLOCKS_GRID'),
+                       # Checked against the arm CS_DERIVED_COST_ACCEPT selects, not the union: a
+                       # frac that only exists in the OTHER arm would make --single-point run
+                       # nothing at all, which is exactly the failure this assertion exists for.
+                       (cu_def, _derived_frac_arm, 'CS_DERIVED_EXPLORE_FRAC_ON',
+                        'EXPLORE_FRACS_COST_%s' % ('ON' if cu_dca else 'OFF')),
                        (cu_cap_derived, cu_kcap, 'CAP_DERIVED', 'KPAXCAP_CAPS')):
     if not any(abs(v - val) < 1e-6 for v in lst):
         problems.append('%s (%g) is not in %s %s' % (a, val, b, lst))
@@ -139,25 +171,36 @@ for val, lst, a, b in ((cu_dgf, cu_goalf, 'CS_DERIVED_GOAL_FRONTIER', 'GOAL_FRON
 if any(v < 1 for v in cu_goalf):
     problems.append('GOAL_FRONTIER_SIZES %s has an entry below 1 -- an empty frontier cannot '
                     'advance the search' % (cu_goalf,))
-if any(v < 0.0 or v > 1.0 for v in cu_efrac):
-    problems.append('EXPLORE_FRACS %s has an entry outside [0, 1] -- it is a share of the remaining '
-                    'budget, not a count' % (cu_efrac,))
+for nm, arr in (('EXPLORE_FRACS_COST_ON', cu_efrac_on), ('EXPLORE_FRACS_COST_OFF', cu_efrac_off)):
+    if any(v < 0.0 or v > 1.0 for v in arr):
+        problems.append('%s %s has an entry outside [0, 1] -- it is a share of the remaining '
+                        'budget, not a count' % (nm, arr))
+if any(v < 1 for v in cu_blocks):
+    problems.append('MAX_BLOCKS_GRID %s has an entry below 1 -- rep >= 1 is a correctness floor'
+                    % (cu_blocks,))
 
 
-def cs_skip(goalf, efrac):
-    """Mirrors countingStarsSkip(): FULL FACTORIAL, so --single-point is the only skip."""
+def cs_skip(goalf, efrac, blocks, ca):
+    """Mirrors countingStarsSkip(): --single-point is the only skip."""
     return False
+
+
+def cs_label(goalf, efrac, blocks, ca):
+    """Mirrors countingStarsLabel() in the benchmark."""
+    return 'CountingStars_B%d_f%d_mb%d_ca%s' % (int(round(goalf)), ftok(efrac),
+                                                int(round(blocks)), 'on' if ca else 'off')
 
 
 cu_pairs = set()
 for d, plus_only in zip(sh_deltas, sh_plus_only):
     if not plus_only:
         for goalf in cu_goalf:
-            for efrac in cu_efrac:
-                if cs_skip(goalf, efrac):
-                    continue
-                cu_pairs.add(('CountingStars_B%d_e%d'
-                              % (int(round(goalf)), tok(efrac)), d))
+            for blocks in cu_blocks:
+                for ca, arm in CS_ARMS:          # <-- conditional, not a full factorial
+                    for efrac in arm:
+                        if cs_skip(goalf, efrac, blocks, ca):
+                            continue
+                        cu_pairs.add((cs_label(goalf, efrac, blocks, ca), d))
         cu_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                       % (cu_clean['r2'], cu_clean['w'], cu_clean['k'], cu_clean['cap']), d))
         for c in cu_kcap:
@@ -166,13 +209,18 @@ for d, plus_only in zip(sh_deltas, sh_plus_only):
     cu_pairs.add(('KinoPaxPlus', d))
 
 # ---------------------------------------------------------------- the MATLAB side
-m_goalf   = m_ints('csGoalFrontierSizes')
-m_efrac   = m_ints('csExploreFracs')
-m_kcap    = m_ints('kpaxCapCaps')
-m_deltas  = m_cellstr('deltas')
+m_goalf    = m_ints('csGoalFrontierSizes')
+m_efrac_on = m_ints('csExploreFracsCostOn')
+m_efrac_off = m_ints('csExploreFracsCostOff')
+m_blocks   = m_ints('csMaxBlocks')
+m_kcap     = m_ints('kpaxCapCaps')
+m_deltas   = m_cellstr('deltas')
 m_plus_only = m_bools('deltaPlusOnly')
 m_dgf = m_scalar_int('csDerivedGoalFrontier')
-m_def = m_scalar_int('csDerivedExploreFrac')
+m_dmb = m_scalar_int('csDerivedMaxBlocks')
+m_def = m_scalar_int('csDerivedExploreFracOn')
+m_dca = (m_str('csDerivedCostAccept') == 'on')
+M_ARMS = ((True, m_efrac_on), (False, m_efrac_off))
 m_clean = {
     'r2': m_str('cleanBaseR2'),
     'w': m_scalar_int('cleanBaseW'),
@@ -184,8 +232,11 @@ m_pairs = set()
 for d, plus_only in zip(m_deltas, m_plus_only):
     if not plus_only:
         for goalf in m_goalf:
-            for efrac in m_efrac:
-                m_pairs.add(('CountingStars_B%d_e%d' % (goalf, efrac), d))
+            for blocks in m_blocks:
+                for ca, arm in M_ARMS:           # <-- conditional, mirroring the .cu
+                    for efrac in arm:
+                        m_pairs.add(('CountingStars_B%d_f%d_mb%d_ca%s'
+                                     % (goalf, efrac, blocks, 'on' if ca else 'off'), d))
         m_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                      % (m_clean['r2'], m_clean['w'], m_clean['k'], m_clean['cap']), d))
         for c in m_kcap:
@@ -196,6 +247,11 @@ for d, plus_only in zip(m_deltas, m_plus_only):
 # ---------------------------------------------------------------- diff
 only_cu = sorted(cu_pairs - m_pairs)
 only_m = sorted(m_pairs - cu_pairs)
+
+if (cu_dgf, cu_dmb, cu_dca, ftok(cu_def)) != (m_dgf, m_dmb, m_dca, m_def):
+    problems.append('DERIVED POINT DRIFT: .cu (B%d, mb%d, ca%s, f%d) != .m (B%d, mb%d, ca%s, f%d)'
+                    % (cu_dgf, cu_dmb, 'on' if cu_dca else 'off', ftok(cu_def),
+                       m_dgf, m_dmb, 'on' if m_dca else 'off', m_def))
 
 if sh_deltas != m_deltas:
     problems.append('DELTA_LABELS %s (%s) != deltas %s (%s)' % (sh_deltas, SH, m_deltas, M))
@@ -291,8 +347,11 @@ if cu_writer_prefixes and (m_loader_prefixes or m_loader_exact):
 # --- Assertion 4: distinct floats must not collapse onto the same label token. 0.01 and 0.1 both
 # look plausible and both want "cap1"/"cap10"; a collision means two grid points silently write to
 # ONE filename and the second overwrites the first.
-for name, vals, f in (('EXPLORE_FRACS', cu_efrac, tok),
+# The frac check runs over the UNION of both arms: the two arms share one filename token space, so
+# a value in the ON arm colliding with one in the OFF arm would put two different runs on one path.
+for name, vals, f in (('EXPLORE_FRACS (both arms)', cu_efrac_on + cu_efrac_off, ftok),
                       ('KPAXCAP_CAPS', cu_kcap, tok),
+                      ('MAX_BLOCKS_GRID', cu_blocks, lambda v: int(round(v))),
                       ('GOAL_FRONTIER_SIZES', cu_goalf, lambda v: int(round(v)))):
     toks = [f(v) for v in vals]
     if len(set(toks)) != len(set(vals)):

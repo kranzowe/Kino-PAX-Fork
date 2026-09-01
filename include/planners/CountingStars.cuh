@@ -91,6 +91,36 @@ public:
     float h_exploreFrac_;
 
     // ==================================================================================
+    // THE COST-ACCEPTANCE TOGGLE. false removes EVERY cost-driven admission -- both of them, and
+    // it has to be both or the change backfires.
+    //
+    //   OPTIMAL    (accept pass 2)  candidates admitted for being their region's best
+    //   GUARANTEE  (Part B arm 1)   existing region bests put back in the frontier
+    //
+    // WHY BOTH. regionCovered is written ONLY by the optimal door. Disable that door alone and
+    // every active region reads as uncovered, so the guarantee fires for all of them and the
+    // frontier gets BIGGER -- the exact opposite of the reason for switching it off.
+    //
+    // WHAT IT BUYS. Those two are the only doors that are UNCAPPED, and both are bounded by
+    // NUM_R1_REGIONS rather than by B, which is why budget_used can overrun B at all. With the
+    // toggle off, optimalCount and guaranteed are both structurally 0 and
+    //
+    //     frontier = freshness(explore_frac * B) + draw(B - admitted)  <=  B
+    //
+    // holds BY CONSTRUCTION. B binds for the first time at every setting.
+    //
+    // WHAT IT COSTS. Nothing preferentially expands cheap nodes any more. minCost still improves
+    // whenever a cheaper goal node is found, but there is no optimality pressure at all -- expect
+    // a faster first solution and a worse final cost, which is the trade this toggle exists to
+    // measure. Read the time-to-first-solution vs final-cost scatter, not either one alone.
+    //
+    // Three kernels take it: both accept passes and updateFrontier. Pass 1 needs it because its
+    // region-best early return SKIPS THE ORDINALITY HISTOGRAM -- gating only pass 2 would leave
+    // region bests falling through both doors and being rejected every iteration.
+    // ==================================================================================
+    bool h_costAccept_;
+
+    // ==================================================================================
     // FAN-OUT. Blocks are decided AT ADMISSION and stored per node; propagateFrontier only reads
     // them, so it stays the single writer of activeFrontierRepeatCount.
     //
@@ -102,6 +132,11 @@ public:
     // B - optimalCount and everyone gets maxBlocks. It bites exactly when the frontier OVERSHOOTS,
     // which is the case it exists for: the optimal door keeps its full boost and the overshoot is
     // paid for by everyone else.
+    //
+    // maxBlocks AND B ARE INDEPENDENT KNOBS, and an earlier comment here claiming they were the
+    // same knob twice was wrong. While the split is non-binding every frontier node receives
+    // otherBlocks == maxBlocks, so it gets 32 * maxBlocks propagations: B sets the frontier's SIZE
+    // and maxBlocks sets propagations PER NODE. They only interact once the buffer ceiling binds.
     //
     // THE GEOMETRIC RAMP IS GONE with the explore door that indexed it. Ordinality is now a
     // SELECTION signal (which candidates are fresh enough to be admitted at all) rather than a
@@ -348,7 +383,7 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
 // it. Two launches, both O(candidates), and the split is what makes the budget exact.
 __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                  float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
-                                                 int* regionNodeCount, float costScale,
+                                                 int* regionNodeCount, float costScale, bool costAccept,
                                                  float* candDistance, int* ordHistogram, uint* optimalCount);
 
 /***************************/
@@ -370,7 +405,7 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
                                                  int* frontierNextXR1s, int* regionNodeCount,
                                                  float* candDistance, bool* frontierNext, int* candDoor,
                                                  bool* regionCovered, curandState* randomSeeds,
-                                                 int ordCutoff, float pBoundary,
+                                                 int ordCutoff, float pBoundary, bool costAccept,
                                                  unsigned long long* doorCounts);
 
 /***************************/
@@ -391,7 +426,7 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
                                float* minCostsR1, int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet,
                                int* iterations, int iteration,
-                               float pReactivate, int maxBlocks, int otherBlocks,
+                               float pReactivate, int maxBlocks, int otherBlocks, bool costAccept,
                                unsigned long long* doorCounts);
 
 /***************************/
