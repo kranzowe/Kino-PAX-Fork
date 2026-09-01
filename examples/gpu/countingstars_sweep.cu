@@ -28,21 +28,28 @@ static std::string g_vizDir;
 // built to hit, so sweeping it is the whole experiment: its purpose is finding where this GPU is
 // fast, and nothing else in the planner is upstream of it.
 //
-// SWEEP IT WIDE. 2000 -> 50000 is a 25x span in F, which is a 25x span in propagations-per-node at
-// a fixed block budget. If first-solution time does not move across that span, B is not the lever
-// and no other knob on this grid matters.
+// SWEEP IT WIDE. 2000 -> 100000 is a 50x span in F, which is a 50x span in propagations-per-node
+// at a fixed block budget. If first-solution time does not move across that span, B is not the
+// lever and no other knob on this grid matters.
 //
-// NOTE 2000 AND 10000 ARE BELOW NUM_R1_REGIONS (27,000 at the coarse delta). The optimal door is
-// uncapped and NUM_R1_REGIONS bounds how many nodes can be a region best in one iteration, so at
-// those two points B is a SOFT TARGET -- budget_used may run over it. That is deliberate and worth
-// measuring: it is the direct read on how much of the frontier the optimal door alone accounts for.
-static const int GOAL_FRONTIER_SIZES[] = {2000, 10000, 50000};
+// THE GRID STRADDLES NUM_R1_REGIONS (27,000 at the coarse delta), and that is the point of its
+// shape. TWO doors are uncapped and both are bounded by the region count, not by B: the OPTIMAL
+// door (at most one region best per region per iteration) and the GUARANTEE (at most one node per
+// uncovered region). So B binds only ABOVE that count.
+//
+//   2000, 10000    BELOW  -- B is a SOFT target; budget_used runs over it, held near the
+//                            active-region count by the guarantee. Deliberate: the gap is the
+//                            direct read on how much of the frontier the priority doors take
+//                            before the draw is offered anything at all.
+//   50000, 100000  ABOVE  -- B genuinely binds. These are the points that test the design claim.
+static const int GOAL_FRONTIER_SIZES[] = {2000, 10000, 50000, 100000};
 static const int NUM_GOAL_FRONTIER_SIZES = sizeof(GOAL_FRONTIER_SIZES) / sizeof(GOAL_FRONTIER_SIZES[0]);
 
 // Share of the REMAINING budget (B - optimalCount) handed to the freshness door. The rest goes to
-// the region-best guarantee and the uniform draw. 0.05 -> 0.25 is a 5x span in how much of the
-// frontier is bought with novelty rather than optimality or reach.
-static const float EXPLORE_FRACS[] = {0.05f, 0.10f, 0.25f};
+// the region-best guarantee and the uniform draw. 0.01 -> 0.25 is a 25x span in how much of the
+// frontier is bought with novelty rather than optimality or reach; 0.01 is close enough to zero to
+// answer whether the freshness door earns its place at all.
+static const float EXPLORE_FRACS[] = {0.01f, 0.05f, 0.25f};
 static const int NUM_EXPLORE_FRACS = sizeof(EXPLORE_FRACS) / sizeof(EXPLORE_FRACS[0]);
 
 // maxBlocks is NO LONGER AN AXIS. In v1 it was the height of a geometric fan-out ramp and had to be
@@ -70,9 +77,9 @@ static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0
 // --single-point restricts every axis to one point, for a finer-discretization pass that only needs
 // the operating point so the deltas can be overlaid like with like. Each of these MUST remain a
 // member of its list -- the flag selects BY VALUE, so a derived point outside the grid would run
-// nothing at all. cross_check_combo_grid.py asserts exactly that.
+// nothing at all. cross_check_countingstars_grid.py asserts exactly that.
 static const int   CS_DERIVED_GOAL_FRONTIER = 10000;
-static const float CS_DERIVED_EXPLORE_FRAC  = 0.10f;
+static const float CS_DERIVED_EXPLORE_FRAC  = 0.05f;
 static const float CAP_DERIVED              = 0.03f;
 
 static bool g_singlePoint = false;
@@ -1009,8 +1016,12 @@ RunResult benchmarkCountingStars(
 
         // --- Frontier diagnostics (outside the timed window) ---
         // reactivated counts frontier bits among the PRE-EXISTING tree, i.e. exactly Part B's
-        // output. The planner also counts it on the device (reactivated_count); the two are computed
-        // independently and should agree, which is a free check on the draw.
+        // output -- and Part B HAS TWO ARMS, so the device-side identity is
+        //
+        //     reactivated  ==  reactivated_best + reactivated_count
+        //
+        // NOT reactivated_count alone. The two sides are computed independently (a thrust::count
+        // here, atomicAdds in the kernel), so the sum is a free check on both arms of Part B.
         int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
                                              planner.d_frontier_.begin() + oldTreeSize, true);
         // r2_coverage_pct from the planner's RUNNING COUNTER, not a sweep of d_activeSubVertices_.
@@ -1354,12 +1365,25 @@ int main(int argc, char* argv[])
         // Counted with the same predicate the runner uses, not a closed form -- the previous
         // closed form silently assumed the last WEIGHTS entry was 1.0.
         int csPoints = countingStarsPointCount();
-        printf("CountingStars:  goal_frontier_size {2000,10000,50000} x explore_frac {0.05,0.10,0.25}\n"
-               "                B is the PRIMITIVE, not a cap: the doors fill it in priority order and\n"
-               "                the budget is met by construction. maxBlocks FIXED at %d -- with the\n"
-               "                geometric ramp gone it is the same knob as B seen twice.\n"
-               "                B < NUM_R1_REGIONS (%d) makes the budget a SOFT target, because the\n"
-               "                optimal door is uncapped; the two low points are there on purpose.\n"
+        // THE AXES ARE PRINTED FROM THE ARRAYS, never restated as a literal. A hardcoded banner is
+        // a fourth place the grid can drift, and the only one no cross-check reads.
+        printf("CountingStars:  goal_frontier_size {");
+        for(int i = 0; i < NUM_GOAL_FRONTIER_SIZES; i++)
+            printf("%s%d", i ? ", " : "", GOAL_FRONTIER_SIZES[i]);
+        printf("} x explore_frac {");
+        for(int i = 0; i < NUM_EXPLORE_FRACS; i++)
+            printf("%s%.2f", i ? ", " : "", EXPLORE_FRACS[i]);
+        printf("}\n");
+        printf("                B is the PRIMITIVE, not a cap: the doors fill it in priority order\n"
+               "                and the budget is met by construction. maxBlocks FIXED at %d --\n"
+               "                with the geometric ramp gone it is the same knob as B seen twice.\n"
+               "                TWO DOORS ARE UNCAPPED and both are bounded by NUM_R1_REGIONS (%d),\n"
+               "                not by B: the OPTIMAL door (one region best per region) and the\n"
+               "                GUARANTEE (one node per uncovered region). So B binds only ABOVE\n"
+               "                that count; below it budget_used runs over B, which is exactly what\n"
+               "                the low points are on the grid to measure.\n"
+               "                READ FIRST: budget_used vs goal_frontier_size, then\n"
+               "                prop_attempted/frontier_size against KinoPaxPlus bf, then ord_cutoff.\n"
                "                -> %d points x %d runs = %d runs\n",
                CS_MAX_BLOCKS, NUM_R1_REGIONS, csPoints, NUM_CS_RUNS, csPoints * NUM_CS_RUNS);
         printf("CleanCost:      r2 OFF, w %.2f, k %.2f, cap %.2f = 1 point x %d runs = %d runs\n",

@@ -608,7 +608,7 @@ which does mean COMBO's coverage delta and KPAX's seeding door keep reading the 
 `scripts/check_region_math.py` proves the corrected decode is a bijection and measures the shared
 one's collapse.
 
-**Knobs.** `h_goalFrontierSize_` (10000, swept) and `h_exploreFrac_` (0.10, swept) — the entire
+**Knobs.** `h_goalFrontierSize_` (10000, swept) and `h_exploreFrac_` (0.05, swept) — the entire
 tuning surface. `h_maxBlocks_` (15) is pinned: with the ramp gone it is the same knob as B seen
 twice.
 

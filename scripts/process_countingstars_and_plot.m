@@ -1,52 +1,58 @@
-%% Cost Tuning Sweep Visualization — w x k x cap grid, both cost metrics
-% Reads per-iteration CSVs produced by kinopaxstar_cost_tuning_sweep.cu
-% (run via run_combo_tuning_sweep.sh).
+%% CountingStars v2 Sweep Visualization - node budget x freshness share
+% Reads per-iteration CSVs produced by examples/gpu/countingstars_sweep.cu
+% (run via scripts/run_countingstars_sweep.sh).
 %
-% Series are (planner, delta) pairs; the delta machinery is intact but THIS PASS runs the coarse
-% delta and the house environment only (see the commented full sets below and in
-% run_combo_tuning_sweep.sh):
+% Series are (planner, delta) pairs. THIS PASS runs the coarse delta and the house environment
+% only for the tuned arms; the two finer deltas run KinoPaxPlus alone (see deltaPlusOnly below and
+% DELTA_EXTRA_ARGS in run_countingstars_sweep.sh):
 %
-%   KinoPaxSTARCleanCost  r2 OFF (fixed) x w {0.9, 0.95, 1.0} x k {0.25, 1, 16}
-%                         x cap {0.03, 0.1, 1.0}                                  = 21
-%   KinoPaxSTARTrue       cap {0.03, 0.1}                                         =  2
-%   KPAXCap               cap {0.03, 0.1}                                         =  2
-%   KPAX, KinoPaxPlus                                                             =  2
-%                                                                                 -----
-%                                                                                    27
+%   CountingStars         goal_frontier_size {2000, 10000, 50000, 100000}
+%                         x explore_frac {0.01, 0.05, 0.25}                        = 12
+%   KinoPaxSTARCleanCost  r2 OFF, w 0.9, k 1, cap 0.03  (one tuned reference point) =  1
+%   KPAXCap               cap {0.03}                                               =  1
+%   KPAX, KinoPaxPlus                                                              =  2
+%                                                                                  -----
+%                                                              at the coarse delta    16
+%   KinoPaxPlus at the two finer deltas                                            +  2
 %
-% 21 and not the plain 3*3*3 = 27: at w = 1 the cost term vanishes from weightedAccept, so only
-% k = 1 is run there -- the other six points would be the same rule differing only by RNG stream.
+% WHAT THIS SWEEP IS ASKING. v2 makes goal_frontier_size B the PRIMITIVE: four doors fill it in
+% priority order -- OPTIMAL (distance 0, uncapped), FRESHEST (explore_frac of what is left, taken
+% from the least-populated regions), GUARANTEE (each active region's best, if OPTIMAL did not
+% already cover it), then a uniform DRAW. F is met by construction, so B is the INPUT and
+% propagations-per-node is the OUTPUT. Read the figures in that order:
 %
-% r2 = the R2 SUB-REGION SEEDING FREE PASS, now FIXED OFF. With it on (KPAX's behaviour) a candidate
-% claiming a virgin R2 sub-region is admitted unconditionally, bypassing the weighted roll; off, it
-% takes the same roll as everything else (the KinoPaxSTARnoseed condition). Both arms were measured
-% and off is now permanent, so admission is steered only by the Syclop score and the cost term.
-% Propagate still marks activeSubVertices, so r2_coverage_pct stays valid and comparable with the
-% earlier two-arm data.
+%   1. budget_used / B          the claim the design rests on. See the note on where B binds.
+%   2. prop_attempted / F       against KinoPaxPlus's bf (MAX_TREE_SIZE/(F*32), 40,000 at F = 10).
+%                               If it does not move across the 50x span in B, B is not the lever.
+%   3. ord_cutoff               rising = regions filling, freshness getting scarce. 0 = explore_frac
+%                               inert; 256 = saturated, so explore_frac is not binding either.
+%   4. block_scale              near 0 = the rep >= 1 floor ate the budget, fan-out split is inert.
 %
-% TWO NORMALIZATION FIXES land in this data, which is why k and cap are both re-opened:
-%   * Graph's Syclop floor is now 1/N_active (the mean share) rather than a fixed EPSILON = 1e-2,
-%     which exceeded the score it floored by ~270x and capped the number of discriminated regions
-%     at 1/EPSILON = 100 at ANY grid size. OPT-IN: KPAXCap / TrueStar / CleanCost take it; KPAX
-%     deliberately keeps the legacy floor, so it stays an unmodified baseline. The score_floor
-%     column makes that split visible: flat 0.01 for KPAX, decaying for the others.
-%   * CleanCost drops P_floor and uses a GLOBAL cost scale (costProbExpGlobal): the region's own
-%     minimum stays the reference, but the denominator is global, so a cost excess means the same
-%     thing everywhere instead of being pinned at x ~ 1 in every region by construction. The
-%     cost_scale column logs that denominator.
+% WHERE B BINDS. Two doors are uncapped and BOTH are bounded by NUM_R1_REGIONS rather than by B:
+% OPTIMAL (at most one region best per region per iteration) and GUARANTEE (at most one node per
+% uncovered region). So B binds only ABOVE that count -- 27,000 at the coarse delta. B = 2000 and
+% 10000 therefore sit in the SOFT regime and budget_used reads pinned near the active-region count;
+% B = 50000 and 100000 are the points that actually test the budget. The gap at the low points is
+% not a defect, it is the measurement.
 %
-% ENCODING: colour = cap (steel ramp light->dark 0.03->1.0 for CleanCost, amber for TrueStar,
-% grey-green for KPAXCap, near-black KPAX, blue KinoPaxPlus); line style = k (':' 0.25, '-' 1, '--' 16);
-% marker = w ('o' 0.9, 'x' 0.95, '+' 1.0, scatter only); line width = delta (constant with one
-% delta and one r2 arm; it separates them again as soon as either set is restored). Every legend
-% here is CLICKABLE — click an entry to hide/show that series.
+% SCORE FLOOR. Graph's Syclop floor is 1/N_active (the mean share) rather than a fixed
+% EPSILON = 1e-2, which exceeded the score it floored by ~270x and capped the number of
+% discriminated regions at 1/EPSILON = 100 at ANY grid size. OPT-IN: KPAXCap and CleanCost take it,
+% KPAX deliberately keeps the legacy floor so it stays an unmodified baseline. COUNTINGSTARS HAS NO
+% SCORE AT ALL -- it never reads vertexScores, h_scoreFloor_, h_nActive_ or regionCoverage in any
+% decision -- so it writes NaN there and simply does not draw on that panel.
+%
+% ENCODING: colour = goal_frontier_size (near-black smallest -> pale largest); line style and
+% scatter marker = explore_frac; line width = delta. CleanCost is crimson, KPAXCap grey-green,
+% KPAX near-black, KinoPaxPlus blue -- all four drawn thicker as reference anchors. Every legend
+% here is CLICKABLE - click an entry to hide/show that series.
 %
 % FAIR-COMPARISON NOTE: an "iteration" is a different unit of work per planner, so
 % cost-vs-TIME is the fair cross-planner axis. Error bands and error bars are
 % deliberately omitted throughout; the scatter shows run means only.
 %
 % USAGE: cd into the data directory, then call the script BY NAME, not via run():
-%   cd build/Data/Benchmarks/CountingStars/zigzag     % or .../narrowPassage
+%   cd build/Data/Benchmarks/CountingStars/house      % or .../zigzag, .../narrowPassage
 %   addpath('<repo>/scripts')
 %   process_countingstars_and_plot
 % run('<abs path>/process_countingstars_and_plot.m') would cd to the scripts folder
@@ -59,7 +65,7 @@ dataDir = '';   % '' = current directory (run this from Data/Benchmarks/Counting
 
 % One environment per run — must match the subfolder you cd'd into.
 %   'zigzag' -> 'Zigzag Corridor',  'house' -> 'House'
-% SCOPE: zigzag and narrowPassage this pass (matches ENV_NAMES in run_combo_tuning_sweep.sh).
+% SCOPE: house this pass (matches ENV_NAMES in run_countingstars_sweep.sh).
 % ONE PER RUN -- each environment writes to its own subfolder, so set this to match the folder you
 % cd'd into and re-run for the other.
 %   'zigzag' -> 'Zigzag Corridor',  'narrowPassage' -> 'Narrow Passage',  'house' -> 'House'
@@ -111,15 +117,18 @@ deltaLabel = '3 deltas overlaid';
 % pruning keeps tiny (bf = MAX_TREE_SIZE/(F*32), 40,000 propagations per node at F = 10), which is
 % the number prop_attempted/frontier_size is read against.
 %
-% B = 2000 and 10000 are BELOW NUM_R1_REGIONS (27,000 at the coarse delta), and the optimal door is
-% uncapped, so at those points the budget is a SOFT target and budget_used may run over B. That is
-% deliberate: it is the direct read on how much of the frontier the optimal door alone accounts for.
-csGoalFrontierSizes = [2000 10000 50000];
-csExploreFracs      = [5 10 25];
+% THE GRID STRADDLES NUM_R1_REGIONS (27,000 at the coarse delta) on purpose. Two doors are
+% uncapped and both are bounded by the region count rather than by B -- OPTIMAL (one region best
+% per region) and GUARANTEE (one node per uncovered region) -- so B binds only ABOVE it.
+%   2000, 10000    below: B is a SOFT target, budget_used runs over it. The gap is the measurement.
+%   50000, 100000  above: B genuinely binds. These test the design claim.
+csGoalFrontierSizes = [2000 10000 50000 100000];
+csExploreFracs      = [1 5 25];
 
-% The derived operating point that --single-point selects.
+% The derived operating point that --single-point selects. BOTH MUST BE MEMBERS of the lists above:
+% the flag selects BY VALUE, so a derived point outside the grid would run nothing at all.
 csDerivedGoalFrontier = 10000;
-csDerivedExploreFrac  = 10;
+csDerivedExploreFrac  = 5;
 
 % CleanCost baseline point - one series, the well-tuned operating point. Same label format as the
 % cost sweep, so its historical CSVs load here unchanged.
@@ -128,27 +137,28 @@ cleanBaseW   = 90;
 cleanBaseK   = 100;
 cleanBaseCap = 3;
 
-% TrueStar and KPAXCap cap sweeps - must match TRUE_CAPS / KPAXCAP_CAPS in the benchmark.
+% KPAXCap cap sweep - must match KPAXCAP_CAPS in the benchmark. Values are the label tokens
+% (100 x the float), exactly as they appear in the filenames.
 kpaxCapCaps = [3];
 
 % TWO axes, so they get the two channels the eye reads first and nothing has to double up.
 % colour = goal_frontier_size, because B is what the whole design turns on; DARKER IS A SMALLER
 % BUDGET, which is the direction the design is pushing. line style = explore_frac.
-%   rows: B 2000, B 10000, B 50000
-budgetColors = [0.10 0.10 0.10;    % B 2000   (smallest frontier, most propagations per node)
-                0.16 0.38 0.63;    % B 10000
-                0.62 0.55 0.72];   % B 50000  (largest frontier, fewest propagations per node)
-fracStyles   = {'-', '--', ':'};   % explore_frac = 0.05, 0.10, 0.25
+% The ramp also encodes where B sits relative to NUM_R1_REGIONS: the two dark rows are the SOFT
+% points (B below the region count), the two light rows are the ones where B genuinely binds.
+%   rows: B 2000, B 10000, B 50000, B 100000
+budgetColors = [0.10 0.10 0.10;    % B 2000    (smallest frontier, most propagations per node)
+                0.13 0.33 0.55;    % B 10000
+                0.36 0.52 0.70;    % B 50000
+                0.66 0.62 0.76];   % B 100000  (largest frontier, fewest propagations per node)
+fracStyles   = {'-', '--', ':'};   % explore_frac = 0.01, 0.05, 0.25
 fracMarkers  = {'o', '+', 'x'};    % explore_frac -- scatter only
 
-% CleanCost baseline: crimson, distinct from every COMBO colour, drawn as a reference anchor.
+% CleanCost baseline: crimson, distinct from every budget colour, drawn as a reference anchor.
 cleanColor = [0.70 0.15 0.20];
 
-% TrueStar and KPAXCap sweep the low two caps only, so two entries each.
-amberRamp = [0.95 0.62 0.24;     % cap 0.03 (lighter)
-             0.66 0.30 0.03];    % cap 0.10 (darker)
-
-% KPAXCap: grey-green, distinct from both the steel ramp and near-black KPAX it is compared to.
+% KPAXCap: grey-green, distinct from both the budget ramp and the near-black KPAX it is compared
+% to. One row per entry in kpaxCapCaps; the second is kept for when cap 0.10 is restored.
 mossRamp  = [0.58 0.73 0.53;     % cap 0.03 (lighter)
              0.24 0.44 0.26];    % cap 0.10 (darker)
 
@@ -207,7 +217,7 @@ for di = 1:numel(deltas)
         end
     end
 
-    % --- CleanCost baseline: ONE point, the reference the COMBO grid is read against ---
+    % --- CleanCost baseline: ONE point, the reference the CountingStars grid is read against ---
     plannerNames{end + 1}   = sprintf('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d', ...
                                       cleanBaseR2, cleanBaseW, cleanBaseK, cleanBaseCap); %#ok<SAGROW>
     plannerDisplay{end + 1} = sprintf('CleanCost w%g k%g cap%g [%s]', cleanBaseW / 100, ...
@@ -220,8 +230,7 @@ for di = 1:numel(deltas)
     plannerDeltaIdx(end + 1)  = di;              %#ok<SAGROW>
     plannerGoalFrontier(end + 1) = NaN;          %#ok<SAGROW>
 
-    % --- TrueStar ---
-    % --- KPAXCap ---
+    % --- KPAXCap: the control arm for the cap itself, read against the KPAX baseline below ---
     for ci = 1:numel(kpaxCapCaps)
         if dOne && kpaxCapCaps(ci) ~= capDerived, continue; end
         plannerNames{end + 1}   = sprintf('KPAXCap_cap%d', kpaxCapCaps(ci)); %#ok<SAGROW>
@@ -250,7 +259,7 @@ for di = 1:numel(deltas)
 
     % --- KinoPaxPlus. THE ONLY ARM THAT RUNS AT EVERY DELTA, which is the entire reason the two
     % finer deltas exist in this sweep: its advantage is a tiny frontier at a fine discretisation,
-    % and that is exactly what CountingStars' react_count is trying to reproduce. ---
+    % and a small F is exactly what CountingStars' goal_frontier_size is trying to buy directly. ---
     plannerNames    = [plannerNames,   {'KinoPaxPlus'}];                                  %#ok<AGROW>
     plannerDisplay  = [plannerDisplay, {sprintf('KinoPaxPlus [%s]', dTag)}];              %#ok<AGROW>
     plannerColors   = [plannerColors;  0.20 0.40 0.80];                                   %#ok<AGROW>
@@ -267,9 +276,9 @@ numRunsPer = 50 * ones(1, numel(plannerNames));   % max runs searched (missing f
 MAX_FLOAT_THRESH = 1e30;   % best_cost sentinel (MAX_FLOAT / INFINITY) -> NaN
 numTimeSamples   = 500;
 
-% Reference line for the growth-schedule panel. MUST match the MAX_TREE_SIZE / MAX_ITER that
-% run_combo_tuning_sweep.sh writes into config.h -- neither is in the CSV, so this is the one place
-% the plot has to be told. Only used to draw the dashed ideal; nothing else depends on it.
+% Reference line for the tree-growth panel. MUST match the MAX_TREE_SIZE / MAX_ITER that
+% run_countingstars_sweep.sh writes into config.h -- neither is in the CSV, so this is the one place
+% the plot has to be told. Only used to draw the dashed reference; nothing else depends on it.
 maxTreeSize = 3000000;
 growthIters = 300;
 
@@ -316,10 +325,11 @@ for ei = 1:numel(environments)
               'FontWeight', 'bold');
 
         %% ---------- FIGURE: normalization diagnostics ----------
-        % The direct evidence for both fixes. score_floor should sit flat at EPSILON = 0.01 for KPAX
-        % and decay as 1/N_active for KPAXCap / TrueStar / CleanCost; cost_scale is CleanCost's
-        % global denominator, whose size relative to the per-region spreads tells you which k range
-        % to sweep next. Series lacking either column are skipped by getCol/plotMeanTime.
+        % score_floor should sit flat at EPSILON = 0.01 for KPAX and decay as 1/N_active for
+        % KPAXCap and CleanCost. COUNTINGSTARS DRAWS ON NEITHER HALF OF THE LEFT PANEL: it has no
+        % Syclop score, so no floor, and writes NaN. It DOES write cost_scale -- the same global
+        % denominator CleanCost uses in costProbExpGlobal, and the denominator of a CountingStars
+        % candidate's distance. Series lacking either column are skipped by getCol/plotMeanTime.
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Normalization Diagnostics (%s)', envTitle, costTitle), ...
                'Position', [90 90 1400 620]);
@@ -384,12 +394,18 @@ for ei = 1:numel(environments)
         % --- Which door filled it. Every node came through a named door and the counts are exact,
         % so a shortfall on the left has an address here.
         %
-        %   optimal_count      the top door, uncapped, first claim every iteration.
+        %   optimal_count      the top door, uncapped, first claim every iteration. It must equal
+        %                      admitted_cost exactly -- pass 1 counts it, pass 2 admits it, and every
+        %                      optimal candidate is admitted -- so the CSV carries a free identity
+        %                      check between the two accept passes.
         %   admitted_explore   the freshness door, spending explore_frac of what optimal left.
-        %   reactivated_best   the guarantee, realised. Compare with guaranteed_react (the PLANNED
-        %                      count that set the draw's probability): the gap is the guaranteed
-        %                      nodes Part B skipped for already being in the frontier.
-        %   reactivated_count  the uniform draw, filling the remainder.
+        %   reactivated_best   the guarantee, REALISED. The PLANNED count is guaranteed_react, which
+        %                      is what set the draw's probability; it is in the CSV rather than on
+        %                      this panel, and the gap between them is the guaranteed nodes Part B
+        %                      skipped for already being in the frontier or having reached the goal.
+        %   reactivated_count  the uniform draw, filling the remainder. Note that the separate
+        %                      `reactivated` column is BOTH Part B arms, so it should equal
+        %                      reactivated_best + reactivated_count.
         subplot(1, 2, 2); hold on;
         for pi = 1:nPlanner
             plotMeanIter(R{pi}, @(t) getCol(t, 'optimal_count'), ...
@@ -471,16 +487,22 @@ for ei = 1:numel(environments)
         xlabel('Iteration'); ylabel('propagations per repeat entry'); grid on;
         title({'Kernel1 check: 32 while the ceiling holds', 'below 32 = kernel2 (block split across candidates)'});
 
-        % --- 2. Is the controller tracking its growth schedule? ---
+        % --- 2. How fast is the tree actually filling? ---
+        % THERE IS NO GROWTH CONTROLLER IN v2 -- the dashed line is a REFERENCE, not a target the
+        % planner is tracking. Tree growth is an OUTPUT here: it is however many candidates the
+        % doors admitted, and the budget governs the FRONTIER, not the tree. Read a shortfall as
+        % "the candidate pool ran dry" (propagation is colliding, or F is too small to produce
+        % enough candidates), never as "the controller is behind schedule". ---
         subplot(1, 3, 2); hold on;
         for pi = 1:nPlanner
             plotMeanIter(R{pi}, @(t) getCol(t, 'tree_size'), ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
         end
         plot([0 growthIters], [0 maxTreeSize], 'k--', 'LineWidth', 1.2, ...
-             'DisplayName', 'linear schedule');
+             'DisplayName', 'fill MAX\_TREE\_SIZE by MAX\_ITER');
         xlabel('Iteration'); ylabel('tree\_size'); grid on;
-        title({'Tree growth vs the linear schedule', 'shortfall = demand exceeds the candidate pool'});
+        title({'Tree growth against a linear fill reference', ...
+               'an OUTPUT, not a target -- v2 budgets the frontier, not the tree'});
 
         % --- 3. What is the frontier actually made of? ---
         % `reactivated` counts frontier bits among the PRE-EXISTING tree, i.e. exactly Part B's
@@ -662,7 +684,8 @@ for ei = 1:numel(environments)
         clickableLegend();
         title(sprintf(['Tuning Tradeoff: Time to First Solution vs Final Cost \x2014 %s, %s\n' ...
                        'lower-left is better (fast and cheap); ' ...
-                       '\x25cb CleanCost grid, \x25b3 TrueStar, \x25bd KPAXCap, \x25a1 baseline'], ...
+                       '\x25cb/+/\x00d7 CountingStars, \x2606 CleanCost, \x25bd KPAXCap, ' ...
+                       '\x25a1 KPAX, \x25c7 KinoPaxPlus'], ...
                        envTitle, costTitle), 'FontWeight', 'bold');
     end   % cost metric loop
 end  % environment loop
@@ -836,8 +859,8 @@ function plotMeanIter(runs, valueFcn, color, style, width, name)
     % resampling them onto a time grid would blur exactly the step changes worth seeing.
     %
     % valueFcn(tbl) returns a per-iteration column, or [] when the run lacks the columns it needs --
-    % baselines write NaN for every COMBO-only column, so those series simply do not draw rather
-    % than erroring.
+    % baselines write NaN for every CountingStars-only column, so those series simply do not draw
+    % rather than erroring.
     %
     % Runs are RAGGED: the 6 s timeout ends them at different iterations. Each iteration index is
     % averaged over whatever runs reached it, then the tail is trimmed where fewer than half the

@@ -8,8 +8,9 @@
 # exists; TrueStar answers a cap question this planner does not ask.
 #
 # Per (environment, cost metric) at the COARSE delta:
-#   CountingStars   goal_frontier_size {2000, 10000, 50000} x explore_frac {0.05, 0.10, 0.25}
-#                   = 9 points (FULL FACTORIAL) x 3 runs = 27 runs
+#   CountingStars   goal_frontier_size {2000, 10000, 50000, 100000}
+#                   x explore_frac {0.01, 0.05, 0.25}
+#                   = 12 points (FULL FACTORIAL) x 3 runs = 36 runs
 #
 #                   maxBlocks is FIXED AT 15 and deliberately NOT an axis. In v1 it was the height
 #                   of a geometric fan-out ramp and had to be swept against the ramp's width; v2 has
@@ -31,20 +32,27 @@
 # tiny -- bf = MAX_TREE_SIZE/(F*32), so 40,000 propagations per node at F = 10. That is the number
 # prop_attempted/frontier_size is read against.
 #
-# NOTE 2000 AND 10000 ARE BELOW NUM_R1_REGIONS (27,000 at the coarse delta). The optimal door is
-# uncapped and NUM_R1_REGIONS bounds how many nodes can be a region best in one iteration, so at
-# those two points B is a SOFT target and budget_used may run over it. That is deliberate, and it is
-# the direct read on how much of the frontier the optimal door alone accounts for.
+# THE GRID STRADDLES NUM_R1_REGIONS (27,000 at the coarse delta), and that is the point of its
+# shape. TWO doors are uncapped and BOTH are bounded by the region count rather than by B: the
+# OPTIMAL door (at most one region best per region per iteration) and the GUARANTEE (at most one
+# node per uncovered region). So B binds only ABOVE that count.
+#
+#   2000, 10000    BELOW  -- B is a SOFT target; budget_used runs over it, held near the
+#                            active-region count by the guarantee. Deliberate: the gap is the
+#                            direct read on how much of the frontier the priority doors take
+#                            before the draw is offered anything at all.
+#   50000, 100000  ABOVE  -- B genuinely binds. These are the points that test the design claim.
 #
 # READ IN THIS ORDER:
 #   1. budget_used vs goal_frontier_size. THE CLAIM THE WHOLE DESIGN RESTS ON. A persistent
-#      shortfall means a door is not filling its share; an overshoot means the optimal count
-#      exceeded B.
+#      shortfall means a door is not filling its share; an overshoot means the two uncapped doors
+#      already exceeded B on their own -- expected at the two low points, not at the two high ones.
 #   2. prop_attempted / frontier_size against KinoPaxPlus's bf. The point of controlling F is
-#      controlling this. If it does not move across the 25x span in B, B is not the lever and
+#      controlling this. If it does not move across the 50x span in B, B is not the lever and
 #      nothing else on this grid matters.
 #   3. ord_cutoff over the run. Rising means regions are filling and freshness is getting scarce,
-#      which is expected. Pinned at 0 means explore_frac is doing nothing.
+#      which is expected. Pinned at 0 means explore_frac is doing nothing; pinned at 256 means the
+#      whole candidate pool is fresh enough and explore_frac is not binding either.
 #
 # THE TWO FINER DELTAS RUN KINOPAXPLUS ONLY (--only-kinopaxplus), and that is the point of having
 # them: KinoPaxPlus is the planner whose whole advantage is a tiny frontier at a fine
@@ -301,7 +309,8 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  CountingStars:  goal_frontier_size {2000,10000,50000} x explore_frac {0.05,0.10,0.25} = 9 points"
+echo "  CountingStars:  goal_frontier_size {2000,10000,50000,100000}"
+echo "                  x explore_frac {0.01,0.05,0.25} = 12 points"
 echo "                  maxBlocks FIXED at 15 -- with the geometric ramp gone it is the same"
 echo "                  knob as B seen twice, so sweeping it would duplicate the axis."
 echo "                  ONE GLOBAL NODE BUDGET, filled in priority order. Four doors:"
@@ -310,13 +319,14 @@ echo "                    FRESHEST   explore_frac of what is LEFT, to the least-
 echo "                    GUARANTEE  each active region's best, if OPTIMAL did not already cover it"
 echo "                    DRAW       uniform over the rest, filling whatever the budget has left"
 echo "                  B is the PRIMITIVE, not a cap: F is met by construction, so B is the"
-echo "                  INPUT and propagations-per-node is the OUTPUT. 2000 vs 50000 is a 25x"
+echo "                  INPUT and propagations-per-node is the OUTPUT. 2000 vs 100000 is a 50x"
 echo "                  span in F; if first-solution time does not move across it, B is not"
 echo "                  the lever and no other knob on this grid matters."
-echo "                  B < NUM_R1_REGIONS (27,000 at the coarse delta) makes the budget a SOFT"
-echo "                  target, because the optimal door is uncapped and NUM_R1_REGIONS bounds"
-echo "                  how many nodes can be a region best in one iteration. The two low"
-echo "                  points are on the grid to measure exactly that."
+echo "                  TWO DOORS ARE UNCAPPED -- OPTIMAL and GUARANTEE -- and both are bounded"
+echo "                  by NUM_R1_REGIONS (27,000 at the coarse delta) rather than by B, so B"
+echo "                  binds only ABOVE that count. 2000 and 10000 are SOFT points where"
+echo "                  budget_used runs over B; 50000 and 100000 are where B genuinely binds."
+echo "                  The grid straddles the threshold on purpose."
 echo "                  READ FIRST: budget_used vs goal_frontier_size, then"
 echo "                  prop_attempted/frontier_size against KinoPaxPlus's bf, then ord_cutoff."
 echo "  CleanCost:      r2 OFF, w 0.9, k 1, cap 0.03 = 1 point (baseline)"

@@ -192,9 +192,11 @@ CountingStars::CountingStars()
     // frontier pinned at nActive.
     h_goalFrontierSize_ = 10000;
 
-    // Share of the REMAINING budget (B - optimalCount) given to freshness. 0.10 leaves the great
-    // majority of what the optimal door does not take to the guarantee and the draw.
-    h_exploreFrac_ = 0.10f;
+    // Share of the REMAINING budget (B - optimalCount) given to freshness. 0.05 leaves the great
+    // majority of what the optimal door does not take to the guarantee and the draw. Kept equal to
+    // the sweep's derived operating point (CS_DERIVED_EXPLORE_FRAC), so a standalone plan() run and
+    // a --single-point sweep pass are the same planner.
+    h_exploreFrac_ = 0.05f;
 
     // ---- Fan-out. Blocks a node gets are decided at admission; see the header for the rule. ----
     // 15 is KPAX's number, and rep is a plain COUNT OF BLOCKS with no alignment constraint --
