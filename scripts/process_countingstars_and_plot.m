@@ -7,15 +7,15 @@
 % DELTA_EXTRA_ARGS in run_countingstars_sweep.sh):
 %
 %   CountingStars         goal_frontier_size {2000, 10000, 50000}
-%                         x explore_frac {0.1, 0.5} x maxBlocks {16, 32}           = 12
+%                         x explore_frac {0.1, 0.5} x maxBlocks {1, 4, 16}         = 18
 %   KinoPaxSTARCleanCost  r2 OFF, w 0.9, k 1, cap 0.03  (one tuned reference point) =  1
 %   KPAXCap               cap {0.03}                                               =  1
 %   KPAX, KinoPaxPlus                                                              =  2
 %                                                                                  -----
-%                                                              at the coarse delta    16
+%                                                              at the coarse delta    22
 %   KinoPaxPlus at the two finer deltas                                            +  2
 %                                                                                  -----
-%                                                                                     18
+%                                                                                     24
 %
 % WHAT THIS SWEEP IS ASKING. v2 makes goal_frontier_size B the PRIMITIVE: four doors fill it in
 % priority order -- OPTIMAL (distance 0, uncapped), FRESHEST (explore_frac of what is left, taken
@@ -32,9 +32,13 @@
 % Read the figures in this order:
 %
 %   1. budget_used / B          the claim the design rests on. See the note on where B binds.
-%   2. prop_attempted / F       against KinoPaxPlus's bf (MAX_TREE_SIZE/(F*32), 40,000 at F = 10).
-%                               Should move with maxBlocks INDEPENDENTLY of B: B sets frontier
-%                               size, maxBlocks sets propagations per node (32 x maxBlocks).
+%   2. frontier_repeat_size / frontier_size    THE REALISED MEAN rep, and the direct check that
+%                               fan-out now concentrates. At maxBlocks = 1 it must be exactly 1;
+%                               at 16 it should sit near 1 with a small excess from thin regions,
+%                               NOT near the old flat ~7.
+%   3. prop_attempted / budget_used            candidates produced per node ADMITTED. This is what
+%                               the runtime gap against KPAXCap and CleanCost is made of: it was
+%                               ~224 under the old flat rule against their ~32.
 %   3. ord_cutoff               rising = regions filling, freshness getting scarce. 0 = explore_frac
 %                               inert; 256 = saturated, so explore_frac is not binding either.
 %   4. block_scale              near 0 = the rep >= 1 floor ate the budget, fan-out split is inert.
@@ -138,7 +142,7 @@ deltaLabel = '3 deltas overlaid';
 %
 csGoalFrontierSizes = [2000 10000 50000];
 csExploreFracs      = [100 500];
-csMaxBlocks         = [16 32];
+csMaxBlocks         = [1 4 16];
 
 % The derived operating point that --single-point selects. EVERY component must be a member of its
 % list, because the flag selects BY VALUE -- a derived point outside the grid would run nothing.
@@ -167,7 +171,8 @@ budgetColors = [0.09 0.16 0.28;    % B 2000   |  soft: F pinned by the guarantee
                 0.16 0.38 0.63;    % B 10000  |
                 0.55 0.68 0.84];   % B 50000  :  binding (largest frontier, fewest props per node)
 fracStyles   = {'-', '--'};        % explore_frac = 0.1, 0.5
-blockMarkers = {'o', 's'};         % maxBlocks = 16, 32 -- scatter only
+blockMarkers = {'o', 's', '^'};    % maxBlocks = 1, 4, 16 -- scatter only
+                                   % mb 1 is the ancestors' steady state (every node rep 1)
 
 % CleanCost baseline: crimson, distinct from every budget colour, drawn as a reference anchor.
 cleanColor = [0.70 0.15 0.20];

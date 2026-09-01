@@ -25,6 +25,19 @@ static const int CS_DOOR_BEST    = 4;   // existing tree node put back because i
 // rank; see the .cu for why a rank was never needed.
 static const int CS_ORD_BUCKETS = 256;
 
+// A region is "thin" -- and every node landing in it earns the fan-out burst -- until it has seen
+// this many collision-free propagations. THE SAME RULE AND THE SAME NUMBER KPAXCap AND CleanCost
+// USE (`validVertexCounter[region] < 10 ? 15 : 1`), and it is ported deliberately: those two are
+// the runtime targets, and a like-for-like fan-out rule is what makes the comparison decidable.
+//
+// KEYED ON validVertexCounter, NOT regionNodeCount, and the distinction is the whole rule.
+// validVertexCounter counts PROPAGATIONS -- it gains ~32 per frontier node per iteration, so a
+// region crosses 10 almost as soon as it is touched and the burst stays a one-shot on genuinely
+// new ground. regionNodeCount counts ADMITTED NODES: roughly 0.4 per region per iteration at
+// B = 10000 spread over 27,000 regions, so a threshold of 10 there would leave nearly every region
+// "thin" for hundreds of iterations and the rule would concentrate nothing at all.
+static const int CS_NOVEL_THRESH = 10;
+
 class CountingStars : public Planner
 {
 public:
@@ -91,26 +104,30 @@ public:
     float h_exploreFrac_;
 
     // ==================================================================================
-    // FAN-OUT. Blocks are decided AT ADMISSION and stored per node; propagateFrontier only reads
-    // them, so it stays the single writer of activeFrontierRepeatCount.
+    // FAN-OUT, REGION-KEYED. Blocks are decided AT ADMISSION and stored per node;
+    // propagateFrontier only reads them, so it stays the single writer of
+    // activeFrontierRepeatCount.
     //
-    //   blockBudget   = maxBlocks * B                                  the DESIGN budget
-    //   OPTIMAL       -> maxBlocks each
-    //   everyone else -> floor((blockBudget - maxBlocks * optimalCount) / otherCount), >= 1
+    //   ADMITTED, region thin   -> maxBlocks     validVertexCounter[r] < CS_NOVEL_THRESH
+    //   ADMITTED, region filled -> 1
+    //   REACTIVATED (both arms) -> 1
     //
-    // The split is NON-BINDING while the frontier lands at or under B -- otherCount is then
-    // B - optimalCount and everyone gets maxBlocks. It bites exactly when the frontier OVERSHOOTS,
-    // which is the case it exists for: the optimal door keeps its full boost and the overshoot is
-    // paid for by everyone else.
+    // INDEPENDENT OF THE DOOR, which is the point. An earlier rule gave the OPTIMAL door maxBlocks
+    // and split a `maxBlocks * B` design budget over everyone else -- and that split was INERT in
+    // the nominal case, because the divisor came out at B - optimalCount and every frontier node
+    // received maxBlocks regardless. So the planner spent its whole block budget uniformly while
+    // KPAXCap and CleanCost were concentrating theirs 15-to-1 on new ground. At B = 10000,
+    // maxBlocks = 16 that was ~224 candidates produced per node admitted against their ~32, and it
+    // was the bulk of the runtime gap -- the propagation kernel, not bookkeeping.
     //
-    // maxBlocks AND B ARE INDEPENDENT KNOBS, and an earlier comment here claiming they were the
-    // same knob twice was wrong. While the split is non-binding every frontier node receives
-    // otherBlocks == maxBlocks, so it gets 32 * maxBlocks propagations: B sets the frontier's SIZE
-    // and maxBlocks sets propagations PER NODE. They only interact once the buffer ceiling binds.
+    // maxBlocks AND B ARE INDEPENDENT KNOBS: B sets the frontier's SIZE, maxBlocks sets
+    // propagations PER NODE (32 * maxBlocks) for the nodes that earn the burst. maxBlocks = 1 makes
+    // every node rep 1, which is KPAXCap's steady state exactly.
     //
-    // THE GEOMETRIC RAMP IS GONE with the explore door that indexed it. Ordinality is now a
-    // SELECTION signal (which candidates are fresh enough to be admitted at all) rather than a
-    // WEIGHTING one, and running it as both would double-count the same fact.
+    // THE GEOMETRIC RAMP IS GONE with the explore door that indexed it, and ordinality is a
+    // SELECTION signal (which candidates are admitted at all) rather than a WEIGHTING one --
+    // running it as both would double-count the same fact. Region thinness, which is what the
+    // ancestors weight on, is a different measurement and is read straight from the graph.
     // ==================================================================================
     int h_maxBlocks_;
 
@@ -235,9 +252,10 @@ public:
     //                     guarantee in Part B is deduplicated against it, so a region whose best
     //                     was already re-admitted through the top door does not also spend a
     //                     guarantee slot on the older node it superseded.
-    //   d_candCounts_     collision-free candidates in this region. Diagnostic only.
+    //
+    // d_candCounts_ USED TO LIVE HERE and is gone: it took an atomicAdd from every collision-free
+    // candidate -- millions per iteration -- and was never read by anything.
     thrust::device_vector<bool> d_regionCovered_;
-    thrust::device_vector<int>  d_candCounts_;
 
     // --- per-R1, CUMULATIVE. THE ORDINALITY SOURCE, and the reason freshness costs nothing.
     //
@@ -254,9 +272,13 @@ public:
     // integer, so a histogram plus an exclusive scan gives the exact cutoff in two O(n) atomic
     // passes -- cheaper than a sort, and it reuses atomics that are already everywhere in this
     // file. ---
+    // ONE BUFFER, CS_ORD_BUCKETS + 1 ENTRIES. Slot [CS_ORD_BUCKETS] holds the OPTIMAL COUNT, which
+    // is not a bucket -- optimal candidates never enter the histogram, because the freshness door
+    // spends what is LEFT of the budget after them. It rides here so the host round trip between
+    // the two accept passes costs ONE synchronising memcpy instead of two, and that stall sits in
+    // the middle of the iteration where it serialises everything behind it.
     thrust::device_vector<int>  d_ordHistogram_;
-    thrust::device_vector<uint> d_optimalCount_;
-    int h_ordHistogram_[CS_ORD_BUCKETS];
+    int h_ordHistogram_[CS_ORD_BUCKETS + 1];
 
     // --- per-node, TREE-INDEXED, written once at admission ---
     thrust::device_vector<int> d_nodeBlocks_, d_nodeDoor_;
@@ -282,8 +304,7 @@ public:
     float *d_minCostsR1_ptr_, *d_sumCostsR1_ptr_, *d_minCost_ptr_;
     float *d_minCornerCS_ptr_;
     int   *d_cntCostsR1_ptr_;
-    int   *d_candCounts_ptr_, *d_regionNodeCount_ptr_, *d_ordHistogram_ptr_;
-    uint  *d_optimalCount_ptr_;
+    int   *d_regionNodeCount_ptr_, *d_ordHistogram_ptr_;
     bool  *d_regionCovered_ptr_;
     int   *d_nodeBlocks_ptr_, *d_nodeDoor_ptr_, *d_candDoor_ptr_;
     float *d_candDistance_ptr_;
@@ -324,7 +345,7 @@ __global__ void CountingStars_propagateFrontier_kernel1(bool* frontier, uint* ac
                                                    int* vertexCounter, int* validVertexCounter, float* minCorner,
                                                    float* treeSampleCosts, float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
                                                    int* frontierNextXR1s, int* candDoor,
-                                                   int* candCounts, uint* touchedR2Count,
+                                                   uint* touchedR2Count,
                                                    float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid);
 
 /***************************/
@@ -338,7 +359,7 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
                                                    float* minCorner,
                                                    float* treeSampleCosts, float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
                                                    int* frontierNextXR1s, int* candDoor,
-                                                   int* candCounts, uint* touchedR2Count,
+                                                   uint* touchedR2Count,
                                                    float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid);
 
 /***************************/
@@ -354,7 +375,7 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
 __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                  float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
                                                  int* regionNodeCount, float costScale,
-                                                 float* candDistance, int* ordHistogram, uint* optimalCount);
+                                                 float* candDistance, int* ordHistogram);
 
 /***************************/
 /* ACCEPT PASS 2 - the ONLY admission decision */
@@ -392,11 +413,11 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
                                int* unexploredSamplesParentIdxs, int* treeSamplesParentIdxs, float* treeSampleCosts,
                                curandState* randomSeeds,
                                int* candDoor, int* nodeDoor, int* nodeBlocks,
-                               int* regionNodeCount, bool* regionCovered,
+                               int* regionNodeCount, bool* regionCovered, int* validVertexCounter,
                                float* minCostsR1, int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet,
                                int* iterations, int iteration,
-                               float pReactivate, int maxBlocks, int otherBlocks,
+                               float pReactivate, int maxBlocks,
                                unsigned long long* doorCounts);
 
 /***************************/

@@ -32,6 +32,17 @@ static std::string g_vizDir;
 // cost-driven doors (OPTIMAL and the Part B GUARANTEE) to test whether they were costing time to
 // first solution. That experiment is over and the doors stay: they are what makes the search
 // converge on cost at all, and without them nothing preferentially expands cheap nodes.
+//
+// FAN-OUT IS NOW REGION-KEYED, and that is what this pass is testing. The old rule gave every
+// frontier node the same block count (the design-budget split came out at maxBlocks for everyone
+// in the nominal case), so at B = 10000 / maxBlocks = 16 the planner produced ~224 candidates per
+// node admitted where KPAXCap and CleanCost produce ~32 -- the bulk of the runtime gap, and it was
+// the propagation kernel rather than bookkeeping. Blocks now follow REGION THINNESS, exactly as
+// both ancestors do.
+//
+// READ frontier_repeat_size / frontier_size FIRST: that is the realised mean rep. At maxBlocks = 1
+// it must be exactly 1; at 16 it should sit near 1 with a small excess from thin regions, NOT near
+// the old flat 7.
 static const int GOAL_FRONTIER_SIZES[] = {2000, 10000, 50000};
 static const int NUM_GOAL_FRONTIER_SIZES = sizeof(GOAL_FRONTIER_SIZES) / sizeof(GOAL_FRONTIER_SIZES[0]);
 
@@ -41,13 +52,20 @@ static const int NUM_GOAL_FRONTIER_SIZES = sizeof(GOAL_FRONTIER_SIZES) / sizeof(
 static const float EXPLORE_FRACS[] = {0.1f, 0.5f};
 static const int NUM_EXPLORE_FRACS = sizeof(EXPLORE_FRACS) / sizeof(EXPLORE_FRACS[0]);
 
-// Blocks an OPTIMAL node receives, and -- while the fan-out split is non-binding -- what EVERY
-// frontier node receives, since otherBlocks then equals maxBlocks.
+// Blocks a node receives when it lands in a region the search has barely touched
+// (validVertexCounter[r] < CS_NOVEL_THRESH). Everything else -- populated regions, and both
+// reactivation arms -- gets 1, matching KPAXCap and CleanCost exactly.
 //
-// A REAL AXIS, independent of B: every frontier node gets 32 * maxBlocks propagations, so B sets
-// the frontier's SIZE and maxBlocks sets propagations PER NODE. They only interact once the buffer
-// ceiling binds, which makes them the two halves of the throughput question rather than one knob.
-static const int MAX_BLOCKS_GRID[] = {16, 32};
+// maxBlocks = 1 IS THE POINT OF THIS AXIS. It makes every node rep 1, which is the ancestors'
+// steady state: their validVertexCounter is cumulative and gains ~32 per frontier node per
+// iteration, so regions cross the threshold almost as soon as they are touched and their x15 is a
+// one-shot burst on new ground, not a sustained boost. The previous grid was {16, 32}, which never
+// sampled that regime at all -- and the buffer ceiling clamped BOTH of those to roughly the same
+// realised rep early on, so the axis was close to inert.
+//
+// Independent of B: B sets the frontier's SIZE, maxBlocks sets propagations PER NODE
+// (32 * maxBlocks) for the nodes that earn the burst.
+static const int MAX_BLOCKS_GRID[] = {1, 4, 16};
 static const int NUM_MAX_BLOCKS = sizeof(MAX_BLOCKS_GRID) / sizeof(MAX_BLOCKS_GRID[0]);
 
 // ---- KinoPaxSTARCleanCost baseline point ----
@@ -1402,12 +1420,17 @@ int main(int argc, char* argv[])
                "                region-best GUARANTEE always run. Those two are the only UNCAPPED\n"
                "                doors and both are bounded by NUM_R1_REGIONS (%d) rather than by B,\n"
                "                so B binds only ABOVE that count; below it budget_used runs over B.\n"
-               "                maxBlocks is INDEPENDENT of B: B sets frontier size, maxBlocks sets\n"
-               "                propagations per node (32 x maxBlocks while the split is loose).\n"
-               "                READ FIRST: budget_used vs goal_frontier_size, then\n"
-               "                prop_attempted/frontier_size against KinoPaxPlus bf, then ord_cutoff.\n"
+               "                FAN-OUT IS REGION-KEYED: a node gets maxBlocks only if its region\n"
+               "                has seen < %d valid propagations, else 1; reactivations always 1.\n"
+               "                That is KPAXCap's and CleanCost's rule, ported so the runtime\n"
+               "                comparison is like-for-like. maxBlocks = 1 reproduces their steady\n"
+               "                state exactly (every node rep 1).\n"
+               "                READ FIRST: frontier_repeat_size/frontier_size (the realised mean\n"
+               "                rep -- must be 1 at maxBlocks=1), then prop_attempted/budget_used\n"
+               "                (candidates per admitted node; was ~224, target ~32), then time to\n"
+               "                first solution against KPAXCap and CleanCost.\n"
                "                -> %d points x %d runs = %d runs\n",
-               NUM_R1_REGIONS, csPoints, NUM_CS_RUNS, csPoints * NUM_CS_RUNS);
+               NUM_R1_REGIONS, CS_NOVEL_THRESH, csPoints, NUM_CS_RUNS, csPoints * NUM_CS_RUNS);
         printf("CleanCost:      r2 OFF, w %.2f, k %.2f, cap %.2f = 1 point x %d runs = %d runs\n",
                CLEAN_BASE_W, CLEAN_BASE_K, CLEAN_BASE_CAP, NUM_CLEANCOST_RUNS, NUM_CLEANCOST_RUNS);
         int kcapPoints = capAxisPointCount(KPAXCAP_CAPS, NUM_KPAXCAP_CAPS);

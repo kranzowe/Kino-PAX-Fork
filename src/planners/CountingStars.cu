@@ -109,14 +109,14 @@ CountingStars::CountingStars()
 
     // Per-R1, reset every iteration.
     d_regionCovered_          = thrust::device_vector<bool>(NUM_R1_REGIONS, false);
-    d_candCounts_             = thrust::device_vector<int>(NUM_R1_REGIONS);
     // Per-R1, cumulative. THE ORDINALITY SOURCE: how many nodes this region has ever taken.
     d_regionNodeCount_        = thrust::device_vector<int>(NUM_R1_REGIONS);
     // The freshness histogram and the optimal count that sizes the budget it spends. Both are read
     // back to the host between the two accept passes, which is the only device->host round trip the
     // admission path adds over v1: 256 ints plus one uint.
-    d_ordHistogram_           = thrust::device_vector<int>(CS_ORD_BUCKETS, 0);
-    d_optimalCount_           = thrust::device_vector<uint>(1, 0u);
+    // CS_ORD_BUCKETS + 1: the extra slot carries the optimal count, so the mid-iteration readback
+    // between the two accept passes is one synchronising memcpy rather than two.
+    d_ordHistogram_           = thrust::device_vector<int>(CS_ORD_BUCKETS + 1, 0);
     // Per-node, tree-indexed, written once at admission.
     d_nodeBlocks_             = thrust::device_vector<int>(MAX_TREE_SIZE, 1);
     d_nodeDoor_               = thrust::device_vector<int>(MAX_TREE_SIZE, CS_DOOR_NONE);
@@ -156,10 +156,8 @@ CountingStars::CountingStars()
     d_touchedR2Count_ptr_         = thrust::raw_pointer_cast(d_touchedR2Count_.data());
     d_minCornerCS_ptr_            = thrust::raw_pointer_cast(d_minCornerCS_.data());
     d_regionCovered_ptr_          = thrust::raw_pointer_cast(d_regionCovered_.data());
-    d_candCounts_ptr_             = thrust::raw_pointer_cast(d_candCounts_.data());
     d_regionNodeCount_ptr_        = thrust::raw_pointer_cast(d_regionNodeCount_.data());
     d_ordHistogram_ptr_           = thrust::raw_pointer_cast(d_ordHistogram_.data());
-    d_optimalCount_ptr_           = thrust::raw_pointer_cast(d_optimalCount_.data());
     d_nodeBlocks_ptr_             = thrust::raw_pointer_cast(d_nodeBlocks_.data());
     d_nodeDoor_ptr_               = thrust::raw_pointer_cast(d_nodeDoor_.data());
     d_candDistance_ptr_           = thrust::raw_pointer_cast(d_candDistance_.data());
@@ -225,7 +223,7 @@ CountingStars::CountingStars()
     h_propAttempted_       = 0;
     h_candidatesPreGate_   = 0;
     for(int i = 0; i < CS_NUM_DOOR_SLOTS; i++) h_doorCounts_[i] = 0ULL;
-    for(int i = 0; i < CS_ORD_BUCKETS; i++) h_ordHistogram_[i] = 0;
+    for(int i = 0; i <= CS_ORD_BUCKETS; i++) h_ordHistogram_[i] = 0;
 
     h_activeBlockSize_ = 32;
 
@@ -288,9 +286,7 @@ void CountingStars::resetPlanner(float* h_initial, float* h_goal)
     // door would admit nothing from iteration 1 onward.
     thrust::fill(d_regionNodeCount_.begin(), d_regionNodeCount_.end(), 0);
     thrust::fill(d_regionCovered_.begin(), d_regionCovered_.end(), false);
-    thrust::fill(d_candCounts_.begin(), d_candCounts_.end(), 0);
     thrust::fill(d_ordHistogram_.begin(), d_ordHistogram_.end(), 0);
-    thrust::fill(d_optimalCount_.begin(), d_optimalCount_.end(), 0u);
     // maxBlocks, not 1: the root is admitted by no door, so nothing else would ever write its count.
     thrust::fill(d_nodeBlocks_.begin(), d_nodeBlocks_.end(), h_maxBlocks_);
     thrust::fill(d_nodeDoor_.begin(), d_nodeDoor_.end(), CS_DOOR_NONE);
@@ -318,7 +314,7 @@ void CountingStars::resetPlanner(float* h_initial, float* h_goal)
     // carried the previous run's final values into iteration 1.
     thrust::fill(d_doorCounts_.begin(), d_doorCounts_.end(), 0ULL);
     for(int i = 0; i < CS_NUM_DOOR_SLOTS; i++) h_doorCounts_[i] = 0ULL;
-    for(int i = 0; i < CS_ORD_BUCKETS; i++) h_ordHistogram_[i] = 0;
+    for(int i = 0; i <= CS_ORD_BUCKETS; i++) h_ordHistogram_[i] = 0;
     h_propAttempted_        = 0;
     h_candidatesPreGate_    = 0;
     h_frontierNextSize_     = 0;
@@ -526,9 +522,6 @@ void CountingStars::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCo
               d_activeFrontierRepeatCount_ptr_);
         }
 
-    // --- Per-iteration per-region counters, zeroed before propagate fills them. ---
-    thrust::fill(d_candCounts_.begin(), d_candCounts_.end(), 0);
-
     // --- Build frontier repeat vector ---
     // Safety net: any position repeatInd does not write must not expose a stale index from an
     // earlier iteration/cycle. Seeding with 0 (the root) makes a missed slot degrade to a
@@ -565,7 +558,7 @@ void CountingStars::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCo
               h_propIterations_, d_minCornerCS_ptr_,
               d_treeSampleCosts_ptr_, d_minCostsR1_ptr_, d_sumCostsR1_ptr_, d_cntCostsR1_ptr_,
               d_frontierNextXR1s_ptr_, d_candDoor_ptr_,
-              d_candCounts_ptr_, d_touchedR2Count_ptr_,
+              d_touchedR2Count_ptr_,
               d_unexploredSampleCosts_ptr_, h_spatialHashGrid_);
 
             // kernel2 launches h_frontierRepeatSize_ * h_propIterations_ threads, one candidate each.
@@ -580,7 +573,7 @@ void CountingStars::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCo
               d_minCornerCS_ptr_,
               d_treeSampleCosts_ptr_, d_minCostsR1_ptr_, d_sumCostsR1_ptr_, d_cntCostsR1_ptr_,
               d_frontierNextXR1s_ptr_, d_candDoor_ptr_,
-              d_candCounts_ptr_, d_touchedR2Count_ptr_,
+              d_touchedR2Count_ptr_,
               d_unexploredSampleCosts_ptr_, h_spatialHashGrid_);
 
             // kernel1 launches one block of h_activeBlockSize_ threads per repeat entry.
@@ -677,7 +670,7 @@ __global__ void CountingStars_propagateFrontier_kernel1(bool* frontier, uint* ac
                                                    int* vertexCounter, int* validVertexCounter, float* minCorner,
                                                    float* treeSampleCosts, float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
                                                    int* frontierNextXR1s, int* candDoor,
-                                                   int* candCounts, uint* touchedR2Count,
+                                                   uint* touchedR2Count,
                                                    float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid)
 {
     if(blockIdx.x >= frontierSize) return;
@@ -723,8 +716,6 @@ __global__ void CountingStars_propagateFrontier_kernel1(bool* frontier, uint* ac
             atomicAdd(&sumCostsR1[x1Vertex], cost);
             atomicAdd(&cntCostsR1[x1Vertex], 1);
 
-            atomicAdd(&candCounts[x1Vertex], 1);
-
             // --- R2 MARKING, FOR THE COVERAGE METRIC ONLY. No door reads a sub-cell in v2;
             // ordinality replaced novelty. This survives so r2_coverage_pct stays comparable with
             // the KPAX-family baselines, and it stays in THIS form because the CAS's return value
@@ -762,7 +753,7 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
                                                    float* minCorner,
                                                    float* treeSampleCosts, float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
                                                    int* frontierNextXR1s, int* candDoor,
-                                                   int* candCounts, uint* touchedR2Count,
+                                                   uint* touchedR2Count,
                                                    float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid)
 {
     int tid       = blockIdx.x * blockDim.x + threadIdx.x;
@@ -797,8 +788,6 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
             if(minCostsR1[x1Vertex] > cost) atomicMinFloat(&minCostsR1[x1Vertex], cost);
             atomicAdd(&sumCostsR1[x1Vertex], cost);
             atomicAdd(&cntCostsR1[x1Vertex], 1);
-
-            atomicAdd(&candCounts[x1Vertex], 1);
 
             // --- R2 marking for the coverage metric only, read-then-CAS (see kernel 1). ---
             if(activeSubVertices[x1SubVertex] == 0 && atomicCAS(&activeSubVertices[x1SubVertex], 0, 1) == 0)
@@ -836,7 +825,7 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
 __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                  float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
                                                  int* regionNodeCount, float costScale,
-                                                 float* candDistance, int* ordHistogram, uint* optimalCount)
+                                                 float* candDistance, int* ordHistogram)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if(tid >= frontierNextSize) return;
@@ -854,7 +843,10 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
             // what is LEFT of the budget after these, so counting them as fresh too would let one
             // node consume two doors' worth of it.
             candDistance[idx] = 0.0f;
-            atomicAdd(optimalCount, 1u);
+            // Slot CS_ORD_BUCKETS is NOT a bucket -- it is the optimal count, riding in the same
+            // buffer so the host reads both back in one synchronising memcpy. The cutoff scan
+            // below runs over [0, CS_ORD_BUCKETS) and never touches it.
+            atomicAdd(&ordHistogram[CS_ORD_BUCKETS], 1);
             return;
         }
 
@@ -958,11 +950,11 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
                                int* unexploredSamplesParentIdxs, int* treeSamplesParentIdxs, float* treeSampleCosts,
                                curandState* randomSeeds,
                                int* candDoor, int* nodeDoor, int* nodeBlocks,
-                               int* regionNodeCount, bool* regionCovered,
+                               int* regionNodeCount, bool* regionCovered, int* validVertexCounter,
                                float* minCostsR1, int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet,
                                int* iterations, int iteration,
-                               float pReactivate, int maxBlocks, int otherBlocks,
+                               float pReactivate, int maxBlocks,
                                unsigned long long* doorCounts)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1004,11 +996,16 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
 
             // --- FAN-OUT, decided here and read next iteration by propagateFrontier.
             //
-            // OPTIMAL gets the full maxBlocks; everyone else shares what the design budget has left,
-            // which the host has already divided into otherBlocks. The split is non-binding while
-            // the frontier lands at or under B (otherBlocks is then exactly maxBlocks) and bites on
-            // an overshoot, which is the case it exists for. ---
-            int blocks = (door == CS_DOOR_COST) ? maxBlocks : otherBlocks;
+            // REGION-KEYED, NOT DOOR-KEYED. A node earns the burst because it landed in ground the
+            // search has barely touched, whatever door let it in -- exactly KPAXCap's and
+            // CleanCost's `validVertexCounter[region] < 10 ? 15 : 1`.
+            //
+            // validVertexCounter was written by propagate in a completed launch, so reading it here
+            // is safe. It counts PROPAGATIONS and gains ~32 per frontier node per iteration, which
+            // is what keeps the burst a one-shot: a region crosses the threshold almost as soon as
+            // it is touched. Keying on regionNodeCount instead would leave nearly every region thin
+            // for hundreds of iterations and concentrate nothing -- see CS_NOVEL_THRESH. ---
+            int blocks = (validVertexCounter[xR1] < CS_NOVEL_THRESH) ? maxBlocks : 1;
             nodeBlocks[x1TreeIdx] = (blocks > 1) ? blocks : 1;
 
             // Update best-node index if this is the new region best. THE GUARANTEE'S TABLE: Part B
@@ -1075,7 +1072,9 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
                 {
                     frontier[treeIdx]   = true;
                     nodeDoor[treeIdx]   = CS_DOOR_BEST;
-                    nodeBlocks[treeIdx] = (otherBlocks > 1) ? otherBlocks : 1;
+                    // ONE BLOCK. A reactivated node is being revisited, not discovered, and both
+                    // ancestors set exactly 1 on both reactivation arms.
+                    nodeBlocks[treeIdx] = 1;
                     atomicAdd(&doorCounts[CountingStars::CS_SLOT_BEST], 1ULL);
                     return;
                 }
@@ -1102,7 +1101,7 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
                         {
                             frontier[treeIdx]   = true;
                             nodeDoor[treeIdx]   = CS_DOOR_REACT;
-                            nodeBlocks[treeIdx] = (otherBlocks > 1) ? otherBlocks : 1;
+                            nodeBlocks[treeIdx] = 1;   // revisited, not discovered -- see above
                             atomicAdd(&doorCounts[CountingStars::CS_SLOT_REACT], 1ULL);
                         }
                 }
@@ -1130,8 +1129,8 @@ void CountingStars::updateFrontier()
     // Per-iteration accumulators the accept passes fill. regionCovered MUST be cleared here rather
     // than in propagate: it is written by accept pass 2 and read by Part B, both inside this call.
     thrust::fill(d_doorCounts_.begin(), d_doorCounts_.end(), 0ULL);
+    // One fill covers both: slot CS_ORD_BUCKETS is the optimal count.
     thrust::fill(d_ordHistogram_.begin(), d_ordHistogram_.end(), 0);
-    thrust::fill(d_optimalCount_.begin(), d_optimalCount_.end(), 0u);
     thrust::fill(d_regionCovered_.begin(), d_regionCovered_.end(), false);
 
     // --- Collision-free fraction. Diagnostic only now that nothing consumes it, but it is the only
@@ -1156,7 +1155,9 @@ void CountingStars::updateFrontier()
     h_optimalCount_ = 0;
     h_ordCutoff_    = 0;
     h_pBoundary_    = 0.0f;
-    for(int i = 0; i < CS_ORD_BUCKETS; i++) h_ordHistogram_[i] = 0;
+    // <= : slot CS_ORD_BUCKETS is the optimal count, not a bucket. Benign either way here (the
+    // memcpy overwrites it before anything reads it) but the three clears should agree.
+    for(int i = 0; i <= CS_ORD_BUCKETS; i++) h_ordHistogram_[i] = 0;
 
     // ================================================================================
     // THE ADMISSION DECISION, IN TWO PASSES. Guard the launches: iDivUp(0, block) is 0 blocks,
@@ -1170,10 +1171,14 @@ void CountingStars::updateFrontier()
               d_activeFrontierIdxs_ptr_, h_frontierNextSize_,
               d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_unexploredSampleCosts_ptr_,
               d_regionNodeCount_ptr_, h_costScale_,
-              d_candDistance_ptr_, d_ordHistogram_ptr_, d_optimalCount_ptr_);
+              d_candDistance_ptr_, d_ordHistogram_ptr_);
 
-            cudaMemcpy(&h_optimalCount_, d_optimalCount_ptr_, sizeof(uint), cudaMemcpyDeviceToHost);
-            cudaMemcpy(h_ordHistogram_, d_ordHistogram_ptr_, CS_ORD_BUCKETS * sizeof(int), cudaMemcpyDeviceToHost);
+            // ONE synchronising copy, not two: the optimal count rides in slot CS_ORD_BUCKETS.
+            // This stall sits mid-iteration between the accept passes and serialises everything
+            // behind it, so halving it is worth the shared buffer.
+            cudaMemcpy(h_ordHistogram_, d_ordHistogram_ptr_, (CS_ORD_BUCKETS + 1) * sizeof(int),
+                       cudaMemcpyDeviceToHost);
+            h_optimalCount_ = (uint)h_ordHistogram_[CS_ORD_BUCKETS];
 
             // --- SOLVE THE CUTOFF. This is the exclusive scan, done on 256 host ints because that
             // is cheaper than launching a kernel to scan them and copying the answer back.
@@ -1252,26 +1257,12 @@ void CountingStars::updateFrontier()
     // Clamped at 1: a remainder above the tree size means "take everything", not an invalid p.
     float pReactivate = (h_treeSize_ > 0) ? fminf(1.0f, reactBudget / float(h_treeSize_)) : 0.0f;
 
-    // --- THE FAN-OUT SPLIT. blockBudget = maxBlocks * B is the DESIGN budget; optimal nodes take
-    // maxBlocks each off the top and everyone else divides the rest evenly.
-    //
-    // It is deliberately non-binding in the nominal case: frontierPlan is max(B, admitted +
-    // guaranteed), so when the frontier lands at B the divisor is exactly B - optimalCount and
-    // otherBlocks comes out at maxBlocks. It bites on an OVERSHOOT, where the optimal door keeps
-    // its full boost and the overshoot is paid for by everyone else -- and it collapses to the
-    // rep >= 1 floor when the optimal count alone exceeds B, which is the honest answer there.
-    //
-    // The buffer bound (blockCeiling, in propagateFrontier) is a SEPARATE constraint and both must
-    // hold; this one does not replace it. ---
-    float frontierPlan  = float(h_frontierNextSize_) + float(guaranteed) + reactBudget;
-    float otherCount    = fmaxf(1.0f, frontierPlan - float(h_optimalCount_));
-    long long blockBudget = (long long)h_maxBlocks_ * (long long)h_goalFrontierSize_;
-    long long spare       = blockBudget - (long long)h_maxBlocks_ * (long long)h_optimalCount_;
-    int otherBlocks = (spare > 0) ? (int)floorf(float(spare) / otherCount) : 1;
-    if(otherBlocks < 1) otherBlocks = 1;
-    // Never above maxBlocks. Unreachable while frontierPlan >= B (the algebra caps it at maxBlocks
-    // exactly), so this is a guard on that invariant rather than a live clamp.
-    if(otherBlocks > h_maxBlocks_) otherBlocks = h_maxBlocks_;
+    // NO DESIGN-BUDGET SPLIT ANY MORE. The old rule divided `maxBlocks * B` between the optimal
+    // door and everyone else, and in the nominal case the divisor came out at B - optimalCount so
+    // EVERY frontier node received maxBlocks -- it concentrated nothing while the ancestors were
+    // concentrating 15-to-1. Fan-out is now region-keyed and decided per node in Part A; the only
+    // block constraint left on the host is blockCeiling / blockScale in propagateFrontier, which is
+    // the buffer bound and a different thing entirely.
 
     // --- Update Frontier. Part A inserts and stamps blocks; Part B fills the remainder. ---
     CountingStars_updateFrontier_kernel<<<iDivUp(h_frontierNextSize_ + h_treeSize_, h_blockSize_), h_blockSize_>>>(
@@ -1279,11 +1270,11 @@ void CountingStars::updateFrontier()
       d_unexploredSamples_ptr_, d_treeSamples_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_treeSamplesParentIdxs_ptr_,
       d_treeSampleCosts_ptr_, d_randomSeeds_ptr_,
       d_candDoor_ptr_, d_nodeDoor_ptr_, d_nodeBlocks_ptr_,
-      d_regionNodeCount_ptr_, d_regionCovered_ptr_,
+      d_regionNodeCount_ptr_, d_regionCovered_ptr_, graph_.d_validCounterArray_ptr_,
       d_minCostsR1_ptr_, d_treeXR1s_ptr_, d_frontierNextXR1s_ptr_, d_bestNodeIdxPerR1_ptr_,
       d_minCost_ptr_, d_unexploredSampleCosts_ptr_, d_goalSet_ptr_,
       d_iterations_ptr_, h_itr_,
-      pReactivate, h_maxBlocks_, otherBlocks,
+      pReactivate, h_maxBlocks_,
       d_doorCounts_ptr_);
 
     // --- Read back the door counts. One memcpy for the whole "what built this tree" answer. ---

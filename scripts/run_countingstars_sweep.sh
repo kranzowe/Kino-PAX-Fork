@@ -9,8 +9,8 @@
 #
 # Per (environment, cost metric) at the COARSE delta:
 #   CountingStars   goal_frontier_size {2000, 10000, 50000} x explore_frac {0.1, 0.5}
-#                   x maxBlocks {16, 32}
-#                   = 12 points (FULL FACTORIAL) x 3 runs = 36 runs
+#                   x maxBlocks {1, 4, 16}
+#                   = 18 points (FULL FACTORIAL) x 3 runs = 54 runs
 #
 #                   maxBlocks is FIXED AT 15 and deliberately NOT an axis. In v1 it was the height
 #                   of a geometric fan-out ramp and had to be swept against the ramp's width; v2 has
@@ -29,8 +29,19 @@
 #
 # goal_frontier_size is the design's primitive: B is the TARGET the doors fill in priority order,
 # so F is an INPUT and propagations-per-node is the output. maxBlocks is the OTHER half of that --
-# B sets frontier size, maxBlocks sets propagations per node (32 x maxBlocks while the fan-out
-# split is loose). They are independent knobs, not one knob twice.
+# B sets frontier size, maxBlocks sets propagations per node. They are independent knobs.
+#
+# FAN-OUT IS REGION-KEYED THIS PASS, and that is the change under test. Blocks now follow REGION
+# THINNESS (validVertexCounter[r] < 10 ? maxBlocks : 1, reactivations always 1) -- KPAXCap's and
+# CleanCost's exact rule. The previous flat rule gave every frontier node the same count, so at
+# B = 10000 / maxBlocks = 16 the planner produced ~224 candidates per node admitted against the
+# ancestors' ~32. That was the bulk of the runtime gap, and it was the propagation kernel rather
+# than bookkeeping.
+#
+# maxBlocks = 1 reproduces the ancestors' steady state exactly: their counter is cumulative and
+# gains ~32 per frontier node per iteration, so regions cross the threshold almost at once and
+# their x15 is a one-shot burst on new ground. The old {16, 32} axis never sampled that regime --
+# and the buffer ceiling clamped both to roughly the same realised rep, so it was close to inert.
 #
 # KinoPaxPlus divides the whole propagation budget over a frontier its parent-chain pruning keeps
 # tiny -- bf = MAX_TREE_SIZE/(F*32), so 40,000 propagations per node at F = 10. That is the number
@@ -315,7 +326,7 @@ for i in "${!DELTA_LABELS[@]}"; do
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
 echo "  CountingStars:  goal_frontier_size {2000,10000,50000} x explore_frac {0.1,0.5}"
-echo "                  x maxBlocks {16,32}   = 12 points (full factorial)"
+echo "                  x maxBlocks {1,4,16}   = 18 points (full factorial)"
 echo "                  Filenames: _B<budget>_f<round(1000*frac)>_mb<maxBlocks>,"
 echo "                  e.g. CountingStars_B10000_f100_mb16."
 echo "                  THE _ca TOKEN IS GONE with the cost_accept toggle. CSVs carrying it"
@@ -334,10 +345,14 @@ echo "                  doors and both are bounded by NUM_R1_REGIONS (27,000 at 
 echo "                  delta) rather than by B, so B binds only ABOVE that count; below it"
 echo "                  budget_used runs over B. 2000 and 10000 are SOFT points where the"
 echo "                  two should converge; 50000 is where B genuinely binds."
-echo "                  maxBlocks is INDEPENDENT of B: B sets frontier size, maxBlocks sets"
-echo "                  propagations per node (32 x maxBlocks while the split is loose)."
-echo "                  READ FIRST: budget_used vs goal_frontier_size, then"
-echo "                  prop_attempted/frontier_size against KinoPaxPlus's bf, then ord_cutoff."
+echo "                  FAN-OUT IS REGION-KEYED: maxBlocks only for a node landing in a region"
+echo "                  with < 10 valid propagations, else 1; reactivations always 1. That is"
+echo "                  KPAXCap's and CleanCost's rule, ported so the runtime comparison is"
+echo "                  like-for-like. maxBlocks = 1 reproduces their steady state exactly."
+echo "                  READ FIRST: frontier_repeat_size/frontier_size (realised mean rep --"
+echo "                  must be 1 at maxBlocks=1), then prop_attempted/budget_used (candidates"
+echo "                  per admitted node; was ~224, target ~32 like the ancestors), then time"
+echo "                  to first solution against KPAXCap and CleanCost."
 echo "  CleanCost:      r2 OFF, w 0.9, k 1, cap 0.03 = 1 point (baseline)"
 echo "  KPAXCap:        cap {0.03} = 1 point"
 echo "  Score floor:    dynamic 1/N_active for KPAXCap/CleanCost; legacy EPSILON for KPAX."

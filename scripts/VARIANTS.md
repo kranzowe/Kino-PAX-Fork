@@ -609,9 +609,25 @@ which does mean COMBO's coverage delta and KPAX's seeding door keep reading the 
 one's collapse.
 
 **Knobs.** `h_goalFrontierSize_` (10000), `h_exploreFrac_` (0.1) and `h_maxBlocks_` (16) — all
-three swept. `maxBlocks` is **not** a restatement of `B`: while the fan-out split is non-binding
-every frontier node receives `32 · maxBlocks` propagations, so `B` sets the frontier's *size* and
-`maxBlocks` sets propagations *per node*.
+three swept. `B` sets the frontier's *size*; `maxBlocks` sets propagations *per node* for the nodes
+that earn the burst.
+
+**Fan-out is region-keyed, matching KPAXCap and CleanCost.** A node gets `maxBlocks` when it lands
+in a region that has seen fewer than `CS_NOVEL_THRESH = 10` collision-free propagations, and 1
+otherwise; reactivations always get 1. This is the ancestors' `validVertexCounter[r] < 10 ? 15 : 1`
+ported verbatim.
+
+It replaces a door-keyed rule that gave the optimal door `maxBlocks` and split a `maxBlocks · B`
+design budget over everyone else — a split that was **inert**, because in the nominal case the
+divisor came out at `B − optimalCount` and every frontier node received `maxBlocks` anyway. The
+planner therefore spent its block budget uniformly while its ancestors concentrated theirs 15-to-1
+on new ground: ~**224 candidates produced per node admitted** against their ~32 at
+`B = 10000, maxBlocks = 16`. That was the bulk of the runtime gap, and it was the propagation
+kernel, not bookkeeping.
+
+Keyed on `validVertexCounter` (propagations, ~32 per frontier node per iteration) and **not**
+`regionNodeCount` (admitted nodes, ~0.4 per region per iteration) — at that scale a threshold of 10
+would leave nearly every region "thin" indefinitely and concentrate nothing.
 
 **Cost acceptance is permanent.** A `h_costAccept_` toggle briefly existed to test whether the two
 cost-driven doors — the **OPTIMAL** door in accept pass 2 and the **GUARANTEE** in Part B — were
