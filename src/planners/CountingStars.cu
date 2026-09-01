@@ -193,16 +193,16 @@ CountingStars::CountingStars()
     // Share of the REMAINING budget (B - optimalCount) given to freshness. Kept equal to the
     // sweep's derived operating point (CS_DERIVED_EXPLORE_FRAC), so a standalone plan() run and
     // a --single-point sweep pass are the same planner.
-    h_exploreFrac_ = 0.1f;
+    h_exploreFrac_ = 0.5f;
 
     // ---- Fan-out. Blocks a node gets are decided at admission; see the header for the rule. ----
     // rep is a plain COUNT OF BLOCKS with no alignment constraint -- repeatInd writes rep integer
-    // entries and kernel1 launches one 32-thread block per entry, so a node at 16 gets
-    // 16 x 32 = 512 propagations. blockBudget = maxBlocks * B follows from it.
+    // entries and kernel1 launches one 32-thread block per entry, so a node at 4 gets
+    // 4 x 32 = 128 propagations.
     //
-    // SWEPT, and independent of B: while the fan-out split is non-binding this IS
-    // propagations-per-node, where B is frontier size. 16 matches the sweep's derived point.
-    h_maxBlocks_   = 16;
+    // SWEPT, and independent of B: this is propagations-per-node for the nodes that earn the burst,
+    // where B is frontier size. 4 matches the sweep's derived point.
+    h_maxBlocks_   = 4;
 
     // ---- Derived per-iteration scalars. All recomputed before they are read; these are only the
     // values the CSV would show if a run somehow logged iteration 0. ----

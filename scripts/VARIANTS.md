@@ -608,7 +608,7 @@ which does mean COMBO's coverage delta and KPAX's seeding door keep reading the 
 `scripts/check_region_math.py` proves the corrected decode is a bijection and measures the shared
 one's collapse.
 
-**Knobs.** `h_goalFrontierSize_` (10000), `h_exploreFrac_` (0.1) and `h_maxBlocks_` (16) — all
+**Knobs.** `h_goalFrontierSize_` (10000), `h_exploreFrac_` (0.5) and `h_maxBlocks_` (4) — all
 three swept. `B` sets the frontier's *size*; `maxBlocks` sets propagations *per node* for the nodes
 that earn the burst.
 

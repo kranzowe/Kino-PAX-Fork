@@ -41,31 +41,52 @@ static std::string g_vizDir;
 // both ancestors do.
 //
 // READ frontier_repeat_size / frontier_size FIRST: that is the realised mean rep. At maxBlocks = 1
-// it must be exactly 1; at 16 it should sit near 1 with a small excess from thin regions, NOT near
-// the old flat 7.
-static const int GOAL_FRONTIER_SIZES[] = {2000, 10000, 50000};
+// it must be exactly 1; at 4 it should sit near 1 with a small excess from thin regions.
+//
+// EVERY B ON THIS GRID IS BELOW NUM_R1_REGIONS (27,000 at the coarse delta), and that is a
+// deliberate narrowing rather than an oversight. Two doors are uncapped and both are bounded by
+// the region count rather than by B -- the OPTIMAL door (at most one region best per region per
+// iteration) and the GUARANTEE (at most one node per uncovered region) -- so B stops binding once
+// nActive passes it.
+//
+// WHICH MEANS B BINDS EARLY IN A RUN AND THEN STOPS, at a point that moves with B: almost at once
+// at 200, much later at 10000. That is not the axis going inert -- it is the axis acting exactly
+// where time-to-first-solution is decided, which is the question this pass is asking. Read
+// budget_used/B as a curve over iterations, not as a single number: the iteration where it
+// crosses 1 IS the measurement.
+//
+// A LATE-RUN OVERSHOOT IS THEREFORE EXPECTED AT EVERY POINT and is not a defect. The gap between
+// budget_used and B is how much of the frontier the priority doors take before the draw is offered
+// anything at all.
+static const int GOAL_FRONTIER_SIZES[] = {200, 2000, 6000, 10000};
 static const int NUM_GOAL_FRONTIER_SIZES = sizeof(GOAL_FRONTIER_SIZES) / sizeof(GOAL_FRONTIER_SIZES[0]);
 
 // Share of the REMAINING budget (B - optimalCount) handed to the freshness door; the rest goes to
-// the guarantee and the draw. The label token is round(1000 x frac), NOT 100x -- see
-// countingStarsLabel().
-static const float EXPLORE_FRACS[] = {0.1f, 0.5f};
+// the guarantee and the draw. 0.01 -> 0.9 is a 90x span, wide enough that if the freshness door
+// matters at all it has to show here: at 0.01 it is a rounding error against the guarantee and the
+// draw, at 0.9 it takes almost everything the optimal door left.
+//
+// The label token is round(1000 x frac), NOT 100x -- see countingStarsLabel().
+static const float EXPLORE_FRACS[] = {0.01f, 0.5f, 0.9f};
 static const int NUM_EXPLORE_FRACS = sizeof(EXPLORE_FRACS) / sizeof(EXPLORE_FRACS[0]);
 
 // Blocks a node receives when it lands in a region the search has barely touched
 // (validVertexCounter[r] < CS_NOVEL_THRESH). Everything else -- populated regions, and both
 // reactivation arms -- gets 1, matching KPAXCap and CleanCost exactly.
 //
-// maxBlocks = 1 IS THE POINT OF THIS AXIS. It makes every node rep 1, which is the ancestors'
-// steady state: their validVertexCounter is cumulative and gains ~32 per frontier node per
-// iteration, so regions cross the threshold almost as soon as they are touched and their x15 is a
-// one-shot burst on new ground, not a sustained boost. The previous grid was {16, 32}, which never
-// sampled that regime at all -- and the buffer ceiling clamped BOTH of those to roughly the same
-// realised rep early on, so the axis was close to inert.
+// maxBlocks = 1 IS THE REFERENCE POINT. It makes every node rep 1, which is the ancestors' steady
+// state: their validVertexCounter is cumulative and gains ~32 per frontier node per iteration, so
+// regions cross the threshold almost as soon as they are touched and their x15 is a one-shot burst
+// on new ground, not a sustained boost. 4 is the smallest setting where the burst is doing
+// anything at all, so the pair brackets "no concentration" against "a little".
+//
+// 16 IS OFF THE GRID NOW. With the fan-out rule region-keyed the burst only reaches nodes landing
+// in thin regions, so the high settings that mattered under the old flat rule are no longer where
+// the question is.
 //
 // Independent of B: B sets the frontier's SIZE, maxBlocks sets propagations PER NODE
 // (32 * maxBlocks) for the nodes that earn the burst.
-static const int MAX_BLOCKS_GRID[] = {1, 4, 16};
+static const int MAX_BLOCKS_GRID[] = {1, 4};
 static const int NUM_MAX_BLOCKS = sizeof(MAX_BLOCKS_GRID) / sizeof(MAX_BLOCKS_GRID[0]);
 
 // ---- KinoPaxSTARCleanCost baseline point ----
@@ -89,8 +110,8 @@ static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0
 // member of its list -- the flag selects BY VALUE, so a derived point outside the grid would run
 // nothing at all. cross_check_countingstars_grid.py asserts exactly that.
 static const int   CS_DERIVED_GOAL_FRONTIER = 10000;
-static const int   CS_DERIVED_MAX_BLOCKS    = 16;
-static const float CS_DERIVED_EXPLORE_FRAC  = 0.1f;
+static const int   CS_DERIVED_MAX_BLOCKS    = 4;
+static const float CS_DERIVED_EXPLORE_FRAC  = 0.5f;
 static const float CAP_DERIVED              = 0.03f;
 
 static bool g_singlePoint = false;
@@ -107,7 +128,7 @@ static bool capSkip(float cap)
 // it, so the printed point count can never drift from the grid actually executed.
 static bool countingStarsSkip(int goalFrontier, float exploreFrac, int maxBlocks)
 {
-    // FULL FACTORIAL: 3 budgets x 2 fracs x 2 maxBlocks = 12 points. --single-point is the only skip.
+    // FULL FACTORIAL: 4 budgets x 3 fracs x 2 maxBlocks = 24 points. --single-point is the only skip.
     if(!g_singlePoint) return false;
     return goalFrontier != CS_DERIVED_GOAL_FRONTIER
         || maxBlocks != CS_DERIVED_MAX_BLOCKS

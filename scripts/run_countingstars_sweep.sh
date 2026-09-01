@@ -8,9 +8,9 @@
 # exists; TrueStar answers a cap question this planner does not ask.
 #
 # Per (environment, cost metric) at the COARSE delta:
-#   CountingStars   goal_frontier_size {2000, 10000, 50000} x explore_frac {0.1, 0.5}
-#                   x maxBlocks {1, 4, 16}
-#                   = 18 points (FULL FACTORIAL) x 3 runs = 54 runs
+#   CountingStars   goal_frontier_size {200, 2000, 6000, 10000}
+#                   x explore_frac {0.01, 0.5, 0.9} x maxBlocks {1, 4}
+#                   = 24 points (FULL FACTORIAL, coarse delta only) x 3 runs = 72 runs
 #
 #                   maxBlocks is FIXED AT 15 and deliberately NOT an axis. In v1 it was the height
 #                   of a geometric fan-out ramp and had to be swept against the ramp's width; v2 has
@@ -52,13 +52,15 @@
 # OPTIMAL door (at most one region best per region per iteration) and the GUARANTEE (at most one
 # node per uncovered region). So B binds only ABOVE that count.
 #
-#   2000, 10000   BELOW -- B is a SOFT target and budget_used runs over it, held near the
-#                           active-region count by the guarantee. Expect the two to converge on
-#                           one frontier_size curve.
-#   50000         ABOVE -- B genuinely binds. This is the point that tests the design claim.
+# EVERY B ON THIS GRID IS BELOW THAT COUNT (200 / 2000 / 6000 / 10000 against 27,000), so B stops
+# binding once nActive passes it. THAT IS THE POINT: B binds EARLY and then stops, at an iteration
+# that moves with B -- almost at once at 200, much later at 10000 -- and early is exactly where
+# time-to-first-solution is decided.
 #
-# If the two low points do converge, that is direct evidence that capping the guarantee
-# (KinoPaxPlus's hysteresis is the precedent) is the next lever, not a smaller B.
+# Read budget_used/B as a CURVE over iterations, not a single number: the iteration where it
+# crosses 1 IS the measurement, and a late-run overshoot is expected at every point. If the four
+# curves are indistinguishable even early, capping the guarantee (KinoPaxPlus's hysteresis is the
+# precedent) is the next lever, not a different B.
 #
 # READ IN THIS ORDER:
 #   1. budget_used vs goal_frontier_size. THE CLAIM THE WHOLE DESIGN RESTS ON. A persistent
@@ -325,8 +327,9 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  CountingStars:  goal_frontier_size {2000,10000,50000} x explore_frac {0.1,0.5}"
-echo "                  x maxBlocks {1,4,16}   = 18 points (full factorial)"
+echo "  CountingStars:  goal_frontier_size {200,2000,6000,10000}"
+echo "                  x explore_frac {0.01,0.5,0.9} x maxBlocks {1,4}"
+echo "                  = 24 points (full factorial, coarse delta only)"
 echo "                  Filenames: _B<budget>_f<round(1000*frac)>_mb<maxBlocks>,"
 echo "                  e.g. CountingStars_B10000_f100_mb16."
 echo "                  THE _ca TOKEN IS GONE with the cost_accept toggle. CSVs carrying it"

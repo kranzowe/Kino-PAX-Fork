@@ -7,15 +7,19 @@
 % DELTA_EXTRA_ARGS in run_countingstars_sweep.sh):
 %
 %   CountingStars         goal_frontier_size {2000, 10000, 50000}
-%                         x explore_frac {0.1, 0.5} x maxBlocks {1, 4, 16}         = 18
+%                         x explore_frac {0.01, 0.5, 0.9} x maxBlocks {1, 4}       = 24
 %   KinoPaxSTARCleanCost  r2 OFF, w 0.9, k 1, cap 0.03  (one tuned reference point) =  1
 %   KPAXCap               cap {0.03}                                               =  1
 %   KPAX, KinoPaxPlus                                                              =  2
 %                                                                                  -----
-%                                                              at the coarse delta    22
+%                                                              at the coarse delta    28
 %   KinoPaxPlus at the two finer deltas                                            +  2
 %                                                                                  -----
-%                                                                                     24
+%                                                                                     30
+%
+% CountingStars runs at the COARSE delta only -- that is what the discretization factor in the
+% grid above means, and it is enforced by DELTA_EXTRA_ARGS in run_countingstars_sweep.sh
+% (--only-kinopaxplus at the two finer deltas), mirrored by deltaPlusOnly below.
 %
 % WHAT THIS SWEEP IS ASKING. v2 makes goal_frontier_size B the PRIMITIVE: four doors fill it in
 % priority order -- OPTIMAL (distance 0, uncapped), FRESHEST (explore_frac of what is left, taken
@@ -43,15 +47,20 @@
 %                               inert; 256 = saturated, so explore_frac is not binding either.
 %   4. block_scale              near 0 = the rep >= 1 floor ate the budget, fan-out split is inert.
 %
-% WHERE B BINDS. Two doors are uncapped and BOTH are bounded by NUM_R1_REGIONS rather than by B:
-% OPTIMAL (at most one region best per region per iteration) and GUARANTEE (at most one node per
-% uncovered region). So B binds only ABOVE that count -- 27,000 at the coarse delta -- and
-% B = 2000 / 10000 sit in the SOFT regime with budget_used pinned near the active-region count.
-% Expect those two to converge on one frontier_size curve; only B = 50000 tests the budget.
+% WHERE B BINDS -- AND EVERY B ON THIS GRID IS BELOW THE THRESHOLD. Two doors are uncapped and BOTH
+% are bounded by NUM_R1_REGIONS rather than by B: OPTIMAL (at most one region best per region per
+% iteration) and GUARANTEE (at most one node per uncovered region). So B stops binding once nActive
+% passes it, and 200 / 2000 / 6000 / 10000 are all under the coarse delta's 27,000.
 %
-% If they do converge, that is direct evidence that capping the guarantee (KinoPaxPlus's hysteresis
-% is the precedent -- un-prune a region best only after ~5 idle iterations) is the next lever, not
-% a smaller B.
+% THAT IS THE POINT, NOT A PROBLEM. B binds EARLY in a run and then stops, at an iteration that
+% moves with B -- almost at once at 200, much later at 10000. Early is exactly where
+% time-to-first-solution is decided, so the axis is acting where the question is. Read budget_used/B
+% as a CURVE over iterations rather than a single number: the iteration where it crosses 1 is the
+% measurement, and a late-run overshoot is expected at every point.
+%
+% If the four B curves are indistinguishable even early, that is direct evidence that capping the
+% guarantee (KinoPaxPlus's hysteresis is the precedent -- un-prune a region best only after ~5 idle
+% iterations) is the next lever, not a different B.
 %
 % SCORE FLOOR. Graph's Syclop floor is 1/N_active (the mean share) rather than a fixed
 % EPSILON = 1e-2, which exceeded the score it floored by ~270x and capped the number of
@@ -140,15 +149,15 @@ deltaLabel = '3 deltas overlaid';
 % and is KEPT now that it is gone, because switching back would make `_f100` ambiguous against the
 % CSVs already labelled that way. The filename letter is `f` to match.
 %
-csGoalFrontierSizes = [2000 10000 50000];
-csExploreFracs      = [100 500];
-csMaxBlocks         = [1 4 16];
+csGoalFrontierSizes = [200 2000 6000 10000];
+csExploreFracs      = [10 500 900];
+csMaxBlocks         = [1 4];
 
 % The derived operating point that --single-point selects. EVERY component must be a member of its
 % list, because the flag selects BY VALUE -- a derived point outside the grid would run nothing.
 csDerivedGoalFrontier = 10000;
-csDerivedExploreFrac  = 100;        % explore_frac 0.1 -> round(1000 * 0.1)
-csDerivedMaxBlocks    = 16;
+csDerivedExploreFrac  = 500;        % explore_frac 0.5 -> round(1000 * 0.5)
+csDerivedMaxBlocks    = 4;
 
 % CleanCost baseline point - one series, the well-tuned operating point. Same label format as the
 % cost sweep, so its historical CSVs load here unchanged.
@@ -163,15 +172,17 @@ kpaxCapCaps = [3];
 
 % THREE axes, three style channels, so nothing has to double up.
 % colour = goal_frontier_size, because B is what the whole design turns on; DARKER IS A SMALLER
-% BUDGET, which is the direction the design is pushing. The ramp also encodes where B sits relative
-% to NUM_R1_REGIONS: the two dark rows are the SOFT points (B below the region count, where the
-% guarantee pins F and the two should converge), the light row is where B genuinely binds.
-%   rows: B 2000, B 10000, B 50000
-budgetColors = [0.09 0.16 0.28;    % B 2000   |  soft: F pinned by the guarantee, not by B
-                0.16 0.38 0.63;    % B 10000  |
-                0.55 0.68 0.84];   % B 50000  :  binding (largest frontier, fewest props per node)
-fracStyles   = {'-', '--'};        % explore_frac = 0.1, 0.5
-blockMarkers = {'o', 's', '^'};    % maxBlocks = 1, 4, 16 -- scatter only
+% BUDGET, which is the direction the design is pushing. Every B here is below NUM_R1_REGIONS, so
+% the ramp no longer separates "soft" from "binding" -- it separates HOW LONG each one binds for
+% before nActive overtakes it.
+%   rows: B 200, B 2000, B 6000, B 10000
+budgetColors = [0.08 0.08 0.08;    % B 200    stops binding almost immediately
+                0.11 0.24 0.40;    % B 2000
+                0.20 0.45 0.66;    % B 6000
+                0.55 0.68 0.84];   % B 10000  binds longest (largest frontier, fewest props/node)
+fracStyles   = {'-', '--', ':'};   % explore_frac = 0.01, 0.5, 0.9
+blockMarkers = {'o', 's'};         % maxBlocks = 1, 4 -- scatter only
+                                   % mb 1 is the ancestors' steady state (every node rep 1)
                                    % mb 1 is the ancestors' steady state (every node rep 1)
 
 % CleanCost baseline: crimson, distinct from every budget colour, drawn as a reference anchor.
