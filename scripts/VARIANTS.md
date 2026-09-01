@@ -608,28 +608,16 @@ which does mean COMBO's coverage delta and KPAX's seeding door keep reading the 
 `scripts/check_region_math.py` proves the corrected decode is a bijection and measures the shared
 one's collapse.
 
-**Knobs.** `h_goalFrontierSize_` (10000), `h_exploreFrac_` (0.1), `h_maxBlocks_` (16) and
-`h_costAccept_` (true) — all four swept. `maxBlocks` is **not** a restatement of `B`: while the
-fan-out split is non-binding every frontier node receives `32 · maxBlocks` propagations, so `B`
-sets the frontier's *size* and `maxBlocks` sets propagations *per node*.
+**Knobs.** `h_goalFrontierSize_` (10000), `h_exploreFrac_` (0.1) and `h_maxBlocks_` (16) — all
+three swept. `maxBlocks` is **not** a restatement of `B`: while the fan-out split is non-binding
+every frontier node receives `32 · maxBlocks` propagations, so `B` sets the frontier's *size* and
+`maxBlocks` sets propagations *per node*.
 
-**The cost-acceptance toggle.** `h_costAccept_ = false` removes **both** cost-driven admissions —
-the **OPTIMAL** door in accept pass 2 *and* the **GUARANTEE** in Part B — leaving a frontier of
-freshness admissions plus the uniform draw.
-
-It has to be both. `regionCovered` is written *only* by the optimal door, so disabling that door
-alone leaves every active region reading as uncovered, fires the guarantee for all of them, and
-makes the frontier **larger**. Gating them together is also what makes the budget exact: those two
-are the only uncapped doors and the only reason `budget_used` can overrun `B`, so with the toggle
-off `budget_used ≤ B` holds by construction and `B` binds at every setting.
-
-Three kernels take the flag. Accept **pass 1** needs it because its region-best early return skips
-the ordinality histogram — gating only pass 2 would leave region bests falling through *both* doors
-and being rejected every iteration for the crime of being cheap.
-
-The trade is the point: with cost acceptance off nothing preferentially expands cheap nodes, so
-expect a faster first solution at a worse final cost. The sweep reads it on the
-time-to-first-solution vs final-cost scatter, never on either axis alone.
+**Cost acceptance is permanent.** A `h_costAccept_` toggle briefly existed to test whether the two
+cost-driven doors — the **OPTIMAL** door in accept pass 2 and the **GUARANTEE** in Part B — were
+what held time-to-first-solution back. It has been removed: those doors are what makes the search
+converge on cost at all, and without them nothing preferentially expands cheap nodes. Both always
+run.
 
 **Removed in v2:** `h_exploreCount0_/1_`, `h_costCount0_/1_`, `h_reactCount0_/1_`,
 `countingStarsRamp()`, `h_fanHalfLife_` and the geometric ramp, `d_novelCounts_`, `d_candNovel_`, and

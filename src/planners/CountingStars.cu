@@ -193,13 +193,9 @@ CountingStars::CountingStars()
     h_goalFrontierSize_ = 10000;
 
     // Share of the REMAINING budget (B - optimalCount) given to freshness. Kept equal to the
-    // sweep's derived operating point (CS_DERIVED_EXPLORE_FRAC_ON), so a standalone plan() run and
+    // sweep's derived operating point (CS_DERIVED_EXPLORE_FRAC), so a standalone plan() run and
     // a --single-point sweep pass are the same planner.
     h_exploreFrac_ = 0.1f;
-
-    // Cost acceptance ON by default: the planner's normal behaviour, and the arm the toggle is
-    // read against. See the header for why switching it off has to remove BOTH cost-driven doors.
-    h_costAccept_ = true;
 
     // ---- Fan-out. Blocks a node gets are decided at admission; see the header for the rule. ----
     // rep is a plain COUNT OF BLOCKS with no alignment constraint -- repeatInd writes rep integer
@@ -212,7 +208,7 @@ CountingStars::CountingStars()
 
     // ---- Derived per-iteration scalars. All recomputed before they are read; these are only the
     // values the CSV would show if a run somehow logged iteration 0. ----
-    h_optimalCount_        = 0;   // stays 0 for the whole run when h_costAccept_ is false
+    h_optimalCount_        = 0;
     h_ordCutoff_           = 0;
     h_pBoundary_           = 0.0f;
     h_guaranteedReact_     = 0;
@@ -839,7 +835,7 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
 // so the flag written into candDistance is 0 for exactly the set the comparison selects.
 __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                  float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
-                                                 int* regionNodeCount, float costScale, bool costAccept,
+                                                 int* regionNodeCount, float costScale,
                                                  float* candDistance, int* ordHistogram, uint* optimalCount)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -852,12 +848,7 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
     int   xR1  = frontierNextXR1s[idx];
     float m    = minCostsR1[xR1];
 
-    // THE EARLY RETURN IS GATED, and that gate is the whole reason this kernel takes the flag.
-    // It SKIPS THE HISTOGRAM: with cost acceptance off, an ungated return would leave every region
-    // best out of the freshness competition as well as out of the optimal door, so it would be
-    // rejected every iteration for the crime of being cheap. Falling through instead lets it
-    // compete on ordinality like any other candidate.
-    if(costAccept && cost <= m)
+    if(cost <= m)
         {
             // OPTIMAL. Uncapped, and it does not enter the histogram: the freshness door spends
             // what is LEFT of the budget after these, so counting them as fresh too would let one
@@ -871,11 +862,6 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
     // mark. Two ways it could be: a collapsed costScale (the ratio is 0/0 rather than infinite),
     // and an underflow when the spread is enormous next to the gap. Both fall back to the raw
     // difference, which cannot be 0 here: cost > m, and float subtraction of nearby values is exact.
-    //
-    // WITH costAccept FALSE a region best reaches this line and writes distance 0 anyway (cost == m
-    // makes both the ratio and the fallback 0). That is harmless ONLY because pass 2 gates the
-    // optimal branch on the FLAG rather than on distance == 0. Do not "simplify" pass 2 back to a
-    // bare distance test.
     float d = (costScale > 0.0f) ? ((cost - m) / costScale) : (cost - m);
     candDistance[idx] = (d != 0.0f) ? d : (cost - m);
 
@@ -907,7 +893,7 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
                                                  int* frontierNextXR1s, int* regionNodeCount,
                                                  float* candDistance, bool* frontierNext, int* candDoor,
                                                  bool* regionCovered, curandState* randomSeeds,
-                                                 int ordCutoff, float pBoundary, bool costAccept,
+                                                 int ordCutoff, float pBoundary,
                                                  unsigned long long* doorCounts)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -919,9 +905,7 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
     // --- OPTIMAL: first claim on the budget, every iteration. That is a stronger optimality
     // guarantee than v1's region-best reactivation, which only restored a region's best AFTER it
     // had already been passed over. ---
-    // GATED ON THE FLAG, NOT ON THE DISTANCE. With cost acceptance off a region best still carries
-    // distance 0 out of pass 1 (see there), so a bare distance test would let the door back in.
-    if(costAccept && candDistance[idx] == 0.0f)
+    if(candDistance[idx] == 0.0f)
         {
             candDoor[idx] = CS_DOOR_COST;
             // Part B's guarantee is deduplicated against this: a region whose best came back in
@@ -978,7 +962,7 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
                                float* minCostsR1, int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet,
                                int* iterations, int iteration,
-                               float pReactivate, int maxBlocks, int otherBlocks, bool costAccept,
+                               float pReactivate, int maxBlocks, int otherBlocks,
                                unsigned long long* doorCounts)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1087,11 +1071,7 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
             // atomicExch, so ties resolve arbitrarily -- exactly one node per region, which is what
             // this arm wants. A Part A write racing this read can only move the guarantee by one
             // node for one iteration, and the covered case is gated by regionCovered anyway.
-            // GATED with the optimal door, and they must be gated TOGETHER. regionCovered is
-            // written only by the optimal door, so disabling that door alone would leave every
-            // active region reading as uncovered and fire this arm for all of them -- turning a
-            // change meant to SHRINK the frontier into one that grows it to ~nActive.
-            if(costAccept && !regionCovered[xR1] && treeIdx == bestNodeIdxPerR1[xR1])
+            if(!regionCovered[xR1] && treeIdx == bestNodeIdxPerR1[xR1])
                 {
                     frontier[treeIdx]   = true;
                     nodeDoor[treeIdx]   = CS_DOOR_BEST;
@@ -1189,7 +1169,7 @@ void CountingStars::updateFrontier()
             CountingStars_acceptPass1_kernel<<<iDivUp(h_frontierNextSize_, h_blockSize_), h_blockSize_>>>(
               d_activeFrontierIdxs_ptr_, h_frontierNextSize_,
               d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_unexploredSampleCosts_ptr_,
-              d_regionNodeCount_ptr_, h_costScale_, h_costAccept_,
+              d_regionNodeCount_ptr_, h_costScale_,
               d_candDistance_ptr_, d_ordHistogram_ptr_, d_optimalCount_ptr_);
 
             cudaMemcpy(&h_optimalCount_, d_optimalCount_ptr_, sizeof(uint), cudaMemcpyDeviceToHost);
@@ -1233,7 +1213,7 @@ void CountingStars::updateFrontier()
               d_frontierNextXR1s_ptr_, d_regionNodeCount_ptr_,
               d_candDistance_ptr_, d_frontierNext_ptr_, d_candDoor_ptr_,
               d_regionCovered_ptr_, d_randomSeeds_ptr_,
-              h_ordCutoff_, h_pBoundary_, h_costAccept_,
+              h_ordCutoff_, h_pBoundary_,
               d_doorCounts_ptr_);
         }
 
@@ -1261,19 +1241,11 @@ void CountingStars::updateFrontier()
     // contributes nothing and B becomes a soft floor -- which is exactly the case the header
     // documents for B <= NUM_R1_REGIONS.
     // ================================================================================
-    // With cost acceptance off the guarantee arm never fires, so the reduction has nothing to
-    // count -- skip it rather than sweeping NUM_R1_REGIONS to prove it is 0. regionCovered is
-    // all-false in that case too (only the optimal door writes it), so the predicate would return
-    // the full active-region count and be WRONG, not merely wasteful.
-    int guaranteed = 0;
-    if(h_costAccept_)
-        {
-            CountingStars_UncoveredBest uncovered{d_bestNodeIdxPerR1_ptr_, d_regionCovered_ptr_};
-            guaranteed = thrust::transform_reduce(thrust::device,
-                                                  thrust::counting_iterator<int>(0),
-                                                  thrust::counting_iterator<int>(NUM_R1_REGIONS),
-                                                  uncovered, 0, thrust::plus<int>());
-        }
+    CountingStars_UncoveredBest uncovered{d_bestNodeIdxPerR1_ptr_, d_regionCovered_ptr_};
+    int guaranteed = thrust::transform_reduce(thrust::device,
+                                              thrust::counting_iterator<int>(0),
+                                              thrust::counting_iterator<int>(NUM_R1_REGIONS),
+                                              uncovered, 0, thrust::plus<int>());
     h_guaranteedReact_ = (uint)guaranteed;
 
     float reactBudget = fmaxf(0.0f, float(h_goalFrontierSize_) - float(h_frontierNextSize_) - float(guaranteed));
@@ -1311,7 +1283,7 @@ void CountingStars::updateFrontier()
       d_minCostsR1_ptr_, d_treeXR1s_ptr_, d_frontierNextXR1s_ptr_, d_bestNodeIdxPerR1_ptr_,
       d_minCost_ptr_, d_unexploredSampleCosts_ptr_, d_goalSet_ptr_,
       d_iterations_ptr_, h_itr_,
-      pReactivate, h_maxBlocks_, otherBlocks, h_costAccept_,
+      pReactivate, h_maxBlocks_, otherBlocks,
       d_doorCounts_ptr_);
 
     // --- Read back the door counts. One memcpy for the whole "what built this tree" answer. ---
