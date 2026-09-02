@@ -178,8 +178,8 @@ COST_MODES=(0)
 # 0.02 wide against an agent diameter of 0.01 (AGENT_RADIUS 0.005). Expect low success rates there,
 # and read the success-rate subplot alongside the cost bars: unsolved runs are dropped from the cost
 # mean rather than penalised, so a config that solved once cheaply can look best.
-ENV_NAMES=("house")
-ENV_OBSTACLES=("../include/config/obstacles/house/obstacles.csv")
+ENV_NAMES=("narrowPassage")
+ENV_OBSTACLES=("../include/config/obstacles/narrowPassage/obstacles.csv")
 
 # --- Full environment set (uncomment to restore; comment out the block above) ---
 # ENV_NAMES=("house" "zigzag" "narrowPassage")
