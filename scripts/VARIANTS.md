@@ -514,9 +514,11 @@ benefit depends on seeding still supplying coverage underneath it.
 
 Derived from KinoPaxSTARCOMBO. **v1** (branch `CountingStarsAlgorithm`) replaced COMBO's acceptance
 probability with per-region counts. **v2** (branch `CountingStarsV2`, same class name, evolved in
-place) replaces those counts with **one global node budget, filled in priority order**. COMBO stays
-as the comparison arm; v1 stays on its own branch, which does mean v1 and v2 cannot appear in one
-figure without merging the two.
+place) replaced those counts with **one global node budget, filled in priority order**. **v3**
+(branch `CountingStarsV3`, same class name, evolved in place again) **derives** that budget instead
+of sweeping it and adds a **fifth door that admits a node for being cheap rather than only for being
+the cheapest**. COMBO stays as the comparison arm; each earlier version stays on its own branch,
+which does mean no two of them can appear in one figure without merging.
 
 **Why the probability had to go (v1's argument, still load-bearing).** COMBO admitted with
 `P = min(pMax, shape · pTargetAccept)`, where `pTargetAccept` was solved so the *expected* admission
@@ -642,6 +644,146 @@ ordinality source. **Removed in v1, still absent:** the whole shape apparatus (`
 `comboDeltas`, `comboBlendWeights`, μ+N·σ, every `h_kAcc*`/`h_kFan*`/`h_blend*`), both budget
 scalars, `h_selectivity_`, the growth schedule, and every statistic that existed only to feed them.
 
+**v3 — the budget is derived, and cheapness becomes a door.**
+
+Two changes, and the second is the substantive one.
+
+**1. `B` is derived, not hand-swept.** v2's grid was `goal_frontier_size {200, 2000, 6000, 10000}`
+with no derivation behind any of them — the budget was the design's primitive, and its value was a
+guess. The buffer and the iteration count are the only things that actually constrain a frontier
+size, so that is what it should be a function of:
+
+    B = floor(fill_frac * MAX_TREE_SIZE / MAX_ITER)
+
+"the frontier size that fills the tree exactly at `MAX_ITER`", scaled by `fill_frac`, so the
+remaining `1 - fill_frac` of the buffer is what the uncapped optimal door is left to spend.
+`h_fillFrac_` (0.75) is the only knob; `h_goalFrontierSize_` becomes an **output**, computed in
+`resetPlanner` — which is the correct point, because every caller sets the tunables *before* the
+reset, the same ordering `d_nodeBlocks_`'s fill from `h_maxBlocks_` already relies on. It rides into
+every CSV as the `goal_frontier_size` column, which retires the plot script's "B travels with the
+series" workaround: the budget figure now divides by what the run actually used. `h_fillIters_`
+(default `MAX_ITER`) is exposed so a benchmark running to a different cap can align it rather than
+silently sizing `B` against the wrong run length; the sweep deliberately leaves it alone, so
+`fill_frac` means the same `B` there as in a `plan()` call.
+
+**2. There is now a way to be admitted for being CHEAP.** v2's only cost-driven admission was the
+OPTIMAL door, `cost <= minCostsR1[r]` — a threshold with nothing behind it, so a candidate one part
+in 10⁶ above its region's minimum was treated exactly like one at ten times the minimum. The new
+**CHEAPEST** door selects the top `cost_frac * B` smallest cost distances the same way the freshness
+door selects the top `explore_frac * B` smallest ordinalities: a histogram, an exclusive scan, and a
+boundary roll. A previous branch did this with `thrust::sort_by_key` over the distances and kept
+breaking; **nothing here needs a rank**, and the two selections share one `csSolveCutoff` helper.
+
+**Its buckets are LOG and anchored at an exactly computed `distMax`, and both halves matter.** A
+distance is `(cost − minCostsR1[r]) / costScale`, so it is dimensionless and piles up near 0 with a
+long tail — the region minimum is by construction the left edge of every region's own distribution.
+Under linear buckets one pathological region sets `distMax` and compresses the entire real
+distribution into bucket 0, where the boundary roll degrades the door to a uniform draw among
+near-optimal candidates. The map is
+`b = clamp(255 + 12·log2(d/distMax), 0, 255)`, which resolves 21 octaves below the anchor at 12
+buckets each. Monotonicity is the only property the scan needs, and log has it, so the selection
+stays exact either way.
+
+`distMax` costs **one atomic and one reduction, and no third pass**. Propagate gains an
+`atomicMaxFloat` on a new `d_maxCostsR1_` beside the existing `atomicMinFloat`, and the host reduces
+`max_r (maxCostsR1[r] − minCostsR1[r]) / costScale` alongside the three `costScale` reductions that
+already run before pass 1. That bound is **exact, not conservative**: every candidate's own cost went
+through the `atomicMax` for its region, so `cost − min_r ≤ max_r − min_r ≤ spreadMax`.
+`d_maxCostsR1_` is **per-iteration** where `d_minCostsR1_` is cumulative — the asymmetry is the
+point, since a cumulative max would anchor the histogram on a spread no current candidate can reach
+and the top buckets would empty out over a run. It is therefore cleared at the top of
+`propagateFrontier`, **not** with the accept passes' accumulators in `updateFrontier`, which run
+after the launch that fills it.
+
+**The budget splits three ways by fixed fraction**, not "one share plus a remainder":
+
+| share | door | budget |
+|---|---|---|
+| `h_exploreFrac_` (0.1) | FRESHEST — lowest region ordinality | `B · explore_frac` |
+| `h_costFrac_` (0.6) | **CHEAPEST — lowest cost distance** | `B · cost_frac` |
+| `h_reactFrac_` = `1 − explore − cost` | DRAW — uniform over the tree | `p = react_frac · B / treeSize` |
+
+All three are fractions of **B itself**, not of `B − optimalCount`: v2 handed freshness a share of
+what the optimal door had left, which made the freshness door's size depend on a count it has nothing
+to do with. OPTIMAL and the region-best GUARANTEE stay uncapped and spend on top, so the frontier is
+`optimalCount + B·(explore + cost) + guaranteed + B·react` in expectation — over `B`, deliberately,
+by an amount `budget_used` reports directly.
+
+**The two selection doors are a UNION, not a priority chain.** They select over the same candidate
+pool on independent signals, so a candidate can clear both — and it is still one tree node, so the
+second admission is spent as **fan-out**: `CS_DOOR_BOTH` takes `maxBlocks` whatever its region's
+thinness says. Chaining them would make the second door's realised count depend on the first door's
+picks, so neither would meet its share. The door counters therefore **overlap by construction**, and
+`CS_SLOT_BOTH` is what makes them add back up:
+`admitted == optimal + explore + costdist − both`, exact every iteration because pass 2 is the only
+door writer and every candidate takes exactly one of its branches.
+
+**`explore_frac = 0` and `cost_frac = 0` are real ablation arms, not special cases.** `X = 0` makes
+`csSolveCutoff` return cutoff 0 / pBoundary 0, and the door admits exactly nothing. `(0, 0)` is the
+sweep's internal control: OPTIMAL + GUARANTEE + a full-`B` uniform draw and nothing else.
+
+**Two atomics removed from the hot kernel**, both by answering "is this duplicative?" rather than by
+profiling:
+
+* `d_cntCostsR1_` **is gone.** It was incremented in the same `if(valid)` branch as
+  `graph_.d_validCounterArray_`, once each per collision-free candidate, and both were cleared only
+  in `resetPlanner` — so they were **equal at every point in a run**. The mean's denominator now
+  reads the graph counter (64-bit, since the total valid-sample count over a long run passes what an
+  `int` accumulator holds), and one per-region array and one fill go with it.
+* `graph_.d_counterArray_`'s per-region `atomicAdd` **is gone.** It counted *attempted* propagations
+  — one per thread whether it collided or not, ~32× the frontier per iteration onto a per-region
+  address, the hottest atomic in the planner — and its only consumer was `h_globalCollisionFrac_`, a
+  diagnostic. Both of that fraction's terms are already exact on the host: `h_propAttempted_` from
+  the launch geometry, `h_candidatesPreGate_` from the post-propagate scan. Two reductions go with
+  it. The value is now per-iteration rather than run-cumulative. Nothing else reads `counterArray`
+  here — CountingStars never calls `graph_.updateVertices()`.
+
+**Also removed:** `CountingStars_UncoveredBest` and its `transform_reduce` over `NUM_R1_REGIONS`.
+It counted the guarantee's *planned* size, and existed only because v2's draw probability was the
+remainder `(B − admitted − guaranteed)/treeSize` and therefore had to know it before the kernel that
+spent it launched. v3's draw is a fixed share that reads nothing about the guarantee, and
+`reactivated_best` already measures its realised size exactly on the device. `regionCovered` is still
+written by accept pass 2 rather than Part A, and still for the original reason — Part B's guarantee is
+deduplicated against it and Part B runs in the same launch as Part A.
+
+**Kept from v2, deliberately:** ordinality stays `regionNodeCount[r]` with the linear 0–255 clamp.
+Keying it on `validVertexCounter` (which the pseudocode proposed, and which the fan-out rule does
+use) would put every touched region in the top bucket within a few iterations — that counter gains
+~32 per frontier node per iteration against `regionNodeCount`'s ~0.4 — and the freshness door would
+collapse into a uniform draw. The fan-out rule itself is unchanged:
+`validVertexCounter[r] < CS_NOVEL_THRESH ? maxBlocks : 1`, reactivations always 1, plus the
+both-doors boost. Both bucket maps now live in **one** `__host__ __device__ inline` each
+(`csOrdBucket`, `csCostBucket`) called by both accept passes, which makes v2's "the clamps must
+match" discipline structural instead of a comment.
+
+**Known exposure, stated plainly.** OPTIMAL and GUARANTEE are bounded by `NUM_R1_REGIONS` (27,000 at
+the coarse delta), not by `B`, and every point on the v3 grid gives `B` between 2500 and 7500. So the
+two fractions steer a minority of the frontier and `B` binds **early in a run and then stops**, at an
+iteration that moves with `fill_frac`. That is the honest limit on this design — and it is where
+time-to-first-solution is decided, so the axis acts where the question is. Read
+`budget_used / goal_frontier_size` as a **curve**; the iteration it crosses 1 is the measurement. If
+the three curves are indistinguishable even early, the next lever is capping the guarantee
+(KinoPaxPlus's hysteresis — un-prune a region best only after ~5 idle iterations, which caps re-entry
+at `nActive/5` without giving up the invariant), not a different `B`.
+
+**Knobs.** `h_fillFrac_` (0.75), `h_exploreFrac_` (0.1), `h_costFrac_` (0.6) — all three swept, on
+`{0.25, 0.5, 0.75} × {0, 0.2, 0.4} × {0, 0.2, 0.4}`, 27 points. `h_maxBlocks_` (4) is **held**: the
+previous pass swept `{1, 4}` and answered the question the region-keyed fan-out rule was asking, v3
+changes the admission rule rather than the fan-out rule, and the plot script has exactly three style
+channels for the three fraction axes. `h_fillIters_` (`MAX_ITER`) is a calibration input, not an axis.
+
+**Checked without a GPU.** `scripts/check_countingstars_histogram.py` parses the real
+`csCostBucket` / `csSolveCutoff` expressions (and fails loudly if either is edited out from under it)
+and proves the two properties the cost door rests on: the bucket map is monotone and in range across
+30 octaves and every IEEE edge, and the solve admits **exactly `min(X, n)` in expectation** for
+uniform, exponential, lognormal, all-in-one-bucket and maximal-ties distributions — which is what the
+boundary roll exists for. It also proves `X = 0` admits nothing and `X ≥ n` admits everything, so the
+sweep's zero arms are genuine controls, and that `react_frac ≥ 0` at every grid point (the planner
+floors it, so an oversubscribed pair would silently switch the draw off rather than fail).
+`cross_check_countingstars_grid.py` asserts the same budget property from the grid side plus the
+derived `B ≥ 1`, reading `MAX_TREE_SIZE` and `MAX_ITER` out of the `.sh`'s `write_config` heredoc
+rather than restating them.
+
 ## Quick comparison
 | Variant | Explore | Seeding (pSeed) | Cost-aware | Pruning | Spatial hash |
 |---|---|---|---|---|---|
@@ -661,4 +803,4 @@ scalars, `h_selectivity_`, the growth schedule, and every statistic that existed
 | KinoPaxSTARnoseed | ✔ | 0 | ✔ | — | ✔ |
 | KinoPaxSTARsparsefill | ✔ | ramp 0→1 | ✔ | — | ✔ |
 | KinoPaxSTARcostprunenoseed | capped (`h_acceptCap_`) | 0 (`h_pSeed_`) | ✔ | cost | ✔ |
-| CountingStars | ONE GLOBAL BUDGET filled in priority order: optimal (uncapped) → freshest by region ordinality → region-best guarantee → uniform draw | n/a (the R2 door is gone; ordinality is the novelty signal) | ✔ | — | ✔ |
+| CountingStars | DERIVED BUDGET `B = fill_frac·MAX_TREE_SIZE/MAX_ITER`, split by three fixed shares: optimal (uncapped) → freshest by region ordinality **∪** cheapest by cost distance → region-best guarantee → uniform draw | n/a (the R2 door is gone; ordinality is the novelty signal) | ✔✔ (a cost-distance histogram door, not just the region min) | — | ✔ |

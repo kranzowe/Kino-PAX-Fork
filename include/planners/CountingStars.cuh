@@ -2,6 +2,7 @@
 #include "planners/Planner.cuh"
 #include "graphs/Graph.cuh"
 #include "collisionCheck/spatialHash.cuh"
+#include <cmath>
 
 // Which door a candidate/node came in by. Stored per node so the CSV can answer "what built this
 // tree", and consumed by the fan-out rule, which gives the optimal door a different block count.
@@ -16,6 +17,11 @@ static const int CS_DOOR_COST    = 1;   // OPTIMAL: distance 0, i.e. cost <= min
 static const int CS_DOOR_EXPLORE = 2;   // freshest: from a region whose ordinality beat the cutoff
 static const int CS_DOOR_REACT   = 3;   // existing tree node put back in the frontier by the draw
 static const int CS_DOOR_BEST    = 4;   // existing tree node put back because it is its region's best
+static const int CS_DOOR_COSTDIST = 5;  // v3: cheapest by COST DISTANCE, not just at distance 0
+// v3: cleared BOTH the freshness and the cost cutoff. A candidate is one node however many doors
+// let it in, so "added twice" is spent as FAN-OUT instead: this node takes maxBlocks regardless of
+// region thinness. Stamped as its own door value rather than a side array, so nodeDoor answers it.
+static const int CS_DOOR_BOTH    = 6;
 
 // Ordinality buckets in the freshness histogram. A candidate's ordinality is its REGION's node
 // count, clamped into [0, CS_ORD_BUCKETS): "how full is the region this candidate landed in".
@@ -24,6 +30,85 @@ static const int CS_DOOR_BEST    = 4;   // existing tree node put back because i
 // plus an exclusive scan then gives the exact top-X cutoff in two O(n) passes, with no sort and no
 // rank; see the .cu for why a rank was never needed.
 static const int CS_ORD_BUCKETS = 256;
+
+// ==================================================================================
+// v3: THE COST-DISTANCE HISTOGRAM. The second selection signal, and the reason a node can now be
+// admitted for being CHEAP rather than only for being THE cheapest.
+//
+// v2's only cost-driven admission was the OPTIMAL door, `cost <= minCostsR1[r]` -- a threshold with
+// nothing behind it, so a candidate one part in 1e6 above its region's minimum was treated exactly
+// like one at ten times the minimum. An earlier branch fixed that with a sort over the distances;
+// it was buggy and slow. This does it the way the freshness door already works: a histogram, an
+// exclusive scan, and a boundary roll give the exact top-X in two O(n) atomic passes, no rank.
+//
+// LOG-SCALED AND ANCHORED AT distMax, which is the one real design choice here. A candidate's
+// distance is (cost - regionMin) / costScale, so it is dimensionless and PILES UP NEAR 0 with a long
+// tail -- the region minimum is by construction the left edge of every region's own distribution.
+// Under linear buckets one pathological region sets distMax and compresses the entire real
+// distribution into bucket 0, where the boundary roll degrades the door to a uniform draw. Log
+// buckets put the resolution where the data is. What the scan needs is only that the map be
+// MONOTONE, which log is, so the top-X selection stays exact either way.
+static const int   CS_COST_BUCKETS   = 256;
+static const float CS_COST_LOG_SCALE = 12.0f;   // buckets per octave below distMax (21 octaves)
+
+// The stand-in accept pass 1 writes when a NON-optimal candidate's normalised distance underflows
+// to 0. It has to be non-zero, because pass 2 reads 0 as the optimal mark -- and it has to be TINY
+// rather than the raw cost gap v2 substituted, because v3 BUCKETS the value: a raw gap is in cost
+// units, can exceed distMax, and would put a candidate sitting at its region's minimum in the WORST
+// bucket. This buckets to 0, which is where such a candidate belongs.
+//
+// Defensive rather than reachable. The ratio underflows only if costScale exceeds the cost gap by
+// ~1e38, and costScale is globalMean - globalMin -- the same units and the same order of magnitude
+// as the costs it divides.
+static const float CS_MIN_DISTANCE = 1e-37f;
+
+// ONE histogram buffer, ONE synchronising copy. That mid-iteration stall sits between the two accept
+// passes and serialises everything behind it, so the second selection signal rides in the same
+// buffer rather than costing a second round trip.
+//
+//   [0, CS_ORD_BUCKETS)                       ordinality buckets
+//   [CS_ORD_BUCKETS]                          the optimal count -- NOT a bucket
+//   [CS_HIST_COST_BASE, +CS_COST_BUCKETS)     cost-distance buckets
+static const int CS_HIST_ORD_BASE  = 0;
+static const int CS_HIST_OPT_SLOT  = CS_ORD_BUCKETS;
+static const int CS_HIST_COST_BASE = CS_ORD_BUCKETS + 1;
+static const int CS_HIST_SIZE      = CS_ORD_BUCKETS + 1 + CS_COST_BUCKETS;
+
+// ==================================================================================
+// THE TWO BUCKET MAPS, in ONE definition each so both accept passes cannot disagree.
+//
+// v2 spelled the ordinality clamp out separately in pass 1 and pass 2 with a comment warning that a
+// mismatch would compare a candidate against a cutoff derived from a histogram it never entered.
+// These make that structural rather than a discipline.
+// ==================================================================================
+
+// Ordinality: a plain clamp, unchanged from v2. regionNodeCount counts ADMITTED nodes (~0.4 per
+// region per iteration at B = 7500 over 27,000 regions), so the raw value stays inside 256 buckets
+// for hundreds of iterations and needs no rescaling. Keying this on validVertexCounter instead --
+// which gains ~32 per frontier node per iteration -- would put every touched region in the top
+// bucket within a few iterations and turn the freshness door into a uniform draw.
+__host__ __device__ inline int csOrdBucket(int ord)
+{
+    if(ord < 0) return 0;
+    return (ord < CS_ORD_BUCKETS) ? ord : (CS_ORD_BUCKETS - 1);
+}
+
+// Cost distance: log, anchored at the top. d == distMax -> the last bucket; every octave below it
+// costs CS_COST_LOG_SCALE buckets; anything more than 21 octaves below lands in bucket 0, which is
+// the right answer -- those candidates are at their region's minimum for any purpose that matters.
+//
+// Non-decreasing in d for every distMax > 0, which is what keeps histogram + scan an EXACT top-X
+// selection. d <= 0 cannot occur for a non-optimal candidate (pass 1 guarantees it) but is mapped to
+// bucket 0 anyway so the function is total.
+__host__ __device__ inline int csCostBucket(float d, float distMax)
+{
+    if(!(d > 0.0f) || !(distMax > 0.0f)) return 0;
+    if(d >= distMax) return CS_COST_BUCKETS - 1;
+    float b = float(CS_COST_BUCKETS - 1) + CS_COST_LOG_SCALE * log2f(d / distMax);
+    if(!(b > 0.0f)) return 0;
+    int bi = (int)b;
+    return (bi < CS_COST_BUCKETS - 1) ? bi : (CS_COST_BUCKETS - 1);
+}
 
 // A region is "thin" -- and every node landing in it earns the fan-out burst -- until it has seen
 // this many collision-free propagations. THE SAME RULE AND THE SAME NUMBER KPAXCap AND CleanCost
@@ -81,13 +166,30 @@ public:
     // own normalisation.
     // ==================================================================================
 
-    // B -- the node budget for ONE iteration's frontier. Set it where the GPU is fast; everything
-    // else in this planner is downstream of it. The doors fill it in priority order:
+    // ==================================================================================
+    // v3: B IS DERIVED, NOT SET. It is an OUTPUT of this planner, recomputed once per resetPlanner
+    // and never written by a caller.
+    //
+    //     B = floor(fill_frac * MAX_TREE_SIZE / fill_iters)
+    //
+    // "the frontier size that fills the tree exactly at fill_iters", scaled by fill_frac -- so the
+    // remaining (1 - fill_frac) of the buffer is left for the uncapped OPTIMAL door to spend. v2
+    // hand-swept B over {200, 2000, 6000, 10000} with no derivation behind any of them; the buffer
+    // and the iteration count are the only things that actually constrain a frontier size, and this
+    // is what they say it should be. h_fillFrac_ is the one knob.
+    // ==================================================================================
+
+    // The node budget for ONE iteration's frontier. Five doors fill it in priority order:
     //
     //   1. OPTIMAL      every candidate at distance 0 from its region's best. UNCAPPED.
-    //   2. FRESHEST     explore_frac of what is LEFT, taken from the least-populated regions.
-    //   3. GUARANTEE    each active region's best node, if no optimal admission covered it.
-    //   4. DRAW         uniform over the rest of the tree, filling whatever the budget has left.
+    //   2. FRESHEST     explore_frac * B, taken from the least-populated regions.
+    //   3. CHEAPEST     cost_frac * B, taken from the smallest cost distances.        (v3, NEW)
+    //   4. GUARANTEE    each active region's best node, if no optimal admission covered it.
+    //   5. DRAW         uniform over the rest of the tree at p = react_frac * B / treeSize.
+    //
+    // v3 SPLITS THE BUDGET BY THREE FIXED FRACTIONS OF B rather than "one share plus a remainder".
+    // The fractions are of B ITSELF, not of (B - optimalCount): the optimal door is uncapped and
+    // spends on top of them, which is the acknowledged overshoot.
     //
     // DOORS 1 AND 3 ARE BOTH UNCAPPED, AND BOTH ARE BOUNDED BY NUM_R1_REGIONS -- one node per region
     // can be a region best in an iteration, and one node per uncovered region can be guaranteed. So
@@ -98,10 +200,27 @@ public:
     // doors account for before the draw is offered anything at all.
     int h_goalFrontierSize_;
 
-    // Share of the REMAINING budget (B - optimalCount) handed to freshness. The one place novelty
-    // still costs something: at 0 the frontier is optimal nodes plus reactivations and nothing
-    // else, at 1 the freshness door takes everything the optimal door left.
+    // ---- THE TUNING SURFACE. Three fractions; the third is derived from the other two. ----
+
+    // Share of the tree buffer B is sized to consume per iteration. The ONLY knob behind B, and the
+    // sweep's headline axis. 0.75 leaves a quarter of the buffer for the optimal door.
+    float h_fillFrac_;
+
+    // The iteration count B is sized against -- "fill the tree at THIS iteration". Defaults to
+    // MAX_ITER, which is what "fill the tree by the end of the run" means; exposed so a benchmark
+    // running to a different cap can align it rather than silently sizing B against the wrong run
+    // length.
+    int h_fillIters_;
+
+    // Share of B handed to the FRESHEST door (lowest region ordinality). 0 is a real ablation arm
+    // rather than a degenerate case: X = 0 makes the cutoff solve return cutoff 0 / pBoundary 0, so
+    // the door admits exactly nothing and nothing else changes.
     float h_exploreFrac_;
+
+    // v3: share of B handed to the CHEAPEST door (smallest cost distance). Same ablation property
+    // at 0. This is the door that did not exist in v2 -- see CS_COST_BUCKETS for why it is a
+    // histogram and not the sort that kept breaking.
+    float h_costFrac_;
 
     // ==================================================================================
     // FAN-OUT, REGION-KEYED. Blocks are decided AT ADMISSION and stored per node;
@@ -149,10 +268,31 @@ public:
     int   h_ordCutoff_;
     float h_pBoundary_;
 
-    // The guarantee's PLANNED size: active regions whose best node no optimal admission covered.
-    // Read against reactivated_best, which is the REALISED count -- the gap is the guaranteed nodes
-    // Part B skipped because they were already in the frontier or had reached the goal.
-    uint h_guaranteedReact_;
+    // v3: the same pair for the cost-distance door, solved from the same histogram buffer in the
+    // same host round trip.
+    //
+    // READ h_costCutoffDist_, NOT h_costCutoff_, ACROSS ITERATIONS. The bucket index is only
+    // meaningful relative to the distMax that produced it, and distMax moves every iteration; the
+    // distance the cutoff corresponds to is comparable throughout a run.
+    int   h_costCutoff_;
+    float h_pCostBoundary_;
+    float h_costCutoffDist_;
+
+    // The exact upper bound on THIS iteration's cost distances: max over regions of the region's own
+    // (max - min) cost spread, divided by costScale. Computed on the host from d_maxCostsR1_ BEFORE
+    // accept pass 1 launches, which is what lets the bucket map be anchored without an extra
+    // measuring pass over the candidates.
+    float h_distMax_;
+
+    // 1 - explore_frac - cost_frac, floored at 0. Sets the draw's probability directly
+    // (p = react_frac * B / treeSize) instead of v2's leftover remainder.
+    float h_reactFrac_;
+
+    // h_guaranteedReact_ IS GONE. It was the guarantee's PLANNED size, and it existed only because
+    // v2's draw probability was a remainder -- (B - admitted - guaranteed)/treeSize -- so the count
+    // had to be known before the kernel that spent it launched. v3's draw is a fixed share of B, so
+    // nothing consumes the plan, and reactivated_best already measures the guarantee's REALISED size
+    // exactly. Dropping it removes a transform_reduce over NUM_R1_REGIONS from every iteration.
 
     // What the doors actually committed this iteration: admissions + guarantee + draw. THE NUMBER
     // TO READ AGAINST goal_frontier_size, in the same row rather than shifted by an iteration the
@@ -160,11 +300,20 @@ public:
     uint h_budgetUsed_;
 
     // Admissions by door this iteration, counted exactly on the device and copied back once.
-    enum DoorSlot { CS_SLOT_EXPLORE = 0, CS_SLOT_COST, CS_SLOT_REACT, CS_SLOT_BEST, CS_NUM_DOOR_SLOTS };
+    // CS_SLOT_COST is the OPTIMAL door (distance 0); CS_SLOT_COSTDIST is v3's cost-distance door.
+    // CS_SLOT_BOTH counts candidates that cleared BOTH cutoffs -- so EXPLORE and COSTDIST OVERLAP
+    // and must not simply be added. The exact identity, free every iteration:
+    //
+    //     admitted == optimalCount + admittedExplore + admittedCostDist - admittedBoth
+    //
+    // NEW SLOTS ARE APPENDED, never inserted: the enum's values are what the kernels index by.
+    enum DoorSlot { CS_SLOT_EXPLORE = 0, CS_SLOT_COST, CS_SLOT_REACT, CS_SLOT_BEST,
+                    CS_SLOT_COSTDIST, CS_SLOT_BOTH, CS_NUM_DOOR_SLOTS };
     thrust::device_vector<unsigned long long> d_doorCounts_;
     unsigned long long* d_doorCounts_ptr_;
     unsigned long long  h_doorCounts_[CS_NUM_DOOR_SLOTS];
     uint h_admittedExplore_, h_admittedCost_, h_reactivated_, h_reactivatedBest_;
+    uint h_admittedCostDist_, h_admittedBoth_;
 
     // Blocks the buffer allows, and the scale applied to make the frontier fit inside it.
     //
@@ -178,8 +327,15 @@ public:
     float h_blockCeiling_;
     float h_blockScale_;
 
-    // Collision-free fraction, kept purely as the diagnostic window into propagation efficiency now
-    // that nothing consumes it. Reduced from the graph's cumulative counter arrays.
+    // Collision fraction, kept purely as the diagnostic window into propagation efficiency now that
+    // nothing consumes it.
+    //
+    // v3: PER-ITERATION, AND FREE. v2 reduced it out of graph_.d_counterArray_, which cost one
+    // atomicAdd per ATTEMPTED propagation -- the hottest atomic in the planner, ~32x the frontier
+    // per iteration onto a per-region address -- plus two reductions over NUM_R1_REGIONS. Both ends
+    // are gone: h_propAttempted_ is already known exactly on the host from the launch geometry and
+    // h_candidatesPreGate_ from the scan, so the same number falls out of arithmetic the planner had
+    // already done. The value is now per-iteration rather than run-cumulative.
     float h_globalCollisionFrac_;
 
     // CleanCost's global cost scale: (mean cost over all valid samples) - (min over regions). It is
@@ -218,8 +374,16 @@ public:
     thrust::device_vector<float> d_unexploredSamples_, d_goalSample_;
 
     // --- device fields (cost / region stats) ---
-    thrust::device_vector<float> d_minCostsR1_, d_sumCostsR1_;
-    thrust::device_vector<int>   d_cntCostsR1_;
+    // d_maxCostsR1_ IS PER-ITERATION where d_minCostsR1_ is cumulative, and the asymmetry is
+    // deliberate: (thisIterMax_r - cumulativeMin_r) is the TIGHT exact bound on this iteration's
+    // distances, where a cumulative max would only drift upward over a run and leave the cost
+    // histogram's top buckets permanently empty.
+    //
+    // d_cntCostsR1_ IS GONE. It was incremented in the same `if(valid)` branch as
+    // graph_.d_validCounterArray_, once each per collision-free candidate, and both were cleared
+    // only in resetPlanner -- so they were equal at every point in a run. The mean's denominator now
+    // comes from the graph counter, which the fan-out rule already reads.
+    thrust::device_vector<float> d_minCostsR1_, d_sumCostsR1_, d_maxCostsR1_;
     thrust::device_vector<float> d_unexploredSampleCosts_;
     thrust::device_vector<int> d_bestNodeIdxPerR1_;
     thrust::device_vector<int> d_treeXR1s_, d_frontierNextXR1s_;
@@ -277,8 +441,10 @@ public:
     // spends what is LEFT of the budget after them. It rides here so the host round trip between
     // the two accept passes costs ONE synchronising memcpy instead of two, and that stall sits in
     // the middle of the iteration where it serialises everything behind it.
-    thrust::device_vector<int>  d_ordHistogram_;
-    int h_ordHistogram_[CS_ORD_BUCKETS + 1];
+    // v3: TWO histograms and the optimal count in ONE buffer of CS_HIST_SIZE ints -- see the slot
+    // layout above. The second selection signal costs no second round trip.
+    thrust::device_vector<int>  d_acceptHistogram_;
+    int h_acceptHistogram_[CS_HIST_SIZE];
 
     // --- per-node, TREE-INDEXED, written once at admission ---
     thrust::device_vector<int> d_nodeBlocks_, d_nodeDoor_;
@@ -301,10 +467,9 @@ public:
 
     // --- raw pointers ---
     float *d_unexploredSamples_ptr_, *d_goalSample_ptr_, *d_unexploredSampleCosts_ptr_;
-    float *d_minCostsR1_ptr_, *d_sumCostsR1_ptr_, *d_minCost_ptr_;
+    float *d_minCostsR1_ptr_, *d_sumCostsR1_ptr_, *d_maxCostsR1_ptr_, *d_minCost_ptr_;
     float *d_minCornerCS_ptr_;
-    int   *d_cntCostsR1_ptr_;
-    int   *d_regionNodeCount_ptr_, *d_ordHistogram_ptr_;
+    int   *d_regionNodeCount_ptr_, *d_acceptHistogram_ptr_;
     bool  *d_regionCovered_ptr_;
     int   *d_nodeBlocks_ptr_, *d_nodeDoor_ptr_, *d_candDoor_ptr_;
     float *d_candDistance_ptr_;
@@ -342,8 +507,8 @@ __global__ void CountingStars_propagateFrontier_kernel1(bool* frontier, uint* ac
                                                    float* unexploredSamples, uint frontierSize, curandState* randomSeeds,
                                                    int* unexploredSamplesParentIdxs, float* obstacles, int obstaclesCount,
                                                    int* activeSubVertices, bool* frontierNext,
-                                                   int* vertexCounter, int* validVertexCounter, float* minCorner,
-                                                   float* treeSampleCosts, float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
+                                                   int* validVertexCounter, float* minCorner,
+                                                   float* treeSampleCosts, float* minCostsR1, float* maxCostsR1, float* sumCostsR1,
                                                    int* frontierNextXR1s, int* candDoor,
                                                    uint* touchedR2Count,
                                                    float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid);
@@ -355,9 +520,9 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
                                                    float* unexploredSamples, uint frontierSize, curandState* randomSeeds,
                                                    int* unexploredSamplesParentIdxs, float* obstacles, int obstaclesCount,
                                                    int* activeSubVertices, bool* frontierNext,
-                                                   int* vertexCounter, int* validVertexCounter, int iterations,
+                                                   int* validVertexCounter, int iterations,
                                                    float* minCorner,
-                                                   float* treeSampleCosts, float* minCostsR1, float* sumCostsR1, int* cntCostsR1,
+                                                   float* treeSampleCosts, float* minCostsR1, float* maxCostsR1, float* sumCostsR1,
                                                    int* frontierNextXR1s, int* candDoor,
                                                    uint* touchedR2Count,
                                                    float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid);
@@ -365,30 +530,43 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
 /***************************/
 /* ACCEPT PASS 1 - measure, do not decide */
 /***************************/
-// One thread per candidate. Computes the two quantities the budget is spent against and NOTHING
-// else: the candidate's scale-free distance from its region's best, and -- for the ones that are not
-// already optimal -- a vote in the ordinality histogram.
+// One thread per candidate. Computes the quantities the budget is spent against and NOTHING else:
+// the candidate's scale-free distance from its region's best, and -- for the ones that are not
+// already optimal -- a vote in EACH of the two selection histograms.
 //
-// IT STAMPS NO DOOR. The cutoff is not known until this launch has finished and the host has scanned
-// the histogram, so a door written here would be a decision taken without the number that decides
+// A NON-OPTIMAL CANDIDATE VOTES IN BOTH. It is eligible for both the freshness door and the cost
+// door, and the two are independent selections over the same pool. Optimal candidates vote in
+// NEITHER: they are already spent, and counting them as fresh or cheap would let one node consume
+// three doors' worth of the budget.
+//
+// IT STAMPS NO DOOR. Neither cutoff is known until this launch has finished and the host has scanned
+// the histograms, so a door written here would be a decision taken without the numbers that decide
 // it. Two launches, both O(candidates), and the split is what makes the budget exact.
 __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                  float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
-                                                 int* regionNodeCount, float costScale,
-                                                 float* candDistance, int* ordHistogram);
+                                                 int* regionNodeCount, float costScale, float distMax,
+                                                 float* candDistance, int* acceptHistogram);
 
 /***************************/
 /* ACCEPT PASS 2 - the ONLY admission decision */
 /***************************/
-// Admits in priority order against the cutoff the host solved from pass 1's histogram:
+// Admits against the two cutoffs the host solved from pass 1's histograms:
 //
-//   OPTIMAL   distance == 0                                      door = COST     (uncapped)
-//   FRESHEST  ordinality <  cutoff                               door = EXPLORE
-//             ordinality == cutoff, with probability pBoundary   door = EXPLORE
+//   OPTIMAL   distance == 0                                        door = COST      (uncapped)
+//   FRESHEST  ordBucket  <  ordCutoff,  or == it at pBoundary      door = EXPLORE
+//   CHEAPEST  costBucket <  costCutoff, or == it at pCostBoundary  door = COSTDIST
+//   BOTH      cleared both of the above                            door = BOTH
 //
-// The boundary roll is what makes the count EXACT rather than approximately right: the X-th freshest
-// node almost never falls on a bucket edge, and admitting the whole boundary bucket would overshoot
-// the budget by up to one bucket's width -- which, at a coarse ordinality, is most of the frontier.
+// THE TWO NON-OPTIMAL DOORS ARE A UNION, NOT A PRIORITY CHAIN. They select over the same candidate
+// pool on independent signals, so a candidate can clear both; it is still ONE tree node, and the
+// second admission is spent as fan-out instead (CS_DOOR_BOTH takes maxBlocks in Part A). The door
+// counters therefore overlap by construction and CS_SLOT_BOTH is what makes them add back up.
+//
+// The boundary roll is what makes each count EXACT rather than approximately right: the X-th
+// candidate almost never falls on a bucket edge, and admitting the whole boundary bucket would
+// overshoot by up to one bucket's width -- which, where thousands of candidates share a bucket, is
+// most of a frontier. ONE curandState is loaded and drawn from at most twice, so a candidate on both
+// boundaries costs one load and one store rather than two of each.
 //
 // Also marks regionCovered for every optimal admission, which is what Part B's guarantee is
 // deduplicated against.
@@ -397,6 +575,7 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
                                                  float* candDistance, bool* frontierNext, int* candDoor,
                                                  bool* regionCovered, curandState* randomSeeds,
                                                  int ordCutoff, float pBoundary,
+                                                 int costCutoff, float pCostBoundary, float distMax,
                                                  unsigned long long* doorCounts);
 
 /***************************/

@@ -15,6 +15,13 @@ This sweep has a second drift axis the COMBO one did not: the two finer deltas r
 exist at all. The .sh says so with DELTA_EXTRA_ARGS, the .m says so with deltaPlusOnly, and they have
 to agree or the plot expects series the sweep never wrote.
 
+v3 ADDS TWO CHECKS THAT COULD NOT EXIST IN v2. The budget now splits by three fixed fractions rather
+than one share plus a remainder, so explore_frac + cost_frac can be oversubscribed -- and the planner
+floors react_frac at 0 rather than failing, which makes it silent. And B is DERIVED from
+MAX_TREE_SIZE and MAX_ITER rather than swept, so a fill_frac small enough to round B down to 0 is
+also silent (the planner clamps to 1 and the run merely looks slow). Both are asserted below,
+against constants parsed out of the .sh heredoc that writes config.h.
+
 Run from anywhere:  python scripts/cross_check_countingstars_grid.py
 Exit 0 = GRIDS MATCH, 1 = GRIDS DIVERGE.
 """
@@ -95,31 +102,47 @@ def m_bools(name):
     return [w == 'true' for w in re.findall(r'true|false', mo.group(1))]
 
 
+def sh_config_int(name):
+    """Read a #define out of the write_config heredoc in the .sh.
+
+    B is DERIVED from MAX_TREE_SIZE and MAX_ITER, and both are written into config.h by this script
+    rather than living in the repo's checked-in config -- so the only honest place to read them for
+    the derived-B assertion is the heredoc that writes them.
+    """
+    mo = re.search(r'^#define\s+%s\s+(\d+)' % re.escape(name), sh, re.M)
+    if not mo:
+        sys.exit('FATAL: #define %s not found in %s write_config' % (name, SH))
+    return int(mo.group(1))
+
+
 def tok(x):
     """The label token convention for most fractional axes: round(100 x float)."""
     return int(round(100.0 * x))
 
 
 def ftok(x):
-    """explore_frac's token: round(1000 x float), and the filename letter is `f` not `e`.
+    """The SHARE axes' token: round(1000 x float), letters `ef` and `cf`.
 
-    1000x because the grid reaches 0.001, which rounds to the token 0 at 100x -- unreadable, and
-    indistinguishable from a genuine explore_frac of 0. The LETTER changes with it so a stale CSV
-    from a 100x `_e` grid cannot be silently loaded as the wrong series: under 100x `_e10` was
-    frac 0.10, under 1000x it is frac 0.01.
+    1000x because a grid once reached 0.001, which rounds to the token 0 at 100x -- unreadable, and
+    indistinguishable from a genuine share of 0. It is kept so a stale CSV from a 100x grid cannot
+    be silently loaded as the wrong series.
+
+    fill_frac uses tok() (100x) instead: it is a coarse axis on {0.25, 0.5, 0.75} and `ff75` reads
+    as three quarters where `ff750` does not.
     """
     return int(round(1000.0 * x))
 
 
 # ---------------------------------------------------------------- the C++ side
-cu_goalf  = cu_array('GOAL_FRONTIER_SIZES', 'int')
+cu_ffrac  = cu_array('FILL_FRACS')
 cu_efrac  = cu_array('EXPLORE_FRACS')
-cu_blocks = cu_array('MAX_BLOCKS_GRID', 'int')
+cu_cfrac  = cu_array('COST_FRACS')
+cu_blocks = cu_scalar('CS_MAX_BLOCKS', 'int')
 cu_kcap   = cu_array('KPAXCAP_CAPS')
 cu_cap_derived = cu_scalar('CAP_DERIVED')
-cu_dgf = cu_scalar('CS_DERIVED_GOAL_FRONTIER', 'int')
-cu_dmb = cu_scalar('CS_DERIVED_MAX_BLOCKS', 'int')
+cu_dff = cu_scalar('CS_DERIVED_FILL_FRAC')
 cu_def = cu_scalar('CS_DERIVED_EXPLORE_FRAC')
+cu_dcf = cu_scalar('CS_DERIVED_COST_FRAC')
 
 cu_clean = {}
 for fld, key in (('CLEAN_BASE_W', 'w'), ('CLEAN_BASE_K', 'k'), ('CLEAN_BASE_CAP', 'cap')):
@@ -140,46 +163,69 @@ problems = []
 
 # --- Assertion 1: every derived point must be a member of its own list. --single-point selects BY
 # VALUE, so a derived point outside the grid means that pass runs nothing at all.
-for val, lst, a, b in ((cu_dgf, cu_goalf, 'CS_DERIVED_GOAL_FRONTIER', 'GOAL_FRONTIER_SIZES'),
-                       (cu_dmb, cu_blocks, 'CS_DERIVED_MAX_BLOCKS', 'MAX_BLOCKS_GRID'),
+for val, lst, a, b in ((cu_dff, cu_ffrac, 'CS_DERIVED_FILL_FRAC', 'FILL_FRACS'),
                        (cu_def, cu_efrac, 'CS_DERIVED_EXPLORE_FRAC', 'EXPLORE_FRACS'),
+                       (cu_dcf, cu_cfrac, 'CS_DERIVED_COST_FRAC', 'COST_FRACS'),
                        (cu_cap_derived, cu_kcap, 'CAP_DERIVED', 'KPAXCAP_CAPS')):
     if not any(abs(v - val) < 1e-6 for v in lst):
         problems.append('%s (%g) is not in %s %s' % (a, val, b, lst))
 
-# --- Assertion 2: the axes must stay in their meaningful ranges. goal_frontier_size is the NODE
-# BUDGET for one iteration, so below 1 the frontier is empty and the search cannot advance;
-# explore_frac is a SHARE of the remaining budget, so outside [0, 1] it is not a share at all.
-if any(v < 1 for v in cu_goalf):
-    problems.append('GOAL_FRONTIER_SIZES %s has an entry below 1 -- an empty frontier cannot '
-                    'advance the search' % (cu_goalf,))
-if any(v < 0.0 or v > 1.0 for v in cu_efrac):
-    problems.append('EXPLORE_FRACS %s has an entry outside [0, 1] -- it is a share of the remaining '
-                    'budget, not a count' % (cu_efrac,))
-if any(v < 1 for v in cu_blocks):
-    problems.append('MAX_BLOCKS_GRID %s has an entry below 1 -- rep >= 1 is a correctness floor'
-                    % (cu_blocks,))
+# --- Assertion 2: the axes must stay in their meaningful ranges.
+#
+# fill_frac is the SHARE OF THE TREE BUFFER B is sized to consume per iteration, so outside (0, 1]
+# it is not a share; at 0 the frontier is empty and the search cannot advance. explore_frac and
+# cost_frac are SHARES OF B, so each must be in [0, 1] on its own.
+if any(v <= 0.0 or v > 1.0 for v in cu_ffrac):
+    problems.append('FILL_FRACS %s has an entry outside (0, 1] -- it is the share of the tree buffer '
+                    'B consumes per iteration, and at 0 the frontier is empty' % (cu_ffrac,))
+for name, vals in (('EXPLORE_FRACS', cu_efrac), ('COST_FRACS', cu_cfrac)):
+    if any(v < 0.0 or v > 1.0 for v in vals):
+        problems.append('%s %s has an entry outside [0, 1] -- it is a share of B, not a count'
+                        % (name, vals))
+if cu_blocks < 1:
+    problems.append('CS_MAX_BLOCKS (%g) is below 1 -- rep >= 1 is a correctness floor' % cu_blocks)
+
+# --- Assertion 2b: react_frac = 1 - explore_frac - cost_frac MUST STAY NON-NEGATIVE at every point
+# on the grid. The planner floors it at 0, so an oversubscribed pair does not crash -- it silently
+# switches the uniform DRAW off, and two grid points that differ only in how far past 1 they went
+# would produce identical runs under different labels. NEW IN v3: v2 had one share and a remainder,
+# so this could not be violated.
+for ff in cu_ffrac:
+    for ef in cu_efrac:
+        for cf in cu_cfrac:
+            if ef + cf > 1.0 + 1e-6:
+                problems.append('OVERSUBSCRIBED BUDGET at (fill %g, explore %g, cost %g): '
+                                'explore + cost = %g > 1, so react_frac would be negative and the '
+                                'draw silently switches off' % (ff, ef, cf, ef + cf))
+
+# --- Assertion 2c: the DERIVED B must be at least 1 at every fill_frac. B is
+# floor(fill_frac * MAX_TREE_SIZE / MAX_ITER), and both constants are written into config.h by the
+# .sh -- so this reads them from the heredoc rather than restating them. B < 1 means an empty
+# frontier and a search that cannot advance, and it is silent: the planner clamps to 1 and the run
+# looks merely slow.
+cfg_tree = sh_config_int('MAX_TREE_SIZE')
+cfg_iter = sh_config_int('MAX_ITER')
+for ff in cu_ffrac:
+    b = int(ff * cfg_tree / cfg_iter)
+    if b < 1:
+        problems.append('DERIVED B < 1 at fill_frac %g: floor(%g * %d / %d) = %d'
+                        % (ff, ff, cfg_tree, cfg_iter, b))
 
 
-def cs_skip(goalf, efrac, blocks):
-    """Mirrors countingStarsSkip(): FULL FACTORIAL, so --single-point is the only skip."""
-    return False
-
-
-def cs_label(goalf, efrac, blocks):
+def cs_label(ffrac, efrac, cfrac, blocks):
     """Mirrors countingStarsLabel() in the benchmark."""
-    return 'CountingStars_B%d_f%d_mb%d' % (int(round(goalf)), ftok(efrac), int(round(blocks)))
+    return 'CountingStars_ff%d_ef%d_cf%d_mb%d' % (tok(ffrac), ftok(efrac), ftok(cfrac),
+                                                  int(round(blocks)))
 
 
 cu_pairs = set()
 for d, plus_only in zip(sh_deltas, sh_plus_only):
     if not plus_only:
-        for goalf in cu_goalf:
-            for blocks in cu_blocks:
-                for efrac in cu_efrac:
-                    if cs_skip(goalf, efrac, blocks):
-                        continue
-                    cu_pairs.add((cs_label(goalf, efrac, blocks), d))
+        # FULL FACTORIAL: --single-point is the only skip, so there is no cs_skip() to mirror.
+        for ffrac in cu_ffrac:
+            for efrac in cu_efrac:
+                for cfrac in cu_cfrac:
+                    cu_pairs.add((cs_label(ffrac, efrac, cfrac, cu_blocks), d))
         cu_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                       % (cu_clean['r2'], cu_clean['w'], cu_clean['k'], cu_clean['cap']), d))
         for c in cu_kcap:
@@ -188,15 +234,17 @@ for d, plus_only in zip(sh_deltas, sh_plus_only):
     cu_pairs.add(('KinoPaxPlus', d))
 
 # ---------------------------------------------------------------- the MATLAB side
-m_goalf   = m_ints('csGoalFrontierSizes')
+m_ffrac   = m_ints('csFillFracs')
 m_efrac   = m_ints('csExploreFracs')
+m_cfrac   = m_ints('csCostFracs')
 m_blocks  = m_ints('csMaxBlocks')
 m_kcap    = m_ints('kpaxCapCaps')
 m_deltas  = m_cellstr('deltas')
 m_plus_only = m_bools('deltaPlusOnly')
-m_dgf = m_scalar_int('csDerivedGoalFrontier')
-m_dmb = m_scalar_int('csDerivedMaxBlocks')
+m_dff = m_scalar_int('csDerivedFillFrac')
 m_def = m_scalar_int('csDerivedExploreFrac')
+m_dcf = m_scalar_int('csDerivedCostFrac')
+m_dmb = m_scalar_int('csDerivedMaxBlocks')
 m_clean = {
     'r2': m_str('cleanBaseR2'),
     'w': m_scalar_int('cleanBaseW'),
@@ -207,10 +255,14 @@ m_clean = {
 m_pairs = set()
 for d, plus_only in zip(m_deltas, m_plus_only):
     if not plus_only:
-        for goalf in m_goalf:
-            for blocks in m_blocks:
-                for efrac in m_efrac:
-                    m_pairs.add(('CountingStars_B%d_f%d_mb%d' % (goalf, efrac, blocks), d))
+        # The .m holds maxBlocks at csDerivedMaxBlocks rather than looping csMaxBlocks, exactly as
+        # the .cu holds it at CS_MAX_BLOCKS -- so the single-entry list and the derived scalar have
+        # to agree, which the derived-point diff below asserts.
+        for ffrac in m_ffrac:
+            for efrac in m_efrac:
+                for cfrac in m_cfrac:
+                    m_pairs.add(('CountingStars_ff%d_ef%d_cf%d_mb%d'
+                                 % (ffrac, efrac, cfrac, m_dmb), d))
         m_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                      % (m_clean['r2'], m_clean['w'], m_clean['k'], m_clean['cap']), d))
         for c in m_kcap:
@@ -222,9 +274,17 @@ for d, plus_only in zip(m_deltas, m_plus_only):
 only_cu = sorted(cu_pairs - m_pairs)
 only_m = sorted(m_pairs - cu_pairs)
 
-if (cu_dgf, cu_dmb, ftok(cu_def)) != (m_dgf, m_dmb, m_def):
-    problems.append('DERIVED POINT DRIFT: .cu (B%d, mb%d, f%d) != .m (B%d, mb%d, f%d)'
-                    % (cu_dgf, cu_dmb, ftok(cu_def), m_dgf, m_dmb, m_def))
+if (tok(cu_dff), ftok(cu_def), ftok(cu_dcf), int(cu_blocks)) != (m_dff, m_def, m_dcf, m_dmb):
+    problems.append('DERIVED POINT DRIFT: .cu (ff%d, ef%d, cf%d, mb%d) != .m (ff%d, ef%d, cf%d, mb%d)'
+                    % (tok(cu_dff), ftok(cu_def), ftok(cu_dcf), int(cu_blocks),
+                       m_dff, m_def, m_dcf, m_dmb))
+
+# maxBlocks is held rather than swept on both sides, so the .m's one-entry list must name the value
+# the .cu holds. A mismatch produces labels for a maxBlocks nothing ran.
+if m_blocks != [int(cu_blocks)]:
+    problems.append('csMaxBlocks %s (%s) does not match CS_MAX_BLOCKS %d (%s) -- maxBlocks is held, '
+                    'not swept, so the list must be exactly the held value'
+                    % (m_blocks, M, int(cu_blocks), CU))
 
 if sh_deltas != m_deltas:
     problems.append('DELTA_LABELS %s (%s) != deltas %s (%s)' % (sh_deltas, SH, m_deltas, M))
@@ -320,10 +380,10 @@ if cu_writer_prefixes and (m_loader_prefixes or m_loader_exact):
 # --- Assertion 4: distinct floats must not collapse onto the same label token. 0.01 and 0.1 both
 # look plausible and both want "cap1"/"cap10"; a collision means two grid points silently write to
 # ONE filename and the second overwrites the first.
-for name, vals, f in (('EXPLORE_FRACS', cu_efrac, ftok),
-                      ('KPAXCAP_CAPS', cu_kcap, tok),
-                      ('MAX_BLOCKS_GRID', cu_blocks, lambda v: int(round(v))),
-                      ('GOAL_FRONTIER_SIZES', cu_goalf, lambda v: int(round(v)))):
+for name, vals, f in (('FILL_FRACS', cu_ffrac, tok),
+                      ('EXPLORE_FRACS', cu_efrac, ftok),
+                      ('COST_FRACS', cu_cfrac, ftok),
+                      ('KPAXCAP_CAPS', cu_kcap, tok)):
     toks = [f(v) for v in vals]
     if len(set(toks)) != len(set(vals)):
         problems.append('TOKEN COLLISION in %s: %s -> %s' % (name, vals, toks))
