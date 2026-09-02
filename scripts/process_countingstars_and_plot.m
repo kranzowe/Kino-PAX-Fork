@@ -7,7 +7,7 @@
 % DELTA_EXTRA_ARGS in run_countingstars_sweep.sh):
 %
 %   CountingStars         goal_frontier_size {200, 2000, 6000, 10000}
-%                         x explore_frac {0.01, 0.5, 0.9} x maxBlocks {1, 4}
+%                         x explore_frac {0.01, 0.5} x maxBlocks {1, 4}
 %                         x selection_key {ord, dist}                             = 48
 %   KinoPaxSTARCleanCost  r2 OFF, w 0.9, k 1, cap 0.03  (one tuned reference point) =  1
 %   KPAXCap               cap {0.03}                                               =  1
@@ -181,7 +181,7 @@ deltaLabel = '3 deltas overlaid';
 csSelectionKeys = {'ord', 'dist'};
 
 csGoalFrontierSizes = [200 2000 6000 10000];
-csExploreFracs      = [10 500 900];
+csExploreFracs      = [10 500];
 csMaxBlocks         = [1 4];
 
 % The derived operating point that --single-point selects. EVERY component must be a member of its

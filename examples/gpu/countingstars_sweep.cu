@@ -67,7 +67,7 @@ static const int NUM_GOAL_FRONTIER_SIZES = sizeof(GOAL_FRONTIER_SIZES) / sizeof(
 // draw, at 0.9 it takes almost everything the optimal door left.
 //
 // The label token is round(1000 x frac), NOT 100x -- see countingStarsLabel().
-static const float EXPLORE_FRACS[] = {0.01f, 0.5f, 0.9f};
+static const float EXPLORE_FRACS[] = {0.01f, 0.5f};
 static const int NUM_EXPLORE_FRACS = sizeof(EXPLORE_FRACS) / sizeof(EXPLORE_FRACS[0]);
 
 // Blocks a node receives when it lands in a region the search has barely touched

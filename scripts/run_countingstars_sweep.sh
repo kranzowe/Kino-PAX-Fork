@@ -9,7 +9,7 @@
 #
 # Per (environment, cost metric) at the COARSE delta:
 #   CountingStars   selection_key {ord, dist} x goal_frontier_size {200, 2000, 6000, 10000}
-#                   x explore_frac {0.01, 0.5, 0.9} x maxBlocks {1, 4}
+#                   x explore_frac {0.01, 0.5} x maxBlocks {1, 4}
 #                   = 48 points (FULL FACTORIAL, coarse delta only) x 3 runs = 144 runs
 #
 #                   maxBlocks is FIXED AT 15 and deliberately NOT an axis. In v1 it was the height
@@ -344,7 +344,7 @@ for i in "${!DELTA_LABELS[@]}"; do
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
 echo "  CountingStars:  selection_key {ord,dist} x goal_frontier_size {200,2000,6000,10000}"
-echo "                  x explore_frac {0.01,0.5,0.9} x maxBlocks {1,4}"
+echo "                  x explore_frac {0.01,0.5} x maxBlocks {1,4}"
 echo "                  = 48 points (full factorial, coarse delta only)"
 echo "                  ord  = least-populated regions (v2, control arm)"
 echo "                  dist = closest to their own region's best, exact sort"
