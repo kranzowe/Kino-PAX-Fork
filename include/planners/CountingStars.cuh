@@ -38,6 +38,21 @@ static const int CS_ORD_BUCKETS = 256;
 // "thin" for hundreds of iterations and the rule would concentrate nothing at all.
 static const int CS_NOVEL_THRESH = 10;
 
+// WHICH SIGNAL THE SECOND DOOR RANKS ON. Prefixed for the same reason as CS_DOOR_* -- the sweep
+// pulls several planner headers into one translation unit, so an unprefixed file-scope constant is
+// a redefinition error in exactly the one .cu that matters.
+//
+//   ORDINALITY  regionNodeCount[r] -- how many nodes this candidate's region has ever admitted.
+//               Prefers the least-populated regions: spatial spreading by node count.
+//   DISTANCE    (cost - minCostsR1[r]) / costScale -- how far above its OWN region's best.
+//               Prefers near-optimal candidates: quality within each region.
+//
+// NOT greedy best-first: distance is per-region normalised, so a node in a far, expensive region
+// still scores 0 if it is that region's best. Every region that received candidates contributes its
+// best at distance 0, so spatial coverage survives structurally and distance only ranks the rest.
+static const int CS_KEY_ORDINALITY = 0;
+static const int CS_KEY_DISTANCE   = 1;
+
 class CountingStars : public Planner
 {
 public:
@@ -103,6 +118,12 @@ public:
     // else, at 1 the freshness door takes everything the optimal door left.
     float h_exploreFrac_;
 
+    // Which signal the second door ranks on -- CS_KEY_ORDINALITY or CS_KEY_DISTANCE. A swept axis,
+    // not a replacement: both keys spend exactly the same budget by construction, so any difference
+    // in outcome is the CHOICE OF WHICH CANDIDATES and nothing else. That is what makes the two
+    // arms comparable in one figure.
+    int h_selectionKey_;
+
     // ==================================================================================
     // FAN-OUT, REGION-KEYED. Blocks are decided AT ADMISSION and stored per node;
     // propagateFrontier only reads them, so it stays the single writer of
@@ -148,6 +169,12 @@ public:
     // non-optimal candidate is ever fresh enough and explore_frac is doing nothing.
     int   h_ordCutoff_;
     float h_pBoundary_;
+
+    // The realised distance threshold, for the CSV. RISING over a run means the candidate pool is
+    // drifting away from the region bests -- the tree is filling with mediocre nodes. PINNED near 0
+    // means the door is only admitting near-optimal candidates and has become a second optimal
+    // door. NaN in ordinality mode.
+    float h_distCutoff_;
 
     // The guarantee's PLANNED size: active regions whose best node no optimal admission covered.
     // Read against reactivated_best, which is the REALISED count -- the gap is the guaranteed nodes
@@ -280,6 +307,26 @@ public:
     thrust::device_vector<int>  d_ordHistogram_;
     int h_ordHistogram_[CS_ORD_BUCKETS + 1];
 
+    // --- THE DISTANCE PATH'S RANKING BUFFER. Dense (compacted-position indexed, NOT slot indexed),
+    // written by accept pass 1 and sorted in place, so sortBuf[k] is the k-th smallest distance in
+    // this iteration's candidate pool.
+    //
+    // A SORT RATHER THAN A HISTOGRAM, and the reason is the key's type. Ordinality is a small
+    // non-negative integer, which is what made a histogram exact and free; distance is continuous,
+    // and for a continuous key binning buys an approximation plus a scale tunable nobody can guess
+    // correctly. thrust::sort dispatches to CUB radix -- ~0.2 ms on a 250k candidate pool against a
+    // ~15 ms iteration.
+    //
+    // Every optimal candidate writes 0 here before returning, so the zeros occupy [0, optimalCount)
+    // after the sort and the X-th admissible non-optimal sits at optimalCount + X.
+    thrust::device_vector<float> d_sortBuf_;
+
+    // The rank the distance cutoff sits at, computed on the DEVICE by a one-thread kernel and read
+    // by pass 2 from device memory. That is the point: it removes the mid-iteration host round trip
+    // entirely on this path, and that stall is the one that serialises the iteration into two
+    // dependent halves. Ordinality mode still does its 257-int readback.
+    thrust::device_vector<int> d_distCutoffIdx_;
+
     // --- per-node, TREE-INDEXED, written once at admission ---
     thrust::device_vector<int> d_nodeBlocks_, d_nodeDoor_;
 
@@ -304,7 +351,8 @@ public:
     float *d_minCostsR1_ptr_, *d_sumCostsR1_ptr_, *d_minCost_ptr_;
     float *d_minCornerCS_ptr_;
     int   *d_cntCostsR1_ptr_;
-    int   *d_regionNodeCount_ptr_, *d_ordHistogram_ptr_;
+    int   *d_regionNodeCount_ptr_, *d_ordHistogram_ptr_, *d_distCutoffIdx_ptr_;
+    float *d_sortBuf_ptr_;
     bool  *d_regionCovered_ptr_;
     int   *d_nodeBlocks_ptr_, *d_nodeDoor_ptr_, *d_candDoor_ptr_;
     float *d_candDistance_ptr_;
@@ -375,7 +423,18 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
 __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                  float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
                                                  int* regionNodeCount, float costScale,
-                                                 float* candDistance, int* ordHistogram);
+                                                 float* candDistance, int* ordHistogram, float* sortBuf);
+
+/***************************/
+/* DISTANCE CUTOFF - one thread, so pass 2 never waits on the host */
+/***************************/
+// Turns the optimal count (riding in ordHistogram[CS_ORD_BUCKETS]) into the RANK at which the
+// distance cutoff sits. One thread because it is three arithmetic ops on two scalars, and the whole
+// reason it exists is to keep that arithmetic on the device: doing it on the host would mean a
+// synchronising copy in the middle of the iteration, which is exactly the stall this path removes.
+__global__ void CountingStars_solveDistanceCutoff_kernel(const int* ordHistogram, int nCand,
+                                                         int goalFrontierSize, float exploreFrac,
+                                                         int* cutoffIdx);
 
 /***************************/
 /* ACCEPT PASS 2 - the ONLY admission decision */
@@ -396,7 +455,9 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
                                                  int* frontierNextXR1s, int* regionNodeCount,
                                                  float* candDistance, bool* frontierNext, int* candDoor,
                                                  bool* regionCovered, curandState* randomSeeds,
+                                                 int selectionKey,
                                                  int ordCutoff, float pBoundary,
+                                                 const float* sortBuf, const int* cutoffIdx,
                                                  unsigned long long* doorCounts);
 
 /***************************/

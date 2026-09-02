@@ -89,6 +89,25 @@ static const int NUM_EXPLORE_FRACS = sizeof(EXPLORE_FRACS) / sizeof(EXPLORE_FRAC
 static const int MAX_BLOCKS_GRID[] = {1, 4};
 static const int NUM_MAX_BLOCKS = sizeof(MAX_BLOCKS_GRID) / sizeof(MAX_BLOCKS_GRID[0]);
 
+// Which signal the SECOND door ranks on. THE HEADLINE AXIS THIS PASS.
+//
+//   ORDINALITY  regionNodeCount[r] -- prefers the least-populated regions. v2's behaviour, and the
+//               control arm.
+//   DISTANCE    (cost - minCostsR1[r]) / costScale -- prefers candidates closest to their OWN
+//               region's best.
+//
+// A SWEPT AXIS RATHER THAN A REPLACEMENT, and that is what makes the comparison readable. Both keys
+// spend exactly the same budget by construction -- the optimal door takes its uncapped share first,
+// then explore_frac of the remainder goes to the second door either way -- so any difference in
+// outcome is the CHOICE OF WHICH CANDIDATES and nothing else. Running them as two branches would
+// mean merging two sets of CSVs into one figure by hand.
+//
+// NOT greedy best-first: distance is per-region normalised, so a node in a far, expensive region
+// still scores 0 if it is that region's best. Every region that received candidates contributes its
+// best at distance 0, so spatial coverage survives structurally and distance only ranks the rest.
+static const int SELECTION_KEYS[] = {CS_KEY_ORDINALITY, CS_KEY_DISTANCE};
+static const int NUM_SELECTION_KEYS = sizeof(SELECTION_KEYS) / sizeof(SELECTION_KEYS[0]);
+
 // ---- KinoPaxSTARCleanCost baseline point ----
 // Demoted from a 21-point grid to the single well-tuned operating point, as the reference the
 // CountingStars grid is read against. Same cleanLabel() format as the cost sweep, so its CSVs
@@ -112,6 +131,8 @@ static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0
 static const int   CS_DERIVED_GOAL_FRONTIER = 10000;
 static const int   CS_DERIVED_MAX_BLOCKS    = 4;
 static const float CS_DERIVED_EXPLORE_FRAC  = 0.5f;
+// This branch's default and the mode under test.
+static const int   CS_DERIVED_SELECTION_KEY = CS_KEY_DISTANCE;
 static const float CAP_DERIVED              = 0.03f;
 
 static bool g_singlePoint = false;
@@ -126,22 +147,26 @@ static bool capSkip(float cap)
 // factorial, so the only skip is --single-point.
 // Single source of truth for the CountingStars grid's shape: the runner and the banner both call
 // it, so the printed point count can never drift from the grid actually executed.
-static bool countingStarsSkip(int goalFrontier, float exploreFrac, int maxBlocks)
+static bool countingStarsSkip(int goalFrontier, float exploreFrac, int maxBlocks, int selectionKey)
 {
-    // FULL FACTORIAL: 4 budgets x 3 fracs x 2 maxBlocks = 24 points. --single-point is the only skip.
+    // FULL FACTORIAL: 2 keys x 4 budgets x 3 fracs x 2 maxBlocks = 48 points. --single-point is the
+    // only skip.
     if(!g_singlePoint) return false;
     return goalFrontier != CS_DERIVED_GOAL_FRONTIER
         || maxBlocks != CS_DERIVED_MAX_BLOCKS
+        || selectionKey != CS_DERIVED_SELECTION_KEY
         || fabsf(exploreFrac - CS_DERIVED_EXPLORE_FRAC) > 1e-6f;
 }
 
 static int countingStarsPointCount()
 {
     int n = 0;
+    for(int ki = 0; ki < NUM_SELECTION_KEYS; ki++)
     for(int bi = 0; bi < NUM_GOAL_FRONTIER_SIZES; bi++)
     for(int mi = 0; mi < NUM_MAX_BLOCKS; mi++)
     for(int ei = 0; ei < NUM_EXPLORE_FRACS; ei++)
-        if(!countingStarsSkip(GOAL_FRONTIER_SIZES[bi], EXPLORE_FRACS[ei], MAX_BLOCKS_GRID[mi])) n++;
+        if(!countingStarsSkip(GOAL_FRONTIER_SIZES[bi], EXPLORE_FRACS[ei], MAX_BLOCKS_GRID[mi],
+                              SELECTION_KEYS[ki])) n++;
     return n;
 }
 
@@ -157,8 +182,9 @@ static int capAxisPointCount(const float* caps, int nCaps)
 // "CountingStars_B10000_f100_mb16". MUST start with a name loadRuns() dispatches on.
 //
 //   B    node budget, plain integer
-//   f    freshness share, round(1000 x float)
+//   f    second-door share, round(1000 x float)
 //   mb   maxBlocks, plain integer
+//   k    selection key, "ord" / "dist"  (same on/off-word precedent as cleanLabel's r2on/r2off)
 //
 // THE `_f` TOKEN IS 1000x, NOT THE 100x `_e` USED ELSEWHERE IN THIS FAMILY. It was introduced when
 // the grid reached explore_frac 0.001, which rounds to the token 0 at 100x -- unreadable, and
@@ -170,11 +196,13 @@ static int capAxisPointCount(const float* caps, int nCaps)
 //
 // THE `_ca` TOKEN IS GONE with the cost_accept toggle. Any CSV still carrying it is from that
 // experiment and will simply not match -- which is the intended outcome, not a loss.
-static std::string countingStarsLabel(int goalFrontier, float exploreFrac, int maxBlocks)
+static std::string countingStarsLabel(int goalFrontier, float exploreFrac, int maxBlocks,
+                                      int selectionKey)
 {
     char buf[160];
-    snprintf(buf, sizeof(buf), "CountingStars_B%d_f%d_mb%d",
-             goalFrontier, (int)lroundf(1000.0f * exploreFrac), maxBlocks);
+    snprintf(buf, sizeof(buf), "CountingStars_B%d_f%d_mb%d_k%s",
+             goalFrontier, (int)lroundf(1000.0f * exploreFrac), maxBlocks,
+             (selectionKey == CS_KEY_DISTANCE) ? "dist" : "ord");
     return std::string(buf);
 }
 
@@ -247,10 +275,15 @@ struct IterationData
     int   ord_cutoff;
     int   guaranteed_react;
     int   budget_used;
-    // A swept axis that is a setting rather than a measurement. In the data so the fan-out panel
-    // can be read against the maxBlocks that produced it, without parsing filenames.
-    // -1 for non-CountingStars rows.
+    // Swept axes that are settings rather than measurements. In the data so every axis of the grid
+    // is filterable without parsing filenames. -1 for non-CountingStars rows.
     int   max_blocks;
+    int   selection_key;      // 0 = ordinality, 1 = distance
+    // The realised distance threshold. RISING over a run means the candidate pool is drifting away
+    // from the region bests -- the tree is filling with mediocre nodes. PINNED near 0 means the
+    // door is admitting only near-optimal candidates and has become a second optimal door.
+    // NaN on the ordinality path, where no distance threshold exists.
+    float dist_cutoff;
     // Admissions by door, counted exactly on the device.
     int   admitted_explore;
     int   admitted_cost;
@@ -279,6 +312,8 @@ static void clearCountingStarsCols(IterationData& d)
     d.guaranteed_react = -1;
     d.budget_used = -1;
     d.max_blocks = -1;
+    d.selection_key = -1;
+    d.dist_cutoff = NAN;
     d.admitted_explore = -1;
     d.admitted_cost = -1;
     d.reactivated_count = -1;
@@ -441,6 +476,7 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
          << "score_floor,cost_scale,"
          << "prop_attempted,prop_valid,frontier_repeat_size,"
          << "optimal_count,ord_cutoff,guaranteed_react,budget_used,max_blocks,"
+         << "selection_key,dist_cutoff,"
          << "admitted_explore,admitted_cost,reactivated_count,reactivated_best,"
          << "block_ceiling,block_scale,global_collision_frac\n";
 
@@ -465,6 +501,8 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
              << d.guaranteed_react << ","
              << d.budget_used << ","
              << d.max_blocks << ","
+             << d.selection_key << ","
+             << std::fixed << std::setprecision(6) << d.dist_cutoff << ","
              << d.admitted_explore << ","
              << d.admitted_cost << ","
              << d.reactivated_count << ","
@@ -1009,6 +1047,7 @@ RunResult benchmarkCountingStars(
     int goalFrontier,
     float exploreFrac,
     int maxBlocks,
+    int selectionKey,
     const std::string& label)
 {
     // Override the planner's defaults for this run. resetPlanner (called below) does not touch the
@@ -1020,6 +1059,7 @@ RunResult benchmarkCountingStars(
     planner.h_goalFrontierSize_ = goalFrontier;
     planner.h_exploreFrac_      = exploreFrac;
     planner.h_maxBlocks_        = maxBlocks;
+    planner.h_selectionKey_     = selectionKey;
 
     RunResult result;
     result.delta_label = label;
@@ -1110,6 +1150,8 @@ RunResult benchmarkCountingStars(
         d.guaranteed_react     = (int)planner.h_guaranteedReact_;
         d.budget_used          = (int)planner.h_budgetUsed_;
         d.max_blocks           = planner.h_maxBlocks_;
+        d.selection_key        = planner.h_selectionKey_;
+        d.dist_cutoff          = planner.h_distCutoff_;
         d.admitted_explore     = (int)planner.h_admittedExplore_;
         d.admitted_cost        = (int)planner.h_admittedCost_;
         d.reactivated_count    = (int)planner.h_reactivated_;
@@ -1152,29 +1194,34 @@ void runCountingStarsBenchmark(
            environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
     printf("========================================\n");
 
+    // The selection key is the OUTERMOST loop so the two arms come out of the log adjacent at
+    // matched (B, frac, mb) -- the comparison this pass exists for is read pairwise.
+    for(int ki = 0; ki < NUM_SELECTION_KEYS; ki++)
     for(int bi = 0; bi < NUM_GOAL_FRONTIER_SIZES; bi++)
     for(int mi = 0; mi < NUM_MAX_BLOCKS; mi++)
     for(int ei = 0; ei < NUM_EXPLORE_FRACS; ei++)
     {
+        const int   selectionKey = SELECTION_KEYS[ki];
         const int   goalFrontier = GOAL_FRONTIER_SIZES[bi];
         const int   maxBlocks    = MAX_BLOCKS_GRID[mi];
         const float exploreFrac  = EXPLORE_FRACS[ei];
+        const char* keyName      = (selectionKey == CS_KEY_DISTANCE) ? "dist" : "ord";
 
-        if(countingStarsSkip(goalFrontier, exploreFrac, maxBlocks)) continue;
+        if(countingStarsSkip(goalFrontier, exploreFrac, maxBlocks, selectionKey)) continue;
 
-        const std::string label = countingStarsLabel(goalFrontier, exploreFrac, maxBlocks);
+        const std::string label = countingStarsLabel(goalFrontier, exploreFrac, maxBlocks, selectionKey);
 
-        printf("  --- B = %d, explore_frac = %.3f, maxBlocks = %d (%s) ---\n",
-               goalFrontier, exploreFrac, maxBlocks, label.c_str());
+        printf("  --- key = %s, B = %d, explore_frac = %.3f, maxBlocks = %d (%s) ---\n",
+               keyName, goalFrontier, exploreFrac, maxBlocks, label.c_str());
         CountingStars planner;
         for(int run = 0; run < numRuns; run++)
         {
             RunResult result = benchmarkCountingStars(planner, deltaLabel, environment_name, run,
                                                  h_initial, h_goal, d_obstacles,
                                                  numObstacles, maxIterations, maxTimeMs,
-                                                 goalFrontier, exploreFrac, maxBlocks, label);
-            printf("  B=%d f=%.3f mb=%d Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-                   goalFrontier, exploreFrac, maxBlocks,
+                                                 goalFrontier, exploreFrac, maxBlocks, selectionKey, label);
+            printf("  k=%s B=%d f=%.3f mb=%d Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                   keyName, goalFrontier, exploreFrac, maxBlocks,
                    run + 1, numRuns, result.total_time_seconds,
                    result.total_iterations, result.final_tree_size, result.first_solution_iteration,
                    result.first_solution_cost, result.final_best_cost);
@@ -1435,7 +1482,15 @@ int main(int argc, char* argv[])
         for(int i = 0; i < NUM_MAX_BLOCKS; i++)
             printf("%s%d", i ? ", " : "", MAX_BLOCKS_GRID[i]);
         printf("}\n");
-        printf("                B is the PRIMITIVE, not a cap: the doors fill it in priority order\n"
+        printf("                selection_key {ord, dist} -- THE HEADLINE AXIS. Both keys spend the\n"
+               "                SAME budget; they differ only in WHICH candidates the second door\n"
+               "                picks. ord = least-populated regions (v2, the control arm); dist =\n"
+               "                closest to their own region's best, ranked by an exact sort.\n"
+               "                dist is NOT greedy best-first: distance is per-region normalised,\n"
+               "                so every region that got candidates contributes its best at 0.\n"
+               "                READ admitted_explore ord vs dist at matched (B, frac, mb): both\n"
+               "                spend the same budget, so any difference is WHICH candidates.\n"
+               "                B is the PRIMITIVE, not a cap: the doors fill it in priority order\n"
                "                and the budget is met by construction.\n"
                "                COST ACCEPTANCE IS PERMANENT -- the OPTIMAL door and the Part B\n"
                "                region-best GUARANTEE always run. Those two are the only UNCAPPED\n"

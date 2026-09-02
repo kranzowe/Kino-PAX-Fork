@@ -121,6 +121,19 @@ cu_dgf = cu_scalar('CS_DERIVED_GOAL_FRONTIER', 'int')
 cu_dmb = cu_scalar('CS_DERIVED_MAX_BLOCKS', 'int')
 cu_def = cu_scalar('CS_DERIVED_EXPLORE_FRAC')
 
+# The selection-key axis. Its entries are the SYMBOLS CS_KEY_ORDINALITY / CS_KEY_DISTANCE rather
+# than numbers, so cu_array's numeric parse does not apply -- match the names directly and map them
+# to the filename token, which is what the label is actually built from.
+_kmo = re.search(r'static const int SELECTION_KEYS\[\]\s*=\s*\{([^}]*)\}', cu)
+if not _kmo:
+    sys.exit('FATAL: SELECTION_KEYS[] not found in %s' % CU)
+cu_keys = [('dist' if 'DISTANCE' in t else 'ord') for t in _kmo.group(1).split(',') if t.strip()]
+
+_dkmo = re.search(r'static const int\s+CS_DERIVED_SELECTION_KEY\s*=\s*(CS_KEY_\w+)', cu)
+if not _dkmo:
+    sys.exit('FATAL: CS_DERIVED_SELECTION_KEY not found in %s' % CU)
+cu_dkey = 'dist' if 'DISTANCE' in _dkmo.group(1) else 'ord'
+
 cu_clean = {}
 for fld, key in (('CLEAN_BASE_W', 'w'), ('CLEAN_BASE_K', 'k'), ('CLEAN_BASE_CAP', 'cap')):
     cu_clean[key] = tok(cu_scalar(fld))
@@ -156,6 +169,12 @@ if any(v < 1 for v in cu_goalf):
 if any(v < 0.0 or v > 1.0 for v in cu_efrac):
     problems.append('EXPLORE_FRACS %s has an entry outside [0, 1] -- it is a share of the remaining '
                     'budget, not a count' % (cu_efrac,))
+if cu_dkey not in cu_keys:
+    problems.append('CS_DERIVED_SELECTION_KEY (%s) is not in SELECTION_KEYS %s -- --single-point '
+                    'selects BY VALUE, so that pass would run nothing at all' % (cu_dkey, cu_keys))
+if len(set(cu_keys)) != len(cu_keys):
+    problems.append('SELECTION_KEYS %s has a duplicate -- two grid points would write one file'
+                    % (cu_keys,))
 if any(v < 1 for v in cu_blocks):
     problems.append('MAX_BLOCKS_GRID %s has an entry below 1 -- rep >= 1 is a correctness floor'
                     % (cu_blocks,))
@@ -166,20 +185,22 @@ def cs_skip(goalf, efrac, blocks):
     return False
 
 
-def cs_label(goalf, efrac, blocks):
+def cs_label(goalf, efrac, blocks, key):
     """Mirrors countingStarsLabel() in the benchmark."""
-    return 'CountingStars_B%d_f%d_mb%d' % (int(round(goalf)), ftok(efrac), int(round(blocks)))
+    return 'CountingStars_B%d_f%d_mb%d_k%s' % (int(round(goalf)), ftok(efrac),
+                                               int(round(blocks)), key)
 
 
 cu_pairs = set()
 for d, plus_only in zip(sh_deltas, sh_plus_only):
     if not plus_only:
-        for goalf in cu_goalf:
-            for blocks in cu_blocks:
-                for efrac in cu_efrac:
-                    if cs_skip(goalf, efrac, blocks):
-                        continue
-                    cu_pairs.add((cs_label(goalf, efrac, blocks), d))
+        for key in cu_keys:
+            for goalf in cu_goalf:
+                for blocks in cu_blocks:
+                    for efrac in cu_efrac:
+                        if cs_skip(goalf, efrac, blocks):
+                            continue
+                        cu_pairs.add((cs_label(goalf, efrac, blocks, key), d))
         cu_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                       % (cu_clean['r2'], cu_clean['w'], cu_clean['k'], cu_clean['cap']), d))
         for c in cu_kcap:
@@ -195,8 +216,10 @@ m_kcap    = m_ints('kpaxCapCaps')
 m_deltas  = m_cellstr('deltas')
 m_plus_only = m_bools('deltaPlusOnly')
 m_dgf = m_scalar_int('csDerivedGoalFrontier')
-m_dmb = m_scalar_int('csDerivedMaxBlocks')
-m_def = m_scalar_int('csDerivedExploreFrac')
+m_dmb  = m_scalar_int('csDerivedMaxBlocks')
+m_def  = m_scalar_int('csDerivedExploreFrac')
+m_keys = m_cellstr('csSelectionKeys')
+m_dkey = m_str('csDerivedSelectionKey')
 m_clean = {
     'r2': m_str('cleanBaseR2'),
     'w': m_scalar_int('cleanBaseW'),
@@ -207,10 +230,12 @@ m_clean = {
 m_pairs = set()
 for d, plus_only in zip(m_deltas, m_plus_only):
     if not plus_only:
-        for goalf in m_goalf:
-            for blocks in m_blocks:
-                for efrac in m_efrac:
-                    m_pairs.add(('CountingStars_B%d_f%d_mb%d' % (goalf, efrac, blocks), d))
+        for key in m_keys:
+            for goalf in m_goalf:
+                for blocks in m_blocks:
+                    for efrac in m_efrac:
+                        m_pairs.add(('CountingStars_B%d_f%d_mb%d_k%s'
+                                     % (goalf, efrac, blocks, key), d))
         m_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                      % (m_clean['r2'], m_clean['w'], m_clean['k'], m_clean['cap']), d))
         for c in m_kcap:
@@ -222,9 +247,11 @@ for d, plus_only in zip(m_deltas, m_plus_only):
 only_cu = sorted(cu_pairs - m_pairs)
 only_m = sorted(m_pairs - cu_pairs)
 
-if (cu_dgf, cu_dmb, ftok(cu_def)) != (m_dgf, m_dmb, m_def):
-    problems.append('DERIVED POINT DRIFT: .cu (B%d, mb%d, f%d) != .m (B%d, mb%d, f%d)'
-                    % (cu_dgf, cu_dmb, ftok(cu_def), m_dgf, m_dmb, m_def))
+if (cu_dgf, cu_dmb, ftok(cu_def), cu_dkey) != (m_dgf, m_dmb, m_def, m_dkey):
+    problems.append('DERIVED POINT DRIFT: .cu (B%d, mb%d, f%d, k%s) != .m (B%d, mb%d, f%d, k%s)'
+                    % (cu_dgf, cu_dmb, ftok(cu_def), cu_dkey, m_dgf, m_dmb, m_def, m_dkey))
+if sorted(cu_keys) != sorted(m_keys):
+    problems.append('SELECTION KEY AXIS DRIFT: .cu %s != .m %s' % (cu_keys, m_keys))
 
 if sh_deltas != m_deltas:
     problems.append('DELTA_LABELS %s (%s) != deltas %s (%s)' % (sh_deltas, SH, m_deltas, M))

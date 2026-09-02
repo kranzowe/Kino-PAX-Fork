@@ -6,16 +6,17 @@
 % only for the tuned arms; the two finer deltas run KinoPaxPlus alone (see deltaPlusOnly below and
 % DELTA_EXTRA_ARGS in run_countingstars_sweep.sh):
 %
-%   CountingStars         goal_frontier_size {2000, 10000, 50000}
-%                         x explore_frac {0.01, 0.5, 0.9} x maxBlocks {1, 4}       = 24
+%   CountingStars         goal_frontier_size {200, 2000, 6000, 10000}
+%                         x explore_frac {0.01, 0.5, 0.9} x maxBlocks {1, 4}
+%                         x selection_key {ord, dist}                             = 48
 %   KinoPaxSTARCleanCost  r2 OFF, w 0.9, k 1, cap 0.03  (one tuned reference point) =  1
 %   KPAXCap               cap {0.03}                                               =  1
 %   KPAX, KinoPaxPlus                                                              =  2
 %                                                                                  -----
-%                                                              at the coarse delta    28
+%                                                              at the coarse delta    52
 %   KinoPaxPlus at the two finer deltas                                            +  2
 %                                                                                  -----
-%                                                                                     30
+%                                                                                     54
 %
 % CountingStars runs at the COARSE delta only -- that is what the discretization factor in the
 % grid above means, and it is enforced by DELTA_EXTRA_ARGS in run_countingstars_sweep.sh
@@ -27,6 +28,24 @@
 % already cover it), then a uniform DRAW. F is met by construction, so B is the INPUT and
 % propagations-per-node is the OUTPUT.
 %
+% SELECTION KEY IS THE HEADLINE AXIS THIS PASS. The second door (the one that spends
+% explore_frac of what the optimal door left) can rank its candidates two ways:
+%
+%   ord   regionNodeCount[r]  -- prefers the LEAST-POPULATED regions. v2's behaviour, control arm.
+%   dist  (cost - minCostsR1[r]) / costScale -- prefers candidates CLOSEST TO THEIR OWN region's
+%         best, ranked by an exact sort rather than a histogram.
+%
+% BOTH KEYS SPEND EXACTLY THE SAME BUDGET by construction, so any difference in outcome is the
+% choice of WHICH candidates and nothing else. Read admitted_explore ord vs dist at matched
+% (B, frac, mb) first -- if it differs, the two arms are not spending the same budget and the
+% comparison is invalid before any conclusion is drawn from it.
+%
+% dist is NOT greedy best-first: distance is per-region normalised, so a node in a far, expensive
+% region still scores 0 if it is that region's best. Every region that received candidates
+% contributes its best at distance 0, so spatial coverage survives structurally. THE RISK CASE is
+% that dist still concentrates admissions in already-good regions, coverage suffers, and the goal
+% is found LATER despite a better final cost -- r2_coverage_pct is the corroborating column.
+%
 % COST ACCEPTANCE IS PERMANENT. An earlier pass carried a cost_accept toggle that removed both
 % cost-driven doors (OPTIMAL and the Part B GUARANTEE) to test whether they were costing time to
 % first solution. That experiment is over and the doors stay -- they are what makes the search
@@ -36,16 +55,23 @@
 % Read the figures in this order:
 %
 %   1. budget_used / B          the claim the design rests on. See the note on where B binds.
-%   2. frontier_repeat_size / frontier_size    THE REALISED MEAN rep, and the direct check that
-%                               fan-out now concentrates. At maxBlocks = 1 it must be exactly 1;
-%                               at 16 it should sit near 1 with a small excess from thin regions,
-%                               NOT near the old flat ~7.
-%   3. prop_attempted / budget_used            candidates produced per node ADMITTED. This is what
-%                               the runtime gap against KPAXCap and CleanCost is made of: it was
-%                               ~224 under the old flat rule against their ~32.
-%   3. ord_cutoff               rising = regions filling, freshness getting scarce. 0 = explore_frac
-%                               inert; 256 = saturated, so explore_frac is not binding either.
-%   4. block_scale              near 0 = the rep >= 1 floor ate the budget, fan-out split is inert.
+%   1. admitted_explore ord vs dist at matched (B, frac, mb) -- MUST MATCH. Both keys spend the
+%                               same budget by construction; if they do not, the arms are not
+%                               comparable and nothing below is interpretable.
+%   2. final cost, ord vs dist  distance is a QUALITY signal. If it does not improve final cost it
+%                               is not doing what it claims.
+%   3. time to first solution, ord vs dist     the risk case: dist concentrates on already-good
+%                               regions, coverage suffers, and the goal is found LATER. Read
+%                               r2_coverage_pct alongside it.
+%   4. ord_cutoff / dist_cutoff each arm populates one of them. dist_cutoff rising = the pool is
+%                               drifting off the region bests; pinned ~0 = the door has become a
+%                               second optimal door.
+%   5. budget_used / B          the claim the design rests on. See the note on where B binds.
+%   6. frontier_repeat_size / frontier_size    the realised mean rep. At maxBlocks = 1 it must be
+%                               exactly 1; at 4 near 1 with a small excess from thin regions.
+%   7. prop_attempted / budget_used            candidates produced per node ADMITTED -- what the
+%                               runtime gap against KPAXCap and CleanCost is made of.
+%   8. block_scale              near 0 = the rep >= 1 floor ate the budget.
 %
 % WHERE B BINDS -- AND EVERY B ON THIS GRID IS BELOW THE THRESHOLD. Two doors are uncapped and BOTH
 % are bounded by NUM_R1_REGIONS rather than by B: OPTIMAL (at most one region best per region per
@@ -69,8 +95,10 @@
 % SCORE AT ALL -- it never reads vertexScores, h_scoreFloor_, h_nActive_ or regionCoverage in any
 % decision -- so it writes NaN there and simply does not draw on that panel.
 %
-% ENCODING: colour = goal_frontier_size (near-black smallest -> pale largest); line style and
-% scatter marker = explore_frac; line width = delta. CleanCost is crimson, KPAXCap grey-green,
+% ENCODING: colour = selection_key x goal_frontier_size -- COOL = ord, WARM = dist, darker =
+% smaller B, so the ord/dist contrast is the first thing the eye resolves; line style =
+% explore_frac; scatter marker = maxBlocks; line width = delta, and the dist arm is drawn thicker
+% as the hypothesis under test. CleanCost is crimson, KPAXCap grey-green,
 % KPAX near-black, KinoPaxPlus blue -- all four drawn thicker as reference anchors. Every legend
 % here is CLICKABLE - click an entry to hide/show that series.
 %
@@ -149,6 +177,9 @@ deltaLabel = '3 deltas overlaid';
 % and is KEPT now that it is gone, because switching back would make `_f100` ambiguous against the
 % CSVs already labelled that way. The filename letter is `f` to match.
 %
+% Selection keys, as the filename tokens. Order is control-arm first.
+csSelectionKeys = {'ord', 'dist'};
+
 csGoalFrontierSizes = [200 2000 6000 10000];
 csExploreFracs      = [10 500 900];
 csMaxBlocks         = [1 4];
@@ -158,6 +189,7 @@ csMaxBlocks         = [1 4];
 csDerivedGoalFrontier = 10000;
 csDerivedExploreFrac  = 500;        % explore_frac 0.5 -> round(1000 * 0.5)
 csDerivedMaxBlocks    = 4;
+csDerivedSelectionKey = 'dist';     % this branch's default and the mode under test
 
 % CleanCost baseline point - one series, the well-tuned operating point. Same label format as the
 % cost sweep, so its historical CSVs load here unchanged.
@@ -175,11 +207,21 @@ kpaxCapCaps = [3];
 % BUDGET, which is the direction the design is pushing. Every B here is below NUM_R1_REGIONS, so
 % the ramp no longer separates "soft" from "binding" -- it separates HOW LONG each one binds for
 % before nActive overtakes it.
-%   rows: B 200, B 2000, B 6000, B 10000
-budgetColors = [0.08 0.08 0.08;    % B 200    stops binding almost immediately
-                0.11 0.24 0.40;    % B 2000
-                0.20 0.45 0.66;    % B 6000
-                0.55 0.68 0.84];   % B 10000  binds longest (largest frontier, fewest props/node)
+% FOUR axes, three style channels, so COLOUR CARRIES THE PAIR THAT MATTERS: selection_key x B.
+% The key is the headline question, so it gets a whole hue family each -- COOL = ordinality,
+% WARM = distance -- which makes the ord/dist contrast the first thing the eye resolves on every
+% panel. Within a family, darker = smaller B.
+%   rows in each: B 200, B 2000, B 6000, B 10000
+ordColors  = [0.08 0.08 0.08;    % B 200    stops binding almost immediately
+              0.11 0.24 0.40;    % B 2000
+              0.20 0.45 0.66;    % B 6000
+              0.55 0.68 0.84];   % B 10000  binds longest
+distColors = [0.35 0.10 0.02;    % B 200
+              0.62 0.26 0.05;    % B 2000
+              0.85 0.45 0.13;    % B 6000
+              0.96 0.70 0.42];   % B 10000
+% Kept under the old name so the panels that index one ramp still work; ord is the control arm.
+budgetColors = ordColors;
 fracStyles   = {'-', '--', ':'};   % explore_frac = 0.01, 0.5, 0.9
 blockMarkers = {'o', 's'};         % maxBlocks = 1, 4 -- scatter only
                                    % mb 1 is the ancestors' steady state (every node rep 1)
@@ -218,37 +260,44 @@ for di = 1:numel(deltas)
 
     if ~dPlus
 
-    % --- CountingStars: B x explore_frac x maxBlocks, a full factorial ---
-    for bi = 1:numel(csGoalFrontierSizes)
-        for ei = 1:numel(csExploreFracs)
-            for mi = 1:numel(csMaxBlocks)
-                goalF = csGoalFrontierSizes(bi);
-                eFrac = csExploreFracs(ei);
-                maxB  = csMaxBlocks(mi);
+    % --- CountingStars: selection_key x B x explore_frac x maxBlocks, a full factorial ---
+    for ki = 1:numel(csSelectionKeys)
+        keyStr  = csSelectionKeys{ki};
+        keyCols = ordColors;
+        if strcmp(keyStr, 'dist'), keyCols = distColors; end
 
-                % Mirror countingStarsSkip(): --single-point is the only skip.
-                if dOne && ~(goalF == csDerivedGoalFrontier && eFrac == csDerivedExploreFrac ...
-                             && maxB == csDerivedMaxBlocks)
-                    continue;
-                end
+        for bi = 1:numel(csGoalFrontierSizes)
+            for ei = 1:numel(csExploreFracs)
+                for mi = 1:numel(csMaxBlocks)
+                    goalF = csGoalFrontierSizes(bi);
+                    eFrac = csExploreFracs(ei);
+                    maxB  = csMaxBlocks(mi);
 
-                plannerNames{end + 1}   = sprintf('CountingStars_B%d_f%d_mb%d', ...
-                                                  goalF, eFrac, maxB); %#ok<SAGROW>
-                plannerDisplay{end + 1} = sprintf('CS B%d f%g mb%d [%s]', ...
-                                                  goalF, eFrac / 1000, maxB, dTag); %#ok<SAGROW>
-                plannerColors(end + 1, :) = budgetColors(bi, :);   %#ok<SAGROW>
-                plannerStyles{end + 1}    = fracStyles{ei};        %#ok<SAGROW>
-                plannerMarkers{end + 1}   = blockMarkers{mi};      %#ok<SAGROW>
-                % The smallest-budget arm is drawn thicker: it is the reference the rest is read
-                % against, and the one closest to KinoPaxPlus's regime.
-                if goalF == min(csGoalFrontierSizes)
-                    plannerWidths(end + 1) = dWidth + 0.8;         %#ok<SAGROW>
-                else
-                    plannerWidths(end + 1) = dWidth;               %#ok<SAGROW>
+                    % Mirror countingStarsSkip(): --single-point is the only skip.
+                    if dOne && ~(goalF == csDerivedGoalFrontier && eFrac == csDerivedExploreFrac ...
+                                 && maxB == csDerivedMaxBlocks ...
+                                 && strcmp(keyStr, csDerivedSelectionKey))
+                        continue;
+                    end
+
+                    plannerNames{end + 1}   = sprintf('CountingStars_B%d_f%d_mb%d_k%s', ...
+                                                      goalF, eFrac, maxB, keyStr); %#ok<SAGROW>
+                    plannerDisplay{end + 1} = sprintf('CS %s B%d f%g mb%d [%s]', ...
+                                                      keyStr, goalF, eFrac / 1000, maxB, dTag); %#ok<SAGROW>
+                    plannerColors(end + 1, :) = keyCols(bi, :);        %#ok<SAGROW>
+                    plannerStyles{end + 1}    = fracStyles{ei};        %#ok<SAGROW>
+                    plannerMarkers{end + 1}   = blockMarkers{mi};      %#ok<SAGROW>
+                    % The DISTANCE arm is drawn thicker: it is the hypothesis under test and the
+                    % one to read first on every panel.
+                    if strcmp(keyStr, 'dist')
+                        plannerWidths(end + 1) = dWidth + 0.8;         %#ok<SAGROW>
+                    else
+                        plannerWidths(end + 1) = dWidth;               %#ok<SAGROW>
+                    end
+                    plannerBaseline(end + 1) = false;                  %#ok<SAGROW>
+                    plannerDeltaIdx(end + 1) = di;                     %#ok<SAGROW>
+                    plannerGoalFrontier(end + 1) = goalF;              %#ok<SAGROW>
                 end
-                plannerBaseline(end + 1) = false;                  %#ok<SAGROW>
-                plannerDeltaIdx(end + 1) = di;                     %#ok<SAGROW>
-                plannerGoalFrontier(end + 1) = goalF;              %#ok<SAGROW>
             end
         end
     end
@@ -472,8 +521,12 @@ for ei = 1:numel(environments)
         %                       every non-optimal candidate is admitted. explore_frac is not binding.
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Freshness Cutoff and Cost Scale (%s)', envTitle, costTitle), ...
-               'Position', [140 140 1400 620]);
-        subplot(1, 2, 1); hold on;
+               'Position', [140 140 1680 620]);
+        % Each series carries exactly ONE of these two cutoffs -- the other is -1 / NaN and simply
+        % does not draw -- so the ord arm populates the left panel and the dist arm the middle one.
+        % They cannot share an axis: ord_cutoff is an integer region population in [0, 256] and
+        % dist_cutoff is a small scale-free float.
+        subplot(1, 3, 1); hold on;
         for pi = 1:nPlanner
             plotMeanIter(R{pi}, @(t) getCol(t, 'ord_cutoff'), ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
@@ -481,13 +534,26 @@ for ei = 1:numel(environments)
         grid on;
         yline(256, 'k--', 'saturated (all fresh)', 'LineWidth', 1.2, 'HandleVisibility', 'off');
         xlabel('Iteration'); ylabel('ord\_cutoff (region population)');
-        title({'Freshness cutoff', 'rising = regions filling; 0 = explore\_frac inert; 256 = not binding'});
+        title({'ORD arm: freshness cutoff', 'rising = regions filling; 0 = explore\_frac inert; 256 = not binding'});
         clickableLegend();
+
+        % --- The distance arm's threshold. RISING means the candidate pool is drifting away from
+        % the region bests -- the tree is filling with mediocre nodes. PINNED NEAR 0 means the door
+        % is only admitting near-optimal candidates and has quietly become a second optimal door,
+        % which would make the ord/dist comparison a comparison of one door against two.
+        subplot(1, 3, 2); hold on;
+        for pi = 1:nPlanner
+            plotMeanIter(R{pi}, @(t) getCol(t, 'dist_cutoff'), ...
+                         plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
+        end
+        set(gca, 'YScale', 'log'); grid on;
+        xlabel('Iteration'); ylabel('dist\_cutoff ((cost - regionMin) / cost\_scale)');
+        title({'DIST arm: distance cutoff', 'rising = pool drifting off the region bests; ~0 = a second optimal door'});
 
         % --- The denominator of the top door's test. distance = (cost - regionMin) / cost_scale,
         % and distance 0 is what the optimal door admits -- so a cost_scale collapsing toward 0 is
         % the one way that test could go degenerate without anything else looking wrong.
-        subplot(1, 2, 2); hold on;
+        subplot(1, 3, 3); hold on;
         for pi = 1:nPlanner
             plotMeanIter(R{pi}, @(t) getCol(t, 'cost_scale'), ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
@@ -719,7 +785,7 @@ for ei = 1:numel(environments)
         grid on;
         clickableLegend();
         title(sprintf(['Tuning Tradeoff: Time to First Solution vs Final Cost \x2014 %s, %s\n' ...
-                       'lower-left is better (fast and cheap); darker = smaller B; ' ...
+                       'lower-left is better (fast and cheap); cool = ord, warm = dist; ' ...
                        '\x25cb/\x25a1 CountingStars (mb16/mb32), \x2606 CleanCost, ' ...
                        '\x25bd KPAXCap, \x25a1 KPAX, \x25c7 KinoPaxPlus'], ...
                        envTitle, costTitle), 'FontWeight', 'bold');

@@ -70,6 +70,7 @@
 #include "statePropagator/statePropagatorSpatialHash.cuh"
 #include <thrust/transform_reduce.h>
 #include <thrust/execution_policy.h>
+#include <thrust/sort.h>
 
 CountingStars::CountingStars()
 {
@@ -117,6 +118,9 @@ CountingStars::CountingStars()
     // CS_ORD_BUCKETS + 1: the extra slot carries the optimal count, so the mid-iteration readback
     // between the two accept passes is one synchronising memcpy rather than two.
     d_ordHistogram_           = thrust::device_vector<int>(CS_ORD_BUCKETS + 1, 0);
+    // The distance path's ranking buffer: dense, sorted in place, one float per candidate.
+    d_sortBuf_                = thrust::device_vector<float>(MAX_TREE_SIZE, 0.0f);
+    d_distCutoffIdx_          = thrust::device_vector<int>(1, 0);
     // Per-node, tree-indexed, written once at admission.
     d_nodeBlocks_             = thrust::device_vector<int>(MAX_TREE_SIZE, 1);
     d_nodeDoor_               = thrust::device_vector<int>(MAX_TREE_SIZE, CS_DOOR_NONE);
@@ -158,6 +162,8 @@ CountingStars::CountingStars()
     d_regionCovered_ptr_          = thrust::raw_pointer_cast(d_regionCovered_.data());
     d_regionNodeCount_ptr_        = thrust::raw_pointer_cast(d_regionNodeCount_.data());
     d_ordHistogram_ptr_           = thrust::raw_pointer_cast(d_ordHistogram_.data());
+    d_sortBuf_ptr_                = thrust::raw_pointer_cast(d_sortBuf_.data());
+    d_distCutoffIdx_ptr_          = thrust::raw_pointer_cast(d_distCutoffIdx_.data());
     d_nodeBlocks_ptr_             = thrust::raw_pointer_cast(d_nodeBlocks_.data());
     d_nodeDoor_ptr_               = thrust::raw_pointer_cast(d_nodeDoor_.data());
     d_candDistance_ptr_           = thrust::raw_pointer_cast(d_candDistance_.data());
@@ -195,6 +201,10 @@ CountingStars::CountingStars()
     // a --single-point sweep pass are the same planner.
     h_exploreFrac_ = 0.5f;
 
+    // DISTANCE is this branch's default -- it is the mode under test. Set to CS_KEY_ORDINALITY to
+    // recover v2's behaviour exactly; both are swept, so the sweep carries both arms.
+    h_selectionKey_ = CS_KEY_DISTANCE;
+
     // ---- Fan-out. Blocks a node gets are decided at admission; see the header for the rule. ----
     // rep is a plain COUNT OF BLOCKS with no alignment constraint -- repeatInd writes rep integer
     // entries and kernel1 launches one 32-thread block per entry, so a node at 4 gets
@@ -209,6 +219,7 @@ CountingStars::CountingStars()
     h_optimalCount_        = 0;
     h_ordCutoff_           = 0;
     h_pBoundary_           = 0.0f;
+    h_distCutoff_          = 0.0f;
     h_guaranteedReact_     = 0;
     h_budgetUsed_          = 0;
     h_admittedExplore_     = 0;
@@ -287,6 +298,8 @@ void CountingStars::resetPlanner(float* h_initial, float* h_goal)
     thrust::fill(d_regionNodeCount_.begin(), d_regionNodeCount_.end(), 0);
     thrust::fill(d_regionCovered_.begin(), d_regionCovered_.end(), false);
     thrust::fill(d_ordHistogram_.begin(), d_ordHistogram_.end(), 0);
+    thrust::fill(d_sortBuf_.begin(), d_sortBuf_.end(), 0.0f);
+    thrust::fill(d_distCutoffIdx_.begin(), d_distCutoffIdx_.end(), 0);
     // maxBlocks, not 1: the root is admitted by no door, so nothing else would ever write its count.
     thrust::fill(d_nodeBlocks_.begin(), d_nodeBlocks_.end(), h_maxBlocks_);
     thrust::fill(d_nodeDoor_.begin(), d_nodeDoor_.end(), CS_DOOR_NONE);
@@ -326,6 +339,7 @@ void CountingStars::resetPlanner(float* h_initial, float* h_goal)
     h_optimalCount_         = 0;
     h_ordCutoff_            = 0;
     h_pBoundary_            = 0.0f;
+    h_distCutoff_           = 0.0f;
     h_guaranteedReact_      = 0;
     h_budgetUsed_           = 0;
     h_admittedExplore_      = 0;
@@ -825,7 +839,7 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
 __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                  float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
                                                  int* regionNodeCount, float costScale,
-                                                 float* candDistance, int* ordHistogram)
+                                                 float* candDistance, int* ordHistogram, float* sortBuf)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if(tid >= frontierNextSize) return;
@@ -843,6 +857,12 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
             // what is LEFT of the budget after these, so counting them as fresh too would let one
             // node consume two doors' worth of it.
             candDistance[idx] = 0.0f;
+            // WRITE THE DENSE RANKING SLOT BEFORE RETURNING. sortBuf is indexed by tid -- the
+            // COMPACTED position -- and is sorted whole, so an unwritten entry here is an
+            // uninitialised float in the middle of the sort. The optimal candidates' zeros are
+            // also load-bearing: they occupy [0, optimalCount) after the sort, which is exactly
+            // what makes the X-th admissible non-optimal sit at optimalCount + X.
+            sortBuf[tid] = 0.0f;
             // Slot CS_ORD_BUCKETS is NOT a bucket -- it is the optimal count, riding in the same
             // buffer so the host reads both back in one synchronising memcpy. The cutoff scan
             // below runs over [0, CS_ORD_BUCKETS) and never touches it.
@@ -855,12 +875,48 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
     // and an underflow when the spread is enormous next to the gap. Both fall back to the raw
     // difference, which cannot be 0 here: cost > m, and float subtraction of nearby values is exact.
     float d = (costScale > 0.0f) ? ((cost - m) / costScale) : (cost - m);
-    candDistance[idx] = (d != 0.0f) ? d : (cost - m);
+    d = (d != 0.0f) ? d : (cost - m);
+    candDistance[idx] = d;      // slot-indexed: pass 2 reads its OWN value from here
+    sortBuf[tid]      = d;      // dense: the sort ranks the pool through this
 
+    // BOTH KEYS ARE MEASURED EVERY ITERATION, whichever one is selected. The histogram is two
+    // atomics on a 256-entry array and the sortBuf store is one float, so carrying the unused one
+    // costs almost nothing -- and it keeps the two modes' pass-1 timing comparable, which matters
+    // when the whole point of the sweep is a like-for-like runtime comparison.
     int ord = regionNodeCount[xR1];
     if(ord < 0) ord = 0;
     if(ord >= CS_ORD_BUCKETS) ord = CS_ORD_BUCKETS - 1;
     atomicAdd(&ordHistogram[ord], 1);
+}
+
+/***************************/
+/* DISTANCE CUTOFF - one thread, so pass 2 never waits on the host */
+/***************************/
+// Turns the optimal count into the RANK at which the distance cutoff sits.
+//
+// ONE THREAD, and that is the entire point. The arithmetic is three operations on two scalars; it
+// lives on the device so the optimal count never has to come back to the host mid-iteration. That
+// readback is the stall that serialises the iteration into two dependent halves, and this path
+// removes it -- optimalCount still reaches the host for the CSV, but batched with the door counts
+// at the END of the iteration where nothing is waiting on it.
+__global__ void CountingStars_solveDistanceCutoff_kernel(const int* ordHistogram, int nCand,
+                                                         int goalFrontierSize, float exploreFrac,
+                                                         int* cutoffIdx)
+{
+    if(threadIdx.x != 0 || blockIdx.x != 0) return;
+
+    int optimalCount = ordHistogram[CS_ORD_BUCKETS];
+
+    // The optimal door has already spent optimalCount of the budget and is UNCAPPED, so `remaining`
+    // can be zero -- at which point the distance door admits nothing, which is the correct answer
+    // and not a degenerate one.
+    float remaining = fmaxf(0.0f, float(goalFrontierSize) - float(optimalCount));
+    int   X         = (int)(exploreFrac * remaining);
+
+    // The zeros occupy [0, optimalCount), so the first NON-admitted non-optimal sits here. Clamped
+    // to nCand: past that the whole pool is admissible and pass 2 uses +INF instead of a read.
+    int idx = optimalCount + X;
+    cutoffIdx[0] = (idx < nCand) ? idx : nCand;
 }
 
 /***************************/
@@ -885,7 +941,9 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
                                                  int* frontierNextXR1s, int* regionNodeCount,
                                                  float* candDistance, bool* frontierNext, int* candDoor,
                                                  bool* regionCovered, curandState* randomSeeds,
+                                                 int selectionKey,
                                                  int ordCutoff, float pBoundary,
+                                                 const float* sortBuf, const int* cutoffIdx,
                                                  unsigned long long* doorCounts)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -907,17 +965,41 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
             return;
         }
 
-    // --- FRESHEST: from the least-populated regions, up to the cutoff. ---
-    int ord = regionNodeCount[xR1];
-    if(ord < 0) ord = 0;
-    if(ord >= CS_ORD_BUCKETS) ord = CS_ORD_BUCKETS - 1;
-
-    bool take = (ord < ordCutoff);
-    if(!take && ord == ordCutoff && pBoundary > 0.0f)
+    // --- THE SECOND DOOR. Both keys spend exactly the same budget; they differ only in WHICH
+    // candidates they pick out of the same pool.
+    //
+    // THE BRANCH IS UNIFORM ACROSS THE LAUNCH -- selectionKey is one host scalar, identical for
+    // every thread -- so there is no warp divergence here and no reason to split this into two
+    // kernels. Doing so would duplicate the optimal door and the reject path, which are the two
+    // places a subtle difference between the arms would invalidate the comparison. ---
+    bool take;
+    if(selectionKey == CS_KEY_DISTANCE)
         {
-            curandState seed = randomSeeds[idx];
-            take             = (curand_uniform(&seed) < pBoundary);
-            randomSeeds[idx] = seed;
+            // DISTANCE: the X candidates closest to their own region's best. The cutoff is an
+            // exact rank read straight out of the sorted pool -- no bins, so no boundary roll:
+            // with continuous floats an exact tie is measure-zero except at 0, and 0 is the
+            // optimal door's domain.
+            int   k      = cutoffIdx[0];
+            float cutoff = (k < (int)frontierNextSize) ? sortBuf[k] : MAX_FLOAT;
+            take         = (candDistance[idx] < cutoff);
+        }
+    else
+        {
+            // ORDINALITY: from the least-populated regions, up to the cutoff. Re-read here rather
+            // than carried from pass 1, which is safe because regionNodeCount is only written by
+            // Part A. The clamp must match pass 1's exactly, or a top-bucket candidate would be
+            // compared against a cutoff derived from a histogram it was never counted in.
+            int ord = regionNodeCount[xR1];
+            if(ord < 0) ord = 0;
+            if(ord >= CS_ORD_BUCKETS) ord = CS_ORD_BUCKETS - 1;
+
+            take = (ord < ordCutoff);
+            if(!take && ord == ordCutoff && pBoundary > 0.0f)
+                {
+                    curandState seed = randomSeeds[idx];
+                    take             = (curand_uniform(&seed) < pBoundary);
+                    randomSeeds[idx] = seed;
+                }
         }
 
     if(take)
@@ -1155,6 +1237,7 @@ void CountingStars::updateFrontier()
     h_optimalCount_ = 0;
     h_ordCutoff_    = 0;
     h_pBoundary_    = 0.0f;
+    h_distCutoff_   = 0.0f;
     // <= : slot CS_ORD_BUCKETS is the optimal count, not a bucket. Benign either way here (the
     // memcpy overwrites it before anything reads it) but the three clears should agree.
     for(int i = 0; i <= CS_ORD_BUCKETS; i++) h_ordHistogram_[i] = 0;
@@ -1162,54 +1245,81 @@ void CountingStars::updateFrontier()
     // ================================================================================
     // THE ADMISSION DECISION, IN TWO PASSES. Guard the launches: iDivUp(0, block) is 0 blocks,
     // which is cudaErrorInvalidConfiguration.
+    //
+    // THE TWO KEYS DIFFER ONLY IN WHAT HAPPENS BETWEEN THE PASSES. Pass 1 measures both signals
+    // unconditionally and pass 2 takes the same budget either way, so the arms are comparable by
+    // construction -- the only variable is WHICH candidates the second door picks.
+    //
+    //   ORDINALITY  histogram -> 257-int readback -> exclusive scan on the host
+    //   DISTANCE    sort -> one-thread cutoff kernel, ENTIRELY ON DEVICE
+    //
+    // The distance path has no mid-iteration host round trip at all, which is the stall that
+    // serialises the iteration; optimalCount still reaches the host, but batched with the door
+    // counts at the end where nothing waits on it.
     // ================================================================================
     if(h_frontierNextSize_ > 0)
         {
-            // --- Pass 1: measure. Fills candDistance, the ordinality histogram and the optimal
-            // count; stamps no door, because the cutoff is not known yet. ---
+            // --- Pass 1: measure. Fills candDistance, sortBuf, the ordinality histogram and the
+            // optimal count; stamps no door, because the cutoff is not known yet. ---
             CountingStars_acceptPass1_kernel<<<iDivUp(h_frontierNextSize_, h_blockSize_), h_blockSize_>>>(
               d_activeFrontierIdxs_ptr_, h_frontierNextSize_,
               d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_unexploredSampleCosts_ptr_,
               d_regionNodeCount_ptr_, h_costScale_,
-              d_candDistance_ptr_, d_ordHistogram_ptr_);
+              d_candDistance_ptr_, d_ordHistogram_ptr_, d_sortBuf_ptr_);
 
-            // ONE synchronising copy, not two: the optimal count rides in slot CS_ORD_BUCKETS.
-            // This stall sits mid-iteration between the accept passes and serialises everything
-            // behind it, so halving it is worth the shared buffer.
-            cudaMemcpy(h_ordHistogram_, d_ordHistogram_ptr_, (CS_ORD_BUCKETS + 1) * sizeof(int),
-                       cudaMemcpyDeviceToHost);
-            h_optimalCount_ = (uint)h_ordHistogram_[CS_ORD_BUCKETS];
-
-            // --- SOLVE THE CUTOFF. This is the exclusive scan, done on 256 host ints because that
-            // is cheaper than launching a kernel to scan them and copying the answer back.
-            //
-            // The optimal door has already spent optimalCount of the budget and is UNCAPPED, so
-            // `remaining` can be zero -- at which point freshness admits nothing, which is the
-            // correct answer and not a degenerate one.
-            //
-            // X is the number of freshest nodes to take. `cutoff` is the bucket the X-th of them
-            // falls in, and `pBoundary` is the fraction of that bucket needed to reach exactly X.
-            // Everything strictly below the cutoff is admitted whole.
-            //
-            // If the loop never breaks, the whole candidate pool is fresher than X demands: cutoff
-            // lands at CS_ORD_BUCKETS, which no clamped ordinality can equal, so every non-optimal
-            // candidate passes `ord < cutoff`. That is the intended saturation, not an overrun. ---
-            float remaining = fmaxf(0.0f, float(h_goalFrontierSize_) - float(h_optimalCount_));
-            float X         = h_exploreFrac_ * remaining;
-
-            h_ordCutoff_ = CS_ORD_BUCKETS;
-            h_pBoundary_ = 0.0f;
-            float acc    = 0.0f;
-            for(int k = 0; k < CS_ORD_BUCKETS; k++)
+            if(h_selectionKey_ == CS_KEY_DISTANCE)
                 {
-                    float h = float(h_ordHistogram_[k]);
-                    if(acc + h >= X)
+                    // --- RANK THE POOL. Sort only [0, nCand) -- the rest of the buffer is stale
+                    // from earlier iterations and sorting it would be both wrong and 3M elements
+                    // of wasted work. thrust::sort dispatches to CUB radix; the optimal
+                    // candidates' zeros land at the front, which is what puts the X-th admissible
+                    // non-optimal at optimalCount + X. ---
+                    thrust::sort(d_sortBuf_.begin(), d_sortBuf_.begin() + h_frontierNextSize_);
+
+                    // NO HOST ROUND TRIP. One thread turns the optimal count into a rank, and
+                    // pass 2 reads the threshold straight out of the sorted buffer.
+                    CountingStars_solveDistanceCutoff_kernel<<<1, 1>>>(
+                      d_ordHistogram_ptr_, (int)h_frontierNextSize_,
+                      h_goalFrontierSize_, h_exploreFrac_, d_distCutoffIdx_ptr_);
+
+                    h_ordCutoff_ = -1;   // meaningless on this path; the CSV says so
+                }
+            else
+                {
+                    // ONE synchronising copy: the optimal count rides in slot CS_ORD_BUCKETS.
+                    // This stall sits mid-iteration between the accept passes and serialises
+                    // everything behind it -- which is exactly what the distance path avoids.
+                    cudaMemcpy(h_ordHistogram_, d_ordHistogram_ptr_, (CS_ORD_BUCKETS + 1) * sizeof(int),
+                               cudaMemcpyDeviceToHost);
+                    h_optimalCount_ = (uint)h_ordHistogram_[CS_ORD_BUCKETS];
+
+                    // --- SOLVE THE CUTOFF. The exclusive scan, done on 256 host ints because that
+                    // is cheaper than launching a kernel to scan them and copying the answer back.
+                    //
+                    // The optimal door has already spent optimalCount of the budget and is
+                    // UNCAPPED, so `remaining` can be zero -- at which point freshness admits
+                    // nothing, which is the correct answer and not a degenerate one.
+                    //
+                    // If the loop never breaks, the whole candidate pool is fresher than X demands:
+                    // cutoff lands at CS_ORD_BUCKETS, which no clamped ordinality can equal, so
+                    // every non-optimal candidate passes `ord < cutoff`. Intended saturation. ---
+                    float remaining = fmaxf(0.0f, float(h_goalFrontierSize_) - float(h_optimalCount_));
+                    float X         = h_exploreFrac_ * remaining;
+
+                    h_ordCutoff_ = CS_ORD_BUCKETS;
+                    h_pBoundary_ = 0.0f;
+                    float acc    = 0.0f;
+                    for(int k = 0; k < CS_ORD_BUCKETS; k++)
                         {
-                            h_ordCutoff_ = k;
-                            h_pBoundary_ = (h > 0.0f) ? fminf(1.0f, fmaxf(0.0f, (X - acc) / h)) : 0.0f;
-                            break;
+                            float h = float(h_ordHistogram_[k]);
+                            if(acc + h >= X)
+                                {
+                                    h_ordCutoff_ = k;
+                                    h_pBoundary_ = (h > 0.0f) ? fminf(1.0f, fmaxf(0.0f, (X - acc) / h)) : 0.0f;
+                                    break;
+                                }
+                            acc += h;
                         }
-                    acc += h;
                 }
 
             // --- Pass 2: decide. The only door writer, and the only place frontierNext is cleared. ---
@@ -1218,7 +1328,9 @@ void CountingStars::updateFrontier()
               d_frontierNextXR1s_ptr_, d_regionNodeCount_ptr_,
               d_candDistance_ptr_, d_frontierNext_ptr_, d_candDoor_ptr_,
               d_regionCovered_ptr_, d_randomSeeds_ptr_,
+              h_selectionKey_,
               h_ordCutoff_, h_pBoundary_,
+              d_sortBuf_ptr_, d_distCutoffIdx_ptr_,
               d_doorCounts_ptr_);
         }
 
@@ -1284,6 +1396,26 @@ void CountingStars::updateFrontier()
     h_reactivated_     = (uint)h_doorCounts_[CS_SLOT_REACT];
     h_reactivatedBest_ = (uint)h_doorCounts_[CS_SLOT_BEST];
     cudaMemcpy(&h_touchedR2_, d_touchedR2Count_ptr_, sizeof(uint), cudaMemcpyDeviceToHost);
+
+    // --- DIAGNOSTICS THE DISTANCE PATH DEFERRED. Both are read HERE, at the end of the iteration,
+    // rather than mid-iteration: nothing downstream waits on them, so they cost no stall. On the
+    // ordinality path optimalCount already came back with the histogram, so only the cutoff value
+    // is fetched. ---
+    if(h_selectionKey_ == CS_KEY_DISTANCE)
+        {
+            int optCount = 0, cutIdx = 0;
+            cudaMemcpy(&optCount, d_ordHistogram_ptr_ + CS_ORD_BUCKETS, sizeof(int), cudaMemcpyDeviceToHost);
+            cudaMemcpy(&cutIdx, d_distCutoffIdx_ptr_, sizeof(int), cudaMemcpyDeviceToHost);
+            h_optimalCount_ = (uint)optCount;
+            // The realised threshold. cutIdx == nCand means the whole pool was admissible, so
+            // there is no finite threshold to report.
+            h_distCutoff_ = (cutIdx < (int)h_candidatesPreGate_ && cutIdx >= 0)
+                              ? d_sortBuf_[cutIdx] : MAX_FLOAT;
+        }
+    else
+        {
+            h_distCutoff_ = NAN;   // no distance threshold exists on the ordinality path
+        }
 
     // What the doors actually committed, from the REALISED counts rather than the plan: admissions
     // plus the guaranteed and drawn reactivations that survived Part B's skips. Read against

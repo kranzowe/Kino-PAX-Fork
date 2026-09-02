@@ -8,9 +8,9 @@
 # exists; TrueStar answers a cap question this planner does not ask.
 #
 # Per (environment, cost metric) at the COARSE delta:
-#   CountingStars   goal_frontier_size {200, 2000, 6000, 10000}
+#   CountingStars   selection_key {ord, dist} x goal_frontier_size {200, 2000, 6000, 10000}
 #                   x explore_frac {0.01, 0.5, 0.9} x maxBlocks {1, 4}
-#                   = 24 points (FULL FACTORIAL, coarse delta only) x 3 runs = 72 runs
+#                   = 48 points (FULL FACTORIAL, coarse delta only) x 3 runs = 144 runs
 #
 #                   maxBlocks is FIXED AT 15 and deliberately NOT an axis. In v1 it was the height
 #                   of a geometric fan-out ramp and had to be swept against the ramp's width; v2 has
@@ -20,6 +20,22 @@
 #   KPAXCap         cap {0.03}                              = 1 point  x 5 runs
 #   KPAX                                                    = 1 point  x 5 runs
 #   KinoPaxPlus                                             = 1 point  x 5 runs
+#
+# SELECTION KEY IS THE HEADLINE AXIS THIS PASS. The second door -- the one that spends explore_frac
+# of what the optimal door left -- can rank its candidates two ways:
+#
+#   ord   regionNodeCount[r]: prefers the LEAST-POPULATED regions. v2's behaviour, the control arm.
+#   dist  (cost - minCostsR1[r]) / costScale: prefers candidates CLOSEST TO THEIR OWN region's best,
+#         ranked by an exact sort rather than a histogram.
+#
+# BOTH KEYS SPEND EXACTLY THE SAME BUDGET by construction, so any difference in outcome is the
+# choice of WHICH candidates. Check admitted_explore ord vs dist at matched (B, frac, mb) FIRST: if
+# it differs, the arms are not spending the same budget and nothing downstream is interpretable.
+#
+# dist is NOT greedy best-first -- distance is per-region normalised, so every region that received
+# candidates contributes its best at distance 0 and spatial coverage survives structurally. The risk
+# case is that it still concentrates on already-good regions, coverage suffers, and the goal is
+# found LATER despite a better final cost. r2_coverage_pct is the corroborating column.
 #
 # COST ACCEPTANCE IS PERMANENT. An earlier pass carried a cost_accept toggle that removed both
 # cost-driven doors -- OPTIMAL (accept pass 2) and the Part B region-best GUARANTEE -- to test
@@ -327,9 +343,14 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  CountingStars:  goal_frontier_size {200,2000,6000,10000}"
+echo "  CountingStars:  selection_key {ord,dist} x goal_frontier_size {200,2000,6000,10000}"
 echo "                  x explore_frac {0.01,0.5,0.9} x maxBlocks {1,4}"
-echo "                  = 24 points (full factorial, coarse delta only)"
+echo "                  = 48 points (full factorial, coarse delta only)"
+echo "                  ord  = least-populated regions (v2, control arm)"
+echo "                  dist = closest to their own region's best, exact sort"
+echo "                  Both spend the SAME budget -- check admitted_explore matches"
+echo "                  across the two arms before reading anything else."
+echo "                  Filenames gain _kord / _kdist."
 echo "                  Filenames: _B<budget>_f<round(1000*frac)>_mb<maxBlocks>,"
 echo "                  e.g. CountingStars_B10000_f100_mb16."
 echo "                  THE _ca TOKEN IS GONE with the cost_accept toggle. CSVs carrying it"

@@ -608,8 +608,25 @@ which does mean COMBO's coverage delta and KPAX's seeding door keep reading the 
 `scripts/check_region_math.py` proves the corrected decode is a bijection and measures the shared
 one's collapse.
 
-**Knobs.** `h_goalFrontierSize_` (10000), `h_exploreFrac_` (0.5) and `h_maxBlocks_` (4) — all
-three swept. `B` sets the frontier's *size*; `maxBlocks` sets propagations *per node* for the nodes
+**Knobs.** `h_goalFrontierSize_` (10000), `h_exploreFrac_` (0.5), `h_maxBlocks_` (4) and
+`h_selectionKey_` (distance) — all four swept.
+
+**The second door's ranking key is selectable.** `CS_KEY_ORDINALITY` ranks on `regionNodeCount[r]`
+(prefers the least-populated regions — v2's behaviour); `CS_KEY_DISTANCE` ranks on
+`(cost − minCostsR1[r]) / costScale` (prefers candidates closest to their own region's best).
+
+Distance uses an **exact sort**, not a histogram. Ordinality is a small non-negative integer, which
+is what made a histogram exact and free; for a continuous key that argument inverts — binning buys
+an approximation plus a scale tunable nobody can guess correctly. `thrust::sort` dispatches to CUB
+radix at ~0.2 ms on a 250k candidate pool.
+
+It is **not greedy best-first**: distance is per-region normalised, so a node in a far, expensive
+region still scores 0 if it is that region's best. Every region that received candidates contributes
+its best at distance 0, so spatial coverage survives structurally and distance only ranks the rest.
+
+The distance path also has **no mid-iteration host round trip** — the cutoff rank is computed by a
+one-thread kernel and read from device memory by pass 2, where the ordinality path still needs its
+257-int readback between the passes. `B` sets the frontier's *size*; `maxBlocks` sets propagations *per node* for the nodes
 that earn the burst.
 
 **Fan-out is region-keyed, matching KPAXCap and CleanCost.** A node gets `maxBlocks` when it lands
