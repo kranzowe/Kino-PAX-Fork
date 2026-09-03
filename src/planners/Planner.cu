@@ -34,6 +34,18 @@ Planner::Planner()
         }
 }
 
+Planner::~Planner()
+{
+    // The thrust::device_vector members (d_treeSamples_ etc.) free themselves. These four raw
+    // allocations from the constructor above are the only leak -- verified there are no other
+    // cudaFree calls on these pointers anywhere in src/ (the only other cudaFrees in the codebase
+    // are in spatialHash.cu and ReKino.cu, on different pointers).
+    cudaFree(d_randomSeeds_ptr_);
+    cudaFree(d_costToGoal_ptr_);
+    cudaFree(d_pathToGoal_ptr_);
+    delete[] h_controlPathToGoal_;
+}
+
 __global__ void initializeRandomSeeds_kernel(curandState* randomSeeds, int numSeeds, int seed)
 {
     int tid = threadIdx.x + blockIdx.x * blockDim.x;

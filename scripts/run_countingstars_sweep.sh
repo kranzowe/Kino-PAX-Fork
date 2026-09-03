@@ -1,21 +1,21 @@
 #!/bin/bash
 # =============================================================================
-# CountingStars v3 Sweep Runner
+# CountingStars v3.2 Sweep Runner
 #
-# CountingStars v3 (A DERIVED NODE BUDGET SPLIT BY THREE FIXED SHARES), against the baselines it has
+# CountingStars v3.2 (A PER-ITERATION BUDGET RAMP, THREE FIXED SHARES), against the baselines it has
 # to beat: KPAX, KPAXCap, KinoPaxPlus, and one tuned KinoPaxSTARCleanCost point. COMBO and TrueStar
 # are deliberately NOT in this sweep -- COMBO is the thing being replaced and its own sweep still
 # exists; TrueStar answers a cap question this planner does not ask.
 #
 # Per (environment, cost metric) at the COARSE delta:
-#   CountingStars   fill_frac {0.25, 0.5, 0.75}
-#                   x explore_frac {0, 0.2, 0.4} x cost_frac {0, 0.2, 0.4}
-#                   = 27 points (FULL FACTORIAL, coarse delta only) x 3 runs = 81 runs
+#   CountingStars   bufferSlope {0, 1.0, 1.5} x bufferFloor {0, 0.1, 0.2}
+#                   explore_frac and cost_frac FIXED at 0.3 each (not swept this pass)
+#                   = 9 points (FULL FACTORIAL, coarse delta only) x 3 runs = 27 runs
 #
-#                   maxBlocks is HELD AT 4 and is deliberately NOT an axis. The previous pass swept
-#                   {1, 4} and answered the question the region-keyed fan-out rule was asking; v3
-#                   changes the ADMISSION rule, not the fan-out rule, and the plot script has exactly
-#                   three style channels for the three fraction axes.
+#                   maxBlocks is HELD AT 4 and is deliberately NOT an axis, same reasoning as v3:
+#                   the previous pass swept {1, 4} and answered the question the region-keyed
+#                   fan-out rule was asking; this pass changes the BUDGET's shape over a run, not
+#                   the fan-out rule.
 #   CleanCost       r2 OFF, w 0.9, k 1, cap 0.03            = 1 point  x 3 runs
 #   KPAXCap         cap {0.03}                              = 1 point  x 5 runs
 #   KPAX                                                    = 1 point  x 5 runs
@@ -25,15 +25,16 @@
 # WHAT CHANGED FROM v2, AND WHY THIS SWEEP EXISTS
 #
 # 1. B IS DERIVED, NOT SWEPT. v2's grid was goal_frontier_size {200, 2000, 6000, 10000} with no
-#    derivation behind any of them. The planner now computes
+#    derivation behind any of them. v3 made the planner compute it instead:
 #
-#        B = floor(fill_frac * MAX_TREE_SIZE / MAX_ITER)
+#        B = floor(fill_frac * MAX_TREE_SIZE / MAX_ITER)      -- v3, ONE VALUE PER RUN
 #
 #    -- "the frontier size that fills the tree exactly at MAX_ITER", scaled by fill_frac, so the
-#    remaining (1 - fill_frac) of the buffer is what the uncapped OPTIMAL door is left to spend. At
-#    this script's config (MAX_TREE_SIZE 3000000, MAX_ITER 300) the three points are B = 2500 /
-#    5000 / 7500. B rides into every CSV as the goal_frontier_size column rather than being
-#    re-derived by the plot script.
+#    remaining (1 - fill_frac) of the buffer is what the uncapped OPTIMAL door is left to spend.
+#    B rides into every CSV as the goal_frontier_size column rather than being re-derived by the
+#    plot script. SEE ITEM 5 BELOW: v3.2 replaces the single fill_frac with a per-iteration ramp,
+#    so this formula is no longer what the planner actually runs -- kept here as the ancestor the
+#    ramp's bufferSlope = 0 case reproduces exactly.
 #
 # 2. THERE IS A NEW DOOR: CHEAPEST. v2 could admit a node for being THE cheapest in its region
 #    (distance 0) and for nothing else -- a candidate one part in 1e6 above its region's minimum was
@@ -71,46 +72,75 @@
 #    restores "expanded infinitely often in the limit". At 1e-5 over a 3e6-node tree it wakes ~30
 #    nodes per iteration -- completeness in the limit, not reach inside one run.
 #
-# 0 IS ON BOTH FRACTION AXES AND IS A REAL ABLATION ARM. X = 0 makes the cutoff solve return
-# cutoff 0 / pBoundary 0 and the door admits exactly nothing. (0, 0) is the internal control:
-# OPTIMAL + GUARANTEE + a full-B uniform draw and nothing else. If no other point beats it, neither
-# selection door is earning its share.
+# 5. v3.2: B BECOMES A RAMP. Sweep results under v3's constant B showed the standard tradeoff: a
+#    small fill_frac found a first solution fast but converged to a worse final cost; a large one
+#    was the reverse. Rather than pick one point on that tradeoff, B now varies OVER the run:
+#
+#        x         = itr / MAX_ITER                              (fraction of the run elapsed)
+#        B_frac(x) = bufferSlope * x + bufferFloor
+#        B(x)      = floor(B_frac(x) * MAX_TREE_SIZE / MAX_ITER)  -- RECOMPUTED EVERY ITERATION
+#
+#    bufferSlope = 0 REPRODUCES v3's CONSTANT B EXACTLY (B_frac(x) = bufferFloor for every x), so
+#    that subgrid is a free, structural comparison against the old fixed-buffer design rather than
+#    a separate baseline that has to be swept again.
+#
+#    explore_frac AND cost_frac ARE FIXED AT 0.3 EACH this pass (not swept) -- v3's grid varied
+#    them against fill_frac; this pass isolates the ramp's own effect by holding them still.
+#
+#    B IS A PURE HOST SCALAR (read only inside updateFrontier(), never by propagateFrontier() or
+#    any device kernel directly), so making it dynamic cost no device array, no new kernel, and no
+#    new synchronisation -- it is one floating-point formula recomputed once per iteration.
+#
+# (bufferSlope, bufferFloor) = (0, 0) IS THE DEEPEST ABLATION ARM, not a degenerate case: it makes
+# B a constant 0 (floored to 1 by the planner), so the FRESHEST / CHEAPEST / reactivation-CHEAPEST
+# doors get zero budget every iteration. OPTIMAL and the region-best GUARANTEE are UNCAPPED
+# regardless of B, so the frontier is still optimal + guarantee + a trickle draw, not empty. If no
+# other point beats it, none of the three budgeted doors is earning its share.
 # ============================================================================================
 #
 # THE GRID SITS ENTIRELY BELOW NUM_R1_REGIONS (27,000 at the coarse delta), and that is the honest
 # limit on what it can measure. TWO doors are uncapped and BOTH are bounded by the region count
 # rather than by B: OPTIMAL (at most one region best per region per iteration) and the GUARANTEE (at
 # most one node per uncovered region). So B binds EARLY in a run and then stops, at an iteration that
-# moves with fill_frac -- and early is exactly where time-to-first-solution is decided.
+# now moves with the WHOLE RAMP shape (bufferSlope and bufferFloor together) rather than a single
+# fill_frac -- and early is exactly where time-to-first-solution is decided.
 #
 # That is what "tree growth is less controlled once min cost is always accepted" amounts to, and it
 # is a measurement rather than a defect. Read budget_used/goal_frontier_size as a CURVE over
 # iterations: the iteration where it crosses 1 IS the measurement, and a late-run overshoot is
-# expected at every point. If the three fill_frac curves are indistinguishable even early, capping
-# the guarantee (KinoPaxPlus's hysteresis is the precedent) is the next lever, not another B.
+# expected at every point -- MORE SO NOW, since B itself is climbing over the run rather than
+# holding still, so the ratio has two moving parts instead of one. If the bufferSlope = 0 curves are
+# indistinguishable from the ramped ones even early, capping the guarantee (KinoPaxPlus's hysteresis
+# is the precedent) is the next lever, not a different ramp.
 #
 # READ IN THIS ORDER:
-#   1. frontier_repeat_size / frontier_size. Sanity first -- the realised mean rep, which should sit
-#      near 1 with a small excess from thin regions and the both-doors boost, not near 4.
-#   2. budget_used / goal_frontier_size, as a curve. See above.
-#   3. reactivated_cost against reactivated_count. v3.1's cost arm should carry essentially ALL of
+#   1. goal_frontier_size vs iteration, FIRST. Confirms the realized ramp actually matches
+#      slope*x + floor before reading anything else that depends on B. A flat line at every
+#      bufferSlope = 0 series is the direct sanity check that the mechanism is wired correctly.
+#   2. frontier_repeat_size / frontier_size. The realised mean rep, which should sit near 1 with a
+#      small excess from thin regions and the both-doors boost, not near 4.
+#   3. budget_used / goal_frontier_size, as a curve. See above -- now a moving target on both sides.
+#   4. reactivated_cost against reactivated_count. The cost arm should carry essentially ALL of
 #      Part B's non-guarantee volume (~ react_frac * B); reactivated_count is now the completeness
 #      FLOOR alone, ~ react_floor * dormant_count, so ~30 nodes. Large there means the floor is doing
 #      reach work it was not sized for. And react_cutoff_dist against dist_max says whether the arm
 #      is actually selecting: pinned at 1 means the budget exceeds the population below the anchor
 #      and it is partly picking at random within the clamped tail.
-#   4. admitted_costdist against admitted_explore and optimal_count. THE NEW DOOR'S ACTUAL SHARE.
-#      Pinned at 0 while cost_frac > 0 means the cutoff solve is degenerate; equal to
-#      cost_frac * B every iteration means it is working exactly as designed. The two selection
-#      doors OVERLAP, so admitted_both is what makes the four counts add back up:
+#   5. admitted_costdist against admitted_explore and optimal_count. THE CHEAPEST DOOR'S ACTUAL
+#      SHARE. Pinned at 0 means the cutoff solve is degenerate; equal to cost_frac * B every
+#      iteration means it is working exactly as designed. The two selection doors OVERLAP, so
+#      admitted_both is what makes the four counts add back up:
 #      admitted == optimal_count + admitted_explore + admitted_costdist - admitted_both.
-#   4. cost_cutoff_dist against dist_max. The direct read on whether the log bucket map has the right
+#   6. cost_cutoff_dist against dist_max. The direct read on whether the log bucket map has the right
 #      shape. A collapse toward dist_max / 2^21 means everything is landing in bucket 0 and the door
 #      has degraded to a uniform draw among near-optimal candidates -- the signal to switch
 #      csCostBucket to a linear map, which is a one-line change in the header.
-#   5. ord_cutoff over the run. Rising means regions are filling and freshness is getting scarce,
+#   7. ord_cutoff over the run. Rising means regions are filling and freshness is getting scarce,
 #      which is expected. Pinned at 0 means explore_frac is doing nothing; pinned at 256 means the
 #      whole candidate pool is fresh enough and explore_frac is not binding either.
+#   8. First-solution time and cost, final cost (figures 11/12). THE ACTUAL QUESTION: does a ramp
+#      beat the best bufferSlope = 0 point on time-to-first-solution AND close the final-cost gap
+#      against CleanCost. bufferSlope = 0 points are the direct, structural control.
 #
 # THE TWO FINER DELTAS RUN KINOPAXPLUS ONLY (--only-kinopaxplus), and that is the point of having
 # them: KinoPaxPlus is the planner whose whole advantage is a tiny frontier at a fine
@@ -367,43 +397,45 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  CountingStars:  fill_frac {0.25,0.5,0.75}"
-echo "                  x explore_frac {0,0.2,0.4} x cost_frac {0,0.2,0.4}"
-echo "                  = 27 points (full factorial, coarse delta only), maxBlocks held at 4"
-echo "                  Filenames: _ff<round(100*fill)>_ef<round(1000*explore)>_cf<round(1000*cost)>_mb4,"
-echo "                  e.g. CountingStars_ff75_ef200_cf400_mb4."
-echo "                  v2 CSVs are _B<budget>_f<frac>_mb<n> and cannot collide with this shape,"
-echo "                  so they simply stop loading -- intended for a planner whose admission"
-echo "                  rule changed, not a loss."
-echo "                  B IS DERIVED, NOT SWEPT: B = floor(fill_frac * MAX_TREE_SIZE / MAX_ITER),"
-echo "                  so {0.25,0.5,0.75} -> B = 2500 / 5000 / 7500 at this config. It rides into"
-echo "                  every CSV as the goal_frontier_size column."
+echo "  CountingStars:  bufferSlope {0,1.0,1.5} x bufferFloor {0,0.1,0.2}"
+echo "                  explore_frac=0.3, cost_frac=0.3 (FIXED, not swept this pass)"
+echo "                  = 9 points (full factorial, coarse delta only), maxBlocks held at 4"
+echo "                  Filenames: _bs<round(100*slope)>_bf<round(100*floor)>_ef300_cf300_mb4,"
+echo "                  e.g. CountingStars_bs150_bf20_ef300_cf300_mb4."
+echo "                  v3 CSVs are _ff<frac>_ef<frac>_cf<frac>_mb<n> and cannot collide with this"
+echo "                  shape, so they simply stop loading -- intended for a budget mechanism that"
+echo "                  changed, not a loss."
+echo "                  B IS NOW A RAMP, RECOMPUTED EVERY ITERATION:"
+echo "                    x = itr/MAX_ITER, B(x) = floor((slope*x + floor) * MAX_TREE_SIZE/MAX_ITER)"
+echo "                  bufferSlope = 0 REPRODUCES v3's CONSTANT B EXACTLY -- that subgrid is a"
+echo "                  free, structural comparison against the old fixed-buffer design. B rides"
+echo "                  into every CSV as the goal_frontier_size column, now genuinely varying row"
+echo "                  to row within a run rather than constant."
 echo "                  FIVE DOORS, three of them on a fixed share of B:"
 echo "                    OPTIMAL    distance 0, i.e. cost <= minCostsR1[r].  UNCAPPED, first claim"
 echo "                    FRESHEST   explore_frac * B, from the least-populated regions"
-echo "                    CHEAPEST   cost_frac * B, from the smallest cost distances       (v3, NEW)"
+echo "                    CHEAPEST   cost_frac * B, from the smallest cost distances"
 echo "                    GUARANTEE  each active region best, if OPTIMAL did not cover it.  UNCAPPED"
-echo "                    REACTIVATE react_frac * B, to the CHEAPEST DORMANT NODES        (v3.1, NEW)"
+echo "                    REACTIVATE react_frac * B, to the CHEAPEST DORMANT NODES"
 echo "                    FLOOR      every dormant node at react_floor = 1e-5, ON TOP of the budget"
-echo "                  v3.1 MAKES REACTIVATION COST-SELECTIVE. v2/v3 drew uniformly here;"
-echo "                  CleanCost weights the same arm by cost, and that was the one cost"
-echo "                  mechanism this line lacked -- the volumes already matched, so it was"
-echo "                  selectivity not throughput. Part B is the only thing that re-expands"
-echo "                  the tree INTERIOR, which is where cost refinement happens."
+echo "                  REACTIVATION IS COST-SELECTIVE (v3.1): CleanCost weights its own reactivation"
+echo "                  arm by cost, and that was the one cost mechanism this line lacked -- the"
+echo "                  volumes already matched, so it was selectivity not throughput. Part B is the"
+echo "                  only thing that re-expands the tree INTERIOR, which is where cost refinement"
+echo "                  happens."
 echo "                  THE FLOOR IS A CORRECTNESS CONSTANT, not a knob: a node's cost distance"
 echo "                  only ever grows (fixed cost over a non-increasing region min), so under"
 echo "                  a pure top-K a node above the cutoff is dead permanently and its subtree"
 echo "                  unreachable. 1e-5 wakes ~30 nodes/iter -- completeness in the limit."
-echo "                  READ reactivated_cost vs reactivated_count: the cost arm should carry"
-echo "                  almost all of Part B's non-guarantee volume and the floor ~30 nodes."
-echo "                  CLEAR THE OUTPUT FOLDER FIRST IF A PREVIOUS v3 PASS RAN -- the grid and"
-echo "                  the series names are unchanged, so v3 and v3.1 CSVs would mix silently."
+echo "                  CLEAR THE OUTPUT FOLDER FIRST IF A PREVIOUS v3/v3.1 PASS RAN -- the label"
+echo "                  shape changed, so old and new CSVs would otherwise coexist under different"
+echo "                  names rather than colliding, which is fine but confusing to plot together."
 echo "                  FRESHEST and CHEAPEST are a UNION over one candidate pool, not a priority"
 echo "                  chain: a candidate can clear both, and the second admission is spent as"
 echo "                  fan-out (it takes maxBlocks) rather than as a duplicate node."
-echo "                  explore_frac = 0 and cost_frac = 0 are REAL ABLATION ARMS -- the cutoff"
-echo "                  solve returns cutoff 0 and the door admits nothing. (0,0) is the internal"
-echo "                  control: OPTIMAL + GUARANTEE + a full-B draw and nothing else."
+echo "                  (bufferSlope, bufferFloor) = (0, 0) IS THE DEEPEST ABLATION ARM -- the"
+echo "                  cutoff solve returns cutoff 0 and the three budgeted doors admit nothing;"
+echo "                  OPTIMAL + GUARANTEE remain uncapped, so the frontier is not empty."
 echo "                  THE TWO UNCAPPED DOORS ARE BOUNDED BY NUM_R1_REGIONS (27,000 at the coarse"
 echo "                  delta) rather than by B, so B binds only ABOVE that count; every point on"
 echo "                  this grid is below it, so B binds early and then stops."
@@ -411,9 +443,11 @@ echo "                  FAN-OUT IS REGION-KEYED: maxBlocks for a node landing in
 echo "                  < 10 valid propagations OR clearing both cutoffs, else 1; reactivations"
 echo "                  always 1. That is KPAXCap's and CleanCost's rule, ported so the runtime"
 echo "                  comparison is like-for-like."
-echo "                  READ FIRST: frontier_repeat_size/frontier_size (realised mean rep), then"
-echo "                  budget_used/goal_frontier_size as a CURVE, then admitted_costdist against"
-echo "                  admitted_explore, then cost_cutoff_dist against dist_max."
+echo "                  READ FIRST: goal_frontier_size vs iteration (does the realized ramp match"
+echo "                  the intended shape), then frontier_repeat_size/frontier_size (realised mean"
+echo "                  rep), then budget_used/goal_frontier_size as a CURVE against a now-moving"
+echo "                  target, then admitted_costdist against admitted_explore, then"
+echo "                  cost_cutoff_dist against dist_max."
 echo "  CleanCost:      r2 OFF, w 0.9, k 1, cap 0.03 = 1 point (baseline)"
 echo "  KPAXCap:        cap {0.03} = 1 point"
 echo "  Score floor:    dynamic 1/N_active for KPAXCap/CleanCost; legacy EPSILON for KPAX."

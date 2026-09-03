@@ -15,12 +15,18 @@ This sweep has a second drift axis the COMBO one did not: the two finer deltas r
 exist at all. The .sh says so with DELTA_EXTRA_ARGS, the .m says so with deltaPlusOnly, and they have
 to agree or the plot expects series the sweep never wrote.
 
-v3 ADDS TWO CHECKS THAT COULD NOT EXIST IN v2. The budget now splits by three fixed fractions rather
-than one share plus a remainder, so explore_frac + cost_frac can be oversubscribed -- and the planner
-floors react_frac at 0 rather than failing, which makes it silent. And B is DERIVED from
-MAX_TREE_SIZE and MAX_ITER rather than swept, so a fill_frac small enough to round B down to 0 is
-also silent (the planner clamps to 1 and the run merely looks slow). Both are asserted below,
-against constants parsed out of the .sh heredoc that writes config.h.
+v3 ADDED A CHECK THAT COULD NOT EXIST IN v2. The budget splits by fixed fractions rather than one
+share plus a remainder, so explore_frac + cost_frac can be oversubscribed -- and the planner floors
+react_frac at 0 rather than failing, which makes it silent. Asserted below.
+
+v3.2 CHANGES WHAT "B" MEANS, AND THE OLD "B < 1 IS BAD" ASSERTION WITH IT. B used to be a single
+fill_frac, required strictly > 0 because 0 meant a permanently empty budget-driven frontier. B is
+now a per-iteration RAMP -- B_frac(x) = bufferSlope*x + bufferFloor -- and (bufferSlope,
+bufferFloor) = (0, 0) is an INTENTIONAL grid point (the deepest ablation arm: OPTIMAL and the
+region-best GUARANTEE stay uncapped regardless of B, so the frontier is never actually empty). So
+"does B round to 0" is no longer inherently a bug; what still matters is that neither axis goes
+NEGATIVE, which the code's floor-at-1 clamp would silently mask into a positive B that looks fine.
+That is asserted below in place of the old strict-positivity check.
 
 Run from anywhere:  python scripts/cross_check_countingstars_grid.py
 Exit 0 = GRIDS MATCH, 1 = GRIDS DIVERGE.
@@ -127,20 +133,23 @@ def ftok(x):
     indistinguishable from a genuine share of 0. It is kept so a stale CSV from a 100x grid cannot
     be silently loaded as the wrong series.
 
-    fill_frac uses tok() (100x) instead: it is a coarse axis on {0.25, 0.5, 0.75} and `ff75` reads
-    as three quarters where `ff750` does not.
+    bufferSlope/bufferFloor use tok() (100x) instead, matching v3's fill_frac convention: both are
+    coarse axes (slope up to 1.5, floor up to 0.2) and `bs150`/`bf20` read directly as 1.5/0.2 where
+    `bs1500`/`bf200` would not.
     """
     return int(round(1000.0 * x))
 
 
 # ---------------------------------------------------------------- the C++ side
-cu_ffrac  = cu_array('FILL_FRACS')
+cu_slope  = cu_array('BUFFER_SLOPES')
+cu_floor  = cu_array('BUFFER_FLOORS')
 cu_efrac  = cu_array('EXPLORE_FRACS')
 cu_cfrac  = cu_array('COST_FRACS')
 cu_blocks = cu_scalar('CS_MAX_BLOCKS', 'int')
 cu_kcap   = cu_array('KPAXCAP_CAPS')
 cu_cap_derived = cu_scalar('CAP_DERIVED')
-cu_dff = cu_scalar('CS_DERIVED_FILL_FRAC')
+cu_dslope = cu_scalar('CS_DERIVED_BUFFER_SLOPE')
+cu_dfloor = cu_scalar('CS_DERIVED_BUFFER_FLOOR')
 cu_def = cu_scalar('CS_DERIVED_EXPLORE_FRAC')
 cu_dcf = cu_scalar('CS_DERIVED_COST_FRAC')
 
@@ -163,7 +172,8 @@ problems = []
 
 # --- Assertion 1: every derived point must be a member of its own list. --single-point selects BY
 # VALUE, so a derived point outside the grid means that pass runs nothing at all.
-for val, lst, a, b in ((cu_dff, cu_ffrac, 'CS_DERIVED_FILL_FRAC', 'FILL_FRACS'),
+for val, lst, a, b in ((cu_dslope, cu_slope, 'CS_DERIVED_BUFFER_SLOPE', 'BUFFER_SLOPES'),
+                       (cu_dfloor, cu_floor, 'CS_DERIVED_BUFFER_FLOOR', 'BUFFER_FLOORS'),
                        (cu_def, cu_efrac, 'CS_DERIVED_EXPLORE_FRAC', 'EXPLORE_FRACS'),
                        (cu_dcf, cu_cfrac, 'CS_DERIVED_COST_FRAC', 'COST_FRACS'),
                        (cu_cap_derived, cu_kcap, 'CAP_DERIVED', 'KPAXCAP_CAPS')):
@@ -172,12 +182,17 @@ for val, lst, a, b in ((cu_dff, cu_ffrac, 'CS_DERIVED_FILL_FRAC', 'FILL_FRACS'),
 
 # --- Assertion 2: the axes must stay in their meaningful ranges.
 #
-# fill_frac is the SHARE OF THE TREE BUFFER B is sized to consume per iteration, so outside (0, 1]
-# it is not a share; at 0 the frontier is empty and the search cannot advance. explore_frac and
-# cost_frac are SHARES OF B, so each must be in [0, 1] on its own.
-if any(v <= 0.0 or v > 1.0 for v in cu_ffrac):
-    problems.append('FILL_FRACS %s has an entry outside (0, 1] -- it is the share of the tree buffer '
-                    'B consumes per iteration, and at 0 the frontier is empty' % (cu_ffrac,))
+# v3.2: BUFFER_SLOPES / BUFFER_FLOORS replace the old fill_frac, which was required strictly > 0
+# because 0 meant a permanently empty budget-driven frontier. That no longer holds -- (slope,
+# floor) = (0, 0) is now an INTENTIONAL grid point (see the module docstring), and B_frac can
+# legitimately exceed 1 (slope + floor up to 1.7 on this grid). The invariant that actually matters
+# now is just non-negativity: a negative slope or floor would let B go negative, which the code's
+# floor-at-1 clamp would silently turn into a positive B that looks fine. explore_frac and cost_frac
+# are SHARES OF B, so each must still be in [0, 1] on its own.
+for name, vals in (('BUFFER_SLOPES', cu_slope), ('BUFFER_FLOORS', cu_floor)):
+    if any(v < 0.0 for v in vals):
+        problems.append('%s %s has a negative entry -- B_frac = slope*x + floor could go negative, '
+                        'and the planner\'s floor-at-1 clamp would silently mask it' % (name, vals))
 for name, vals in (('EXPLORE_FRACS', cu_efrac), ('COST_FRACS', cu_cfrac)):
     if any(v < 0.0 or v > 1.0 for v in vals):
         problems.append('%s %s has an entry outside [0, 1] -- it is a share of B, not a count'
@@ -188,44 +203,41 @@ if cu_blocks < 1:
 # --- Assertion 2b: react_frac = 1 - explore_frac - cost_frac MUST STAY NON-NEGATIVE at every point
 # on the grid. The planner floors it at 0, so an oversubscribed pair does not crash -- it silently
 # switches the uniform DRAW off, and two grid points that differ only in how far past 1 they went
-# would produce identical runs under different labels. NEW IN v3: v2 had one share and a remainder,
-# so this could not be violated.
-for ff in cu_ffrac:
-    for ef in cu_efrac:
-        for cf in cu_cfrac:
-            if ef + cf > 1.0 + 1e-6:
-                problems.append('OVERSUBSCRIBED BUDGET at (fill %g, explore %g, cost %g): '
-                                'explore + cost = %g > 1, so react_frac would be negative and the '
-                                'draw silently switches off' % (ff, ef, cf, ef + cf))
+# would produce identical runs under different labels. Independent of the buffer axes, which never
+# entered this arithmetic even under v3.
+for ef in cu_efrac:
+    for cf in cu_cfrac:
+        if ef + cf > 1.0 + 1e-6:
+            problems.append('OVERSUBSCRIBED BUDGET at (explore %g, cost %g): '
+                            'explore + cost = %g > 1, so react_frac would be negative and the '
+                            'draw silently switches off' % (ef, cf, ef + cf))
 
-# --- Assertion 2c: the DERIVED B must be at least 1 at every fill_frac. B is
-# floor(fill_frac * MAX_TREE_SIZE / MAX_ITER), and both constants are written into config.h by the
-# .sh -- so this reads them from the heredoc rather than restating them. B < 1 means an empty
-# frontier and a search that cannot advance, and it is silent: the planner clamps to 1 and the run
-# looks merely slow.
+# --- Assertion 2c: informational only, not a "problems" check -- see the module docstring for why
+# the old strict "B < 1 is bad" framing no longer applies (bufferFloor = 0 is now intentional). Logs
+# the ramp's minimum (at x = 0, i.e. bufferFloor alone -- the true infimum since slope >= 0 on every
+# swept combination) so a reader can see it without re-deriving it, using the same MAX_TREE_SIZE /
+# MAX_ITER read out of the .sh heredoc that write the ramp's real denominator.
 cfg_tree = sh_config_int('MAX_TREE_SIZE')
 cfg_iter = sh_config_int('MAX_ITER')
-for ff in cu_ffrac:
-    b = int(ff * cfg_tree / cfg_iter)
-    if b < 1:
-        problems.append('DERIVED B < 1 at fill_frac %g: floor(%g * %d / %d) = %d'
-                        % (ff, ff, cfg_tree, cfg_iter, b))
+ramp_min_info = ['floor(%g * %d / %d) = %d' % (fl, cfg_tree, cfg_iter, int(fl * cfg_tree / cfg_iter))
+                 for fl in cu_floor]
 
 
-def cs_label(ffrac, efrac, cfrac, blocks):
+def cs_label(slope, floor, efrac, cfrac, blocks):
     """Mirrors countingStarsLabel() in the benchmark."""
-    return 'CountingStars_ff%d_ef%d_cf%d_mb%d' % (tok(ffrac), ftok(efrac), ftok(cfrac),
-                                                  int(round(blocks)))
+    return 'CountingStars_bs%d_bf%d_ef%d_cf%d_mb%d' % (tok(slope), tok(floor), ftok(efrac),
+                                                        ftok(cfrac), int(round(blocks)))
 
 
 cu_pairs = set()
 for d, plus_only in zip(sh_deltas, sh_plus_only):
     if not plus_only:
         # FULL FACTORIAL: --single-point is the only skip, so there is no cs_skip() to mirror.
-        for ffrac in cu_ffrac:
-            for efrac in cu_efrac:
-                for cfrac in cu_cfrac:
-                    cu_pairs.add((cs_label(ffrac, efrac, cfrac, cu_blocks), d))
+        for slope in cu_slope:
+            for floor in cu_floor:
+                for efrac in cu_efrac:
+                    for cfrac in cu_cfrac:
+                        cu_pairs.add((cs_label(slope, floor, efrac, cfrac, cu_blocks), d))
         cu_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                       % (cu_clean['r2'], cu_clean['w'], cu_clean['k'], cu_clean['cap']), d))
         for c in cu_kcap:
@@ -234,14 +246,16 @@ for d, plus_only in zip(sh_deltas, sh_plus_only):
     cu_pairs.add(('KinoPaxPlus', d))
 
 # ---------------------------------------------------------------- the MATLAB side
-m_ffrac   = m_ints('csFillFracs')
+m_slope   = m_ints('csBufferSlopes')
+m_floor   = m_ints('csBufferFloors')
 m_efrac   = m_ints('csExploreFracs')
 m_cfrac   = m_ints('csCostFracs')
 m_blocks  = m_ints('csMaxBlocks')
 m_kcap    = m_ints('kpaxCapCaps')
 m_deltas  = m_cellstr('deltas')
 m_plus_only = m_bools('deltaPlusOnly')
-m_dff = m_scalar_int('csDerivedFillFrac')
+m_dslope = m_scalar_int('csDerivedBufferSlope')
+m_dfloor = m_scalar_int('csDerivedBufferFloor')
 m_def = m_scalar_int('csDerivedExploreFrac')
 m_dcf = m_scalar_int('csDerivedCostFrac')
 m_dmb = m_scalar_int('csDerivedMaxBlocks')
@@ -258,11 +272,12 @@ for d, plus_only in zip(m_deltas, m_plus_only):
         # The .m holds maxBlocks at csDerivedMaxBlocks rather than looping csMaxBlocks, exactly as
         # the .cu holds it at CS_MAX_BLOCKS -- so the single-entry list and the derived scalar have
         # to agree, which the derived-point diff below asserts.
-        for ffrac in m_ffrac:
-            for efrac in m_efrac:
-                for cfrac in m_cfrac:
-                    m_pairs.add(('CountingStars_ff%d_ef%d_cf%d_mb%d'
-                                 % (ffrac, efrac, cfrac, m_dmb), d))
+        for slope in m_slope:
+            for floor in m_floor:
+                for efrac in m_efrac:
+                    for cfrac in m_cfrac:
+                        m_pairs.add(('CountingStars_bs%d_bf%d_ef%d_cf%d_mb%d'
+                                     % (slope, floor, efrac, cfrac, m_dmb), d))
         m_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                      % (m_clean['r2'], m_clean['w'], m_clean['k'], m_clean['cap']), d))
         for c in m_kcap:
@@ -274,10 +289,12 @@ for d, plus_only in zip(m_deltas, m_plus_only):
 only_cu = sorted(cu_pairs - m_pairs)
 only_m = sorted(m_pairs - cu_pairs)
 
-if (tok(cu_dff), ftok(cu_def), ftok(cu_dcf), int(cu_blocks)) != (m_dff, m_def, m_dcf, m_dmb):
-    problems.append('DERIVED POINT DRIFT: .cu (ff%d, ef%d, cf%d, mb%d) != .m (ff%d, ef%d, cf%d, mb%d)'
-                    % (tok(cu_dff), ftok(cu_def), ftok(cu_dcf), int(cu_blocks),
-                       m_dff, m_def, m_dcf, m_dmb))
+if (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf), int(cu_blocks)) \
+        != (m_dslope, m_dfloor, m_def, m_dcf, m_dmb):
+    problems.append('DERIVED POINT DRIFT: .cu (bs%d, bf%d, ef%d, cf%d, mb%d) != '
+                    '.m (bs%d, bf%d, ef%d, cf%d, mb%d)'
+                    % (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf), int(cu_blocks),
+                       m_dslope, m_dfloor, m_def, m_dcf, m_dmb))
 
 # maxBlocks is held rather than swept on both sides, so the .m's one-entry list must name the value
 # the .cu holds. A mismatch produces labels for a maxBlocks nothing ran.
@@ -380,7 +397,8 @@ if cu_writer_prefixes and (m_loader_prefixes or m_loader_exact):
 # --- Assertion 4: distinct floats must not collapse onto the same label token. 0.01 and 0.1 both
 # look plausible and both want "cap1"/"cap10"; a collision means two grid points silently write to
 # ONE filename and the second overwrites the first.
-for name, vals, f in (('FILL_FRACS', cu_ffrac, tok),
+for name, vals, f in (('BUFFER_SLOPES', cu_slope, tok),
+                      ('BUFFER_FLOORS', cu_floor, tok),
                       ('EXPLORE_FRACS', cu_efrac, ftok),
                       ('COST_FRACS', cu_cfrac, ftok),
                       ('KPAXCAP_CAPS', cu_kcap, tok)):
@@ -393,6 +411,7 @@ print('deltas       : %s  (--only-kinopaxplus: %s)'
       % (', '.join(sh_deltas), ', '.join(str(b) for b in sh_plus_only)))
 print('series (.cu) : %d' % len(cu_pairs))
 print('series (.m)  : %d' % len(m_pairs))
+print('ramp minimum : B(x=0) at each bufferFloor -- %s' % ', '.join(ramp_min_info))
 
 if only_cu:
     print('\nWritten by the benchmark but NEVER LOADED by the plot script (%d):' % len(only_cu))

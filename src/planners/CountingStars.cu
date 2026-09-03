@@ -231,33 +231,39 @@ CountingStars::CountingStars()
     h_controlPathsToGoal_ = new float[MAX_ITER * SAMPLE_DIM];
 
     // ================================================================================
-    // THE BUDGET. v3: THREE FRACTIONS, and B is DERIVED from the first of them. See the header for
-    // why a hand-swept B was the wrong primitive and why the cost door is a histogram.
+    // THE BUDGET. v3.2: B IS A RAMP, recomputed every iteration inside updateFrontier() from the
+    // two numbers set here. See the header's v3.2 block for the formula and why bufferSlope = 0
+    // reproduces v3's constant-B design exactly rather than being a new, unvalidated path.
     // ================================================================================
 
-    // Share of the tree buffer B is sized to consume per iteration; the remaining quarter is left
-    // for the uncapped OPTIMAL door. THE ONLY KNOB BEHIND B.
-    h_fillFrac_ = 0.75f;
+    // slope = 0, floor = 0.75: A CONSTANT BUFFER AT v3's OLD DEFAULT. A freshly constructed
+    // CountingStars with no sweep overrides therefore behaves EXACTLY as v3 did, unless a caller
+    // opts into a ramp by setting a nonzero slope.
+    h_bufferSlope_ = 0.0f;
+    h_bufferFloor_ = 0.75f;
 
-    // "Fill the tree at THIS iteration." MAX_ITER is the whole run, which is what the derivation
-    // means; a benchmark running to a different cap can override it before resetPlanner.
+    // "The run is over at THIS iteration" -- the ramp's x = 1. MAX_ITER is the whole run, which is
+    // what that means by default; a benchmark running to a different cap can override it before
+    // resetPlanner.
     h_fillIters_ = MAX_ITER;
 
-    // Set in resetPlanner from the two above, and never by a caller. Assigned here only so a
-    // freshly constructed planner that is somehow read before its first reset shows the same value
-    // its first reset would produce.
-    h_goalFrontierSize_ = (int)floorf(h_fillFrac_ * float(MAX_TREE_SIZE) / float(h_fillIters_));
+    // Seeded at x = 0 (so just h_bufferFloor_). Assigned here only so a freshly constructed planner
+    // that is somehow read before its first updateFrontier() call shows a sane value; nothing in
+    // propagateFrontier() or anywhere else reads h_goalFrontierSize_ before updateFrontier()
+    // recomputes it fresh every iteration, so this seed is provably unread in every real path and
+    // its only job is defensive.
+    h_goalFrontierSize_ = (int)floorf(h_bufferFloor_ * float(MAX_TREE_SIZE) / float(h_fillIters_));
     if(h_goalFrontierSize_ < 1) h_goalFrontierSize_ = 1;
 
     // Share of B given to the FRESHEST door, and to the CHEAPEST door. The draw gets whatever the
     // two leave -- h_reactFrac_ = 0.3 at these values.
     //
-    // THESE ARE NOT THE SWEEP'S DERIVED OPERATING POINT, and that is a change from v2, where
+    // THESE ARE NOT THE SWEEP'S FIXED OPERATING POINT, and that is a change from v2, where
     // h_exploreFrac_ was deliberately kept equal to CS_DERIVED_EXPLORE_FRAC so a standalone plan()
-    // run and a --single-point sweep pass were the same planner. The sweep's grid is
-    // {0, 0.2, 0.4} on both axes -- chosen so each has a 0 ablation arm -- and neither 0.1 nor 0.6
-    // is a member, so no derived point could be both these values and a grid point. These stay at
-    // the algorithm's stated defaults; --single-point runs (0.75, 0.2, 0.4) instead.
+    // run and a --single-point sweep pass were the same planner. v3.2's sweep fixes both at 0.3, and
+    // neither 0.1 nor 0.6 equals that, so no derived point could be both these values and the
+    // sweep's operating point. These stay at the algorithm's stated defaults; --single-point runs
+    // (bufferSlope=1.0, bufferFloor=0.1, 0.3, 0.3) instead.
     h_exploreFrac_ = 0.1f;
     h_costFrac_    = 0.6f;
     h_reactFrac_   = fmaxf(0.0f, 1.0f - h_exploreFrac_ - h_costFrac_);
@@ -431,20 +437,18 @@ void CountingStars::resetPlanner(float* h_initial, float* h_goal)
     h_blockCeiling_         = 0.0f;
     h_blockScale_           = 1.0f;
 
-    // ================================================================================
-    // v3: B IS DERIVED HERE, and this is the correct point for it. The tunables are deliberately
-    // NOT reset -- that is what lets a benchmark set them once at entry -- and every caller sets
-    // them BEFORE calling resetPlanner, exactly as d_nodeBlocks_'s fill from h_maxBlocks_ above
-    // already relies on.
+    // v3.2: B IS NO LONGER COMPUTED HERE. It used to be derived once at reset from a single
+    // fill_frac; it is now a RAMP recomputed as the first statement of every updateFrontier() call
+    // (from h_bufferSlope_ / h_bufferFloor_ / h_itr_ / h_fillIters_), because the whole point of
+    // this version is that it changes over the run rather than being fixed at reset.
     //
-    //     B = floor(fill_frac * MAX_TREE_SIZE / fill_iters)
-    //
-    // "the frontier size that fills the tree exactly at fill_iters", scaled by fill_frac. The
-    // remaining (1 - fill_frac) of the buffer is what the uncapped OPTIMAL door is left to spend.
-    // ================================================================================
+    // h_fillIters_ STILL NEEDS THE CLAMP HERE, even though B's computation moved: this is the
+    // actual per-run entry point where a caller's tunable-setting takes effect (the tunables are
+    // deliberately NOT reset, so a benchmark sets them once before calling resetPlanner, exactly as
+    // d_nodeBlocks_'s fill from h_maxBlocks_ above already relies on) -- and updateFrontier()
+    // divides by h_fillIters_ every iteration, so a caller leaving it at 0 would produce NaN/Inf on
+    // the very next run rather than the graceful MAX_ITER fallback this guards.
     if(h_fillIters_ < 1) h_fillIters_ = MAX_ITER;
-    h_goalFrontierSize_ = (int)floorf(h_fillFrac_ * float(MAX_TREE_SIZE) / float(h_fillIters_));
-    if(h_goalFrontierSize_ < 1) h_goalFrontierSize_ = 1;
 
     // The draw's share is whatever the two selection doors leave. Floored at 0 so a caller setting
     // explore + cost > 1 switches the draw off rather than producing a negative probability; the
@@ -1443,6 +1447,21 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
 
 void CountingStars::updateFrontier()
 {
+    // ================================================================================
+    // v3.2: B IS SETTLED FIRST, before anything else this iteration decides. It is a pure host
+    // scalar -- read only by the three csSolveCutoff() calls below, never by propagateFrontier(),
+    // never by a device kernel directly -- so recomputing it here costs nothing beyond the
+    // arithmetic itself: no device array, no kernel, no synchronisation.
+    //
+    // x is clamped to [0, 1] defensively: h_itr_ is 1..h_fillIters_ in the standard benchmark loop
+    // (the caller increments it before propagateFrontier()/updateFrontier() each iteration), so x
+    // never actually reaches exactly 0 -- the true first iteration is x = 1/h_fillIters_, not 0 --
+    // but a caller running past h_fillIters_ iterations would otherwise push x, and therefore B,
+    // past what the ramp's own endpoint describes.
+    float x = fminf(1.0f, float(h_itr_) / float(h_fillIters_));
+    h_goalFrontierSize_ = (int)floorf((h_bufferSlope_ * x + h_bufferFloor_) * float(MAX_TREE_SIZE) / float(h_fillIters_));
+    if(h_goalFrontierSize_ < 1) h_goalFrontierSize_ = 1;
+
     // --- Find indices and size of the candidate list ---
     thrust::exclusive_scan(d_frontierNext_.begin(), d_frontierNext_.end(), d_frontierScanIdx_.begin(), 0, thrust::plus<uint>());
     h_frontierNextSize_ = d_frontierScanIdx_[MAX_TREE_SIZE - 1];

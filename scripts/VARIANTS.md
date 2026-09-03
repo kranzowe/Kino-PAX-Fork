@@ -889,6 +889,64 @@ new ground, and 15 has never been on a grid; and dropping `vertexScores` also dr
 `1/(1 + counterArray²)`, the only term that penalised an over-sampled region, where `regionNodeCount`
 is monotone and saturates at 255 (`ord_cutoff` riding there is the tell).
 
+**v3.2 — the buffer becomes a per-iteration ramp.**
+
+The v3.1 sweep surfaced the standard explore-vs-refine tradeoff on the buffer axis itself: a small
+constant `B` (`fill_frac = 0.25`) found a first solution fast but converged to a worse final cost; a
+large one (`0.75`) was the reverse. Rather than pick one point on that tradeoff, v3.2 makes `B` a
+function of how far into the run the current iteration is, so the search can behave like the small
+buffer early — when a fast first solution is the goal — and the large buffer late, once a route
+already exists and the budget's real job is refinement:
+
+    x         = itr / fill_iters                          (fraction of the run elapsed)
+    B_frac(x) = bufferSlope · x + bufferFloor
+    B(x)      = floor(B_frac(x) · MAX_TREE_SIZE / fill_iters)
+
+recomputed as the **first statement** of every `updateFrontier()` call — B is the primitive the
+whole iteration is decided against, so it is settled before anything else runs.
+
+**`bufferSlope = 0` reproduces v3's constant `B` exactly** (`B_frac(x) = bufferFloor` for every
+`x`), which is the whole design's central property: the ramp is a strict generalisation, not a new
+mechanism running alongside the old one. The constructor's own defaults reflect this —
+`h_bufferSlope_ = 0.0f, h_bufferFloor_ = 0.75f` — so a bare `CountingStars` object with no sweep
+overrides behaves identically to v3, and the `bufferSlope = 0` subgrid in any sweep is a free,
+structural comparison against the fixed-buffer design rather than a separate baseline swept again.
+`(bufferSlope, bufferFloor) = (0, 0)` further reproduces v3's deepest ablation arm — a constant
+`B = 0`, floored to 1 by existing code — since OPTIMAL and the region-best GUARANTEE stay uncapped
+regardless of `B` and the frontier is never actually empty.
+
+**`B` was already a pure host scalar**, read in exactly three places
+(`csSolveCutoff(..., frac * float(h_goalFrontierSize_), ...)` for FRESHEST, CHEAPEST, and
+reactivation-CHEAPEST) and **never** inside `propagateFrontier()` or any device kernel directly — so
+making it dynamic cost no device array, no new kernel, and no new synchronisation. It is one
+floating-point formula recomputed once per iteration.
+
+**The one-time computation moved out of `resetPlanner()` entirely**, not just changed shape. v3
+derived `B` once at reset because that was the only point it was ever set; v3.2 has no such point —
+`propagateFrontier()` provably never reads `h_goalFrontierSize_`, so a stale value sitting in it
+between `resetPlanner()` (which the sweep calls once per run, reusing the same planner object across
+runs) and the first `updateFrontier()` call is never actually read before being overwritten. What
+survives in `resetPlanner()` is only the `h_fillIters_` clamp — that field is still the real per-run
+entry point for a caller's tunable, since `updateFrontier()` divides by it every iteration.
+
+**`explore_frac`/`cost_frac` are fixed at 0.3 each this pass, not swept** — the ramp's effect is
+isolated by holding everything else that touches the budget still, the same discipline `maxBlocks`
+already uses. `react_frac` is derived exactly as before (`1 − explore − cost`).
+
+**The sweep grid shrinks along with the swept axes**: `bufferSlope ∈ {0, 1.0, 1.5}` ×
+`bufferFloor ∈ {0, 0.1, 0.2}` is 9 points (down from v3's 27), since `explore_frac`/`cost_frac` no
+longer contribute a factor. `goal_frontier_size` was always a per-iteration CSV column but was
+constant across a run under v3's fixed `B` — the first pass where it's worth its own panel, since it
+now traces the realized ramp directly and is the most basic sanity check available: does `B(itr)`
+actually match `slope·x + floor` before anything downstream that divides by it is trusted.
+
+**Grid and labels changed shape** (`_ff<frac>` → `_bs<slope>_bf<floor>`, both ×100 matching v3's
+`fill_frac` convention) — a previous v3/v3.1 pass's CSVs simply stop loading under the new label
+shape rather than colliding with it, which is the intended outcome for a budget mechanism that
+changed, not a loss. **The output folder should still be cleared** before running, so old and new
+CSVs don't coexist under different names in a way that's confusing to plot together even though they
+can't silently overwrite each other.
+
 ## Quick comparison
 | Variant | Explore | Seeding (pSeed) | Cost-aware | Pruning | Spatial hash |
 |---|---|---|---|---|---|
@@ -908,4 +966,4 @@ is monotone and saturates at 255 (`ord_cutoff` riding there is the tell).
 | KinoPaxSTARnoseed | ✔ | 0 | ✔ | — | ✔ |
 | KinoPaxSTARsparsefill | ✔ | ramp 0→1 | ✔ | — | ✔ |
 | KinoPaxSTARcostprunenoseed | capped (`h_acceptCap_`) | 0 (`h_pSeed_`) | ✔ | cost | ✔ |
-| CountingStars | DERIVED BUDGET `B = fill_frac·MAX_TREE_SIZE/MAX_ITER`, split by three fixed shares: optimal (uncapped) → freshest by region ordinality **∪** cheapest by cost distance → region-best guarantee → **cheapest dormant nodes** + an ε completeness floor | n/a (the R2 door is gone; ordinality is the novelty signal) | ✔✔✔ (cost-distance histograms on **both** admission and reactivation) | — | ✔ |
+| CountingStars | **RAMPED BUDGET** `B(x) = (bufferSlope·x + bufferFloor)·MAX_TREE_SIZE/MAX_ITER`, recomputed every iteration (`slope = 0` reproduces a constant `B` exactly), split by three fixed shares: optimal (uncapped) → freshest by region ordinality **∪** cheapest by cost distance → region-best guarantee → **cheapest dormant nodes** + an ε completeness floor | n/a (the R2 door is gone; ordinality is the novelty signal) | ✔✔✔ (cost-distance histograms on **both** admission and reactivation) | — | ✔ |

@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 3.5)
 project(KPAX LANGUAGES CXX CUDA)
 
+# No CMAKE_BUILD_TYPE means no optimization flags at all. Every scripts/run_*.sh sets
+# -DCMAKE_BUILD_TYPE=Release explicitly, but JetsonSmokeTest is meant to be built by hand
+# (see scripts/run_jetson_smoke_test.sh, which also sets it) -- default it so a bare
+# `cmake ..` does not silently produce an unoptimized build.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CUDA_STANDARD 17)
 
@@ -308,6 +316,17 @@ set_property(TARGET JetsonSmokeTest PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET KinoPaxPlusDeltaBenchmark PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET KinoPaxPlusSHBenchmark PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET KinoPaxStarLargeBenchmark PROPERTY CUDA_ARCHITECTURES 61 86 87)
+# These seven had CUDA_SEPARABLE_COMPILATION set above but no CUDA_ARCHITECTURES here, so with
+# CMP0104 left OLD by cmake_minimum_required(3.5), CMAKE_CUDA_ARCHITECTURES is never initialized
+# and they fell back to nvcc's default (sm_52) -- device-linked against KPAX_lib, which IS built
+# 61/86/87. On an Orin Nano (sm_87) that meant no native code path in these binaries at all.
+set_property(TARGET KinoPaxStarCostBenchmark PROPERTY CUDA_ARCHITECTURES 61 86 87)
+set_property(TARGET KinoPaxStarCostTuningSweep PROPERTY CUDA_ARCHITECTURES 61 86 87)
+set_property(TARGET KinoPaxStarComboTuningSweep PROPERTY CUDA_ARCHITECTURES 61 86 87)
+set_property(TARGET CountingStarsSweep PROPERTY CUDA_ARCHITECTURES 61 86 87)
+set_property(TARGET KinoPaxStarComparison PROPERTY CUDA_ARCHITECTURES 61 86 87)
+set_property(TARGET KinoPaxStarAcceptBreakdown PROPERTY CUDA_ARCHITECTURES 61 86 87)
+set_property(TARGET TreeGrowthDump PROPERTY CUDA_ARCHITECTURES 61 86 87)
 add_definitions(-DEIGEN_NO_DEBUG)
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations -Wno-unused-function")

@@ -21,6 +21,13 @@ class Planner
 public:
     /**************************** CONSTRUCTORS ****************************/
     Planner();
+    // Frees the three raw cudaMalloc'd pointers below and h_controlPathToGoal_. Nothing derived
+    // frees these -- ~CountingStars, for instance, deletes its own differently-named
+    // h_controlPathsToGoal_, not this one -- so without this every planner construction leaked
+    // 48B * MAX_TREE_SIZE (d_randomSeeds_ptr_ alone) plus two 4-byte allocations and a host array.
+    // Virtual because Planner already has a vtable (plan() is pure virtual), so this changes no
+    // layout contract; it just makes `delete` through a Planner* actually run derived cleanup too.
+    virtual ~Planner();
 
     /****************************    METHODS    ****************************/
     virtual void plan(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount) = 0;

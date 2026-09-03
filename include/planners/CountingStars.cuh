@@ -192,16 +192,33 @@ public:
     // ==================================================================================
 
     // ==================================================================================
-    // v3: B IS DERIVED, NOT SET. It is an OUTPUT of this planner, recomputed once per resetPlanner
-    // and never written by a caller.
+    // v3.2: B IS A RAMP, recomputed every iteration inside updateFrontier() -- not a single derived
+    // point computed once at reset. It is still an OUTPUT of this planner, never written directly
+    // by a caller.
     //
-    //     B = floor(fill_frac * MAX_TREE_SIZE / fill_iters)
+    //     x        = itr / fill_iters                          (fraction of the run elapsed)
+    //     B_frac(x) = bufferSlope * x + bufferFloor
+    //     B(x)     = floor(B_frac(x) * MAX_TREE_SIZE / fill_iters)
     //
-    // "the frontier size that fills the tree exactly at fill_iters", scaled by fill_frac -- so the
-    // remaining (1 - fill_frac) of the buffer is left for the uncapped OPTIMAL door to spend. v2
-    // hand-swept B over {200, 2000, 6000, 10000} with no derivation behind any of them; the buffer
-    // and the iteration count are the only things that actually constrain a frontier size, and this
-    // is what they say it should be. h_fillFrac_ is the one knob.
+    // WHY. v3's constant B traded off against itself: a small fixed buffer found a first solution
+    // fast but converged worse; a large one was the reverse. A ramp lets the search behave like the
+    // small buffer early (fast first solution) and the large buffer late (more optimality-seeking
+    // budget once a route already exists), instead of picking one point on that tradeoff for the
+    // whole run.
+    //
+    // bufferSlope = 0 REPRODUCES v3 EXACTLY -- B_frac(x) = bufferFloor for every x, a constant
+    // buffer, which is what fill_frac WAS. That is deliberate: the bufferSlope = 0 subgrid is a
+    // free, structural comparison against the old fixed-buffer design, not a separate baseline that
+    // has to be swept again.
+    //
+    // (bufferSlope, bufferFloor) = (0, 0) reproduces the OPTIMAL + GUARANTEE-only ablation arm that
+    // already existed in v3's grid: both doors are UNCAPPED regardless of B, so B = 0 (floored to 1
+    // by the code below) just means the FRESHEST / CHEAPEST / reactivation-CHEAPEST doors get zero
+    // budget -- a legitimate, intended control point, not a degenerate one.
+    //
+    // B ITSELF IS A PURE HOST SCALAR, read only inside updateFrontier() (never in
+    // propagateFrontier(), verified), so making it dynamic costs no device array, no new kernel, and
+    // no new synchronisation -- it is one floating-point formula recomputed once per iteration.
     // ==================================================================================
 
     // The node budget for ONE iteration's frontier. Five doors fill it in priority order:
@@ -223,18 +240,24 @@ public:
     // guarantee. That is a legitimate operating point and the sweep visits it on purpose: the gap
     // between budget_used and B is the direct measurement of how much of the frontier the priority
     // doors account for before the draw is offered anything at all.
+    // Recomputed as the FIRST statement of every updateFrontier() call, from h_bufferSlope_ /
+    // h_bufferFloor_ / h_itr_ / h_fillIters_ -- see the v3.2 block above. Never written by a caller.
     int h_goalFrontierSize_;
 
-    // ---- THE TUNING SURFACE. Three fractions; the third is derived from the other two. ----
+    // ---- THE TUNING SURFACE. Two numbers behind B, plus three fractions of B; the third fraction
+    // is derived from the other two. ----
 
-    // Share of the tree buffer B is sized to consume per iteration. The ONLY knob behind B, and the
-    // sweep's headline axis. 0.75 leaves a quarter of the buffer for the optimal door.
-    float h_fillFrac_;
+    // The ramp's slope. THE HEADLINE AXIS of this pass, and the sweep's headline axis. 0 makes B
+    // constant (v3's exact behaviour); a positive slope grows B over the run.
+    float h_bufferSlope_;
 
-    // The iteration count B is sized against -- "fill the tree at THIS iteration". Defaults to
-    // MAX_ITER, which is what "fill the tree by the end of the run" means; exposed so a benchmark
-    // running to a different cap can align it rather than silently sizing B against the wrong run
-    // length.
+    // The ramp's value at x = 0 -- what h_fillFrac_ WAS under v3's constant-B design. Together with
+    // h_bufferSlope_ this is the entire tuning surface behind B.
+    float h_bufferFloor_;
+
+    // The iteration count the ramp's x = 1 corresponds to -- "the run is over at THIS iteration".
+    // Defaults to MAX_ITER; exposed so a benchmark running to a different cap can align it rather
+    // than silently sizing B's ramp against the wrong run length.
     int h_fillIters_;
 
     // Share of B handed to the FRESHEST door (lowest region ordinality). 0 is a real ablation arm
