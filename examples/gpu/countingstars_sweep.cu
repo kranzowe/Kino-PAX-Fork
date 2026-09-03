@@ -46,7 +46,7 @@ static std::string g_vizDir;
 // now (it always was, but was constant across a run under v3 and so never worth plotting on its own
 // -- see process_countingstars_and_plot.m's new goal_frontier_size-vs-iteration panel), precisely so
 // a second copy of this arithmetic does not have to live in the plot script.
-static const float BUFFER_SLOPES[] = {0.8f, 1.0f, 1.2f};
+static const float BUFFER_SLOPES[] = {0.4, 0.8f, 1.0f, 1.2f};
 static const int NUM_BUFFER_SLOPES = sizeof(BUFFER_SLOPES) / sizeof(BUFFER_SLOPES[0]);
 
 static const float BUFFER_FLOORS[] = {0.05f, 0.1f};
@@ -1534,13 +1534,13 @@ int main(int argc, char* argv[])
 
     const int NUM_KPAX_RUNS        = 5;
     const int NUM_KINOPAXPLUS_RUNS = 5;   // drives the KinoPaxPlus runner
-    const int NUM_CS_RUNS          = 3;    // drives the CountingStars grid
-    const int NUM_CLEANCOST_RUNS   = 3;    // drives the single CleanCost baseline point
+    const int NUM_CS_RUNS          = 5;    // drives the CountingStars grid
+    const int NUM_CLEANCOST_RUNS   = 5;    // drives the single CleanCost baseline point
     // KPAXCap runs at the KPAX count, not the grid count: it is the control arm for the cap and is
     // read directly against the KPAX baseline, so the two want a matched noise level.
     const int NUM_KPAXCAP_RUNS     = NUM_KPAX_RUNS;
-    const int MAX_ITERATIONS       = 400;
-    const float MAX_TIME_MS      = 6000.0f;  // 6 second per-run timeout
+    const int MAX_ITERATIONS       = 1000;
+    const float MAX_TIME_MS      = 10000.0f;  // 6 second per-run timeout
 
     // Per-environment subfolder so house and zigzag can be plotted independently.
     std::string outputDir = "Data/Benchmarks/CountingStars/" + envName;

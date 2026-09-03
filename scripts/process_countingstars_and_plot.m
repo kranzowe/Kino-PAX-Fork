@@ -194,7 +194,7 @@ deltaLabel = '3 deltas overlaid';
 % OPTIMAL and the region-best GUARANTEE remain UNCAPPED regardless of B, so the frontier is still
 % optimal + guarantee + a trickle draw, not empty.
 %
-csBufferSlopes = [80 100 120];
+csBufferSlopes = [40 80 100 120];
 csBufferFloors = [5 10];
 csExploreFracs = [300];
 csCostFracs    = [300];
