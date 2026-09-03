@@ -58,8 +58,8 @@ static const int NUM_BUFFER_FLOORS = sizeof(BUFFER_FLOORS) / sizeof(BUFFER_FLOOR
 // the uniform draw's share, comfortably nonnegative.
 //
 // KEPT AS ARRAYS, not bare scalars, so the existing full-factorial loop / countingStarsSkip /
-// countingStarsPointCount machinery needs no shape change to hold them fixed -- the same discipline
-// CS_MAX_BLOCKS already uses. Re-expanding either back into a real axis later is a one-line change.
+// countingStarsPointCount machinery needs no shape change to hold them fixed. Re-expanding either
+// back into a real axis later is a one-line change.
 //
 // The label tokens are round(1000 x frac), matching v2's `_f` convention -- see countingStarsLabel().
 static const float EXPLORE_FRACS[] = {0.3f};
@@ -68,15 +68,9 @@ static const int NUM_EXPLORE_FRACS = sizeof(EXPLORE_FRACS) / sizeof(EXPLORE_FRAC
 static const float COST_FRACS[] = {0.3f};
 static const int NUM_COST_FRACS = sizeof(COST_FRACS) / sizeof(COST_FRACS[0]);
 
-// Blocks a node receives when it lands in a region the search has barely touched
-// (validVertexCounter[r] < CS_NOVEL_THRESH), or when it cleared BOTH selection cutoffs. Everything
-// else -- populated regions, and both reactivation arms -- gets 1, matching KPAXCap and CleanCost.
-//
-// HELD AT 4, NOT SWEPT. The previous pass swept {1, 4} and answered the question the region-keyed
-// fan-out rule was asking; v3 changes the admission rule, not the fan-out rule, and the plot script
-// has exactly three style channels for the three fraction axes. Restoring it as an axis means
-// finding a fourth channel or splitting the figure.
-static const int CS_MAX_BLOCKS = 4;
+// CS_MAX_BLOCKS IS GONE (v3.3). Fan-out is no longer region-keyed with a swept boost size -- a node
+// now gets one propagation block per door that admitted it (nodeBlocks = popcount(door)), which is
+// not a tunable and has nothing left here to sweep.
 
 // ---- KinoPaxSTARCleanCost baseline point ----
 // Demoted from a 21-point grid to the single well-tuned operating point, as the reference the
@@ -150,34 +144,33 @@ static int capAxisPointCount(const float* caps, int nCaps)
     return n;
 }
 
-// "CountingStars_bs150_bf20_ef300_cf300_mb4". MUST start with a name loadRuns() dispatches on.
+// "CountingStars_bs150_bf20_ef300_cf300". MUST start with a name loadRuns() dispatches on.
 //
 //   bs   bufferSlope, round(100 x float)
 //   bf   bufferFloor, round(100 x float)   -- B(x) is DERIVED from these, and goal_frontier_size is
 //                                             a per-ITERATION CSV column, not a per-run constant
 //   ef   explore_frac, round(1000 x float)  -- fixed at 0.3 this pass, still tokened (see below)
 //   cf   cost_frac,    round(1000 x float)  -- fixed at 0.3 this pass, still tokened (see below)
-//   mb   maxBlocks, plain integer
 //
-// THE `_ff` TOKEN IS GONE with fill_frac itself. v3's CSVs are `_ff..._ef..._cf..._mb...` and cannot
-// collide with this 5-token shape, so they simply stop loading -- intended for a planner whose
-// budget mechanism changed, not a loss.
+// THE `_mb` TOKEN IS GONE (v3.3) with maxBlocks itself -- fan-out is door-count now, not a swept
+// boost size, so there is nothing left for that token to carry. v3.2's CSVs are
+// `_bs..._bf..._ef..._cf..._mb...` and cannot collide with this 4-token shape, so they simply stop
+// loading -- intended for a planner whose fan-out mechanism changed, not a loss.
 //
 // bs/bf STAY AT 100x, matching v3's `ff` -- both are coarse axes (bufferSlope up to 1.5, bufferFloor
 // up to 0.2) where `bs150`/`bf20` read directly as 1.5/0.2. ef/cf STAY AT 1000x, matching v3's `_f`
 // convention, unchanged by this pass.
 //
-// ef/cf TOKENS STAY IN THE LABEL EVEN THOUGH FIXED THIS PASS, same reasoning as `_mb4` already
-// being retained while maxBlocks is held: a later rerun at different fixed values does not collide
-// with these CSVs under the same name.
-static std::string countingStarsLabel(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac, int maxBlocks)
+// ef/cf TOKENS STAY IN THE LABEL EVEN THOUGH FIXED THIS PASS: a later rerun at different fixed
+// values does not collide with these CSVs under the same name.
+static std::string countingStarsLabel(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac)
 {
     char buf[160];
-    snprintf(buf, sizeof(buf), "CountingStars_bs%d_bf%d_ef%d_cf%d_mb%d",
+    snprintf(buf, sizeof(buf), "CountingStars_bs%d_bf%d_ef%d_cf%d",
              (int)lroundf(100.0f * bufferSlope),
              (int)lroundf(100.0f * bufferFloor),
              (int)lroundf(1000.0f * exploreFrac),
-             (int)lroundf(1000.0f * costFrac), maxBlocks);
+             (int)lroundf(1000.0f * costFrac));
     return std::string(buf);
 }
 
@@ -236,12 +229,15 @@ struct IterationData
     //      RISING over a run is expected -- regions fill, so both signals get scarce. Pinned at 0
     //      means no candidate is ever good enough on that signal and the fraction is doing nothing.
     //
-    //      admitted_explore AND admitted_costdist OVERLAP. The two selection doors are a union over
-    //      one candidate pool, so admitted_both is what makes them add back up:
-    //      admitted == optimal_count + admitted_explore + admitted_costdist - admitted_both.
+    //      admitted_explore, admitted_cost AND admitted_costdist OVERLAP (v3.3: OPTIMAL now also
+    //      competes for FRESHEST). admitted_opt_fresh_both and admitted_both are what make them add
+    //      back up:
+    //      admitted == optimal_count + admitted_explore + admitted_costdist + admitted_floor
+    //                - admitted_opt_fresh_both - admitted_both.
     //   4. BLOCK IDENTITY. frontier_repeat_size must equal the sum of the frontier's admission-time
     //      block counts after scaling, and prop_attempted / frontier_repeat_size must be EXACTLY 32
-    //      on every iteration. Kernel1 is retained by construction, so below 32 is a defect.
+    //      on every iteration. Kernel1 is retained by construction, so below 32 is a defect. v3.3:
+    //      an admission-time block count is now popcount(door), 1 or 2 -- not a swept boost size.
     int   prop_attempted;         // propagations launched this iteration, collisions included
     int   prop_valid;             // collision-free candidates the accept passes judged
     int   frontier_repeat_size;   // sum of the per-node block counts; x32 is the kernel1 attempt count
@@ -264,14 +260,14 @@ struct IterationData
     // VARIES row to row within one run -- it was always a per-iteration column, just constant under
     // v3's fixed B, so this is the first pass where plotting it against iteration is worth a panel.
     int   goal_frontier_size;
-    // v3.2: the ramp's two settings, constant per run (like max_blocks). fill_frac is gone -- it was
-    // v3's single derived-B knob; bufferSlope/bufferFloor together replace it, with bufferSlope = 0
-    // reproducing v3's constant B exactly.
+    // v3.2: the ramp's two settings, constant per run. fill_frac is gone -- it was v3's single
+    // derived-B knob; bufferSlope/bufferFloor together replace it, with bufferSlope = 0 reproducing
+    // v3's constant B exactly.
     float buffer_slope;
     float buffer_floor;
-    // The three shares as applied. Settings rather than measurements, in the data for the same
-    // reason max_blocks is: the panels can be read without parsing filenames. react_frac is derived
-    // (1 - explore - cost) and is logged so a caller that oversubscribed the budget is visible.
+    // The three shares as applied. Settings rather than measurements, in the data so the panels can
+    // be read without parsing filenames. react_frac is derived (1 - explore - cost) and is logged so
+    // a caller that oversubscribed the budget is visible.
     float explore_frac;
     float cost_frac;
     float react_frac;
@@ -299,17 +295,20 @@ struct IterationData
     // The completeness floor. A SETTING, and one that is deliberately not swept -- its job is to be
     // non-zero. Logged so the value behind any run is auditable.
     float react_floor;
-    // A swept axis that is a setting rather than a measurement. In the data so the fan-out panel
-    // can be read against the maxBlocks that produced it, without parsing filenames.
-    // -1 for non-CountingStars rows.
-    int   max_blocks;
+    // v3.3: THE ADMISSION completeness floor -- react_floor's counterpart for candidates. Same
+    // discipline: a setting, not swept, logged for auditability.
+    float accept_floor;
     // Admissions by door, counted exactly on the device. admitted_cost is the OPTIMAL door
-    // (distance 0); admitted_costdist is v3's cost-distance door; admitted_both is its overlap with
-    // admitted_explore.
+    // (distance 0); admitted_costdist is v3's cost-distance door; admitted_both is the
+    // FRESHEST/CHEAPEST overlap.
     int   admitted_explore;
     int   admitted_cost;
     int   admitted_costdist;
     int   admitted_both;
+    // v3.3: OPTIMAL's overlap with FRESHEST (OPTIMAL never overlaps CHEAPEST -- see
+    // CS_DOORBIT_OPTIMAL in the header), and the admission floor's yield.
+    int   admitted_opt_fresh_both;
+    int   admitted_floor;
     // v3.1: PART B NOW HAS THREE ARMS, and the identity the CSV carries is
     //
     //     reactivated == reactivated_best + reactivated_cost + reactivated_count
@@ -331,7 +330,6 @@ struct IterationData
     // is inert, which is a goal_frontier_size problem and no other knob will move it.
     float block_ceiling;
     float block_scale;
-    float global_collision_frac;
 };
 
 // Blank the CountingStars-only columns. Every other planner calls this, exactly as KinoPaxPlus
@@ -358,17 +356,18 @@ static void clearCountingStarsCols(IterationData& d)
     d.react_cutoff_dist = NAN;
     d.dormant_count = -1;
     d.react_floor = NAN;
-    d.max_blocks = -1;
+    d.accept_floor = NAN;
     d.admitted_explore = -1;
     d.admitted_cost = -1;
     d.admitted_costdist = -1;
     d.admitted_both = -1;
+    d.admitted_opt_fresh_both = -1;
+    d.admitted_floor = -1;
     d.reactivated_cost = -1;
     d.reactivated_count = -1;
     d.reactivated_best = -1;
     d.block_ceiling = NAN;
     d.block_scale = NAN;
-    d.global_collision_frac = NAN;
 }
 
 struct RunResult
@@ -523,13 +522,14 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
          << "num_regions,r2_coverage_pct,mean_vertex_score,reactivated,"
          << "score_floor,cost_scale,"
          << "prop_attempted,prop_valid,frontier_repeat_size,"
-         << "optimal_count,ord_cutoff,budget_used,max_blocks,"
+         << "optimal_count,ord_cutoff,budget_used,"
          << "goal_frontier_size,buffer_slope,buffer_floor,explore_frac,cost_frac,react_frac,"
          << "cost_cutoff,cost_cutoff_dist,dist_max,"
-         << "react_cutoff,react_cutoff_dist,dormant_count,react_floor,"
+         << "react_cutoff,react_cutoff_dist,dormant_count,react_floor,accept_floor,"
          << "admitted_explore,admitted_cost,admitted_costdist,admitted_both,"
+         << "admitted_opt_fresh_both,admitted_floor,"
          << "reactivated_cost,reactivated_count,reactivated_best,"
-         << "block_ceiling,block_scale,global_collision_frac\n";
+         << "block_ceiling,block_scale\n";
 
     for(const auto& d : result.per_iteration)
     {
@@ -550,7 +550,6 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
              << d.optimal_count << ","
              << d.ord_cutoff << ","
              << d.budget_used << ","
-             << d.max_blocks << ","
              << d.goal_frontier_size << ","
              << std::fixed << std::setprecision(4) << d.buffer_slope << ","
              << std::fixed << std::setprecision(4) << d.buffer_floor << ","
@@ -564,17 +563,19 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
              << std::fixed << std::setprecision(9) << d.react_cutoff_dist << ","
              << d.dormant_count << ","
              << std::scientific << std::setprecision(3) << d.react_floor << ","
+             << std::scientific << std::setprecision(3) << d.accept_floor << ","
              << std::fixed
              << d.admitted_explore << ","
              << d.admitted_cost << ","
              << d.admitted_costdist << ","
              << d.admitted_both << ","
+             << d.admitted_opt_fresh_both << ","
+             << d.admitted_floor << ","
              << d.reactivated_cost << ","
              << d.reactivated_count << ","
              << d.reactivated_best << ","
              << std::fixed << std::setprecision(1) << d.block_ceiling << ","
-             << std::fixed << std::setprecision(4) << d.block_scale << ","
-             << std::fixed << std::setprecision(6) << d.global_collision_frac << "\n";
+             << std::fixed << std::setprecision(4) << d.block_scale << "\n";
     }
     file.close();
 }
@@ -1114,7 +1115,6 @@ RunResult benchmarkCountingStars(
     float bufferFloor,
     float exploreFrac,
     float costFrac,
-    int maxBlocks,
     const std::string& label)
 {
     // Override the planner's defaults for this run. resetPlanner (called below) does not touch the
@@ -1123,7 +1123,7 @@ RunResult benchmarkCountingStars(
     // B IS NOT SET HERE AT ALL, not even indirectly: v3.2 recomputes it every iteration inside
     // updateFrontier() from bufferSlope/bufferFloor/h_itr_/h_fillIters_, so there is no one-time
     // derivation for these assignments to precede any more. They still have to land BEFORE
-    // resetPlanner() though, exactly as d_nodeBlocks_'s fill from h_maxBlocks_ already relies on --
+    // resetPlanner() though, exactly as h_reactFloor_/h_acceptFloor_ already rely on --
     // resetPlanner() reads none of the ramp fields itself, but updateFrontier() reads them on the
     // very first iteration of the run that follows.
     //
@@ -1135,7 +1135,6 @@ RunResult benchmarkCountingStars(
     planner.h_bufferFloor_ = bufferFloor;
     planner.h_exploreFrac_ = exploreFrac;
     planner.h_costFrac_    = costFrac;
-    planner.h_maxBlocks_   = maxBlocks;
 
     RunResult result;
     result.delta_label = label;
@@ -1225,7 +1224,6 @@ RunResult benchmarkCountingStars(
         d.optimal_count        = (int)planner.h_optimalCount_;
         d.ord_cutoff           = planner.h_ordCutoff_;
         d.budget_used          = (int)planner.h_budgetUsed_;
-        d.max_blocks           = planner.h_maxBlocks_;
         // B is DERIVED by the planner EVERY ITERATION now, so it is read back out of it rather than
         // echoed from the sweep's own axis -- which is what makes the column a check on the
         // derivation (does the realized ramp match slope*x+floor), not a copy of a setting.
@@ -1242,16 +1240,18 @@ RunResult benchmarkCountingStars(
         d.react_cutoff_dist    = planner.h_reactCutoffDist_;
         d.dormant_count        = (int)planner.h_dormantCount_;
         d.react_floor          = planner.h_reactFloor_;
+        d.accept_floor         = planner.h_acceptFloor_;
         d.admitted_explore     = (int)planner.h_admittedExplore_;
         d.admitted_cost        = (int)planner.h_admittedCost_;
         d.admitted_costdist    = (int)planner.h_admittedCostDist_;
         d.admitted_both        = (int)planner.h_admittedBoth_;
+        d.admitted_opt_fresh_both = (int)planner.h_admittedOptFreshBoth_;
+        d.admitted_floor       = (int)planner.h_admittedFloor_;
         d.reactivated_cost     = (int)planner.h_reactivatedCost_;
         d.reactivated_count    = (int)planner.h_reactivated_;
         d.reactivated_best     = (int)planner.h_reactivatedBest_;
         d.block_ceiling        = planner.h_blockCeiling_;
         d.block_scale          = planner.h_blockScale_;
-        d.global_collision_frac = planner.h_globalCollisionFrac_;
         result.per_iteration.push_back(d);
 
         if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
@@ -1296,11 +1296,10 @@ void runCountingStarsBenchmark(
         const float bufferFloor = BUFFER_FLOORS[fi];
         const float exploreFrac = EXPLORE_FRACS[ei];
         const float costFrac    = COST_FRACS[ci];
-        const int   maxBlocks   = CS_MAX_BLOCKS;
 
         if(countingStarsSkip(bufferSlope, bufferFloor, exploreFrac, costFrac)) continue;
 
-        const std::string label = countingStarsLabel(bufferSlope, bufferFloor, exploreFrac, costFrac, maxBlocks);
+        const std::string label = countingStarsLabel(bufferSlope, bufferFloor, exploreFrac, costFrac);
 
         // B's RANGE over the run, not a single value: B(x=0) = floor, B(x=1) = slope + floor.
         int bStart = (int)floorf(bufferFloor * float(MAX_TREE_SIZE) / float(MAX_ITER));
@@ -1315,7 +1314,7 @@ void runCountingStarsBenchmark(
             RunResult result = benchmarkCountingStars(planner, deltaLabel, environment_name, run,
                                                  h_initial, h_goal, d_obstacles,
                                                  numObstacles, maxIterations, maxTimeMs,
-                                                 bufferSlope, bufferFloor, exploreFrac, costFrac, maxBlocks, label);
+                                                 bufferSlope, bufferFloor, exploreFrac, costFrac, label);
             printf("  bs=%.2f bf=%.2f ef=%.3f cf=%.3f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
                    bufferSlope, bufferFloor, exploreFrac, costFrac,
                    run + 1, numRuns, result.total_time_seconds,
@@ -1574,8 +1573,8 @@ int main(int argc, char* argv[])
         printf("} x bufferFloor {");
         for(int i = 0; i < NUM_BUFFER_FLOORS; i++)
             printf("%s%.2f", i ? ", " : "", BUFFER_FLOORS[i]);
-        printf("}   explore_frac %.2f, cost_frac %.2f (both FIXED), maxBlocks %d (held)\n",
-               EXPLORE_FRACS[0], COST_FRACS[0], CS_MAX_BLOCKS);
+        printf("}   explore_frac %.2f, cost_frac %.2f (both FIXED)\n",
+               EXPLORE_FRACS[0], COST_FRACS[0]);
         printf("                B IS A RAMP, RECOMPUTED EVERY ITERATION:\n"
                "                  x = itr/MAX_ITER, B(x) = floor((slope*x + floor) * MAX_TREE_SIZE / MAX_ITER)\n"
                "                  B(x=0) = floor(bufferFloor * ...) = ");
@@ -1600,9 +1599,10 @@ int main(int argc, char* argv[])
                "                top of those shares. Both are bounded by NUM_R1_REGIONS (%d) rather\n"
                "                than by B, so B binds only ABOVE that count; below it budget_used\n"
                "                runs over B and the two fractions steer a minority of the frontier.\n"
-               "                FAN-OUT IS REGION-KEYED: a node gets maxBlocks only if its region\n"
-               "                has seen < %d valid propagations, or if it cleared BOTH cutoffs;\n"
-               "                else 1, and reactivations always 1.\n"
+               "                v3.3: OPTIMAL ALSO COMPETES FOR FRESHEST now (only CHEAPEST stays\n"
+               "                closed to it). FAN-OUT IS DOOR-COUNT: a node gets one propagation\n"
+               "                block per door that admitted it (popcount of the door mask), full\n"
+               "                stop -- no region-thinness signal, no swept boost size.\n"
                "                READ FIRST: the goal_frontier_size-vs-iteration panel (does the\n"
                "                realized ramp match slope*x+floor), then\n"
                "                budget_used/goal_frontier_size as a CURVE against a now-MOVING\n"
@@ -1614,7 +1614,7 @@ int main(int argc, char* argv[])
                "                constant B = 0 (floored to 1), so the frontier is optimal +\n"
                "                guarantee + a trickle draw and nothing else.\n"
                "                -> %d points x %d runs = %d runs\n",
-               NUM_R1_REGIONS, CS_NOVEL_THRESH, csPoints, NUM_CS_RUNS, csPoints * NUM_CS_RUNS);
+               NUM_R1_REGIONS, csPoints, NUM_CS_RUNS, csPoints * NUM_CS_RUNS);
         printf("CleanCost:      r2 OFF, w %.2f, k %.2f, cap %.2f = 1 point x %d runs = %d runs\n",
                CLEAN_BASE_W, CLEAN_BASE_K, CLEAN_BASE_CAP, NUM_CLEANCOST_RUNS, NUM_CLEANCOST_RUNS);
         int kcapPoints = capAxisPointCount(KPAXCAP_CAPS, NUM_KPAXCAP_CAPS);

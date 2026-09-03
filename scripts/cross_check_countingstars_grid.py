@@ -145,7 +145,6 @@ cu_slope  = cu_array('BUFFER_SLOPES')
 cu_floor  = cu_array('BUFFER_FLOORS')
 cu_efrac  = cu_array('EXPLORE_FRACS')
 cu_cfrac  = cu_array('COST_FRACS')
-cu_blocks = cu_scalar('CS_MAX_BLOCKS', 'int')
 cu_kcap   = cu_array('KPAXCAP_CAPS')
 cu_cap_derived = cu_scalar('CAP_DERIVED')
 cu_dslope = cu_scalar('CS_DERIVED_BUFFER_SLOPE')
@@ -197,8 +196,6 @@ for name, vals in (('EXPLORE_FRACS', cu_efrac), ('COST_FRACS', cu_cfrac)):
     if any(v < 0.0 or v > 1.0 for v in vals):
         problems.append('%s %s has an entry outside [0, 1] -- it is a share of B, not a count'
                         % (name, vals))
-if cu_blocks < 1:
-    problems.append('CS_MAX_BLOCKS (%g) is below 1 -- rep >= 1 is a correctness floor' % cu_blocks)
 
 # --- Assertion 2b: react_frac = 1 - explore_frac - cost_frac MUST STAY NON-NEGATIVE at every point
 # on the grid. The planner floors it at 0, so an oversubscribed pair does not crash -- it silently
@@ -223,10 +220,9 @@ ramp_min_info = ['floor(%g * %d / %d) = %d' % (fl, cfg_tree, cfg_iter, int(fl * 
                  for fl in cu_floor]
 
 
-def cs_label(slope, floor, efrac, cfrac, blocks):
+def cs_label(slope, floor, efrac, cfrac):
     """Mirrors countingStarsLabel() in the benchmark."""
-    return 'CountingStars_bs%d_bf%d_ef%d_cf%d_mb%d' % (tok(slope), tok(floor), ftok(efrac),
-                                                        ftok(cfrac), int(round(blocks)))
+    return 'CountingStars_bs%d_bf%d_ef%d_cf%d' % (tok(slope), tok(floor), ftok(efrac), ftok(cfrac))
 
 
 cu_pairs = set()
@@ -237,7 +233,7 @@ for d, plus_only in zip(sh_deltas, sh_plus_only):
             for floor in cu_floor:
                 for efrac in cu_efrac:
                     for cfrac in cu_cfrac:
-                        cu_pairs.add((cs_label(slope, floor, efrac, cfrac, cu_blocks), d))
+                        cu_pairs.add((cs_label(slope, floor, efrac, cfrac), d))
         cu_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                       % (cu_clean['r2'], cu_clean['w'], cu_clean['k'], cu_clean['cap']), d))
         for c in cu_kcap:
@@ -250,7 +246,6 @@ m_slope   = m_ints('csBufferSlopes')
 m_floor   = m_ints('csBufferFloors')
 m_efrac   = m_ints('csExploreFracs')
 m_cfrac   = m_ints('csCostFracs')
-m_blocks  = m_ints('csMaxBlocks')
 m_kcap    = m_ints('kpaxCapCaps')
 m_deltas  = m_cellstr('deltas')
 m_plus_only = m_bools('deltaPlusOnly')
@@ -258,7 +253,6 @@ m_dslope = m_scalar_int('csDerivedBufferSlope')
 m_dfloor = m_scalar_int('csDerivedBufferFloor')
 m_def = m_scalar_int('csDerivedExploreFrac')
 m_dcf = m_scalar_int('csDerivedCostFrac')
-m_dmb = m_scalar_int('csDerivedMaxBlocks')
 m_clean = {
     'r2': m_str('cleanBaseR2'),
     'w': m_scalar_int('cleanBaseW'),
@@ -269,15 +263,12 @@ m_clean = {
 m_pairs = set()
 for d, plus_only in zip(m_deltas, m_plus_only):
     if not plus_only:
-        # The .m holds maxBlocks at csDerivedMaxBlocks rather than looping csMaxBlocks, exactly as
-        # the .cu holds it at CS_MAX_BLOCKS -- so the single-entry list and the derived scalar have
-        # to agree, which the derived-point diff below asserts.
         for slope in m_slope:
             for floor in m_floor:
                 for efrac in m_efrac:
                     for cfrac in m_cfrac:
-                        m_pairs.add(('CountingStars_bs%d_bf%d_ef%d_cf%d_mb%d'
-                                     % (slope, floor, efrac, cfrac, m_dmb), d))
+                        m_pairs.add(('CountingStars_bs%d_bf%d_ef%d_cf%d'
+                                     % (slope, floor, efrac, cfrac), d))
         m_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                      % (m_clean['r2'], m_clean['w'], m_clean['k'], m_clean['cap']), d))
         for c in m_kcap:
@@ -289,19 +280,12 @@ for d, plus_only in zip(m_deltas, m_plus_only):
 only_cu = sorted(cu_pairs - m_pairs)
 only_m = sorted(m_pairs - cu_pairs)
 
-if (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf), int(cu_blocks)) \
-        != (m_dslope, m_dfloor, m_def, m_dcf, m_dmb):
-    problems.append('DERIVED POINT DRIFT: .cu (bs%d, bf%d, ef%d, cf%d, mb%d) != '
-                    '.m (bs%d, bf%d, ef%d, cf%d, mb%d)'
-                    % (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf), int(cu_blocks),
-                       m_dslope, m_dfloor, m_def, m_dcf, m_dmb))
-
-# maxBlocks is held rather than swept on both sides, so the .m's one-entry list must name the value
-# the .cu holds. A mismatch produces labels for a maxBlocks nothing ran.
-if m_blocks != [int(cu_blocks)]:
-    problems.append('csMaxBlocks %s (%s) does not match CS_MAX_BLOCKS %d (%s) -- maxBlocks is held, '
-                    'not swept, so the list must be exactly the held value'
-                    % (m_blocks, M, int(cu_blocks), CU))
+if (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf)) \
+        != (m_dslope, m_dfloor, m_def, m_dcf):
+    problems.append('DERIVED POINT DRIFT: .cu (bs%d, bf%d, ef%d, cf%d) != '
+                    '.m (bs%d, bf%d, ef%d, cf%d)'
+                    % (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf),
+                       m_dslope, m_dfloor, m_def, m_dcf))
 
 if sh_deltas != m_deltas:
     problems.append('DELTA_LABELS %s (%s) != deltas %s (%s)' % (sh_deltas, SH, m_deltas, M))

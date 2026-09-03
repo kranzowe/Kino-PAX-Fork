@@ -47,9 +47,9 @@
 %                               ramp actually matches slope*x+floor before reading anything that
 %                               depends on B. A flat line at every bufferSlope=0 series is the
 %                               direct sanity check that the mechanism is wired correctly.
-%   1. frontier_repeat_size / frontier_size    sanity: the realised mean rep. It should sit
-%                               near 1 with a small excess from thin regions and the both-doors
-%                               boost, not near maxBlocks.
+%   1. frontier_repeat_size / frontier_size    sanity: the realised mean rep. v3.3: fan-out is
+%                               door-count (nodeBlocks = popcount(door)), so this should sit very
+%                               close to 1 always -- at most 2 doors ever co-fire on one candidate.
 %   2. budget_used / goal_frontier_size, AS A CURVE against a now-MOVING target. See the note on
 %                               where B binds.
 %   3. admitted_costdist        THE CHEAPEST DOOR'S ACTUAL SHARE, against admitted_explore and
@@ -101,7 +101,8 @@
 % ENCODING: colour = bufferFloor (near-black smallest -> pale largest); line style = bufferSlope
 % (solid = bufferSlope 0, v3's constant-B control); scatter marker = 'o' (fixed -- explore_frac and
 % cost_frac no longer vary, so there is no third axis to give its own marker); line width = delta.
-% maxBlocks is held at 4, unchanged from v3. CleanCost is crimson, KPAXCap grey-green,
+% v3.3: maxBlocks is gone -- fan-out is door-count, not a swept boost size, so there is no fourth
+% axis it used to hold fixed. CleanCost is crimson, KPAXCap grey-green,
 % KPAX near-black, KinoPaxPlus blue -- all four drawn thicker as reference anchors. Every legend
 % here is CLICKABLE - click an entry to hide/show that series.
 %
@@ -183,8 +184,8 @@ deltaLabel = '3 deltas overlaid';
 %
 % csExploreFracs / csCostFracs ARE round(1000 x frac) TOKENS, not 100x -- see countingStarsLabel()
 % in the benchmark. FIXED AT 0.3 EACH THIS PASS (single-element arrays, not swept) -- v3.2 isolates
-% the ramp's own effect by holding them still, the same discipline csMaxBlocks already uses to stay
-% held without a shape change to the loop below.
+% the ramp's own effect by holding them still, kept as single-element arrays rather than bare
+% scalars so re-expanding either axis later needs no shape change to the loop below.
 %
 % csBufferSlopes / csBufferFloors STAY AT 100x, matching v3's csFillFracs convention -- both are
 % coarse axes (slope up to 1.5, floor up to 0.2) where `bs150`/`bf20` read directly as 1.5/0.2.
@@ -198,7 +199,6 @@ csBufferSlopes = [40 80 100 120];
 csBufferFloors = [5 10];
 csExploreFracs = [300];
 csCostFracs    = [300];
-csMaxBlocks    = [4];
 
 % The derived operating point that --single-point selects. EVERY component must be a member of its
 % list, because the flag selects BY VALUE -- a derived point outside the grid would run nothing.
@@ -206,7 +206,6 @@ csDerivedBufferSlope = 100;        % bufferSlope 1.0 -> round(100 * 1.0); middle
 csDerivedBufferFloor = 10;         % bufferFloor 0.1 -> round(100 * 0.1); middle of {0,0.1,0.2}
 csDerivedExploreFrac = 300;        % explore_frac 0.3 -> round(1000 * 0.3); the only grid value now
 csDerivedCostFrac    = 300;        % cost_frac 0.3 -> round(1000 * 0.3); the only grid value now
-csDerivedMaxBlocks   = 4;
 
 % CleanCost baseline point - one series, the well-tuned operating point. Same label format as the
 % cost sweep, so its historical CSVs load here unchanged.
@@ -274,10 +273,9 @@ for di = 1:numel(deltas)
     if ~dPlus
 
     % --- CountingStars: bufferSlope x bufferFloor, a full factorial. explore_frac/cost_frac are
-    % single-element arrays (fixed at 0.3 this pass) and maxBlocks is held at csDerivedMaxBlocks, so
-    % these inner loops are trivial -- kept for structural parity with the .cu's loop nest and with
-    % cross_check_countingstars_grid.py's parsing, and so re-expanding either axis later needs no
-    % shape change here. ---
+    % single-element arrays (fixed at 0.3 this pass), so these inner loops are trivial -- kept for
+    % structural parity with the .cu's loop nest and with cross_check_countingstars_grid.py's
+    % parsing, and so re-expanding either axis later needs no shape change here. ---
     for bi = 1:numel(csBufferSlopes)
         for fi = 1:numel(csBufferFloors)
             for ei = 1:numel(csExploreFracs)
@@ -286,7 +284,6 @@ for di = 1:numel(deltas)
                     sFloor = csBufferFloors(fi);
                     eFrac  = csExploreFracs(ei);
                     cFrac  = csCostFracs(ci);
-                    maxB   = csDerivedMaxBlocks;
 
                     % Mirror countingStarsSkip(): --single-point is the only skip.
                     if dOne && ~(sSlope == csDerivedBufferSlope && sFloor == csDerivedBufferFloor ...
@@ -294,8 +291,8 @@ for di = 1:numel(deltas)
                         continue;
                     end
 
-                    plannerNames{end + 1}   = sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d_mb%d', ...
-                                                      sSlope, sFloor, eFrac, cFrac, maxB); %#ok<SAGROW>
+                    plannerNames{end + 1}   = sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d', ...
+                                                      sSlope, sFloor, eFrac, cFrac); %#ok<SAGROW>
                     plannerDisplay{end + 1} = sprintf('CS slope%g floor%g [%s]', ...
                                                       sSlope / 100, sFloor / 100, dTag); %#ok<SAGROW>
                     plannerColors(end + 1, :) = fillColors(fi, :);     %#ok<SAGROW>
@@ -545,14 +542,21 @@ for ei = 1:numel(environments)
         %   reactivated_count  the COMPLETENESS FLOOR alone -- ~ react_floor * dormant_count, so
         %                      ~30 nodes. It was the uniform draw through v3. LARGE HERE MEANS the
         %                      floor is doing reach work it was not sized for.
+        %   admitted_floor     v3.3: the ADMISSION completeness floor's yield -- fires only for a
+        %                      candidate that cleared none of OPTIMAL/FRESHEST/CHEAPEST. Should
+        %                      track ~accept_floor * candidates_this_iteration; large here means the
+        %                      floor is doing reach work rather than plugging the gap.
         %
         % The `reactivated` column is all THREE Part B arms, so it should equal
         % reactivated_best + reactivated_cost + reactivated_count.
         %
-        % THE TWO SELECTION DOORS OVERLAP. admitted_explore and admitted_costdist are a union over
-        % one candidate pool, so they do not simply add: the identity is
-        % admitted == optimal_count + admitted_explore + admitted_costdist - admitted_both, and the
-        % overlap has its own panel below.
+        % v3.3: OPTIMAL, EXPLORE AND COSTDIST ALL OVERLAP now. admitted_explore and admitted_costdist
+        % are a union over one candidate pool as before; OPTIMAL now also competes for FRESHEST, so
+        % it overlaps admitted_explore too (never admitted_costdist -- see CS_DOORBIT_OPTIMAL). The
+        % full identity is
+        % admitted == optimal_count + admitted_explore + admitted_costdist + admitted_floor
+        %           - admitted_opt_fresh_both - admitted_both, and both overlaps have their own
+        % panel below.
         subplot(1, 2, 2); hold on;
         for pi = 1:nPlanner
             plotMeanIter(R{pi}, @(t) getCol(t, 'optimal_count'), ...
@@ -567,11 +571,13 @@ for ei = 1:numel(environments)
                          plannerColors(pi, :), '--', max(0.5, plannerWidths(pi) - 0.9), '');
             plotMeanIter(R{pi}, @(t) getCol(t, 'reactivated_count'), ...
                          plannerColors(pi, :), ':', max(0.5, plannerWidths(pi) - 0.6), '');
+            plotMeanIter(R{pi}, @(t) getCol(t, 'admitted_floor'), ...
+                         plannerColors(pi, :), ':', max(0.5, plannerWidths(pi) - 0.3), '');
         end
         set(gca, 'YScale', 'log'); grid on;
         xlabel('Iteration'); ylabel('nodes');
         title({'optimal (thick solid), explore (dashed), cheapest (thin solid), guarantee (dash-dot),', ...
-               'cheap-reactivation (thin dashed), completeness floor (dotted) -- the six arms'});
+               'cheap-reactivation (thin dashed), reactivation floor (dotted), admission floor (thin dotted)'});
 
         %% ---------- FIGURE: is freshness still scarce ----------
         % ord_cutoff is the freshness threshold the remaining budget bought this iteration: a
@@ -658,18 +664,22 @@ for ei = 1:numel(environments)
                'at 1 = budget exceeds the population below the anchor'});
         clickableLegend();
 
-        %% ---------- FIGURE: DO THE TWO SELECTION DOORS BUY DIFFERENT THINGS ----------
+        %% ---------- FIGURE: DO THE SELECTION DOORS BUY DIFFERENT THINGS ----------
         % The freshness and cheapness doors select over the SAME candidate pool on independent
-        % signals, so their picks overlap and admitted_both counts the overlap exactly.
+        % signals, so their picks overlap and admitted_both counts the overlap exactly. v3.3: OPTIMAL
+        % now also competes for FRESHEST, so it has its own overlap term, admitted_opt_fresh_both --
+        % plotted alongside as a second curve per series (solid = FRESHEST/CHEAPEST, dotted =
+        % OPTIMAL/FRESHEST). OPTIMAL never overlaps CHEAPEST (see CS_DOORBIT_OPTIMAL), so there is no
+        % third term.
         %
         %   near 0   the two signals are independent, which is the case worth having: each door is
         %            buying nodes the other would not have.
-        %   near 1   the cost door is re-admitting what freshness already took (or vice versa), so
-        %            one of the two fractions is being spent twice on the same nodes and the budget
-        %            it was given is going to the draw instead.
+        %   near 1   one door is re-admitting what the other already took, so one fraction is being
+        %            spent twice on the same nodes and the budget it was given is going to the draw
+        %            (or, for the OPTIMAL/FRESHEST curve, is simply inert) instead.
         %
-        % Note it can only be read where BOTH fractions are non-zero; the ablation arms have no
-        % overlap to measure and are skipped by safeRatio returning NaN on a zero denominator.
+        % Note both can only be read where their inputs are non-zero; safeRatio returns NaN on a
+        % zero denominator, which the ablation arms and any FRESHEST=OPTIMAL-only iteration hit.
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Door Overlap (%s)', envTitle, costTitle), ...
                'Position', [160 160 900 560]);
@@ -679,10 +689,13 @@ for ei = 1:numel(environments)
             plotMeanIter(R{pi}, @(t) safeRatio(getCol(t, 'admitted_both'), ...
                                                sumCols(t, 'admitted_explore', 'admitted_costdist')), ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
+            plotMeanIter(R{pi}, @(t) safeRatio(getCol(t, 'admitted_opt_fresh_both'), ...
+                                               sumCols(t, 'optimal_count', 'admitted_explore')), ...
+                         plannerColors(pi, :), ':', max(0.5, plannerWidths(pi) - 0.6), '');
         end
         grid on; ylim([0 1]);
-        xlabel('Iteration'); ylabel('admitted\_both / (explore + costdist)');
-        title({'Selection-door overlap', ...
+        xlabel('Iteration'); ylabel('overlap / union');
+        title({'Selection-door overlap: FRESHEST/CHEAPEST (main) vs OPTIMAL/FRESHEST (dotted)', ...
                '0 = the two signals are independent; 1 = one fraction is being spent twice'});
         clickableLegend();
 
@@ -801,8 +814,8 @@ for ei = 1:numel(environments)
         % block_scale is the fraction of each node's requested BOOST that survived the buffer
         % ceiling; the rep >= 1 floor is never scaled, so no frontier node is ever left blockless.
         %
-        %   block_scale = 1     the buffer ceiling never bound; the design budget alone is setting
-        %                       fan-out (blockBudget = maxBlocks * B, split at admission).
+        %   block_scale = 1     the buffer ceiling never bound; door-count fan-out
+        %                       (nodeBlocks = popcount(door), set at admission) is unscaled.
         %   block_scale < 1     the BUFFER is setting it, not the rule.
         %   block_scale near 0  the rep >= 1 floor ate the budget and the fan-out split is inert.
         %                       That is a goal_frontier_size problem, and explore_frac will not
@@ -932,7 +945,7 @@ for ei = 1:numel(environments)
 
         % The marker legend, written once and used by both titles so they cannot drift apart.
         % \x25cb/\x25a1/\x25b3 are cost_frac 0 / 0.2 / 0.4 -- the marker channel has encoded
-        % cost_frac since v3, NOT maxBlocks, which is held at 4 and is not an axis.
+        % cost_frac since v3.
         % sprintf, NOT a bare concatenation: the \x.... marker glyphs and the \\_ TeX underscore
         % escapes are only resolved by a formatting call, and this string is substituted into the
         % titles below via %s -- which inserts it verbatim rather than re-interpreting it. Built as

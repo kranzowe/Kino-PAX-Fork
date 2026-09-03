@@ -947,6 +947,64 @@ changed, not a loss. **The output folder should still be cleared** before runnin
 CSVs don't coexist under different names in a way that's confusing to plot together even though they
 can't silently overwrite each other.
 
+**v3.3 — fan-out becomes door-count, OPTIMAL joins FRESHEST, and admission gets its own completeness
+floor.**
+
+Two changes to the admission mechanism, both reducible to the same rule: **a candidate is one tree
+node, and how many propagation blocks it earns comes from how many independent doors accepted it —
+not from a separate region-thinness heuristic bolted on top.**
+
+**Fan-out is now `nodeBlocks = popcount(doorMask)`, full stop.** v3's rule decided blocks two ways at
+once: `validVertexCounter[r] < CS_NOVEL_THRESH ? maxBlocks : 1`, overridden to `maxBlocks` if a
+candidate cleared both FRESHEST and CHEAPEST (`CS_DOOR_BOTH`). The region-thinness half was KPAXCap's
+and CleanCost's rule, ported verbatim so the runtime comparison stayed like-for-like; the door-count
+half was v3's own addition sitting alongside it. v3.3 keeps only the door-count half.
+`maxBlocks`/`CS_NOVEL_THRESH`/`h_maxBlocks_` are gone entirely, and so is `validVertexCounter` as a
+fan-out signal — it keeps its other, load-bearing job (`cntAll` → `h_costScale_`'s denominator,
+`CountingStars.cu:1512`), it just stops being read by Part A.
+
+**OPTIMAL now also competes for FRESHEST**, not just CHEAPEST ∪ FRESHEST as before. OPTIMAL and
+CHEAPEST stay mutually exclusive *by construction* (CHEAPEST's histogram only ever buckets non-zero
+distances, and OPTIMAL is exactly distance 0), so the only real fork was OPTIMAL vs FRESHEST, and
+OPTIMAL used to return before the freshness check ran at all. Accept pass 1 now votes an optimal
+candidate into the ordinality histogram too, and accept pass 2 sets OPTIMAL's bit and falls through
+to the freshness check instead of returning early. No new tree storage, no new kernel — the fan-out
+plumbing (`assignFanout_kernel`, `blockCeiling`/`blockScale`) already just sums whatever `nodeBlocks`
+holds, unchanged.
+
+**The door value is a bitmask, not an enum of pairwise combinations.** v3's `CS_DOOR_BOTH` was a
+named constant for exactly one overlap (FRESHEST+CHEAPEST); widening OPTIMAL into the same
+multiplicity would have needed a second named constant, and the admission floor below a third. A bit
+per door (`CS_DOORBIT_OPTIMAL/FRESH/CHEAP/GUAR/FLOOR`) scales to any number of simultaneous
+admissions with no new names, and `nodeBlocks[i] = __popc(door)` is the entire fan-out rule.
+
+**A flat admission completeness floor, `h_acceptFloor_ = 1e-4`**, mirrors v3.1's `h_reactFloor_` in
+shape but not in argument. `h_reactFloor_` fixes a *permanent* exclusion — a tree node's cost distance
+only grows over a run, so a top-K-only reactivation strands a node forever. A rejected *candidate*
+isn't excluded that way: it's simply discarded, and propagation produces fresh candidates from the
+same region next iteration, each getting an independent roll. `h_acceptFloor_`'s job is a plain
+probabilistic-completeness guarantee — every valid propagation should have *some* chance of
+admission — a real but different reason, defaulted an order of magnitude above `h_reactFloor_` since
+its pool is per-iteration and far smaller than the whole dormant tree.
+
+**`h_globalCollisionFrac_` is dropped as dead weight**, unrelated to the fan-out change but found
+while auditing what `validVertexCounter` still fed. It looked like it might be the counter's other
+job, but checking the code showed it wasn't: v3 already decoupled it into a free host-side
+computation off `h_propAttempted_`/`h_candidatesPreGate_`. It just turned out to be a diagnostic
+nothing reads — its CSV column (`global_collision_frac`) is written every iteration and never plotted
+by `process_countingstars_and_plot.m`. `h_propAttempted_`/`h_candidatesPreGate_` themselves are not
+dead — they're exported separately as `prop_attempted`/`prop_valid`, and those *are* plotted.
+
+**Grid and labels changed shape again** (`_bs<slope>_bf<floor>_ef<explore>_cf<cost>_mb<blocks>` →
+`_bs<slope>_bf<floor>_ef<explore>_cf<cost>`, one token shorter) — a v3.2 pass's CSVs simply stop
+loading under the new label shape, intended for a fan-out mechanism that changed, not a loss. New CSV
+columns: `admitted_opt_fresh_both` (OPTIMAL∩FRESHEST, mirroring `admitted_both` for FRESHEST∩CHEAPEST),
+`admitted_floor` (the admission floor's yield), `accept_floor` (the setting, logged for
+auditability). The admitted-count identity gains both new terms:
+
+    admitted == optimal_count + admitted_explore + admitted_costdist + admitted_floor
+              - admitted_opt_fresh_both - admitted_both
+
 ## Quick comparison
 | Variant | Explore | Seeding (pSeed) | Cost-aware | Pruning | Spatial hash |
 |---|---|---|---|---|---|

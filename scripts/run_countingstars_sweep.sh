@@ -12,10 +12,9 @@
 #                   explore_frac and cost_frac FIXED at 0.3 each (not swept this pass)
 #                   = 9 points (FULL FACTORIAL, coarse delta only) x 3 runs = 27 runs
 #
-#                   maxBlocks is HELD AT 4 and is deliberately NOT an axis, same reasoning as v3:
-#                   the previous pass swept {1, 4} and answered the question the region-keyed
-#                   fan-out rule was asking; this pass changes the BUDGET's shape over a run, not
-#                   the fan-out rule.
+#                   maxBlocks IS GONE (v3.3): fan-out is door-count now (nodeBlocks = popcount of
+#                   the doors that admitted a node), not a swept boost size, so there is nothing
+#                   left on this axis to hold fixed.
 #   CleanCost       r2 OFF, w 0.9, k 1, cap 0.03            = 1 point  x 3 runs
 #   KPAXCap         cap {0.03}                              = 1 point  x 5 runs
 #   KPAX                                                    = 1 point  x 5 runs
@@ -237,7 +236,7 @@ COST_MODES=(0)
 # ENV_OBSTACLES=("../include/config/obstacles/narrowPassage/obstacles.csv")
 
 # --- Full environment set (uncomment to restore; comment out the block above) ---
-ENV_NAMES=("house""narrowPassage")
+ENV_NAMES=("house" "narrowPassage")
 ENV_OBSTACLES=("../include/config/obstacles/house/obstacles.csv"
                "../include/config/obstacles/narrowPassage/obstacles.csv")
 
@@ -398,50 +397,58 @@ done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
 echo "  CountingStars:  bufferSlope {0,1.0,1.5} x bufferFloor {0,0.1,0.2}"
 echo "                  explore_frac=0.3, cost_frac=0.3 (FIXED, not swept this pass)"
-echo "                  = 9 points (full factorial, coarse delta only), maxBlocks held at 4"
-echo "                  Filenames: _bs<round(100*slope)>_bf<round(100*floor)>_ef300_cf300_mb4,"
-echo "                  e.g. CountingStars_bs150_bf20_ef300_cf300_mb4."
-echo "                  v3 CSVs are _ff<frac>_ef<frac>_cf<frac>_mb<n> and cannot collide with this"
-echo "                  shape, so they simply stop loading -- intended for a budget mechanism that"
-echo "                  changed, not a loss."
+echo "                  = 9 points (full factorial, coarse delta only)"
+echo "                  Filenames: _bs<round(100*slope)>_bf<round(100*floor)>_ef300_cf300,"
+echo "                  e.g. CountingStars_bs150_bf20_ef300_cf300."
+echo "                  v3.2 CSVs are _bs<..>_bf<..>_ef<..>_cf<..>_mb<n> and cannot collide with this"
+echo "                  shape, so they simply stop loading -- intended for a fan-out mechanism that"
+echo "                  changed (v3.3: door-count, no more maxBlocks), not a loss."
 echo "                  B IS NOW A RAMP, RECOMPUTED EVERY ITERATION:"
 echo "                    x = itr/MAX_ITER, B(x) = floor((slope*x + floor) * MAX_TREE_SIZE/MAX_ITER)"
 echo "                  bufferSlope = 0 REPRODUCES v3's CONSTANT B EXACTLY -- that subgrid is a"
 echo "                  free, structural comparison against the old fixed-buffer design. B rides"
 echo "                  into every CSV as the goal_frontier_size column, now genuinely varying row"
 echo "                  to row within a run rather than constant."
-echo "                  FIVE DOORS, three of them on a fixed share of B:"
-echo "                    OPTIMAL    distance 0, i.e. cost <= minCostsR1[r].  UNCAPPED, first claim"
+echo "                  FIVE DOORS PLUS A FLAT ADMISSION FLOOR, three of the five on a fixed share of B:"
+echo "                    OPTIMAL    distance 0, i.e. cost <= minCostsR1[r].  UNCAPPED, first claim."
+echo "                               v3.3: also competes for FRESHEST rather than returning early."
 echo "                    FRESHEST   explore_frac * B, from the least-populated regions"
 echo "                    CHEAPEST   cost_frac * B, from the smallest cost distances"
 echo "                    GUARANTEE  each active region best, if OPTIMAL did not cover it.  UNCAPPED"
 echo "                    REACTIVATE react_frac * B, to the CHEAPEST DORMANT NODES"
-echo "                    FLOOR      every dormant node at react_floor = 1e-5, ON TOP of the budget"
+echo "                    ADMIT FLOOR (v3.3) every candidate at accept_floor = 1e-4, only when nothing"
+echo "                               else admitted it -- a completeness guarantee, not a reach tool"
+echo "                    REACT FLOOR every dormant node at react_floor = 1e-5, ON TOP of the budget"
 echo "                  REACTIVATION IS COST-SELECTIVE (v3.1): CleanCost weights its own reactivation"
 echo "                  arm by cost, and that was the one cost mechanism this line lacked -- the"
 echo "                  volumes already matched, so it was selectivity not throughput. Part B is the"
 echo "                  only thing that re-expands the tree INTERIOR, which is where cost refinement"
 echo "                  happens."
-echo "                  THE FLOOR IS A CORRECTNESS CONSTANT, not a knob: a node's cost distance"
-echo "                  only ever grows (fixed cost over a non-increasing region min), so under"
-echo "                  a pure top-K a node above the cutoff is dead permanently and its subtree"
-echo "                  unreachable. 1e-5 wakes ~30 nodes/iter -- completeness in the limit."
-echo "                  CLEAR THE OUTPUT FOLDER FIRST IF A PREVIOUS v3/v3.1 PASS RAN -- the label"
-echo "                  shape changed, so old and new CSVs would otherwise coexist under different"
-echo "                  names rather than colliding, which is fine but confusing to plot together."
-echo "                  FRESHEST and CHEAPEST are a UNION over one candidate pool, not a priority"
-echo "                  chain: a candidate can clear both, and the second admission is spent as"
-echo "                  fan-out (it takes maxBlocks) rather than as a duplicate node."
+echo "                  THE REACTIVATION FLOOR IS A CORRECTNESS CONSTANT, not a knob: a node's cost"
+echo "                  distance only ever grows (fixed cost over a non-increasing region min), so"
+echo "                  under a pure top-K a node above the cutoff is dead permanently and its"
+echo "                  subtree unreachable. 1e-5 wakes ~30 nodes/iter -- completeness in the limit."
+echo "                  THE ADMISSION FLOOR (v3.3) makes the same guarantee for CANDIDATES: every"
+echo "                  collision-free candidate keeps a nonzero admission chance whatever its"
+echo "                  region's state, at 1e-4 -- an order of magnitude above the reactivation"
+echo "                  floor, since its pool is per-iteration and far smaller than the whole tree."
+echo "                  CLEAR THE OUTPUT FOLDER FIRST IF A PREVIOUS v3/v3.1/v3.2 PASS RAN -- the"
+echo "                  label shape changed again, so old and new CSVs would otherwise coexist under"
+echo "                  different names rather than colliding, which is fine but confusing to plot"
+echo "                  together."
+echo "                  FRESHEST, CHEAPEST AND (v3.3) OPTIMAL select over the SAME candidate pool on"
+echo "                  independent signals -- a candidate can clear more than one, and it is still"
+echo "                  ONE tree node: every door that admits it buys ONE propagation block"
+echo "                  (nodeBlocks = popcount(door) in Part A), not a duplicate node."
 echo "                  (bufferSlope, bufferFloor) = (0, 0) IS THE DEEPEST ABLATION ARM -- the"
 echo "                  cutoff solve returns cutoff 0 and the three budgeted doors admit nothing;"
 echo "                  OPTIMAL + GUARANTEE remain uncapped, so the frontier is not empty."
 echo "                  THE TWO UNCAPPED DOORS ARE BOUNDED BY NUM_R1_REGIONS (27,000 at the coarse"
 echo "                  delta) rather than by B, so B binds only ABOVE that count; every point on"
 echo "                  this grid is below it, so B binds early and then stops."
-echo "                  FAN-OUT IS REGION-KEYED: maxBlocks for a node landing in a region with"
-echo "                  < 10 valid propagations OR clearing both cutoffs, else 1; reactivations"
-echo "                  always 1. That is KPAXCap's and CleanCost's rule, ported so the runtime"
-echo "                  comparison is like-for-like."
+echo "                  FAN-OUT IS DOOR-COUNT (v3.3), FULL STOP: nodeBlocks = popcount(door), no"
+echo "                  region-thinness signal and no swept boost size left -- the region-keyed rule"
+echo "                  KPAXCap and CleanCost use is gone from this planner."
 echo "                  READ FIRST: goal_frontier_size vs iteration (does the realized ramp match"
 echo "                  the intended shape), then frontier_repeat_size/frontier_size (realised mean"
 echo "                  rep), then budget_used/goal_frontier_size as a CURVE against a now-moving"
