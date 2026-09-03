@@ -482,9 +482,16 @@ for ei = 1:numel(environments)
         %                      sitting at cost_frac * B every iteration means it works as designed.
         %   reactivated_best   the guarantee, REALISED and counted on the device. (v2's PLANNED
         %                      count, guaranteed_react, is gone with the remainder it used to size.)
-        %   reactivated_count  the uniform draw at react_frac * B / treeSize. The separate
-        %                      `reactivated` column is BOTH Part B arms, so it should equal
-        %                      reactivated_best + reactivated_count.
+        %   reactivated_cost   v3.1's CHEAPEST reactivation arm, spending the WHOLE react_frac * B
+        %                      budget on the cheapest dormant nodes. This is the arm CleanCost has
+        %                      and v3 did not; it should carry essentially all of Part B's
+        %                      non-guarantee volume.
+        %   reactivated_count  the COMPLETENESS FLOOR alone -- ~ react_floor * dormant_count, so
+        %                      ~30 nodes. It was the uniform draw through v3. LARGE HERE MEANS the
+        %                      floor is doing reach work it was not sized for.
+        %
+        % The `reactivated` column is all THREE Part B arms, so it should equal
+        % reactivated_best + reactivated_cost + reactivated_count.
         %
         % THE TWO SELECTION DOORS OVERLAP. admitted_explore and admitted_costdist are a union over
         % one candidate pool, so they do not simply add: the identity is
@@ -500,13 +507,15 @@ for ei = 1:numel(environments)
                          plannerColors(pi, :), '-', max(0.5, plannerWidths(pi) - 0.8), '');
             plotMeanIter(R{pi}, @(t) getCol(t, 'reactivated_best'), ...
                          plannerColors(pi, :), '-.', max(0.5, plannerWidths(pi) - 0.3), '');
+            plotMeanIter(R{pi}, @(t) getCol(t, 'reactivated_cost'), ...
+                         plannerColors(pi, :), '--', max(0.5, plannerWidths(pi) - 0.9), '');
             plotMeanIter(R{pi}, @(t) getCol(t, 'reactivated_count'), ...
                          plannerColors(pi, :), ':', max(0.5, plannerWidths(pi) - 0.6), '');
         end
         set(gca, 'YScale', 'log'); grid on;
         xlabel('Iteration'); ylabel('nodes');
-        title({'optimal (thick solid), explore (dashed), cheapest (thin solid),', ...
-               'guarantee (dash-dot), draw (dotted) -- the five doors'});
+        title({'optimal (thick solid), explore (dashed), cheapest (thin solid), guarantee (dash-dot),', ...
+               'cheap-reactivation (thin dashed), completeness floor (dotted) -- the six arms'});
 
         %% ---------- FIGURE: is freshness still scarce ----------
         % ord_cutoff is the freshness threshold the remaining budget bought this iteration: a
@@ -522,8 +531,8 @@ for ei = 1:numel(environments)
         %                       every non-optimal candidate is admitted. explore_frac is not binding.
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Selection Cutoffs (%s)', envTitle, costTitle), ...
-               'Position', [140 140 1400 620]);
-        subplot(1, 2, 1); hold on;
+               'Position', [140 140 1700 600]);
+        subplot(1, 3, 1); hold on;
         for pi = 1:nPlanner
             plotMeanIter(R{pi}, @(t) getCol(t, 'ord_cutoff'), ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
@@ -551,7 +560,7 @@ for ei = 1:numel(environments)
         %                       stopped discriminating. THE FIX IS A ONE-LINE CHANGE to csCostBucket
         %                       in include/planners/CountingStars.cuh -- a linear map over
         %                       [0, distMax] instead of the log one.
-        subplot(1, 2, 2); hold on;
+        subplot(1, 3, 2); hold on;
         for pi = 1:nPlanner
             if isnan(plannerFillFrac(pi)), continue; end   % not a CountingStars series
             plotMeanIter(R{pi}, @(t) safeRatio(getCol(t, 'cost_cutoff_dist'), ...
@@ -561,8 +570,36 @@ for ei = 1:numel(environments)
         set(gca, 'YScale', 'log'); grid on;
         yline(2^-21, 'k--', 'bucket 0 floor (door degenerate)', 'LineWidth', 1.2, 'HandleVisibility', 'off');
         xlabel('Iteration'); ylabel('cost\_cutoff\_dist / dist\_max');
-        title({'Cost-distance cutoff, as a fraction of the histogram anchor', ...
+        title({'CANDIDATE cost-distance cutoff, as a fraction of the anchor', ...
                'at the floor = every candidate in bucket 0, door degenerate'});
+        clickableLegend();
+
+        % --- v3.1: THE SAME READING FOR PART B'S COST ARM, over dormant tree nodes rather than
+        % candidates. This is the panel that says whether cost-selective reactivation is actually
+        % selecting.
+        %
+        % dist_max is the CANDIDATE anchor, reused -- a dormant node above it clamps into the top
+        % bucket, which is harmless while the cutoff sits below it (the arm takes the SMALLEST
+        % distances, and everything in the top bucket is the expensive tail being excluded).
+        %
+        %   AT 1 (the top bucket)   the budget exceeds the population below dist_max, so the arm is
+        %                           partly selecting at RANDOM within the clamped tail. This is the
+        %                           one case where reusing the candidate anchor bites, and the fix
+        %                           is a separate tree-side anchor.
+        %   WELL BELOW 1            healthy: the cutoff is landing inside the resolved range and the
+        %                           arm is genuinely picking the cheapest dormant nodes.
+        subplot(1, 3, 3); hold on;
+        for pi = 1:nPlanner
+            if isnan(plannerFillFrac(pi)), continue; end   % not a CountingStars series
+            plotMeanIter(R{pi}, @(t) safeRatio(getCol(t, 'react_cutoff_dist'), ...
+                                               getCol(t, 'dist_max')), ...
+                         plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
+        end
+        set(gca, 'YScale', 'log'); grid on;
+        yline(1, 'k--', 'top bucket (anchor exceeded)', 'LineWidth', 1.2, 'HandleVisibility', 'off');
+        xlabel('Iteration'); ylabel('react\_cutoff\_dist / dist\_max');
+        title({'REACTIVATION cost cutoff (dormant tree nodes)', ...
+               'at 1 = budget exceeds the population below the anchor'});
         clickableLegend();
 
         %% ---------- FIGURE: DO THE TWO SELECTION DOORS BUY DIFFERENT THINGS ----------
@@ -746,12 +783,17 @@ for ei = 1:numel(environments)
         mFirstIter    = NaN(1, nPlanner);
         mFirstSolTime = NaN(1, nPlanner);
         mFirstSolTree = NaN(1, nPlanner);
+        % The cost OF the first solution, as distinct from the final cost. best_cost is already the
+        % RUNNING best, so this is simply its value at the first finite row -- and because it is
+        % monotone non-increasing, mFirstSolCost >= mFinalCost for every series. The gap between the
+        % two IS that variant's refinement gain after it first reached the goal.
+        mFirstSolCost = NaN(1, nPlanner);
         mFinalCost    = NaN(1, nPlanner);
         mTotalTime    = NaN(1, nPlanner);
         mSuccess      = NaN(1, nPlanner);
         for pi = 1:nPlanner
             runs = R{pi};
-            fiVals = []; fstVals = []; ftsVals = []; fcVals = []; ttVals = [];
+            fiVals = []; fstVals = []; ftsVals = []; fcVals = []; ttVals = []; fscVals = [];
             nSol = 0; nTot = 0;
             for ri = 1:numel(runs)
                 if isempty(runs{ri}), continue; end
@@ -762,6 +804,8 @@ for ei = 1:numel(environments)
                 if ft >= 0, fstVals(end + 1) = ft; end %#ok<SAGROW>
                 fts = firstSolTreeSize(runs{ri}, MAX_FLOAT_THRESH);
                 if fts >= 0, ftsVals(end + 1) = fts; end %#ok<SAGROW>
+                fsc = firstSolCost(runs{ri}, MAX_FLOAT_THRESH);
+                if ~isnan(fsc), fscVals(end + 1) = fsc; end %#ok<SAGROW>
                 fc = finalCost(runs{ri}, MAX_FLOAT_THRESH);
                 if ~isnan(fc), fcVals(end + 1) = fc; end %#ok<SAGROW>
                 ttVals(end + 1) = runs{ri}.elapsed_time_ms(end) / 1000; %#ok<SAGROW>
@@ -769,6 +813,7 @@ for ei = 1:numel(environments)
             if ~isempty(fiVals),  mFirstIter(pi)    = mean(fiVals);  end
             if ~isempty(fstVals), mFirstSolTime(pi) = mean(fstVals); end
             if ~isempty(ftsVals), mFirstSolTree(pi) = mean(ftsVals); end
+            if ~isempty(fscVals), mFirstSolCost(pi) = mean(fscVals); end
             if ~isempty(fcVals),  mFinalCost(pi)    = mean(fcVals);  end
             if ~isempty(ttVals),  mTotalTime(pi)    = mean(ttVals);  end
             if nTot > 0,          mSuccess(pi)      = 100 * nSol / nTot; end
@@ -805,33 +850,67 @@ for ei = 1:numel(environments)
             sprintf('Solution Success Rate \x2014 %s, %s, %s', envTitle, deltaLabel, costTitle));
         ylim([0 110]);
 
-        %% ---------- FIGURE: Tuning tradeoff scatter ----------
-        % Mean time to first solution (x) vs mean final best cost (y). One marker per
-        % variant; the lower-left corner is the winning corner (fast AND cheap).
-        figNum = figNum + 1;
-        figure('Name', sprintf('%s - Tradeoff Scatter (%s)', envTitle, costTitle), ...
-               'Position', [130 140 1180 700]);
-        hold on;
-        for pi = 1:nPlanner
-            x = mFirstSolTime(pi);
-            y = mFinalCost(pi);
-            if isnan(x) || isnan(y), continue; end   % never solved -> nothing to place
-            % Explicit flag, not a positional guess: the baselines are no longer simply the
-            % last two series (each delta contributes its own baselines and KPAXCap pair).
-            if plannerBaseline(pi), msz = 11; else, msz = 8; end
-            plot(x, y, plannerMarkers{pi}, ...
-                 'MarkerFaceColor', plannerColors(pi, :), ...
-                 'MarkerEdgeColor', 'k', 'LineWidth', 0.5, ...
-                 'MarkerSize', msz, 'DisplayName', plannerDisplay{pi});
+        %% ---------- FIGURES: Tuning tradeoff scatters (a PAIR, on matched axes) ----------
+        % Both have the same x -- mean time to first solution -- and the same markers. Only the y
+        % metric differs:
+        %
+        %   this one    mean FINAL best cost      what the run converged to
+        %   the next    mean FIRST-solution cost  what it got the moment it first reached the goal
+        %
+        % THE Y-LIMITS ARE SHARED, computed once over the finite entries of BOTH metrics and applied
+        % to both figures. That is what makes the pair readable rather than two unrelated pictures:
+        % best_cost is monotone non-increasing, so every variant sits at or BELOW its first-solution
+        % marker here, and the VERTICAL GAP BETWEEN THE TWO FIGURES IS THAT VARIANT'S REFINEMENT
+        % GAIN after it first reached the goal. Letting the two autoscale independently destroys
+        % exactly that comparison.
+        %
+        % Lower-left is the winning corner in both (fast AND cheap).
+        costLims = [mFirstSolCost(:); mFinalCost(:)];
+        costLims = costLims(isfinite(costLims));
+        if numel(costLims) >= 2 && max(costLims) > min(costLims)
+            pad      = 0.05 * (max(costLims) - min(costLims));
+            costYLim = [min(costLims) - pad, max(costLims) + pad];
+        else
+            costYLim = [];   % nothing solved, or a single value: let MATLAB autoscale
         end
+
+        % The marker legend, written once and used by both titles so they cannot drift apart.
+        % \x25cb/\x25a1/\x25b3 are cost_frac 0 / 0.2 / 0.4 -- the marker channel has encoded
+        % cost_frac since v3, NOT maxBlocks, which is held at 4 and is not an axis.
+        % sprintf, NOT a bare concatenation: the \x.... marker glyphs and the \\_ TeX underscore
+        % escapes are only resolved by a formatting call, and this string is substituted into the
+        % titles below via %s -- which inserts it verbatim rather than re-interpreting it. Built as
+        % a plain [...] it would print the escape sequences literally.
+        markerKey = sprintf(['lower-left is better (fast and cheap); darker = smaller fill\\_frac; ' ...
+                             '\x25cb/\x25a1/\x25b3 CountingStars (cost\\_frac 0/0.2/0.4), ' ...
+                             '\x2606 CleanCost, \x25bd KPAXCap, \x25a1 KPAX, \x25c7 KinoPaxPlus']);
+
+        figNum = figNum + 1;
+        figure('Name', sprintf('%s - Tradeoff Scatter, Final Cost (%s)', envTitle, costTitle), ...
+               'Position', [130 140 1180 700]);
+        tradeoffScatter(mFirstSolTime, mFinalCost, plannerMarkers, plannerColors, ...
+                        plannerBaseline, plannerDisplay, costYLim);
         xlabel('Avg Time to First Solution (ms)'); ylabel(sprintf('Avg Final %s', costYLab));
-        grid on;
-        clickableLegend();
-        title(sprintf(['Tuning Tradeoff: Time to First Solution vs Final Cost \x2014 %s, %s\n' ...
-                       'lower-left is better (fast and cheap); darker = smaller B; ' ...
-                       '\x25cb/\x25a1 CountingStars (mb16/mb32), \x2606 CleanCost, ' ...
-                       '\x25bd KPAXCap, \x25a1 KPAX, \x25c7 KinoPaxPlus'], ...
-                       envTitle, costTitle), 'FontWeight', 'bold');
+        title(sprintf(['Tuning Tradeoff: Time to First Solution vs FINAL Cost \x2014 %s, %s\n%s'], ...
+                       envTitle, costTitle, markerKey), 'FontWeight', 'bold');
+
+        %% ---------- FIGURE: the same scatter against FIRST-SOLUTION cost ----------
+        % Same x, same markers, same y-limits as the figure above -- so flipping between the two
+        % reads directly as how much each variant's cost improved AFTER it first reached the goal.
+        %
+        % This is the panel that separates the two ways a planner can win on final cost: finding a
+        % good path immediately (low here) versus refining a mediocre one (large gap between the two
+        % figures). CleanCost's advantage is expected to be the second, since its Part B reactivation
+        % is cost-weighted and refinement is what Part B does.
+        figNum = figNum + 1;
+        figure('Name', sprintf('%s - Tradeoff Scatter, First-Solution Cost (%s)', envTitle, costTitle), ...
+               'Position', [160 170 1180 700]);
+        tradeoffScatter(mFirstSolTime, mFirstSolCost, plannerMarkers, plannerColors, ...
+                        plannerBaseline, plannerDisplay, costYLim);
+        xlabel('Avg Time to First Solution (ms)');
+        ylabel(sprintf('Avg %s of the FIRST Solution', costYLab));
+        title(sprintf(['Tuning Tradeoff: Time to First Solution vs FIRST-SOLUTION Cost ' ...
+                       '\x2014 %s, %s\n%s'], envTitle, costTitle, markerKey), 'FontWeight', 'bold');
     end   % cost metric loop
 end  % environment loop
 
@@ -986,6 +1065,34 @@ function n = firstSolTreeSize(tbl, thresh)
     % -1 if it never found a solution.
     solIdx = find(tbl.best_cost < thresh, 1, 'first');
     if isempty(solIdx), n = -1; else, n = tbl.tree_size(solIdx); end
+end
+
+function c = firstSolCost(tbl, thresh)
+    % The cost OF the first solution: best_cost at the first finite (< thresh) row. best_cost is
+    % already the RUNNING best, so no extra bookkeeping is needed -- this is the same one-line
+    % pattern as firstSolIter / firstSolTime / firstSolTreeSize, over a different column.
+    % NaN if the run never found a solution.
+    solIdx = find(tbl.best_cost < thresh, 1, 'first');
+    if isempty(solIdx), c = NaN; else, c = tbl.best_cost(solIdx); end
+end
+
+function tradeoffScatter(x, y, markers, colors, isBaseline, labels, yLim)
+    % The shared body of the two tradeoff scatters, so the pair cannot drift in marker size,
+    % colour or legend behaviour -- the only thing that differs between them is the y metric.
+    hold on;
+    for pi = 1:numel(x)
+        if isnan(x(pi)) || isnan(y(pi)), continue; end   % never solved -> nothing to place
+        % Explicit flag, not a positional guess: the baselines are not simply the last two series
+        % (each delta contributes its own baselines and KPAXCap pair).
+        if isBaseline(pi), msz = 11; else, msz = 8; end
+        plot(x(pi), y(pi), markers{pi}, ...
+             'MarkerFaceColor', colors(pi, :), ...
+             'MarkerEdgeColor', 'k', 'LineWidth', 0.5, ...
+             'MarkerSize', msz, 'DisplayName', labels{pi});
+    end
+    grid on;
+    if ~isempty(yLim), ylim(yLim); end
+    clickableLegend();
 end
 
 function c = finalCost(tbl, thresh)

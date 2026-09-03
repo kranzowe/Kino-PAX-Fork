@@ -701,7 +701,7 @@ after the launch that fills it.
 |---|---|---|
 | `h_exploreFrac_` (0.1) | FRESHEST — lowest region ordinality | `B · explore_frac` |
 | `h_costFrac_` (0.6) | **CHEAPEST — lowest cost distance** | `B · cost_frac` |
-| `h_reactFrac_` = `1 − explore − cost` | DRAW — uniform over the tree | `p = react_frac · B / treeSize` |
+| `h_reactFrac_` = `1 − explore − cost` | REACTIVATION — see v3.1 below, uniform in v3 | `react_frac · B` |
 
 All three are fractions of **B itself**, not of `B − optimalCount`: v2 handed freshness a share of
 what the optimal door had left, which made the freshness door's size depend on a count it has nothing
@@ -784,6 +784,111 @@ floors it, so an oversubscribed pair would silently switch the draw off rather t
 derived `B ≥ 1`, reading `MAX_TREE_SIZE` and `MAX_ITER` out of the `.sh`'s `write_config` heredoc
 rather than restating them.
 
+**v3.1 — reactivation becomes cost-selective, with a completeness floor.**
+
+The change is one arm, and it came out of asking why CountingStars could not reach CleanCost's final
+cost when tree growth was comparable. Reading the two Part Bs against each other:
+
+| | CleanCost | CountingStars v3 |
+|---|---|---|
+| guarantee | region best, unconditional | region best, deduped |
+| **other arm** | `cap·(0.9·pSyclop + 0.1·costProbExpGlobal)` — **cost-weighted** | **uniform draw** |
+
+`KinoPaxSTARCleanCost.cu` evaluates `costProbExpGlobal(minCostsR1[xR1], treeSampleCosts[treeIdx], …)`
+for every dormant node, so cheap interior nodes come back preferentially. v3 rolled
+`curand_uniform() < pReactivate` with no cost term at all. The volumes were already comparable —
+CleanCost's ≈ `0.03·0.1·pCost ≈ 3e-3` over ~10⁶ nodes ≈ 3k/iteration against v3's `react_frac·B` ≈
+1500 — so **this was selectivity, not throughput**.
+
+**Why that arm and not another.** A cheaper route to the goal is built by deepening a cheap
+*interior* branch, and Part B is the only thing that re-expands the interior; new candidates are the
+growing edge. It also narrows where CleanCost's advantage *isn't*: at `w = 0.9` its cost term carries
+only 10% of the weight on new candidates, and the region-best exemption and the guarantee were
+already shared, so reactivation was the one cost mechanism this line lacked.
+
+**The whole reactivation budget now goes to cost.** `react_frac · B` is handed to `csSolveCutoff`
+over a third histogram, and Part B's arm admits the cheapest dormant nodes against that cutoff — the
+same bucket map, the same scan, the same boundary roll as the two candidate doors, so the same
+exactness proof covers it. There is no `react_cost_frac` split: the budget is not shared.
+
+**Instead there is a completeness floor, and it is a correctness constant rather than a knob.**
+`h_reactFloor_` (1e-5) gives *every* dormant node an independent chance, on top of the budget:
+
+> **A pure top-K by cost is not probabilistically complete, and the failure is permanent.** A node's
+> `distance = (cost − minCostsR1[r]) / costScale` has a **fixed numerator** — cost is written once at
+> insertion and there is no rewiring — over a **non-increasing** `minCostsR1[r]`. So a node's
+> distance is **monotonically non-decreasing over a run**: once it falls above the cutoff it can
+> never come back, its whole subtree becomes unreachable, and any solution routed through it is lost.
+> The guarantee keeps one node per region alive; everything else in an expensive region is dead.
+> `ε > 0` restores "expanded infinitely often in the limit". v2 and v3's uniform draw supplied this
+> incidentally, so replacing it with a top-K would have removed it silently — the kind of thing that
+> surfaces as an unsolvable environment three sweeps later.
+
+Sizing it honestly: at 1e-5 over a 3e6-node tree the floor wakes ~30 nodes per iteration, and a given
+node's chance of being woken at least once in 300 iterations is `1 − (1−1e-5)³⁰⁰ ≈ 0.3%`. **It buys
+completeness in the limit, not reach inside one run** — which is the right division of labour, since
+reach is the FRESHEST door's job, but it means raising `ε` is the lever if untargeted revisiting turns
+out to be needed. It is logged per iteration as `react_floor`.
+
+**The third histogram costs no extra synchronisation, and the placement is the whole trick.**
+`CountingStars_reactScan_kernel` is Part B's counterpart to accept pass 1: one thread per tree node,
+measures and decides nothing. It launches **beside** pass 1, because every input is settled the
+moment propagate returns — `frontier[0, treeSize)` is not written again until Part A/B (which own
+disjoint ranges), `minCostsR1` only by propagate, and `costScale`/`distMax` are host scalars already
+solved. So its votes ride in the **same buffer** and come back in the **same single memcpy**. The
+buffer grows to 770 ints:
+
+```
+[0, 256)   ordinality    [256] optimal count    [257, 513) cost (candidates)
+[513, 769) react (dormant tree nodes)           [769] dormant count
+```
+
+`d_reactEligible_` (`bool[MAX_TREE_SIZE]`) is what the scan writes and the arm reads:
+`!goalSet && !frontier && treeIdx != bestNodeIdxPerR1[r]`. Region bests are excluded because the
+guarantee already returns them for free and they sit at distance ≈ 0, so they would take the budget's
+cheap end entirely. **It is an array rather than a predicate Part B re-evaluates** because
+`bestNodeIdxPerR1` is `atomicExch`'d by *Part A*, which runs in the same launch as Part B — so Part B
+cannot re-derive the scan's answer, and an arm selecting from a population its own histogram never
+measured would neither hit its budget nor be exact. Making the scan the single writer is the
+discipline that already makes pass 1 the single measurer of the candidate pool. The **floor
+deliberately ignores it**: eligibility is bookkeeping for the budgeted arm, completeness has to cover
+every dormant node including a covered region's superseded best.
+
+**`distMax` is the candidate anchor, reused.** It bounds this iteration's *candidate* distances, not
+tree distances, so a dormant node above it clamps into the top bucket. Harmless where it matters: the
+arm takes the **smallest** distances, `csCostBucket` stays monotone (so `csSolveCutoff`'s exact
+`min(X, n)` still holds), and the top bucket is the expensive tail being excluded anyway.
+`react_cutoff_dist` and `dormant_count` are logged so the one case that would bite — a cutoff pinned
+at the top bucket, meaning the budget exceeds the population below the anchor — is visible rather
+than assumed, and the fix if it happens is a separate tree-side anchor.
+
+**Part B now has three arms and the CSV checks all three for free:**
+
+    reactivated == reactivated_best + reactivated_cost + reactivated_count
+
+left side a host `thrust::count` over frontier bits in the pre-existing tree, right side device
+atomics. `reactivated_count` is now the **floor alone** (~30 nodes); large there means `ε` is doing
+reach work it was not sized for.
+
+**Cost:** one extra O(treeSize) kernel per iteration doing three loads, one store and one atomic.
+Part B already walks the whole tree in the same launch, so this is one additional full-tree pass
+against propagate's ~800k collision checks.
+
+**Grid, `maxBlocks` and labels are unchanged** — `ε` is not an axis — so a previous v3 pass's CSVs
+share these series names and **the output folder must be cleared** before running, or the two mix
+silently.
+
+**`csNodeDistance`** joins `csOrdBucket` / `csCostBucket` as a `__host__ __device__ inline` shared by
+accept pass 1, the scan and Part B, for the same reason those two exist: the scan and the arm cannot
+be allowed to compute a node's distance differently when one measures the population the other
+selects from.
+
+**Still open, in rank order,** if this does not close the gap: fan-out is `maxBlocks = 4` where
+CleanCost hardcodes 15 on the same `validVertexCounter[r] < 10` rule — ~12% more propagation, all on
+new ground, and 15 has never been on a grid; and dropping `vertexScores` also dropped Syclop's
+`1/(1 + counterArray²)`, the only term that penalised an over-sampled region, where `regionNodeCount`
+is monotone and saturates at 255 (`ord_cutoff` riding there is the tell).
+
 ## Quick comparison
 | Variant | Explore | Seeding (pSeed) | Cost-aware | Pruning | Spatial hash |
 |---|---|---|---|---|---|
@@ -803,4 +908,4 @@ rather than restating them.
 | KinoPaxSTARnoseed | ✔ | 0 | ✔ | — | ✔ |
 | KinoPaxSTARsparsefill | ✔ | ramp 0→1 | ✔ | — | ✔ |
 | KinoPaxSTARcostprunenoseed | capped (`h_acceptCap_`) | 0 (`h_pSeed_`) | ✔ | cost | ✔ |
-| CountingStars | DERIVED BUDGET `B = fill_frac·MAX_TREE_SIZE/MAX_ITER`, split by three fixed shares: optimal (uncapped) → freshest by region ordinality **∪** cheapest by cost distance → region-best guarantee → uniform draw | n/a (the R2 door is gone; ordinality is the novelty signal) | ✔✔ (a cost-distance histogram door, not just the region min) | — | ✔ |
+| CountingStars | DERIVED BUDGET `B = fill_frac·MAX_TREE_SIZE/MAX_ITER`, split by three fixed shares: optimal (uncapped) → freshest by region ordinality **∪** cheapest by cost distance → region-best guarantee → **cheapest dormant nodes** + an ε completeness floor | n/a (the R2 door is gone; ordinality is the novelty signal) | ✔✔✔ (cost-distance histograms on **both** admission and reactivation) | — | ✔ |

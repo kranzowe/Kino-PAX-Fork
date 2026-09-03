@@ -48,9 +48,28 @@
 #    degrades the door to a uniform draw.
 #
 # 3. THE BUDGET SPLITS THREE WAYS BY FIXED FRACTION, not "one share plus a remainder":
-#    explore_frac to freshness, cost_frac to cheapness, and react_frac = 1 - explore - cost to the
-#    uniform draw. All three are fractions of B ITSELF; OPTIMAL and the region-best GUARANTEE stay
+#    explore_frac to freshness, cost_frac to cheapness, and react_frac = 1 - explore - cost to
+#    reactivation. All three are fractions of B ITSELF; OPTIMAL and the region-best GUARANTEE stay
 #    uncapped and spend on top.
+#
+# 4. v3.1: REACTIVATION IS COST-SELECTIVE, and that is the change this pass is really testing.
+#    v2 and v3 spent react_frac * B on a UNIFORM draw over the tree. CleanCost weights the same arm
+#    by costProbExpGlobal, and that is the one cost mechanism this line did not have -- the volumes
+#    were already comparable, so it was selectivity rather than throughput. The whole share now goes
+#    to the CHEAPEST dormant nodes, chosen by a third histogram (over dormant tree nodes) that rides
+#    in the same buffer and the same memcpy as the two candidate ones, so it costs no extra
+#    synchronisation.
+#
+#    WHY THAT ARM AND NOT ANOTHER: a cheaper route to the goal is built by deepening a cheap
+#    INTERIOR branch, and Part B is the only thing that re-expands the interior -- new candidates
+#    are the growing edge.
+#
+#    A SEPARATE COMPLETENESS FLOOR (react_floor, 1e-5) is added ON TOP, not carved out of the
+#    budget, and it is a correctness constant rather than a knob. A node's cost distance has a fixed
+#    numerator over a non-increasing region minimum, so it only ever GROWS: under a pure top-K a node
+#    once above the cutoff can never come back and its whole subtree is unreachable. The floor
+#    restores "expanded infinitely often in the limit". At 1e-5 over a 3e6-node tree it wakes ~30
+#    nodes per iteration -- completeness in the limit, not reach inside one run.
 #
 # 0 IS ON BOTH FRACTION AXES AND IS A REAL ABLATION ARM. X = 0 makes the cutoff solve return
 # cutoff 0 / pBoundary 0 and the door admits exactly nothing. (0, 0) is the internal control:
@@ -74,7 +93,13 @@
 #   1. frontier_repeat_size / frontier_size. Sanity first -- the realised mean rep, which should sit
 #      near 1 with a small excess from thin regions and the both-doors boost, not near 4.
 #   2. budget_used / goal_frontier_size, as a curve. See above.
-#   3. admitted_costdist against admitted_explore and optimal_count. THE NEW DOOR'S ACTUAL SHARE.
+#   3. reactivated_cost against reactivated_count. v3.1's cost arm should carry essentially ALL of
+#      Part B's non-guarantee volume (~ react_frac * B); reactivated_count is now the completeness
+#      FLOOR alone, ~ react_floor * dormant_count, so ~30 nodes. Large there means the floor is doing
+#      reach work it was not sized for. And react_cutoff_dist against dist_max says whether the arm
+#      is actually selecting: pinned at 1 means the budget exceeds the population below the anchor
+#      and it is partly picking at random within the clamped tail.
+#   4. admitted_costdist against admitted_explore and optimal_count. THE NEW DOOR'S ACTUAL SHARE.
 #      Pinned at 0 while cost_frac > 0 means the cutoff solve is degenerate; equal to
 #      cost_frac * B every iteration means it is working exactly as designed. The two selection
 #      doors OVERLAP, so admitted_both is what makes the four counts add back up:
@@ -358,7 +383,21 @@ echo "                    OPTIMAL    distance 0, i.e. cost <= minCostsR1[r].  UN
 echo "                    FRESHEST   explore_frac * B, from the least-populated regions"
 echo "                    CHEAPEST   cost_frac * B, from the smallest cost distances       (v3, NEW)"
 echo "                    GUARANTEE  each active region best, if OPTIMAL did not cover it.  UNCAPPED"
-echo "                    DRAW       uniform at p = react_frac * B / treeSize"
+echo "                    REACTIVATE react_frac * B, to the CHEAPEST DORMANT NODES        (v3.1, NEW)"
+echo "                    FLOOR      every dormant node at react_floor = 1e-5, ON TOP of the budget"
+echo "                  v3.1 MAKES REACTIVATION COST-SELECTIVE. v2/v3 drew uniformly here;"
+echo "                  CleanCost weights the same arm by cost, and that was the one cost"
+echo "                  mechanism this line lacked -- the volumes already matched, so it was"
+echo "                  selectivity not throughput. Part B is the only thing that re-expands"
+echo "                  the tree INTERIOR, which is where cost refinement happens."
+echo "                  THE FLOOR IS A CORRECTNESS CONSTANT, not a knob: a node's cost distance"
+echo "                  only ever grows (fixed cost over a non-increasing region min), so under"
+echo "                  a pure top-K a node above the cutoff is dead permanently and its subtree"
+echo "                  unreachable. 1e-5 wakes ~30 nodes/iter -- completeness in the limit."
+echo "                  READ reactivated_cost vs reactivated_count: the cost arm should carry"
+echo "                  almost all of Part B's non-guarantee volume and the floor ~30 nodes."
+echo "                  CLEAR THE OUTPUT FOLDER FIRST IF A PREVIOUS v3 PASS RAN -- the grid and"
+echo "                  the series names are unchanged, so v3 and v3.1 CSVs would mix silently."
 echo "                  FRESHEST and CHEAPEST are a UNION over one candidate pool, not a priority"
 echo "                  chain: a candidate can clear both, and the second admission is spent as"
 echo "                  fan-out (it takes maxBlocks) rather than as a duplicate node."

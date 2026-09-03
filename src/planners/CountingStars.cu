@@ -171,6 +171,8 @@ CountingStars::CountingStars()
     // Per-candidate, unexplored-sample-slot indexed.
     d_candDistance_           = thrust::device_vector<float>(MAX_TREE_SIZE, 0.0f);
     d_candDoor_               = thrust::device_vector<int>(MAX_TREE_SIZE, CS_DOOR_NONE);
+    // v3.1: the reactivation population, written by the scan and read by Part B's cost arm.
+    d_reactEligible_          = thrust::device_vector<bool>(MAX_TREE_SIZE, false);
 
     d_goalSetIdxs_            = thrust::device_vector<uint>(MAX_TREE_SIZE);
     d_goalSetScanIdx_         = thrust::device_vector<uint>(MAX_TREE_SIZE);
@@ -204,6 +206,7 @@ CountingStars::CountingStars()
     d_touchedR2Count_ptr_         = thrust::raw_pointer_cast(d_touchedR2Count_.data());
     d_minCornerCS_ptr_            = thrust::raw_pointer_cast(d_minCornerCS_.data());
     d_regionCovered_ptr_          = thrust::raw_pointer_cast(d_regionCovered_.data());
+    d_reactEligible_ptr_          = thrust::raw_pointer_cast(d_reactEligible_.data());
     d_regionNodeCount_ptr_        = thrust::raw_pointer_cast(d_regionNodeCount_.data());
     d_acceptHistogram_ptr_        = thrust::raw_pointer_cast(d_acceptHistogram_.data());
     d_nodeBlocks_ptr_             = thrust::raw_pointer_cast(d_nodeBlocks_.data());
@@ -259,6 +262,11 @@ CountingStars::CountingStars()
     h_costFrac_    = 0.6f;
     h_reactFrac_   = fmaxf(0.0f, 1.0f - h_exploreFrac_ - h_costFrac_);
 
+    // v3.1: the completeness floor. NOT A TUNING KNOB and deliberately not an axis -- its job is to
+    // be non-zero. See h_reactFloor_ in the header for why a pure top-K reactivation is not
+    // probabilistically complete and why the failure is permanent rather than transient.
+    h_reactFloor_ = 1e-5f;
+
     // ---- Fan-out. Blocks a node gets are decided at admission; see the header for the rule. ----
     // rep is a plain COUNT OF BLOCKS with no alignment constraint -- repeatInd writes rep integer
     // entries and kernel1 launches one 32-thread block per entry, so a node at 4 gets
@@ -284,6 +292,11 @@ CountingStars::CountingStars()
     h_admittedBoth_        = 0;
     h_reactivated_         = 0;
     h_reactivatedBest_     = 0;
+    h_reactivatedCost_     = 0;
+    h_reactCutoff_         = 0;
+    h_pReactBoundary_      = 0.0f;
+    h_reactCutoffDist_     = 0.0f;
+    h_dormantCount_        = 0;
     h_blockCeiling_        = 0.0f;
     h_blockScale_          = 1.0f;
     h_globalCollisionFrac_ = 0.1f;
@@ -364,6 +377,7 @@ void CountingStars::resetPlanner(float* h_initial, float* h_goal)
     thrust::fill(d_nodeDoor_.begin(), d_nodeDoor_.end(), CS_DOOR_NONE);
     thrust::fill(d_candDistance_.begin(), d_candDistance_.end(), 0.0f);
     thrust::fill(d_candDoor_.begin(), d_candDoor_.end(), CS_DOOR_NONE);
+    thrust::fill(d_reactEligible_.begin(), d_reactEligible_.end(), false);
     thrust::fill(d_iterations_.begin(), d_iterations_.end(), 0);
     thrust::fill(d_pathCosts_.begin(), d_pathCosts_.end(), 0.0f);
     thrust::fill(d_controlPathsToGoal_.begin(), d_controlPathsToGoal_.end(), 0.0f);
@@ -409,6 +423,11 @@ void CountingStars::resetPlanner(float* h_initial, float* h_goal)
     h_admittedBoth_         = 0;
     h_reactivated_          = 0;
     h_reactivatedBest_      = 0;
+    h_reactivatedCost_      = 0;
+    h_reactCutoff_          = 0;
+    h_pReactBoundary_       = 0.0f;
+    h_reactCutoffDist_      = 0.0f;
+    h_dormantCount_         = 0;
     h_blockCeiling_         = 0.0f;
     h_blockScale_           = 1.0f;
 
@@ -1036,8 +1055,7 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
     // used the value for anything but the zero test; v3 BUCKETS it, and a raw gap is in cost units,
     // can exceed distMax, and would bucket a candidate sitting at its region's minimum as the WORST
     // in the pool. See CS_MIN_DISTANCE. The !( > 0) form also catches a NaN.
-    float d = (costScale > 0.0f) ? ((cost - m) / costScale) : (cost - m);
-    if(!(d > 0.0f)) d = CS_MIN_DISTANCE;
+    float d = csNodeDistance(cost, m, costScale);
     candDistance[idx] = d;
 
     // --- BOTH VOTES. csOrdBucket / csCostBucket are the single definitions of the two bucket maps
@@ -1045,6 +1063,61 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
     // about which bucket a candidate is in -- which they could when each spelled the clamp out. ---
     atomicAdd(&acceptHistogram[CS_HIST_ORD_BASE  + csOrdBucket(regionNodeCount[xR1])], 1);
     atomicAdd(&acceptHistogram[CS_HIST_COST_BASE + csCostBucket(d, distMax)], 1);
+}
+
+/***************************/
+/* REACTIVATION SCAN - measure the dormant tree (v3.1) */
+/***************************/
+// The Part B counterpart of accept pass 1: it measures and decides nothing. One thread per tree node.
+//
+// WHAT COUNTS AS ELIGIBLE, and why the answer is stored rather than recomputed. A node is in the
+// reactivation population when it is dormant (`!frontier`), still expandable (`!goalSet`), and not
+// its region's best -- region bests come back through the GUARANTEE for free, so letting them into
+// this histogram would spend the cost arm's budget on nodes that were never going to need it, and
+// they sit at distance ~0 so they would take the budget's cheap end entirely.
+//
+// bestNodeIdxPerR1 is atomicExch'd by PART A, which runs in the same launch as Part B. So Part B
+// cannot re-derive this predicate and get the scan's answer, and a cost arm selecting from a
+// population its own histogram never measured would neither hit its budget nor be exact. Writing the
+// flag makes the scan the SINGLE writer of the population -- the same discipline that makes accept
+// pass 1 the single measurer of the candidate pool.
+//
+// distMax IS THE CANDIDATE ANCHOR, REUSED. It bounds this iteration's CANDIDATE distances, not tree
+// distances, so a dormant node above it clamps into the top bucket. That is harmless for this
+// selection and is not a shortcut worth removing: the arm takes the SMALLEST distances,
+// csCostBucket stays monotone (so csSolveCutoff's exact min(X, n) still holds), and everything in
+// the top bucket is the expensive tail being excluded anyway. h_reactCutoffDist_ and
+// h_dormantCount_ are logged so the one case where it would bite -- a cutoff pinned at the top
+// bucket, meaning the budget exceeds the population below distMax -- is visible rather than assumed.
+__global__ void CountingStars_reactScan_kernel(int treeSize, bool* frontier, bool* goalSet,
+                                               int* treeXR1s, float* treeSampleCosts, float* minCostsR1,
+                                               int* bestNodeIdxPerR1, float costScale, float distMax,
+                                               bool* reactEligible, int* acceptHistogram)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if(tid >= treeSize) return;
+
+    // Written for EVERY node, not only eligible ones: the array is reused across iterations, and a
+    // stale true would put a node into an arm whose histogram never counted it.
+    if(goalSet[tid] || frontier[tid])
+        {
+            reactEligible[tid] = false;
+            return;
+        }
+
+    int xR1 = treeXR1s[tid];
+    if(tid == bestNodeIdxPerR1[xR1])
+        {
+            reactEligible[tid] = false;
+            return;
+        }
+
+    reactEligible[tid] = true;
+    atomicAdd(&acceptHistogram[CS_HIST_DORMANT_SLOT], 1);
+    atomicAdd(&acceptHistogram[CS_HIST_REACT_BASE
+                               + csCostBucket(csNodeDistance(treeSampleCosts[tid], minCostsR1[xR1], costScale),
+                                              distMax)],
+              1);
 }
 
 /***************************/
@@ -1164,7 +1237,9 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
                                float* minCostsR1, int* treeXR1s, int* frontierNextXR1s, int* bestNodeIdxPerR1,
                                float* minCost, float* unexploredSampleCosts, bool* goalSet,
                                int* iterations, int iteration,
-                               float pReactivate, int maxBlocks,
+                               bool* reactEligible, float costScale, float distMax,
+                               int reactCutoff, float pReactBoundary, float reactFloor,
+                               int maxBlocks,
                                unsigned long long* doorCounts)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1307,20 +1382,61 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
             //
             // Uniform is the simplest thing that hits the count exactly. Top-K by cost, by recency,
             // or a mix all slot in HERE and nowhere else. ---
-            if(pReactivate > 0.0f)
+            // ============================================================================
+            // v3.1: THE REACTIVATION BUDGET IS SPENT ENTIRELY ON COST, and a separate floor keeps
+            // the planner complete. v2 and v3 drew UNIFORMLY here, which is the one cost mechanism
+            // CleanCost has and this planner did not: its Part B reactivation is weighted by
+            // costProbExpGlobal, so cheap dormant nodes come back preferentially. The volumes were
+            // already comparable -- this is selectivity, not throughput.
+            //
+            // WHY IT IS THIS ARM THAT MATTERS FOR OPTIMALITY. A cheaper route to the goal is built
+            // by deepening a cheap INTERIOR branch, and Part B is the only thing that re-expands
+            // the interior; new candidates are the growing edge.
+            //
+            // ONE curandState, at most two draws, one store -- the accept-pass-2 pattern.
+            // ============================================================================
+            curandState seed = randomSeeds[treeIdx];
+
+            // --- ARM 2: CHEAPEST. The whole react_frac * B budget, top-K by cost distance against
+            // the cutoff the host solved from the scan's histogram. Restricted to the population
+            // the scan measured, because a node outside it was never counted and would be judged
+            // against a cutoff it did not contribute to. ---
+            if(reactEligible[treeIdx])
                 {
-                    curandState seed = randomSeeds[treeIdx];
-                    bool take        = curand_uniform(&seed) < pReactivate;
-                    randomSeeds[treeIdx] = seed;
+                    int rb = csCostBucket(csNodeDistance(treeSampleCosts[treeIdx], minCostsR1[xR1], costScale),
+                                          distMax);
+                    bool take = (rb < reactCutoff);
+                    if(!take && rb == reactCutoff && pReactBoundary > 0.0f)
+                        take = (curand_uniform(&seed) < pReactBoundary);
 
                     if(take)
                         {
-                            frontier[treeIdx]   = true;
-                            nodeDoor[treeIdx]   = CS_DOOR_REACT;
-                            nodeBlocks[treeIdx] = 1;   // revisited, not discovered -- see above
-                            atomicAdd(&doorCounts[CountingStars::CS_SLOT_REACT], 1ULL);
+                            randomSeeds[treeIdx] = seed;
+                            frontier[treeIdx]    = true;
+                            nodeDoor[treeIdx]    = CS_DOOR_REACT_COST;
+                            nodeBlocks[treeIdx]  = 1;   // revisited, not discovered -- see above
+                            atomicAdd(&doorCounts[CountingStars::CS_SLOT_REACT_COST], 1ULL);
+                            return;
                         }
                 }
+
+            // --- ARM 3: THE COMPLETENESS FLOOR. Deliberately OUTSIDE the eligibility test and
+            // outside any budget: every dormant node gets this roll, including a covered region's
+            // superseded best. Eligibility is bookkeeping for the budgeted arm; completeness has to
+            // cover the whole tree.
+            //
+            // Without it the cost arm alone is NOT probabilistically complete, and the failure is
+            // permanent: a node's distance has a fixed numerator over a non-increasing
+            // minCostsR1[r], so it only ever grows, and a node once above the cutoff can never
+            // return. See h_reactFloor_. ---
+            if(reactFloor > 0.0f && curand_uniform(&seed) < reactFloor)
+                {
+                    frontier[treeIdx]   = true;
+                    nodeDoor[treeIdx]   = CS_DOOR_REACT;
+                    nodeBlocks[treeIdx] = 1;
+                    atomicAdd(&doorCounts[CountingStars::CS_SLOT_REACT], 1ULL);
+                }
+            randomSeeds[treeIdx] = seed;
         }
 }
 
@@ -1389,13 +1505,38 @@ void CountingStars::updateFrontier()
     // so distMax and the distances it buckets are always in the same units.
     h_distMax_ = (h_costScale_ > 0.0f) ? (spreadMax / h_costScale_) : spreadMax;
 
-    h_optimalCount_   = 0;
-    h_ordCutoff_      = 0;
-    h_pBoundary_      = 0.0f;
-    h_costCutoff_     = 0;
-    h_pCostBoundary_  = 0.0f;
-    h_costCutoffDist_ = 0.0f;
+    h_optimalCount_    = 0;
+    h_ordCutoff_       = 0;
+    h_pBoundary_       = 0.0f;
+    h_costCutoff_      = 0;
+    h_pCostBoundary_   = 0.0f;
+    h_costCutoffDist_  = 0.0f;
+    h_reactCutoff_     = 0;
+    h_pReactBoundary_  = 0.0f;
+    h_reactCutoffDist_ = 0.0f;
+    h_dormantCount_    = 0;
     for(int i = 0; i < CS_HIST_SIZE; i++) h_acceptHistogram_[i] = 0;
+
+    // ================================================================================
+    // v3.1: MEASURE THE DORMANT TREE, alongside accept pass 1 rather than after it.
+    //
+    // Every input this needs is settled the moment propagate returned -- frontier[0, treeSize) is
+    // not written again until Part A/B, minCostsR1 only by propagate, costScale and distMax are the
+    // host scalars just solved above. So it votes into the SAME histogram buffer and its result
+    // comes back in the SAME synchronising memcpy the accept passes already pay for. A third
+    // selection signal, zero extra round trips.
+    //
+    // Launched OUTSIDE the `candidates > 0` guard below on purpose: the dormant tree exists and
+    // wants reactivating whether or not this iteration produced any candidates.
+    // ================================================================================
+    if(h_treeSize_ > 0)
+        {
+            CountingStars_reactScan_kernel<<<iDivUp(h_treeSize_, h_blockSize_), h_blockSize_>>>(
+              h_treeSize_, d_frontier_ptr_, d_goalSet_ptr_,
+              d_treeXR1s_ptr_, d_treeSampleCosts_ptr_, d_minCostsR1_ptr_,
+              d_bestNodeIdxPerR1_ptr_, h_costScale_, h_distMax_,
+              d_reactEligible_ptr_, d_acceptHistogram_ptr_);
+        }
 
     // ================================================================================
     // THE ADMISSION DECISION, IN TWO PASSES. Guard the launches: iDivUp(0, block) is 0 blocks,
@@ -1455,6 +1596,34 @@ void CountingStars::updateFrontier()
               d_doorCounts_ptr_);
         }
 
+    // ================================================================================
+    // v3.1: SOLVE THE REACTIVATION CUTOFF. Outside the candidate guard, because the scan above ran
+    // unconditionally -- an iteration that produced no candidates still has a dormant tree to
+    // reactivate, and skipping this would leave the cutoff at its cleared 0 and switch the cost arm
+    // off for that iteration.
+    //
+    // ITS BUDGET IS THE WHOLE react_frac * B. v2 and v3 spent this share on a UNIFORM draw; the
+    // entire share now goes to the cheapest dormant nodes, and the completeness floor
+    // (h_reactFloor_) is added on top rather than carved out of it.
+    //
+    // The histogram was copied back above with the candidate ones when there were candidates. When
+    // there were none, nothing has copied it yet -- so do it here, and note this branch costs a
+    // synchronising memcpy only on an iteration that had no candidates at all.
+    // ================================================================================
+    if(h_frontierNextSize_ == 0 && h_treeSize_ > 0)
+        cudaMemcpy(h_acceptHistogram_, d_acceptHistogram_ptr_, CS_HIST_SIZE * sizeof(int),
+                   cudaMemcpyDeviceToHost);
+
+    h_dormantCount_ = (uint)h_acceptHistogram_[CS_HIST_DORMANT_SLOT];
+    csSolveCutoff(h_acceptHistogram_ + CS_HIST_REACT_BASE, CS_COST_BUCKETS,
+                  h_reactFrac_ * float(h_goalFrontierSize_), h_reactCutoff_, h_pReactBoundary_);
+    // The readable form -- the bucket index only means anything against the distMax that produced
+    // it. Saturation (nothing was cheap enough to bound the budget) reports distMax itself.
+    h_reactCutoffDist_ = (h_reactCutoff_ >= CS_COST_BUCKETS)
+                           ? h_distMax_
+                           : h_distMax_ * exp2f((float(h_reactCutoff_) - float(CS_COST_BUCKETS - 1))
+                                                / CS_COST_LOG_SCALE);
+
     // --- Re-scan after the accept passes. The trailing-element correction matters: a candidate
     // landing in the last slot is otherwise dropped from the count. ---
     thrust::exclusive_scan(d_frontierNext_.begin(), d_frontierNext_.end(), d_frontierScanIdx_.begin(), 0, thrust::plus<uint>());
@@ -1470,26 +1639,20 @@ void CountingStars::updateFrontier()
         }
 
     // ================================================================================
-    // THE DRAW'S SHARE. v3 makes it a FIXED FRACTION OF B rather than v2's remainder:
-    //
-    //     p = react_frac * B / treeSize,       react_frac = 1 - explore_frac - cost_frac
-    //
-    // so its expected size is react_frac * B whatever the tree size, and it no longer depends on how
-    // much the doors ahead of it happened to take. That is what retires the host-side count of
-    // uncovered regions: v2 needed `guaranteed` before this launch precisely because the draw was
-    // (B - admitted - guaranteed)/treeSize, and nothing needs it now.
+    // NO REACTIVATION PROBABILITY TO SOLVE ANY MORE. v3 computed
+    // p = react_frac * B / treeSize for a uniform draw; v3.1 spends that whole share through the
+    // cost cutoff solved above, which gets its count from the histogram rather than from a
+    // probability, and adds the flat completeness floor h_reactFloor_ on top.
     //
     // The frontier is therefore
     //
     //     optimalCount + B*(explore_frac + cost_frac) + guaranteed + B*react_frac
+    //                  + reactFloor*dormantCount
     //
     // in expectation -- over B by the two uncapped doors, deliberately, and by an amount the CSV
-    // reports directly as budget_used against goal_frontier_size.
+    // reports directly as budget_used against goal_frontier_size. The floor's contribution is ~30
+    // nodes and is not meant to be visible in that number.
     // ================================================================================
-    // Clamped at 1: a share above the tree size means "take everything", not an invalid p.
-    float pReactivate = (h_treeSize_ > 0)
-                          ? fminf(1.0f, h_reactFrac_ * float(h_goalFrontierSize_) / float(h_treeSize_))
-                          : 0.0f;
 
     // NO DESIGN-BUDGET SPLIT ANY MORE. The old rule divided `maxBlocks * B` between the optimal
     // door and everyone else, and in the nominal case the divisor came out at B - optimalCount so
@@ -1508,7 +1671,9 @@ void CountingStars::updateFrontier()
       d_minCostsR1_ptr_, d_treeXR1s_ptr_, d_frontierNextXR1s_ptr_, d_bestNodeIdxPerR1_ptr_,
       d_minCost_ptr_, d_unexploredSampleCosts_ptr_, d_goalSet_ptr_,
       d_iterations_ptr_, h_itr_,
-      pReactivate, h_maxBlocks_,
+      d_reactEligible_ptr_, h_costScale_, h_distMax_,
+      h_reactCutoff_, h_pReactBoundary_, h_reactFloor_,
+      h_maxBlocks_,
       d_doorCounts_ptr_);
 
     // --- Read back the door counts. One memcpy for the whole "what built this tree" answer. ---
@@ -1519,6 +1684,7 @@ void CountingStars::updateFrontier()
     h_admittedBoth_     = (uint)h_doorCounts_[CS_SLOT_BOTH];
     h_reactivated_      = (uint)h_doorCounts_[CS_SLOT_REACT];
     h_reactivatedBest_  = (uint)h_doorCounts_[CS_SLOT_BEST];
+    h_reactivatedCost_  = (uint)h_doorCounts_[CS_SLOT_REACT_COST];
     // EXPLORE and COSTDIST overlap by construction, so the identity that checks all four counters
     // against the compaction is
     //
@@ -1531,7 +1697,11 @@ void CountingStars::updateFrontier()
     // What the doors actually committed, from the REALISED counts rather than the plan: admissions
     // plus the guaranteed and drawn reactivations that survived Part B's skips. Read against
     // goal_frontier_size -- this is the claim the whole design rests on, in one column.
-    h_budgetUsed_ = h_frontierNextSize_ + h_reactivatedBest_ + h_reactivated_;
+    // v3.1: Part B has THREE arms now, so all three count toward what the doors committed. The
+    // benchmark's independent thrust::count of frontier bits among the pre-existing tree must equal
+    // reactivatedBest + reactivatedCost + reactivated -- a free check on every arm, since one side
+    // is a host scan and the other is device atomics.
+    h_budgetUsed_ = h_frontierNextSize_ + h_reactivatedBest_ + h_reactivatedCost_ + h_reactivated_;
 
     // --- Sync goal state ---
     cudaMemcpy(&h_minCost_, d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);

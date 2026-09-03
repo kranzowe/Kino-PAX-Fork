@@ -259,6 +259,21 @@ struct IterationData
     int   cost_cutoff;
     float cost_cutoff_dist;
     float dist_max;
+    // ---- v3.1: Part B's cost arm ----
+    // The reactivation cutoff, over DORMANT TREE NODES rather than candidates. Read
+    // react_cutoff_dist against dist_max exactly as for the candidate door -- and note dist_max is
+    // the CANDIDATE anchor, reused: a dormant node above it clamps into the top bucket, which is
+    // harmless (this arm takes the SMALLEST distances) unless the cutoff itself pins there, which
+    // means the budget exceeded the population below dist_max.
+    //
+    // dormant_count is the arm's population and the denominator that makes react_floor's yield
+    // (~ react_floor * dormant_count) readable.
+    int   react_cutoff;
+    float react_cutoff_dist;
+    int   dormant_count;
+    // The completeness floor. A SETTING, and one that is deliberately not swept -- its job is to be
+    // non-zero. Logged so the value behind any run is auditable.
+    float react_floor;
     // A swept axis that is a setting rather than a measurement. In the data so the fan-out panel
     // can be read against the maxBlocks that produced it, without parsing filenames.
     // -1 for non-CountingStars rows.
@@ -270,6 +285,18 @@ struct IterationData
     int   admitted_cost;
     int   admitted_costdist;
     int   admitted_both;
+    // v3.1: PART B NOW HAS THREE ARMS, and the identity the CSV carries is
+    //
+    //     reactivated == reactivated_best + reactivated_cost + reactivated_count
+    //
+    // with the left side an independent host thrust::count over frontier bits in the pre-existing
+    // tree and the right side device atomics -- so it checks all three arms for free.
+    //
+    //   reactivated_cost   the CHEAPEST arm, spending the whole react_frac * B budget
+    //   reactivated_count  the COMPLETENESS FLOOR alone (~ react_floor * dormant_count, ~30 nodes).
+    //                      It was the uniform draw through v3; if it is large here, the floor is
+    //                      doing reach work it was not sized for.
+    int   reactivated_cost;
     int   reactivated_count;
     // reactivated_best / frontier_size approaching 1 means the region-best guarantee IS the
     // frontier -- KinoPaxPlus's regime. Read it together with best_cost before deciding that is bad.
@@ -301,11 +328,16 @@ static void clearCountingStarsCols(IterationData& d)
     d.cost_cutoff = -1;
     d.cost_cutoff_dist = NAN;
     d.dist_max = NAN;
+    d.react_cutoff = -1;
+    d.react_cutoff_dist = NAN;
+    d.dormant_count = -1;
+    d.react_floor = NAN;
     d.max_blocks = -1;
     d.admitted_explore = -1;
     d.admitted_cost = -1;
     d.admitted_costdist = -1;
     d.admitted_both = -1;
+    d.reactivated_cost = -1;
     d.reactivated_count = -1;
     d.reactivated_best = -1;
     d.block_ceiling = NAN;
@@ -468,8 +500,9 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
          << "optimal_count,ord_cutoff,budget_used,max_blocks,"
          << "goal_frontier_size,fill_frac,explore_frac,cost_frac,react_frac,"
          << "cost_cutoff,cost_cutoff_dist,dist_max,"
+         << "react_cutoff,react_cutoff_dist,dormant_count,react_floor,"
          << "admitted_explore,admitted_cost,admitted_costdist,admitted_both,"
-         << "reactivated_count,reactivated_best,"
+         << "reactivated_cost,reactivated_count,reactivated_best,"
          << "block_ceiling,block_scale,global_collision_frac\n";
 
     for(const auto& d : result.per_iteration)
@@ -500,10 +533,16 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
              << d.cost_cutoff << ","
              << std::fixed << std::setprecision(9) << d.cost_cutoff_dist << ","
              << std::fixed << std::setprecision(9) << d.dist_max << ","
+             << d.react_cutoff << ","
+             << std::fixed << std::setprecision(9) << d.react_cutoff_dist << ","
+             << d.dormant_count << ","
+             << std::scientific << std::setprecision(3) << d.react_floor << ","
+             << std::fixed
              << d.admitted_explore << ","
              << d.admitted_cost << ","
              << d.admitted_costdist << ","
              << d.admitted_both << ","
+             << d.reactivated_cost << ","
              << d.reactivated_count << ","
              << d.reactivated_best << ","
              << std::fixed << std::setprecision(1) << d.block_ceiling << ","
@@ -1115,12 +1154,13 @@ RunResult benchmarkCountingStars(
 
         // --- Frontier diagnostics (outside the timed window) ---
         // reactivated counts frontier bits among the PRE-EXISTING tree, i.e. exactly Part B's
-        // output -- and Part B HAS TWO ARMS, so the device-side identity is
+        // output -- and v3.1 gave Part B a THIRD arm, so the identity is
         //
-        //     reactivated  ==  reactivated_best + reactivated_count
+        //     reactivated  ==  reactivated_best + reactivated_cost + reactivated_count
         //
-        // NOT reactivated_count alone. The two sides are computed independently (a thrust::count
-        // here, atomicAdds in the kernel), so the sum is a free check on both arms of Part B.
+        // NOT reactivated_count alone, which is now only the completeness floor. The two sides are
+        // computed independently (a thrust::count here, atomicAdds in the kernel), so the sum is a
+        // free check on all three arms of Part B.
         int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
                                              planner.d_frontier_.begin() + oldTreeSize, true);
         // r2_coverage_pct from the planner's RUNNING COUNTER, not a sweep of d_activeSubVertices_.
@@ -1164,10 +1204,15 @@ RunResult benchmarkCountingStars(
         d.cost_cutoff          = planner.h_costCutoff_;
         d.cost_cutoff_dist     = planner.h_costCutoffDist_;
         d.dist_max             = planner.h_distMax_;
+        d.react_cutoff         = planner.h_reactCutoff_;
+        d.react_cutoff_dist    = planner.h_reactCutoffDist_;
+        d.dormant_count        = (int)planner.h_dormantCount_;
+        d.react_floor          = planner.h_reactFloor_;
         d.admitted_explore     = (int)planner.h_admittedExplore_;
         d.admitted_cost        = (int)planner.h_admittedCost_;
         d.admitted_costdist    = (int)planner.h_admittedCostDist_;
         d.admitted_both        = (int)planner.h_admittedBoth_;
+        d.reactivated_cost     = (int)planner.h_reactivatedCost_;
         d.reactivated_count    = (int)planner.h_reactivated_;
         d.reactivated_best     = (int)planner.h_reactivatedBest_;
         d.block_ceiling        = planner.h_blockCeiling_;

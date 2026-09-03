@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Assert CountingStars v3's two histogram selections are exact top-X selections.
+"""Assert CountingStars' three histogram selections are exact top-X selections.
 
-WHY THIS EXISTS. v3 adds a second selection door -- CHEAPEST, over the cost distance -- and it is
-built the same way the freshness door already was: bucket the value, histogram it, exclusive-scan
-the histogram to a cutoff, and spend the fractional remainder with a boundary roll. Two properties
-have to hold for that to be a top-X selection rather than an approximation, and neither is visible
-in a diff:
+WHY THIS EXISTS. v3 added a second selection door -- CHEAPEST, over the cost distance -- and v3.1 a
+third, the reactivation arm over dormant tree nodes. All three are built the way the freshness door
+already was: bucket the value, histogram it, exclusive-scan the histogram to a cutoff, and spend the
+fractional remainder with a boundary roll. Two properties have to hold for that to be a top-X
+selection rather than an approximation, and neither is visible in a diff:
 
   1. THE BUCKET MAP MUST BE MONOTONE. The freshness door's is a clamp and obviously is. The cost
      door's is LOG, anchored at distMax, and picked over a linear map because a distance is
@@ -19,10 +19,22 @@ Neither can be checked on the authoring machine any other way -- there is no nvc
 would only show a door that quietly under- or over-spends its share of the budget as "the tuning is
 off". So this replicates the real arithmetic and sweeps it.
 
-It also checks the budget the .cu hands those solves: react_frac = 1 - explore_frac - cost_frac is
-floored at 0 in the planner, so an oversubscribed grid point does not fail -- it silently switches
-the uniform draw off. cross_check_countingstars_grid.py asserts the same thing from the grid side;
-this one asserts it against the arithmetic.
+It also checks two things around the histograms that have the same "fails silently" character:
+
+  3. THE SLOT LAYOUT. v3.1 put a THIRD histogram -- the reactivation one, over dormant tree nodes --
+     into the same buffer, which now carries three 256-bucket ranges and two scalar slots. An
+     off-by-one in a base would have one histogram's votes land in another's buckets, and nothing
+     downstream would notice: every cutoff would still solve, just against the wrong counts.
+  4. THE COMPLETENESS FLOOR IS NON-ZERO. Part B's whole reactivation budget goes to the cheapest
+     dormant nodes, and on its own that is not probabilistically complete -- a node's distance has a
+     fixed numerator over a non-increasing region minimum, so it only ever grows and a node once
+     above the cutoff can NEVER come back. h_reactFloor_ is what restores completeness, and it looks
+     exactly like a magic constant somebody would tidy away. This is the check that stops them.
+
+And the budget the solves are handed: react_frac = 1 - explore_frac - cost_frac is floored at 0 in
+the planner, so an oversubscribed grid point does not fail -- it silently switches reactivation off.
+cross_check_countingstars_grid.py asserts the same thing from the grid side; this one asserts it
+against the arithmetic.
 
 Everything numeric is PARSED from the real sources. A hand-restated constant is just a fourth place
 to drift.
@@ -68,6 +80,38 @@ ORD_BUCKETS = int(cuh_const('CS_ORD_BUCKETS'))
 COST_BUCKETS = int(cuh_const('CS_COST_BUCKETS'))
 LOG_SCALE = cuh_const('CS_COST_LOG_SCALE', 'float')
 
+
+def cuh_slot(name):
+    """Slot bases are defined in terms of the bucket counts, so evaluate the real expression rather
+    than matching a literal -- that is the whole point of checking them."""
+    mo = re.search(r'static const int\s+%s\s*=\s*([^;]+);' % name, cuh)
+    if not mo:
+        sys.exit('FATAL: %s not found in %s' % (name, CUH))
+    expr = mo.group(1).strip()
+    try:
+        return int(eval(expr, {'__builtins__': {}},
+                        {'CS_ORD_BUCKETS': ORD_BUCKETS, 'CS_COST_BUCKETS': COST_BUCKETS}))
+    except Exception as exc:
+        sys.exit('FATAL: cannot evaluate %s = %s (%s)' % (name, expr, exc))
+
+
+HIST_ORD_BASE = cuh_slot('CS_HIST_ORD_BASE')
+HIST_OPT_SLOT = cuh_slot('CS_HIST_OPT_SLOT')
+HIST_COST_BASE = cuh_slot('CS_HIST_COST_BASE')
+HIST_REACT_BASE = cuh_slot('CS_HIST_REACT_BASE')
+HIST_DORMANT_SLOT = cuh_slot('CS_HIST_DORMANT_SLOT')
+HIST_SIZE = cuh_slot('CS_HIST_SIZE')
+
+
+def cu_member_float(name):
+    mo = re.search(r'^\s*%s\s*=\s*([-\d.eE+]+)f?\s*;' % re.escape(name), cu, re.M)
+    if not mo:
+        sys.exit('FATAL: %s default not found in %s' % (name, CU))
+    return float(mo.group(1))
+
+
+REACT_FLOOR = cu_member_float('h_reactFloor_')
+
 # --- Pin the Python mirrors to the real expressions. If either is edited, this fails LOUDLY here
 # rather than quietly passing a check of arithmetic the planner no longer does. ---
 if not re.search(r'float b = float\(CS_COST_BUCKETS - 1\) \+ CS_COST_LOG_SCALE \* log2f\(d / distMax\);', cuh):
@@ -76,6 +120,10 @@ if not re.search(r'pBoundary = \(h > 0\.0f\) \? fminf\(1\.0f, fmaxf\(0\.0f, \(X 
     sys.exit('FATAL: csSolveCutoff in %s no longer matches this script\'s mirror' % CU)
 if not re.search(r'h_reactFrac_ = fmaxf\(0\.0f, 1\.0f - h_exploreFrac_ - h_costFrac_\);', cu):
     sys.exit('FATAL: the react_frac expression in %s no longer matches this script' % CU)
+# v3.1: the reactivation arm must still be solved by the SAME helper over the SAME bucket map, which
+# is what lets the exactness proof below cover it without a second set of cases.
+if not re.search(r'csSolveCutoff\(h_acceptHistogram_ \+ CS_HIST_REACT_BASE, CS_COST_BUCKETS,', cu):
+    sys.exit('FATAL: the reactivation cutoff solve in %s no longer matches this script' % CU)
 
 
 # ---------------------------------------------------------------- the mirrors
@@ -288,6 +336,67 @@ for ff in ffracs:
                 problems.append('SHARES SUM ABOVE 1 (explore %g + cost %g = %g)' % (ef, cf, ef + cf))
 
 
+# ================================================================= 6. the shared histogram buffer
+#
+# Three 256-bucket ranges and two scalar slots in one buffer. Each range must start where the last
+# one ends, the scalars must not collide with any bucket, and CS_HIST_SIZE must cover all of it --
+# an off-by-one puts one histogram's votes in another's buckets, and every cutoff still solves.
+layout = [('ord buckets', HIST_ORD_BASE, ORD_BUCKETS),
+          ('optimal slot', HIST_OPT_SLOT, 1),
+          ('cost buckets', HIST_COST_BASE, COST_BUCKETS),
+          ('react buckets', HIST_REACT_BASE, COST_BUCKETS),
+          ('dormant slot', HIST_DORMANT_SLOT, 1)]
+
+occupied = {}
+for name, base, width in layout:
+    cases += 1
+    if base < 0:
+        problems.append('SLOT LAYOUT: %s starts at %d, below the buffer' % (name, base))
+    if base + width > HIST_SIZE:
+        problems.append('SLOT LAYOUT: %s spans [%d, %d) but CS_HIST_SIZE is %d -- an atomicAdd past '
+                        'the end of the buffer' % (name, base, base + width, HIST_SIZE))
+    for i in range(base, base + width):
+        if i in occupied:
+            problems.append('SLOT LAYOUT: %s overlaps %s at index %d -- one histogram\'s votes land '
+                            'in the other\'s buckets' % (name, occupied[i], i))
+            break
+        occupied[i] = name
+
+cases += 1
+if len(occupied) != HIST_SIZE:
+    problems.append('SLOT LAYOUT: the five regions cover %d of CS_HIST_SIZE = %d entries -- %d '
+                    'unused, which means a base is wrong rather than merely wasteful'
+                    % (len(occupied), HIST_SIZE, HIST_SIZE - len(occupied)))
+
+
+# ================================================================= 7. the completeness floor
+#
+# Part B's whole reactivation budget goes to the cheapest dormant nodes. That alone is NOT
+# probabilistically complete, and the failure is permanent rather than transient: a node's
+#
+#     distance = (cost - minCostsR1[r]) / costScale
+#
+# has a FIXED numerator (cost is written once at insertion, there is no rewiring) over a
+# NON-INCREASING minCostsR1[r], so distance only ever GROWS. A node once above the cutoff can never
+# return, its subtree becomes unreachable, and any solution routed through it is lost.
+#
+# h_reactFloor_ is what restores "expanded infinitely often in the limit", and it looks exactly like
+# a magic constant somebody would tidy away.
+cases += 1
+if not (REACT_FLOOR > 0.0):
+    problems.append('COMPLETENESS FLOOR IS ZERO: h_reactFloor_ = %g. Part B\'s cost arm is a top-K '
+                    'over a distance that only ever grows, so without a non-zero floor a node above '
+                    'the cutoff is dead permanently and the planner is not probabilistically '
+                    'complete.' % REACT_FLOOR)
+if REACT_FLOOR >= 1.0:
+    problems.append('COMPLETENESS FLOOR IS %g: at >= 1 every dormant node is reactivated every '
+                    'iteration and the frontier is the whole tree.' % REACT_FLOOR)
+
+print('histogram    : ord[%d,%d) opt[%d] cost[%d,%d) react[%d,%d) dormant[%d]  size %d'
+      % (HIST_ORD_BASE, HIST_ORD_BASE + ORD_BUCKETS, HIST_OPT_SLOT,
+         HIST_COST_BASE, HIST_COST_BASE + COST_BUCKETS,
+         HIST_REACT_BASE, HIST_REACT_BASE + COST_BUCKETS, HIST_DORMANT_SLOT, HIST_SIZE))
+print('reactFloor   : %g  (~%.0f nodes/iter at a 3e6-node tree)' % (REACT_FLOOR, REACT_FLOOR * 3e6))
 print('ordBuckets %d   costBuckets %d   logScale %g  (window %.1f octaves below distMax)'
       % (ORD_BUCKETS, COST_BUCKETS, LOG_SCALE, (COST_BUCKETS - 1) / LOG_SCALE))
 print('grid       : fill %s x explore %s x cost %s' % (ffracs, efracs, cfracs))
