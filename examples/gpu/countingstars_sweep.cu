@@ -46,10 +46,10 @@ static std::string g_vizDir;
 // now (it always was, but was constant across a run under v3 and so never worth plotting on its own
 // -- see process_countingstars_and_plot.m's new goal_frontier_size-vs-iteration panel), precisely so
 // a second copy of this arithmetic does not have to live in the plot script.
-static const float BUFFER_SLOPES[] = {0.0f, 1.0f, 1.5f};
+static const float BUFFER_SLOPES[] = {0.8f, 1.0f, 1.2f};
 static const int NUM_BUFFER_SLOPES = sizeof(BUFFER_SLOPES) / sizeof(BUFFER_SLOPES[0]);
 
-static const float BUFFER_FLOORS[] = {0.0f, 0.1f, 0.2f};
+static const float BUFFER_FLOORS[] = {0.05f, 0.1f};
 static const int NUM_BUFFER_FLOORS = sizeof(BUFFER_FLOORS) / sizeof(BUFFER_FLOORS[0]);
 
 // Share of B given to the FRESHEST door (lowest region ordinality), and to CHEAPEST (smallest cost

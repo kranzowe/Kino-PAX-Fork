@@ -237,10 +237,10 @@ ENV_NAMES=("narrowPassage")
 ENV_OBSTACLES=("../include/config/obstacles/narrowPassage/obstacles.csv")
 
 # --- Full environment set (uncomment to restore; comment out the block above) ---
-# ENV_NAMES=("house" "zigzag" "narrowPassage")
-# ENV_OBSTACLES=("../include/config/obstacles/house/obstacles.csv"
-#                "../include/config/obstacles/zigzag/obstacles.csv"
-#                "../include/config/obstacles/narrowPassage/obstacles.csv")
+ENV_NAMES=("house" "zigzag" "narrowPassage")
+ENV_OBSTACLES=("../include/config/obstacles/house/obstacles.csv"
+               "../include/config/obstacles/zigzag/obstacles.csv"
+               "../include/config/obstacles/narrowPassage/obstacles.csv")
 
 # --- Parse arguments ---
 SKIP_BUILD=false
