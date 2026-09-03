@@ -8,14 +8,15 @@
 # exists; TrueStar answers a cap question this planner does not ask.
 #
 # Per (environment, cost metric) at the COARSE delta:
-#   CountingStars   bufferSlope {0, 1.0, 1.5} x bufferFloor {0, 0.1, 0.2}
-#                   explore_frac and cost_frac FIXED at 0.3 each (not swept this pass)
-#                   = 9 points (FULL FACTORIAL, coarse delta only) x 3 runs = 27 runs
+#   CountingStars   bufferSlope {1.0, 1.2, 1.4, 1.6} x bufferFloor {0.05, 0.1}
+#                   x explore_frac {0.2, 0.4} x cost_frac {0.2, 0.4} -- all four are real, swept
+#                   axes now (explore_frac/cost_frac stopped being fixed-at-one-value)
+#                   = 32 points (FULL FACTORIAL, coarse delta only) x 5 runs = 160 runs
 #
 #                   maxBlocks IS GONE (v3.3): fan-out is door-count now (nodeBlocks = popcount of
 #                   the doors that admitted a node), not a swept boost size, so there is nothing
 #                   left on this axis to hold fixed.
-#   CleanCost       r2 OFF, w 0.9, k 1, cap 0.03            = 1 point  x 3 runs
+#   CleanCost       r2 OFF, w 0.9, k 1, cap 0.03            = 1 point  x 5 runs
 #   KPAXCap         cap {0.03}                              = 1 point  x 5 runs
 #   KPAX                                                    = 1 point  x 5 runs
 #   KinoPaxPlus                                             = 1 point  x 5 runs
@@ -83,8 +84,10 @@
 #    that subgrid is a free, structural comparison against the old fixed-buffer design rather than
 #    a separate baseline that has to be swept again.
 #
-#    explore_frac AND cost_frac ARE FIXED AT 0.3 EACH this pass (not swept) -- v3's grid varied
-#    them against fill_frac; this pass isolates the ramp's own effect by holding them still.
+#    explore_frac AND cost_frac WERE FIXED AT 0.3 EACH in the pass that introduced the ramp (v3.2)
+#    -- v3's grid varied them against fill_frac, and that pass isolated the ramp's own effect by
+#    holding them still. THEY ARE SWEPT AGAIN NOW, 2 values each ({0.2, 0.4}) -- see BUFFER_SLOPES
+#    et al. below for the grid this binary actually runs.
 #
 #    B IS A PURE HOST SCALAR (read only inside updateFrontier(), never by propagateFrontier() or
 #    any device kernel directly), so making it dynamic cost no device array, no new kernel, and no
@@ -395,11 +398,11 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  CountingStars:  bufferSlope {0,1.0,1.5} x bufferFloor {0,0.1,0.2}"
-echo "                  explore_frac=0.3, cost_frac=0.3 (FIXED, not swept this pass)"
-echo "                  = 9 points (full factorial, coarse delta only)"
-echo "                  Filenames: _bs<round(100*slope)>_bf<round(100*floor)>_ef300_cf300,"
-echo "                  e.g. CountingStars_bs150_bf20_ef300_cf300."
+echo "  CountingStars:  bufferSlope {1.0,1.2,1.4,1.6} x bufferFloor {0.05,0.1}"
+echo "                  x explore_frac {0.2,0.4} x cost_frac {0.2,0.4} -- all four swept"
+echo "                  = 32 points (full factorial, coarse delta only)"
+echo "                  Filenames: _bs<round(100*slope)>_bf<round(100*floor)>_ef<round(1000*explore)>_cf<round(1000*cost)>,"
+echo "                  e.g. CountingStars_bs140_bf10_ef400_cf200."
 echo "                  v3.2 CSVs are _bs<..>_bf<..>_ef<..>_cf<..>_mb<n> and cannot collide with this"
 echo "                  shape, so they simply stop loading -- intended for a fan-out mechanism that"
 echo "                  changed (v3.3: door-count, no more maxBlocks), not a loss."

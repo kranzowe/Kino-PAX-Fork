@@ -6,16 +6,16 @@
 % only for the tuned arms; the two finer deltas run KinoPaxPlus alone (see deltaPlusOnly below and
 % DELTA_EXTRA_ARGS in run_countingstars_sweep.sh):
 %
-%   CountingStars         bufferSlope {0, 1.0, 1.5} x bufferFloor {0, 0.1, 0.2}
-%                         explore_frac=0.3, cost_frac=0.3 FIXED (not swept this pass)  =  9
+%   CountingStars         bufferSlope {1.0,1.2,1.4,1.6} x bufferFloor {0.05,0.1}
+%                         x explore_frac {0.2,0.4} x cost_frac {0.2,0.4} -- all four swept  = 32
 %   KinoPaxSTARCleanCost  r2 OFF, w 0.9, k 1, cap 0.03  (one tuned reference point)     =  1
 %   KPAXCap               cap {0.03}                                                   =  1
 %   KPAX, KinoPaxPlus                                                                  =  2
 %                                                                                      -----
-%                                                                  at the coarse delta    13
+%                                                                  at the coarse delta    36
 %   KinoPaxPlus at the two finer deltas                                                +  2
 %                                                                                      -----
-%                                                                                         15
+%                                                                                         38
 %
 % CountingStars runs at the COARSE delta only -- that is what the discretization factor in the
 % grid above means, and it is enforced by DELTA_EXTRA_ARGS in run_countingstars_sweep.sh
@@ -32,8 +32,9 @@
 %
 % bufferSlope = 0 REPRODUCES v3's CONSTANT B EXACTLY (B_frac(x) = bufferFloor for every x), so that
 % subgrid is a free, structural comparison against the old fixed-buffer design, not a separate
-% baseline swept again. explore_frac/cost_frac are FIXED at 0.3 each this pass (not swept) to
-% isolate the ramp's own effect.
+% baseline swept again -- though bufferSlope = 0 is not itself on the current grid (see
+% csBufferSlopes below). explore_frac/cost_frac were fixed at 0.3 each in the pass that isolated the
+% ramp's own effect (v3.2); they are swept again now, 2 values each.
 %
 % B IS A PURE HOST SCALAR (read only inside updateFrontier(), never by propagateFrontier() or any
 % device kernel directly), so making it dynamic cost no device array, no new kernel, and no new
@@ -183,29 +184,29 @@ deltaLabel = '3 deltas overlaid';
 % prop_attempted/frontier_size is read against.
 %
 % csExploreFracs / csCostFracs ARE round(1000 x frac) TOKENS, not 100x -- see countingStarsLabel()
-% in the benchmark. FIXED AT 0.3 EACH THIS PASS (single-element arrays, not swept) -- v3.2 isolates
-% the ramp's own effect by holding them still, kept as single-element arrays rather than bare
-% scalars so re-expanding either axis later needs no shape change to the loop below.
+% in the benchmark. Real 2-value axes now (they were held fixed, single-element arrays, in the
+% v3.2 pass that isolated the ramp's own effect) -- see the loop below and efCfMarkers, which is
+% keyed off their combination.
 %
 % csBufferSlopes / csBufferFloors STAY AT 100x, matching v3's csFillFracs convention -- both are
-% coarse axes (slope up to 1.5, floor up to 0.2) where `bs150`/`bf20` read directly as 1.5/0.2.
+% coarse axes (slope up to 1.6, floor up to 0.1) where `bs140`/`bf10` read directly as 1.4/0.1.
 %
 % (bufferSlope, bufferFloor) = (0, 0) IS THE DEEPEST ABLATION ARM: it makes B a constant 0
 % (floored to 1), so the cutoff solve returns cutoff 0 / pBoundary 0 for all three budgeted doors.
 % OPTIMAL and the region-best GUARANTEE remain UNCAPPED regardless of B, so the frontier is still
 % optimal + guarantee + a trickle draw, not empty.
 %
-csBufferSlopes = [40 80 100 120];
+csBufferSlopes = [100 120 140 160];
 csBufferFloors = [5 10];
-csExploreFracs = [300];
-csCostFracs    = [300];
+csExploreFracs = [200 400];
+csCostFracs    = [200 400];
 
 % The derived operating point that --single-point selects. EVERY component must be a member of its
 % list, because the flag selects BY VALUE -- a derived point outside the grid would run nothing.
-csDerivedBufferSlope = 100;        % bufferSlope 1.0 -> round(100 * 1.0); middle of {0,1.0,1.5}
-csDerivedBufferFloor = 10;         % bufferFloor 0.1 -> round(100 * 0.1); middle of {0,0.1,0.2}
-csDerivedExploreFrac = 300;        % explore_frac 0.3 -> round(1000 * 0.3); the only grid value now
-csDerivedCostFrac    = 300;        % cost_frac 0.3 -> round(1000 * 0.3); the only grid value now
+csDerivedBufferSlope = 100;        % bufferSlope 1.0 -> round(100 * 1.0); a member of csBufferSlopes
+csDerivedBufferFloor = 10;         % bufferFloor 0.1 -> round(100 * 0.1); a member of csBufferFloors
+csDerivedExploreFrac = 400;        % explore_frac 0.4 -> round(1000 * 0.4); a member of csExploreFracs
+csDerivedCostFrac    = 400;        % cost_frac 0.4 -> round(1000 * 0.4); a member of csCostFracs
 
 % CleanCost baseline point - one series, the well-tuned operating point. Same label format as the
 % cost sweep, so its historical CSVs load here unchanged.
@@ -228,13 +229,30 @@ kpaxCapCaps = [3];
 % grid stays below NUM_R1_REGIONS for at least part of a run, so the ramp does not cleanly separate
 % "soft" from "binding" -- it separates HOW LONG each series binds for before nActive overtakes it,
 % and that window now itself grows over the run wherever bufferSlope > 0.
-%   rows: floor 0 (B starts at 0, floored to 1), floor 0.1 (B0 ~ 333), floor 0.2 (B0 ~ 667)
-fillColors   = [0.08 0.08 0.08;    % floor 0     smallest starting B
-                0.20 0.45 0.66;    % floor 0.1
-                0.55 0.68 0.84];   % floor 0.2   largest starting B
-% style = bufferSlope. Solid is the bufferSlope = 0 series -- v3's constant-B design exactly -- so
-% every dashed/dotted series in a figure is being read directly against its own colour's solid line.
-fracStyles   = {'-', '--', ':'};   % bufferSlope = 0, 1.0, 1.5  (solid = v3's constant-B control)
+%
+% ONE ROW PER csBufferFloors ENTRY -- MUST STAY IN SYNC WITH IT, since fillColors(fi, :) below is
+% indexed straight off numel(csBufferFloors). csBufferFloors is currently [5 10] (bufferFloor
+% 0.05, 0.1), so two rows.
+%   rows: floor 0.05 (B0 ~ 150, smallest starting B), floor 0.1 (B0 ~ 300, largest starting B)
+fillColors   = [0.08 0.08 0.08;    % floor 0.05   smallest starting B
+                0.55 0.68 0.84];   % floor 0.1    largest starting B
+% style = bufferSlope. ONE ENTRY PER csBufferSlopes ENTRY -- MUST STAY IN SYNC WITH IT, since
+% fracStyles{bi} below is indexed straight off numel(csBufferSlopes). csBufferSlopes is currently
+% [100 120 140 160] (bufferSlope 1.0, 1.2, 1.4, 1.6), so four styles; MATLAB's four standard line
+% styles cover it exactly, with no dedicated "structural control" (bufferSlope = 0) any more --
+% see the `sSlope == min(csBufferSlopes)` comment below.
+fracStyles   = {'-', '--', ':', '-.'};   % bufferSlope = 1.0, 1.2, 1.4, 1.6 (in csBufferSlopes order)
+
+% marker = (explore_frac, cost_frac) PAIR, combined into one channel. Both are swept again (2x2),
+% and color/style are already spoken for by bufferFloor/bufferSlope -- with only one visual channel
+% left, the two fraction axes share it rather than each getting its own. plannerDisplay below still
+% carries the exact ef/cf values in the legend text, so the pairing is always recoverable even where
+% two markers are hard to tell apart at a glance.
+%
+% CHOSEN TO AVOID THE BASELINES' MARKERS ('p' CleanCost, 'v' KPAX, 's' KPAXCap, 'd' KinoPaxPlus,
+% defined further down) so a CountingStars point is never marker-identical to a baseline point --
+% colour alone already separates the families, but there is no reason to throw that redundancy away.
+efCfMarkers = {'o', '^', '>', '<'};   % one per (explore_frac, cost_frac) combination
 
 % CleanCost baseline: crimson, distinct from every budget colour, drawn as a reference anchor.
 cleanColor = [0.70 0.15 0.20];
@@ -272,10 +290,13 @@ for di = 1:numel(deltas)
 
     if ~dPlus
 
-    % --- CountingStars: bufferSlope x bufferFloor, a full factorial. explore_frac/cost_frac are
-    % single-element arrays (fixed at 0.3 this pass), so these inner loops are trivial -- kept for
-    % structural parity with the .cu's loop nest and with cross_check_countingstars_grid.py's
-    % parsing, and so re-expanding either axis later needs no shape change here. ---
+    % --- CountingStars: bufferSlope x bufferFloor x explore_frac x cost_frac, a full factorial.
+    % ALL FOUR ARE REAL AXES NOW (explore_frac/cost_frac stopped being fixed-at-one-value), so the
+    % (ei, ci) pair below is not a structural-parity formality any more -- it drives efCfMarkers. ---
+    numEfCf = numel(csExploreFracs) * numel(csCostFracs);
+    assert(numEfCf <= numel(efCfMarkers), ...
+        sprintf(['efCfMarkers has %d entries but csExploreFracs x csCostFracs needs %d -- add more ' ...
+                 'marker shapes to efCfMarkers before growing either axis.'], numel(efCfMarkers), numEfCf));
     for bi = 1:numel(csBufferSlopes)
         for fi = 1:numel(csBufferFloors)
             for ei = 1:numel(csExploreFracs)
@@ -284,6 +305,7 @@ for di = 1:numel(deltas)
                     sFloor = csBufferFloors(fi);
                     eFrac  = csExploreFracs(ei);
                     cFrac  = csCostFracs(ci);
+                    efCfIdx = (ei - 1) * numel(csCostFracs) + ci;   % combined (ei, ci) -> one marker
 
                     % Mirror countingStarsSkip(): --single-point is the only skip.
                     if dOne && ~(sSlope == csDerivedBufferSlope && sFloor == csDerivedBufferFloor ...
@@ -293,15 +315,23 @@ for di = 1:numel(deltas)
 
                     plannerNames{end + 1}   = sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d', ...
                                                       sSlope, sFloor, eFrac, cFrac); %#ok<SAGROW>
-                    plannerDisplay{end + 1} = sprintf('CS slope%g floor%g [%s]', ...
-                                                      sSlope / 100, sFloor / 100, dTag); %#ok<SAGROW>
+                    % ef/cf ARE IN THE LEGEND TEXT NOW -- with both axes swept, "slope1.4 floor0.1"
+                    % alone would print four times over in one legend with no way to tell which
+                    % marker is which; the exact fractions make every entry unique on their own.
+                    plannerDisplay{end + 1} = sprintf('CS slope%g floor%g ef%g cf%g [%s]', ...
+                                                      sSlope / 100, sFloor / 100, ...
+                                                      eFrac / 1000, cFrac / 1000, dTag); %#ok<SAGROW>
                     plannerColors(end + 1, :) = fillColors(fi, :);     %#ok<SAGROW>
                     plannerStyles{end + 1}    = fracStyles{bi};        %#ok<SAGROW>
-                    plannerMarkers{end + 1}   = 'o';                   %#ok<SAGROW>
-                    % The bufferSlope = 0 arm is drawn thicker at every bufferFloor: it is v3's
-                    % exact constant-B design, the structural control every ramped series is read
-                    % against.
-                    if sSlope == 0
+                    plannerMarkers{end + 1}   = efCfMarkers{efCfIdx};  %#ok<SAGROW>
+                    % The SMALLEST bufferSlope in the grid is drawn thicker at every bufferFloor, as
+                    % the closest-to-flat reference every steeper-ramped series is read against.
+                    % v3's literal bufferSlope = 0 (the exact constant-B control) is NOT on this
+                    % grid -- csBufferSlopes has been through more than one revision already and
+                    % has never contained 0 -- so a hardcoded `sSlope == 0` would silently thicken
+                    % NOTHING and every series would draw at the same width. min() reads whatever
+                    % csBufferSlopes currently is, so this stays correct across future revisions.
+                    if sSlope == min(csBufferSlopes)
                         plannerWidths(end + 1) = dWidth + 0.8;         %#ok<SAGROW>
                     else
                         plannerWidths(end + 1) = dWidth;               %#ok<SAGROW>
@@ -944,14 +974,16 @@ for ei = 1:numel(environments)
         end
 
         % The marker legend, written once and used by both titles so they cannot drift apart.
-        % \x25cb/\x25a1/\x25b3 are cost_frac 0 / 0.2 / 0.4 -- the marker channel has encoded
-        % cost_frac since v3.
+        % \x25cb/\x25b3/\x25b7/\x25c1 are the (explore_frac, cost_frac) pairs, in efCfMarkers'
+        % order: (0.2,0.2)/(0.2,0.4)/(0.4,0.2)/(0.4,0.4) -- update this list together with
+        % efCfMarkers and csExploreFracs/csCostFracs if any of those change.
         % sprintf, NOT a bare concatenation: the \x.... marker glyphs and the \\_ TeX underscore
         % escapes are only resolved by a formatting call, and this string is substituted into the
         % titles below via %s -- which inserts it verbatim rather than re-interpreting it. Built as
         % a plain [...] it would print the escape sequences literally.
-        markerKey = sprintf(['lower-left is better (fast and cheap); darker = smaller fill\\_frac; ' ...
-                             '\x25cb/\x25a1/\x25b3 CountingStars (cost\\_frac 0/0.2/0.4), ' ...
+        markerKey = sprintf(['lower-left is better (fast and cheap); darker = smaller bufferFloor; ' ...
+                             '\x25cb/\x25b3/\x25b7/\x25c1 CountingStars (ef\\_cf 0.2\\_0.2 / 0.2\\_0.4 / ' ...
+                             '0.4\\_0.2 / 0.4\\_0.4), ' ...
                              '\x2606 CleanCost, \x25bd KPAXCap, \x25a1 KPAX, \x25c7 KinoPaxPlus']);
 
         figNum = figNum + 1;

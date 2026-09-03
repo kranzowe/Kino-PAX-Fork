@@ -134,8 +134,8 @@ def ftok(x):
     be silently loaded as the wrong series.
 
     bufferSlope/bufferFloor use tok() (100x) instead, matching v3's fill_frac convention: both are
-    coarse axes (slope up to 1.5, floor up to 0.2) and `bs150`/`bf20` read directly as 1.5/0.2 where
-    `bs1500`/`bf200` would not.
+    coarse axes (slope up to 1.6, floor up to 0.1 currently) and `bs140`/`bf10` read directly as
+    1.4/0.1 where `bs1400`/`bf100` would not.
     """
     return int(round(1000.0 * x))
 
