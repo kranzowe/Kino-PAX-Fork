@@ -293,7 +293,7 @@ write_config() {
 #define MAX_TREE_SIZE 3000000
 #define MAX_FLOAT 1e38f
 #define MAX_SOL_SET_SIZE 500
-#define MAX_ITER 300
+#define MAX_ITER 1000
 #define MAX_ITER_REKINO 20000
 #define STEP_SIZE 0.1f
 #define MAX_PROPAGATION_DURATION 10
