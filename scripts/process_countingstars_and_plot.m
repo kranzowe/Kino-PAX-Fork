@@ -2,20 +2,23 @@
 % Reads per-iteration CSVs produced by examples/gpu/countingstars_sweep.cu
 % (run via scripts/run_countingstars_sweep.sh).
 %
-% Series are (planner, delta) pairs. THIS PASS runs the coarse delta and the house environment
+% Series are (planner, delta) pairs. THIS PASS runs the coarse delta and the zigzag environment
 % only for the tuned arms; the two finer deltas run KinoPaxPlus alone (see deltaPlusOnly below and
 % DELTA_EXTRA_ARGS in run_countingstars_sweep.sh):
 %
-%   CountingStars         bufferSlope {1.0,1.2,1.4,1.6} x bufferFloor {0.05,0.1}
-%                         x explore_frac {0.2,0.4} x cost_frac {0.2,0.4} -- all four swept  = 32
+%   CountingStars         bufferSlope {1.4,1.8,2.2} x bufferFloor {0.05,0.2}
+%                         explore_frac=0.3, cost_frac=0.3 FIXED (not swept this pass)  =  6
 %   KinoPaxSTARCleanCost  r2 OFF, w 0.9, k 1, cap 0.03  (one tuned reference point)     =  1
 %   KPAXCap               cap {0.03}                                                   =  1
 %   KPAX, KinoPaxPlus                                                                  =  2
 %                                                                                      -----
-%                                                                  at the coarse delta    36
+%                                                                  at the coarse delta    10
 %   KinoPaxPlus at the two finer deltas                                                +  2
 %                                                                                      -----
-%                                                                                         38
+%                                                                                         12
+%
+% RUN ONCE PER COST METRIC TOO (length, effort -- see metrics below): each is a separate build and
+% a separate set of CSVs, so the series count above applies to each metric independently.
 %
 % CountingStars runs at the COARSE delta only -- that is what the discretization factor in the
 % grid above means, and it is enforced by DELTA_EXTRA_ARGS in run_countingstars_sweep.sh
@@ -112,7 +115,7 @@
 % deliberately omitted throughout; the scatter shows run means only.
 %
 % USAGE: cd into the data directory, then call the script BY NAME, not via run():
-%   cd build/Data/Benchmarks/CountingStars/house      % or .../zigzag, .../narrowPassage
+%   cd build/Data/Benchmarks/CountingStars/zigzag     % or .../house, .../narrowPassage
 %   addpath('<repo>/scripts')
 %   process_countingstars_and_plot
 % run('<abs path>/process_countingstars_and_plot.m') would cd to the scripts folder
@@ -124,19 +127,19 @@ clear; clc; close all;
 dataDir = '';   % '' = current directory (run this from Data/Benchmarks/CountingStars/<env>)
 
 % One environment per run — must match the subfolder you cd'd into.
-%   'zigzag' -> 'Zigzag Corridor',  'house' -> 'House'
-% SCOPE: house this pass (matches ENV_NAMES in run_countingstars_sweep.sh).
+% SCOPE: zigzag this pass (matches ENV_NAMES in run_countingstars_sweep.sh).
 % ONE PER RUN -- each environment writes to its own subfolder, so set this to match the folder you
-% cd'd into and re-run for the other.
+% cd'd into and re-run for another.
 %   'zigzag' -> 'Zigzag Corridor',  'narrowPassage' -> 'Narrow Passage',  'house' -> 'House'
-environments = {'house'};
-envTitles    = {'House'};
+environments = {'zigzag'};
+envTitles    = {'Zigzag Corridor'};
+% environments = {'house'};   envTitles = {'House'};
 % environments = {'narrowPassage'};   envTitles = {'Narrow Passage'};
 
 % Cost metric axis — one build each, so one set of figures each.
-metrics      = {'length'};
-metricTitles = {'Workspace Path Length'};
-metricYLabels = {'Path Cost (workspace path length)'};
+metrics      = {'length', 'effort'};
+metricTitles = {'Workspace Path Length', 'Control Effort'};
+metricYLabels = {'Path Cost (workspace path length)', 'Path Cost (control effort)'};
 
 % Delta axis — OVERLAID inside each figure, encoded as line WIDTH. The filename token is
 % sprintf('%s_%s', delta, metric), e.g. 'fine_control_length'.
@@ -184,29 +187,29 @@ deltaLabel = '3 deltas overlaid';
 % prop_attempted/frontier_size is read against.
 %
 % csExploreFracs / csCostFracs ARE round(1000 x frac) TOKENS, not 100x -- see countingStarsLabel()
-% in the benchmark. Real 2-value axes now (they were held fixed, single-element arrays, in the
-% v3.2 pass that isolated the ramp's own effect) -- see the loop below and efCfMarkers, which is
-% keyed off their combination.
+% in the benchmark. FIXED AT 0.3 EACH THIS PASS (single-element arrays, not swept) -- isolates the
+% slope/floor grid's own effect, kept as single-element arrays rather than bare scalars so
+% re-expanding either axis later needs no shape change to the loop below.
 %
 % csBufferSlopes / csBufferFloors STAY AT 100x, matching v3's csFillFracs convention -- both are
-% coarse axes (slope up to 1.6, floor up to 0.1) where `bs140`/`bf10` read directly as 1.4/0.1.
+% coarse axes (slope up to 2.2, floor up to 0.2) where `bs220`/`bf20` read directly as 2.2/0.2.
 %
 % (bufferSlope, bufferFloor) = (0, 0) IS THE DEEPEST ABLATION ARM: it makes B a constant 0
 % (floored to 1), so the cutoff solve returns cutoff 0 / pBoundary 0 for all three budgeted doors.
 % OPTIMAL and the region-best GUARANTEE remain UNCAPPED regardless of B, so the frontier is still
 % optimal + guarantee + a trickle draw, not empty.
 %
-csBufferSlopes = [100 120 140 160];
-csBufferFloors = [5 10];
-csExploreFracs = [200 400];
-csCostFracs    = [200 400];
+csBufferSlopes = [140 180 220];
+csBufferFloors = [5 20];
+csExploreFracs = [300];
+csCostFracs    = [300];
 
 % The derived operating point that --single-point selects. EVERY component must be a member of its
 % list, because the flag selects BY VALUE -- a derived point outside the grid would run nothing.
-csDerivedBufferSlope = 100;        % bufferSlope 1.0 -> round(100 * 1.0); a member of csBufferSlopes
-csDerivedBufferFloor = 10;         % bufferFloor 0.1 -> round(100 * 0.1); a member of csBufferFloors
-csDerivedExploreFrac = 400;        % explore_frac 0.4 -> round(1000 * 0.4); a member of csExploreFracs
-csDerivedCostFrac    = 400;        % cost_frac 0.4 -> round(1000 * 0.4); a member of csCostFracs
+csDerivedBufferSlope = 180;        % bufferSlope 1.8 -> round(100 * 1.8); middle of csBufferSlopes
+csDerivedBufferFloor = 5;          % bufferFloor 0.05 -> round(100 * 0.05); a member of csBufferFloors
+csDerivedExploreFrac = 300;        % explore_frac 0.3 -> round(1000 * 0.3); the only grid value now
+csDerivedCostFrac    = 300;        % cost_frac 0.3 -> round(1000 * 0.3); the only grid value now
 
 % CleanCost baseline point - one series, the well-tuned operating point. Same label format as the
 % cost sweep, so its historical CSVs load here unchanged.
@@ -231,23 +234,22 @@ kpaxCapCaps = [3];
 % and that window now itself grows over the run wherever bufferSlope > 0.
 %
 % ONE ROW PER csBufferFloors ENTRY -- MUST STAY IN SYNC WITH IT, since fillColors(fi, :) below is
-% indexed straight off numel(csBufferFloors). csBufferFloors is currently [5 10] (bufferFloor
-% 0.05, 0.1), so two rows.
-%   rows: floor 0.05 (B0 ~ 150, smallest starting B), floor 0.1 (B0 ~ 300, largest starting B)
+% indexed straight off numel(csBufferFloors). csBufferFloors is currently [5 20] (bufferFloor
+% 0.05, 0.2), so two rows.
+%   rows: floor 0.05 (B0 ~ 150, smallest starting B), floor 0.2 (B0 ~ 600, largest starting B)
 fillColors   = [0.08 0.08 0.08;    % floor 0.05   smallest starting B
-                0.55 0.68 0.84];   % floor 0.1    largest starting B
+                0.55 0.68 0.84];   % floor 0.2    largest starting B
 % style = bufferSlope. ONE ENTRY PER csBufferSlopes ENTRY -- MUST STAY IN SYNC WITH IT, since
 % fracStyles{bi} below is indexed straight off numel(csBufferSlopes). csBufferSlopes is currently
-% [100 120 140 160] (bufferSlope 1.0, 1.2, 1.4, 1.6), so four styles; MATLAB's four standard line
-% styles cover it exactly, with no dedicated "structural control" (bufferSlope = 0) any more --
-% see the `sSlope == min(csBufferSlopes)` comment below.
-fracStyles   = {'-', '--', ':', '-.'};   % bufferSlope = 1.0, 1.2, 1.4, 1.6 (in csBufferSlopes order)
+% [140 180 220] (bufferSlope 1.4, 1.8, 2.2), so three styles -- no dedicated "structural control"
+% (bufferSlope = 0) any more -- see the `sSlope == min(csBufferSlopes)` comment below.
+fracStyles   = {'-', '--', ':'};   % bufferSlope = 1.4, 1.8, 2.2 (in csBufferSlopes order)
 
-% marker = (explore_frac, cost_frac) PAIR, combined into one channel. Both are swept again (2x2),
-% and color/style are already spoken for by bufferFloor/bufferSlope -- with only one visual channel
-% left, the two fraction axes share it rather than each getting its own. plannerDisplay below still
-% carries the exact ef/cf values in the legend text, so the pairing is always recoverable even where
-% two markers are hard to tell apart at a glance.
+% marker = (explore_frac, cost_frac) PAIR, combined into one channel. Both are single-element
+% arrays this pass (fixed at 0.3 each), so this channel is inert right now -- every CountingStars
+% point draws 'o' -- but it is kept indexed off numel(csExploreFracs)*numel(csCostFracs) rather
+% than hardcoded, so re-expanding either axis needs no shape change here, only more marker shapes.
+% plannerDisplay below carries the exact ef/cf values in the legend text regardless.
 %
 % CHOSEN TO AVOID THE BASELINES' MARKERS ('p' CleanCost, 'v' KPAX, 's' KPAXCap, 'd' KinoPaxPlus,
 % defined further down) so a CountingStars point is never marker-identical to a baseline point --
@@ -290,9 +292,10 @@ for di = 1:numel(deltas)
 
     if ~dPlus
 
-    % --- CountingStars: bufferSlope x bufferFloor x explore_frac x cost_frac, a full factorial.
-    % ALL FOUR ARE REAL AXES NOW (explore_frac/cost_frac stopped being fixed-at-one-value), so the
-    % (ei, ci) pair below is not a structural-parity formality any more -- it drives efCfMarkers. ---
+    % --- CountingStars: bufferSlope x bufferFloor, a full factorial. explore_frac/cost_frac are
+    % single-element arrays (fixed at 0.3 this pass), so the (ei, ci) inner loop and efCfMarkers
+    % lookup are trivial right now -- kept general so re-expanding either axis needs no shape
+    % change here, only more marker shapes in efCfMarkers. ---
     numEfCf = numel(csExploreFracs) * numel(csCostFracs);
     assert(numEfCf <= numel(efCfMarkers), ...
         sprintf(['efCfMarkers has %d entries but csExploreFracs x csCostFracs needs %d -- add more ' ...
@@ -974,16 +977,16 @@ for ei = 1:numel(environments)
         end
 
         % The marker legend, written once and used by both titles so they cannot drift apart.
-        % \x25cb/\x25b3/\x25b7/\x25c1 are the (explore_frac, cost_frac) pairs, in efCfMarkers'
-        % order: (0.2,0.2)/(0.2,0.4)/(0.4,0.2)/(0.4,0.4) -- update this list together with
-        % efCfMarkers and csExploreFracs/csCostFracs if any of those change.
+        % \x25cb (circle) is CountingStars this pass -- explore_frac/cost_frac are single-element
+        % (fixed at 0.3 each), so efCfMarkers only ever emits its first entry, 'o'. If either axis
+        % is re-expanded, list the extra glyphs here too (efCfMarkers has three more: \x25b3, \x25b7,
+        % \x25c1) alongside their (explore_frac, cost_frac) pairs.
         % sprintf, NOT a bare concatenation: the \x.... marker glyphs and the \\_ TeX underscore
         % escapes are only resolved by a formatting call, and this string is substituted into the
         % titles below via %s -- which inserts it verbatim rather than re-interpreting it. Built as
         % a plain [...] it would print the escape sequences literally.
         markerKey = sprintf(['lower-left is better (fast and cheap); darker = smaller bufferFloor; ' ...
-                             '\x25cb/\x25b3/\x25b7/\x25c1 CountingStars (ef\\_cf 0.2\\_0.2 / 0.2\\_0.4 / ' ...
-                             '0.4\\_0.2 / 0.4\\_0.4), ' ...
+                             '\x25cb CountingStars, ' ...
                              '\x2606 CleanCost, \x25bd KPAXCap, \x25a1 KPAX, \x25c7 KinoPaxPlus']);
 
         figNum = figNum + 1;

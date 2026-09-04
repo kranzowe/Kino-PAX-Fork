@@ -8,10 +8,9 @@
 # exists; TrueStar answers a cap question this planner does not ask.
 #
 # Per (environment, cost metric) at the COARSE delta:
-#   CountingStars   bufferSlope {1.0, 1.2, 1.4, 1.6} x bufferFloor {0.05, 0.1}
-#                   x explore_frac {0.2, 0.4} x cost_frac {0.2, 0.4} -- all four are real, swept
-#                   axes now (explore_frac/cost_frac stopped being fixed-at-one-value)
-#                   = 32 points (FULL FACTORIAL, coarse delta only) x 5 runs = 160 runs
+#   CountingStars   bufferSlope {1.4, 1.8, 2.2} x bufferFloor {0.05, 0.2}
+#                   explore_frac and cost_frac FIXED at 0.3 each (not swept this pass)
+#                   = 6 points (FULL FACTORIAL, coarse delta only) x 5 runs = 30 runs
 #
 #                   maxBlocks IS GONE (v3.3): fan-out is door-count now (nodeBlocks = popcount of
 #                   the doors that admitted a node), not a swept boost size, so there is nothing
@@ -20,6 +19,10 @@
 #   KPAXCap         cap {0.03}                              = 1 point  x 5 runs
 #   KPAX                                                    = 1 point  x 5 runs
 #   KinoPaxPlus                                             = 1 point  x 5 runs
+#
+# TWO COST METRICS THIS PASS (length, effort), each its own full build -- see COST_LABELS/
+# COST_MODES below -- so every run count above is doubled in practice: 60 CountingStars runs
+# total across both metrics, one environment (zigzag).
 #
 # ============================================================================================
 # WHAT CHANGED FROM v2, AND WHY THIS SWEEP EXISTS
@@ -84,10 +87,9 @@
 #    that subgrid is a free, structural comparison against the old fixed-buffer design rather than
 #    a separate baseline that has to be swept again.
 #
-#    explore_frac AND cost_frac WERE FIXED AT 0.3 EACH in the pass that introduced the ramp (v3.2)
-#    -- v3's grid varied them against fill_frac, and that pass isolated the ramp's own effect by
-#    holding them still. THEY ARE SWEPT AGAIN NOW, 2 values each ({0.2, 0.4}) -- see BUFFER_SLOPES
-#    et al. below for the grid this binary actually runs.
+#    explore_frac AND cost_frac ARE FIXED AT 0.3 EACH this pass (not swept) -- v3's grid varied
+#    them against fill_frac; this pass isolates the slope/floor grid's own effect by holding them
+#    still. (They were briefly swept, 2 values each, in an intermediate pass -- not this one.)
 #
 #    B IS A PURE HOST SCALAR (read only inside updateFrontier(), never by propagateFrontier() or
 #    any device kernel directly), so making it dynamic cost no device array, no new kernel, and no
@@ -219,29 +221,30 @@ DELTA_EXTRA_ARGS=("" "--only-kinopaxplus" "--only-kinopaxplus")
 # DELTA_V_R1S=(3)
 # DELTA_EXTRA_ARGS=("")
 
-# Cost metric axis: label + COST_MODE  (0 = workspace distance, 1 = control effort)
-COST_LABELS=("length")
-COST_MODES=(0)
+# Cost metric axis: label + COST_MODE  (0 = workspace distance, 1 = control effort). BOTH this
+# pass -- one build per entry, so two full builds of the whole grid.
+COST_LABELS=("length" "effort")
+COST_MODES=(0 1)
 
 # Environments (obstacles already in [0,1]^3 for Model 1). Each gets its own output subfolder.
-# narrowPassage is a wall at x in [0.3, 0.5] spanning all z, split by a gap at y in [0.49, 0.51] --
-# 0.02 wide against an agent diameter of 0.01 (AGENT_RADIUS 0.005). The benchmark's start
-# (0.1, 0.08, 0.05) and goal (0.8, 0.95, 0.9) are clear of both boxes and on opposite sides of the
-# wall, so no endpoint change is needed -- but expect low success rates there, and read the
-# success-rate subplot alongside the cost bars (unsolved runs are dropped from the cost mean).
-# SCOPE: zigzag and narrowPassage this pass. Full set preserved below -- uncomment to restore.
-#
-# narrowPassage is a wall at x in [0.3, 0.5] spanning all z, split by a gap at y in [0.49, 0.51] --
-# 0.02 wide against an agent diameter of 0.01 (AGENT_RADIUS 0.005). Expect low success rates there,
-# and read the success-rate subplot alongside the cost bars: unsolved runs are dropped from the cost
-# mean rather than penalised, so a config that solved once cheaply can look best.
+# SCOPE: zigzag only this pass. Other environments preserved below, commented out, for later runs.
+ENV_NAMES=("zigzag")
+ENV_OBSTACLES=("../include/config/obstacles/zigzag/obstacles.csv")
+
+# --- narrowPassage --- a wall at x in [0.3, 0.5] spanning all z, split by a gap at y in
+# [0.49, 0.51] -- 0.02 wide against an agent diameter of 0.01 (AGENT_RADIUS 0.005). The
+# benchmark's start (0.1, 0.08, 0.05) and goal (0.8, 0.95, 0.9) are clear of both boxes and on
+# opposite sides of the wall, so no endpoint change is needed -- but expect low success rates
+# there, and read the success-rate subplot alongside the cost bars (unsolved runs are dropped from
+# the cost mean, so a config that solved once cheaply can look best).
 # ENV_NAMES=("narrowPassage")
 # ENV_OBSTACLES=("../include/config/obstacles/narrowPassage/obstacles.csv")
 
-# --- Full environment set (uncomment to restore; comment out the block above) ---
-ENV_NAMES=("house" "narrowPassage")
-ENV_OBSTACLES=("../include/config/obstacles/house/obstacles.csv"
-               "../include/config/obstacles/narrowPassage/obstacles.csv")
+# --- house + narrowPassage together (uncomment to restore; comment out the ENV_NAMES/ENV_OBSTACLES
+# pair above) ---
+# ENV_NAMES=("house" "narrowPassage")
+# ENV_OBSTACLES=("../include/config/obstacles/house/obstacles.csv"
+#                "../include/config/obstacles/narrowPassage/obstacles.csv")
 
 # --- Parse arguments ---
 SKIP_BUILD=false
@@ -398,11 +401,11 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  CountingStars:  bufferSlope {1.0,1.2,1.4,1.6} x bufferFloor {0.05,0.1}"
-echo "                  x explore_frac {0.2,0.4} x cost_frac {0.2,0.4} -- all four swept"
-echo "                  = 32 points (full factorial, coarse delta only)"
-echo "                  Filenames: _bs<round(100*slope)>_bf<round(100*floor)>_ef<round(1000*explore)>_cf<round(1000*cost)>,"
-echo "                  e.g. CountingStars_bs140_bf10_ef400_cf200."
+echo "  CountingStars:  bufferSlope {1.4,1.8,2.2} x bufferFloor {0.05,0.2}"
+echo "                  explore_frac=0.3, cost_frac=0.3 (FIXED, not swept this pass)"
+echo "                  = 6 points (full factorial, coarse delta only)"
+echo "                  Filenames: _bs<round(100*slope)>_bf<round(100*floor)>_ef300_cf300,"
+echo "                  e.g. CountingStars_bs180_bf5_ef300_cf300."
 echo "                  v3.2 CSVs are _bs<..>_bf<..>_ef<..>_cf<..>_mb<n> and cannot collide with this"
 echo "                  shape, so they simply stop loading -- intended for a fan-out mechanism that"
 echo "                  changed (v3.3: door-count, no more maxBlocks), not a loss."

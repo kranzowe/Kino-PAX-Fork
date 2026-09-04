@@ -21,7 +21,7 @@
 static bool        g_dumpViz = false;
 static std::string g_vizDir;
 
-// ---- CountingStars grid: RAMP SLOPE x RAMP FLOOR x EXPLORE FRAC x COST FRAC, all four swept ----
+// ---- CountingStars grid: RAMP SLOPE x RAMP FLOOR, explore/cost FIXED ----
 //
 // B IS NOW A RAMP, NOT A SINGLE DERIVED POINT. v3 computed B once, at reset:
 //
@@ -46,22 +46,21 @@ static std::string g_vizDir;
 // now (it always was, but was constant across a run under v3 and so never worth plotting on its own
 // -- see process_countingstars_and_plot.m's new goal_frontier_size-vs-iteration panel), precisely so
 // a second copy of this arithmetic does not have to live in the plot script.
-static const float BUFFER_SLOPES[] = {1.0f, 1.2f, 1.4f, 1.6f};
+static const float BUFFER_SLOPES[] = {1.4f, 1.8f, 2.2f};
 static const int NUM_BUFFER_SLOPES = sizeof(BUFFER_SLOPES) / sizeof(BUFFER_SLOPES[0]);
 
-static const float BUFFER_FLOORS[] = {0.05f, 0.1f};
+static const float BUFFER_FLOORS[] = {0.05f, 0.2f};
 static const int NUM_BUFFER_FLOORS = sizeof(BUFFER_FLOORS) / sizeof(BUFFER_FLOORS[0]);
 
 // Share of B given to the FRESHEST door (lowest region ordinality), and to CHEAPEST (smallest cost
-// distance). SWEPT, 2 values each -- every (explore_frac, cost_frac) pair keeps react_frac
-// nonnegative (worst case 0.4+0.4 -> react_frac 0.2), which cross_check_countingstars_grid.py
-// asserts rather than trusting the values.
+// distance). FIXED AT 0.3 EACH THIS PASS, not swept -- isolates the slope/floor grid's own effect.
+// react_frac = 1 - 0.3 - 0.3 = 0.4, comfortably nonnegative.
 //
 // The label tokens are round(1000 x frac), matching v2's `_f` convention -- see countingStarsLabel().
-static const float EXPLORE_FRACS[] = {0.2f, 0.4f};
+static const float EXPLORE_FRACS[] = {0.3f};
 static const int NUM_EXPLORE_FRACS = sizeof(EXPLORE_FRACS) / sizeof(EXPLORE_FRACS[0]);
 
-static const float COST_FRACS[] = {0.2f, 0.4f};
+static const float COST_FRACS[] = {0.3f};
 static const int NUM_COST_FRACS = sizeof(COST_FRACS) / sizeof(COST_FRACS[0]);
 
 // CS_MAX_BLOCKS IS GONE (v3.3). Fan-out is no longer region-keyed with a swept boost size -- a node
@@ -89,14 +88,12 @@ static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0
 // member of its list -- the flag selects BY VALUE, so a derived point outside the grid would run
 // nothing at all. cross_check_countingstars_grid.py asserts exactly that.
 //
-// CS_DERIVED_EXPLORE_FRAC / CS_DERIVED_COST_FRAC MUST be members of EXPLORE_FRACS / COST_FRACS --
-// each is now a real 2-value axis (0.2f / 0.4f), not a single fixed point, so there is no longer a
-// value both arrays share by construction; pick one explicitly. Placeholder pick below (0.4f for
-// both) -- no tuning data yet, revisit once the sweep has run.
-static const float CS_DERIVED_BUFFER_SLOPE = 1.0f;   // a member of {1.0, 1.2, 1.4, 1.6}; no tuning data yet
-static const float CS_DERIVED_BUFFER_FLOOR = 0.1f;   // a member of {0.05, 0.1}; no tuning data yet
-static const float CS_DERIVED_EXPLORE_FRAC = 0.4f;
-static const float CS_DERIVED_COST_FRAC    = 0.4f;
+// CS_DERIVED_EXPLORE_FRAC / CS_DERIVED_COST_FRAC MUST equal EXPLORE_FRACS[0] / COST_FRACS[0] now
+// that those are single-element arrays (0.3f) again.
+static const float CS_DERIVED_BUFFER_SLOPE = 1.8f;   // middle of {1.4, 1.8, 2.2}; no tuning data yet
+static const float CS_DERIVED_BUFFER_FLOOR = 0.05f;  // a member of {0.05, 0.2}; no tuning data yet
+static const float CS_DERIVED_EXPLORE_FRAC = 0.3f;
+static const float CS_DERIVED_COST_FRAC    = 0.3f;
 static const float CAP_DERIVED             = 0.03f;
 
 static bool g_singlePoint = false;
@@ -110,10 +107,10 @@ static bool capSkip(float cap)
 // it, so the printed point count can never drift from the grid actually executed.
 static bool countingStarsSkip(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac)
 {
-    // FULL FACTORIAL: 4 slope x 2 floor x 2 explore x 2 cost = 32 points. --single-point is the
-    // only skip. The two fraction axes cannot sum above 0.8 on this grid (0.4 + 0.4 worst case), so
-    // nothing is skipped for a negative react_frac -- but cross_check_countingstars_grid.py asserts
-    // it rather than trusting the values.
+    // FULL FACTORIAL: 3 slope x 2 floor x 1 explore x 1 cost = 6 points. --single-point is the only
+    // skip. The two fraction axes cannot sum above 0.6 on this grid (both fixed at 0.3), so nothing
+    // is skipped for a negative react_frac -- but cross_check_countingstars_grid.py asserts it
+    // rather than trusting the values.
     if(!g_singlePoint) return false;
     return fabsf(bufferSlope - CS_DERIVED_BUFFER_SLOPE) > 1e-6f
         || fabsf(bufferFloor - CS_DERIVED_BUFFER_FLOOR) > 1e-6f
@@ -141,22 +138,25 @@ static int capAxisPointCount(const float* caps, int nCaps)
     return n;
 }
 
-// "CountingStars_bs140_bf10_ef400_cf200". MUST start with a name loadRuns() dispatches on.
+// "CountingStars_bs180_bf5_ef300_cf300". MUST start with a name loadRuns() dispatches on.
 //
 //   bs   bufferSlope, round(100 x float)
 //   bf   bufferFloor, round(100 x float)   -- B(x) is DERIVED from these, and goal_frontier_size is
 //                                             a per-ITERATION CSV column, not a per-run constant
-//   ef   explore_frac, round(1000 x float)  -- a real swept axis, tokened
-//   cf   cost_frac,    round(1000 x float)  -- a real swept axis, tokened
+//   ef   explore_frac, round(1000 x float)  -- fixed at 0.3 this pass, still tokened (see below)
+//   cf   cost_frac,    round(1000 x float)  -- fixed at 0.3 this pass, still tokened (see below)
 //
 // THE `_mb` TOKEN IS GONE (v3.3) with maxBlocks itself -- fan-out is door-count now, not a swept
 // boost size, so there is nothing left for that token to carry. v3.2's CSVs are
 // `_bs..._bf..._ef..._cf..._mb...` and cannot collide with this 4-token shape, so they simply stop
 // loading -- intended for a planner whose fan-out mechanism changed, not a loss.
 //
-// bs/bf STAY AT 100x, matching v3's `ff` -- both are coarse axes (bufferSlope up to 1.6, bufferFloor
-// up to 0.1) where `bs140`/`bf10` read directly as 1.4/0.1. ef/cf STAY AT 1000x, matching v3's `_f`
+// bs/bf STAY AT 100x, matching v3's `ff` -- both are coarse axes (bufferSlope up to 2.2, bufferFloor
+// up to 0.2) where `bs220`/`bf20` read directly as 2.2/0.2. ef/cf STAY AT 1000x, matching v3's `_f`
 // convention, unchanged by this pass.
+//
+// ef/cf TOKENS STAY IN THE LABEL EVEN THOUGH FIXED THIS PASS: a later rerun at different fixed
+// values does not collide with these CSVs under the same name.
 static std::string countingStarsLabel(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac)
 {
     char buf[160];
@@ -1503,7 +1503,7 @@ int main(int argc, char* argv[])
     // tree-growth visualization (Data/Benchmarks/KinoPaxStarCostTuning/viz/).
     //
     // --single-point restricts every axis to its derived operating point (CountingStars at
-    // bufferSlope 1.0, bufferFloor 0.1, explore_frac 0.4, cost_frac 0.4). The finer discretizations
+    // bufferSlope 1.8, bufferFloor 0.05, explore_frac 0.3, cost_frac 0.3). The finer discretizations
     // use it: the grid proper happens at the coarse delta, and the finer ones only need the
     // operating point so the deltas can be overlaid like with like.
     //
