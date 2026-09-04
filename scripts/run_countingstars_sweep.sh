@@ -8,7 +8,7 @@
 # exists; TrueStar answers a cap question this planner does not ask.
 #
 # Per (environment, cost metric) at the COARSE delta:
-#   CountingStars   bufferSlope {1.4, 1.8, 2.2} x bufferFloor {0.05, 0.2}
+#   CountingStars   bufferSlope {1.0, 1.3, 1.6} x bufferFloor {0.05, 0.2}
 #                   explore_frac and cost_frac FIXED at 0.3 each (not swept this pass)
 #                   = 6 points (FULL FACTORIAL, coarse delta only) x 5 runs = 30 runs
 #
@@ -401,7 +401,7 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  CountingStars:  bufferSlope {1.4,1.8,2.2} x bufferFloor {0.05,0.2}"
+echo "  CountingStars:  bufferSlope {1.0,1.3,1.6} x bufferFloor {0.05,0.2}"
 echo "                  explore_frac=0.3, cost_frac=0.3 (FIXED, not swept this pass)"
 echo "                  = 6 points (full factorial, coarse delta only)"
 echo "                  Filenames: _bs<round(100*slope)>_bf<round(100*floor)>_ef300_cf300,"

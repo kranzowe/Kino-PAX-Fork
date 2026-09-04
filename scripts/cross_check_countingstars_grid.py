@@ -111,9 +111,11 @@ def m_bools(name):
 def sh_config_int(name):
     """Read a #define out of the write_config heredoc in the .sh.
 
-    B is DERIVED from MAX_TREE_SIZE and MAX_ITER, and both are written into config.h by this script
-    rather than living in the repo's checked-in config -- so the only honest place to read them for
-    the derived-B assertion is the heredoc that writes them.
+    MAX_TREE_SIZE is written into config.h by this script rather than living in the repo's checked-in
+    config -- so the only honest place to read it for the derived-B assertion is the heredoc that
+    writes it. (B's OTHER input, the ramp's fill_iters denominator, is CS_RAMP_FILL_ITERS -- a
+    benchmark constant in countingstars_sweep.cu, not a config.h #define; see cu_scalar's use of it
+    below, not this helper.)
     """
     mo = re.search(r'^#define\s+%s\s+(\d+)' % re.escape(name), sh, re.M)
     if not mo:
@@ -212,11 +214,17 @@ for ef in cu_efrac:
 # --- Assertion 2c: informational only, not a "problems" check -- see the module docstring for why
 # the old strict "B < 1 is bad" framing no longer applies (bufferFloor = 0 is now intentional). Logs
 # the ramp's minimum (at x = 0, i.e. bufferFloor alone -- the true infimum since slope >= 0 on every
-# swept combination) so a reader can see it without re-deriving it, using the same MAX_TREE_SIZE /
-# MAX_ITER read out of the .sh heredoc that write the ramp's real denominator.
+# swept combination) so a reader can see it without re-deriving it.
+#
+# THE DENOMINATOR IS CS_RAMP_FILL_ITERS, NOT MAX_ITER. benchmarkCountingStars() sets
+# planner.h_fillIters_ = CS_RAMP_FILL_ITERS explicitly before every run (it no longer relies on
+# CountingStars' MAX_ITER-defaulted field) -- see that function's own comment for why: at
+# MAX_TREE_SIZE=3,000,000 and a 10s timeout, a real run only completes ~700 iterations, well short
+# of MAX_ITER, so leaving h_fillIters_ at the class default would make this preview describe a ramp
+# the benchmark never actually runs.
 cfg_tree = sh_config_int('MAX_TREE_SIZE')
-cfg_iter = sh_config_int('MAX_ITER')
-ramp_min_info = ['floor(%g * %d / %d) = %d' % (fl, cfg_tree, cfg_iter, int(fl * cfg_tree / cfg_iter))
+cfg_fill_iters = int(cu_scalar('CS_RAMP_FILL_ITERS', ctype='int'))
+ramp_min_info = ['floor(%g * %d / %d) = %d' % (fl, cfg_tree, cfg_fill_iters, int(fl * cfg_tree / cfg_fill_iters))
                  for fl in cu_floor]
 
 

@@ -46,11 +46,22 @@ static std::string g_vizDir;
 // now (it always was, but was constant across a run under v3 and so never worth plotting on its own
 // -- see process_countingstars_and_plot.m's new goal_frontier_size-vs-iteration panel), precisely so
 // a second copy of this arithmetic does not have to live in the plot script.
-static const float BUFFER_SLOPES[] = {1.4f, 1.8f, 2.2f};
+static const float BUFFER_SLOPES[] = {1.0f, 1.3f, 1.6f};
 static const int NUM_BUFFER_SLOPES = sizeof(BUFFER_SLOPES) / sizeof(BUFFER_SLOPES[0]);
 
 static const float BUFFER_FLOORS[] = {0.05f, 0.2f};
 static const int NUM_BUFFER_FLOORS = sizeof(BUFFER_FLOORS) / sizeof(BUFFER_FLOORS[0]);
+
+// How many iterations a run actually completes inside the 10s wall-clock cap at
+// MAX_TREE_SIZE = 3,000,000 (empirical). The ramp's x = itr/fill_iters must track the REAL run
+// length, not MAX_ITER: h_fillIters_ defaults to MAX_ITER (1000 in write_config()'s heredoc), but a
+// run now times out around 700 iterations, well short of that -- x would never reach 1 and B would
+// never reach its ramp maximum for a run's entire duration. See benchmarkCountingStars() below,
+// where this is assigned to planner.h_fillIters_ before resetPlanner().
+// MUST MATCH paper_benchmark.cu's copy of this same constant -- the sweep here is what finds a good
+// (bufferSlope, bufferFloor) point, and the paper's fixed comparison is meant to reproduce it; a
+// mismatched fill_iters would make the same (slope, floor) mean a different ramp in each binary.
+static const int CS_RAMP_FILL_ITERS = 700;
 
 // Share of B given to the FRESHEST door (lowest region ordinality), and to CHEAPEST (smallest cost
 // distance). FIXED AT 0.3 EACH THIS PASS, not swept -- isolates the slope/floor grid's own effect.
@@ -90,7 +101,7 @@ static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0
 //
 // CS_DERIVED_EXPLORE_FRAC / CS_DERIVED_COST_FRAC MUST equal EXPLORE_FRACS[0] / COST_FRACS[0] now
 // that those are single-element arrays (0.3f) again.
-static const float CS_DERIVED_BUFFER_SLOPE = 1.8f;   // middle of {1.4, 1.8, 2.2}; no tuning data yet
+static const float CS_DERIVED_BUFFER_SLOPE = 1.3f;   // middle of {1.0, 1.3, 1.6}; no tuning data yet
 static const float CS_DERIVED_BUFFER_FLOOR = 0.05f;  // a member of {0.05, 0.2}; no tuning data yet
 static const float CS_DERIVED_EXPLORE_FRAC = 0.3f;
 static const float CS_DERIVED_COST_FRAC    = 0.3f;
@@ -1042,10 +1053,14 @@ RunResult benchmarkCountingStars(
     // resetPlanner() reads none of the ramp fields itself, but updateFrontier() reads them on the
     // very first iteration of the run that follows.
     //
-    // h_fillIters_ IS DELIBERATELY LEFT AT MAX_ITER. maxIterations below is this benchmark's own
-    // cap, but B's ramp means "the run is over at h_fillIters_" and MAX_ITER is what config.h calls
-    // the end of a run. Setting it to maxIterations would make the same (slope, floor) mean a
-    // different ramp in this binary than in a plan() call.
+    // h_fillIters_ IS SET TO CS_RAMP_FILL_ITERS, NOT LEFT AT ITS MAX_ITER DEFAULT. It used to be
+    // left alone deliberately -- setting it to maxIterations (this benchmark's own, much larger
+    // cap) would have made the same (slope, floor) mean a different ramp than a plan() call sees.
+    // But MAX_ITER itself is now a poor stand-in for "the run is over": at MAX_TREE_SIZE=3,000,000
+    // and a 10s wall-clock cap, a real run only completes ~700 iterations, well short of MAX_ITER
+    // (1000) -- x = itr/h_fillIters_ would never reach 1 and B would never reach its ramp maximum
+    // for a run's entire duration. CS_RAMP_FILL_ITERS is that real run length instead.
+    planner.h_fillIters_   = CS_RAMP_FILL_ITERS;
     planner.h_bufferSlope_ = bufferSlope;
     planner.h_bufferFloor_ = bufferFloor;
     planner.h_exploreFrac_ = exploreFrac;

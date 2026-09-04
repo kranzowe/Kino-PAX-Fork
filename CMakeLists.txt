@@ -247,6 +247,17 @@ target_link_libraries(CountingStarsSweep
     Python3::NumPy
 )
 
+add_executable(PaperBenchmark examples/gpu/paper_benchmark.cu)
+target_link_libraries(PaperBenchmark
+    PUBLIC KPAX_lib
+    ${CUDA_LIBRARIES}
+    ${Boost_LIBRARIES}
+    ${EIGEN3_LIBRARIES}
+    yaml-cpp
+    Python3::Python
+    Python3::NumPy
+)
+
 add_executable(KinoPaxStarComparison examples/gpu/kinopaxstar_comparison.cu)
 target_link_libraries(KinoPaxStarComparison
     PUBLIC KPAX_lib
@@ -297,6 +308,7 @@ set_target_properties(KinoPaxStarCostBenchmark PROPERTIES CUDA_SEPARABLE_COMPILA
 set_target_properties(KinoPaxStarCostTuningSweep PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(KinoPaxStarComboTuningSweep PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(CountingStarsSweep PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(PaperBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(KinoPaxStarComparison PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(KinoPaxStarAcceptBreakdown PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(TreeGrowthDump PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
@@ -324,6 +336,7 @@ set_property(TARGET KinoPaxStarCostBenchmark PROPERTY CUDA_ARCHITECTURES 61 86 8
 set_property(TARGET KinoPaxStarCostTuningSweep PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET KinoPaxStarComboTuningSweep PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET CountingStarsSweep PROPERTY CUDA_ARCHITECTURES 61 86 87)
+set_property(TARGET PaperBenchmark PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET KinoPaxStarComparison PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET KinoPaxStarAcceptBreakdown PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET TreeGrowthDump PROPERTY CUDA_ARCHITECTURES 61 86 87)

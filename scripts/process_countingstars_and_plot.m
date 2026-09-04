@@ -6,7 +6,7 @@
 % only for the tuned arms; the two finer deltas run KinoPaxPlus alone (see deltaPlusOnly below and
 % DELTA_EXTRA_ARGS in run_countingstars_sweep.sh):
 %
-%   CountingStars         bufferSlope {1.4,1.8,2.2} x bufferFloor {0.05,0.2}
+%   CountingStars         bufferSlope {1.0,1.3,1.6} x bufferFloor {0.05,0.2}
 %                         explore_frac=0.3, cost_frac=0.3 FIXED (not swept this pass)  =  6
 %   KinoPaxSTARCleanCost  r2 OFF, w 0.9, k 1, cap 0.03  (one tuned reference point)     =  1
 %   KPAXCap               cap {0.03}                                                   =  1
@@ -192,21 +192,21 @@ deltaLabel = '3 deltas overlaid';
 % re-expanding either axis later needs no shape change to the loop below.
 %
 % csBufferSlopes / csBufferFloors STAY AT 100x, matching v3's csFillFracs convention -- both are
-% coarse axes (slope up to 2.2, floor up to 0.2) where `bs220`/`bf20` read directly as 2.2/0.2.
+% coarse axes (slope up to 1.6, floor up to 0.2) where `bs160`/`bf20` read directly as 1.6/0.2.
 %
 % (bufferSlope, bufferFloor) = (0, 0) IS THE DEEPEST ABLATION ARM: it makes B a constant 0
 % (floored to 1), so the cutoff solve returns cutoff 0 / pBoundary 0 for all three budgeted doors.
 % OPTIMAL and the region-best GUARANTEE remain UNCAPPED regardless of B, so the frontier is still
 % optimal + guarantee + a trickle draw, not empty.
 %
-csBufferSlopes = [140 180 220];
+csBufferSlopes = [100 130 160];
 csBufferFloors = [5 20];
 csExploreFracs = [300];
 csCostFracs    = [300];
 
 % The derived operating point that --single-point selects. EVERY component must be a member of its
 % list, because the flag selects BY VALUE -- a derived point outside the grid would run nothing.
-csDerivedBufferSlope = 180;        % bufferSlope 1.8 -> round(100 * 1.8); middle of csBufferSlopes
+csDerivedBufferSlope = 130;        % bufferSlope 1.3 -> round(100 * 1.3); middle of csBufferSlopes
 csDerivedBufferFloor = 5;          % bufferFloor 0.05 -> round(100 * 0.05); a member of csBufferFloors
 csDerivedExploreFrac = 300;        % explore_frac 0.3 -> round(1000 * 0.3); the only grid value now
 csDerivedCostFrac    = 300;        % cost_frac 0.3 -> round(1000 * 0.3); the only grid value now
@@ -241,9 +241,9 @@ fillColors   = [0.08 0.08 0.08;    % floor 0.05   smallest starting B
                 0.55 0.68 0.84];   % floor 0.2    largest starting B
 % style = bufferSlope. ONE ENTRY PER csBufferSlopes ENTRY -- MUST STAY IN SYNC WITH IT, since
 % fracStyles{bi} below is indexed straight off numel(csBufferSlopes). csBufferSlopes is currently
-% [140 180 220] (bufferSlope 1.4, 1.8, 2.2), so three styles -- no dedicated "structural control"
+% [100 130 160] (bufferSlope 1.0, 1.3, 1.6), so three styles -- no dedicated "structural control"
 % (bufferSlope = 0) any more -- see the `sSlope == min(csBufferSlopes)` comment below.
-fracStyles   = {'-', '--', ':'};   % bufferSlope = 1.4, 1.8, 2.2 (in csBufferSlopes order)
+fracStyles   = {'-', '--', ':'};   % bufferSlope = 1.0, 1.3, 1.6 (in csBufferSlopes order)
 
 % marker = (explore_frac, cost_frac) PAIR, combined into one channel. Both are single-element
 % arrays this pass (fixed at 0.3 each), so this channel is inert right now -- every CountingStars
