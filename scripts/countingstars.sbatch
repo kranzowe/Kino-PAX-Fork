@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --mem=100G
 #SBATCH --gres=gpu:1
-#SBATCH --time=7-00:00:00
+#SBATCH --time=6-00:00:00
 #SBATCH --output=countingstars-%j.out
 #SBATCH --error=countingstars-%j.err
 
