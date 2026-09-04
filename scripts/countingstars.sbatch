@@ -8,4 +8,5 @@
 #SBATCH --output=countingstars-%j.out
 #SBATCH --error=countingstars-%j.err
 
+cd "$(dirname "${BASH_SOURCE[0]}")"
 bash run_countingstars_sweep.sh

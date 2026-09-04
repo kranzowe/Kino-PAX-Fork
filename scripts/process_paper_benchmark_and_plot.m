@@ -5,7 +5,7 @@
 % A FIXED COMPARISON, not a sweep -- there is no grid here, so the series list below is NOT built
 % from nested loops over swept parameters the way process_countingstars_and_plot.m's is. It is
 % five already-chosen operating points (KPAX, KinoPaxPlus, KinoPaxSTARCleanCost, CountingStars at
-% bufferSlope 1.4, CountingStars at bufferSlope 1.8), each run at all three deltas -- 15 series
+% bufferSlope 1.0, CountingStars at bufferSlope 0.5), each run at all three deltas -- 15 series
 % total, overlaid inside each figure. Same three panels as
 % process_countingstars_summary_plots.m (this script's direct ancestor -- loadRuns and every plot
 % helper below are copies of its versions), plus a results table this one adds:
@@ -67,9 +67,9 @@ maxTreeSize = 3000000;   % MAX_TREE_SIZE in config.h -- denominator for the tabl
 % cleanLabel() / countingStarsLabel() exactly: round(100 x float) for w/k/cap/bs/bf, round(1000 x
 % float) for ef/cf. ---
 cleanR2 = 'off'; cleanW = 90; cleanK = 100; cleanCap = 3;                 % w0.9 k1.0 cap0.03
-csFloor = 5; csExplore = 300; csCost = 300;                              % bufferFloor 0.05, ef/cf 0.3
-csSlopeA = 140;   % bufferSlope 1.4
-csSlopeB = 180;   % bufferSlope 1.8
+csFloor = 10; csExplore = 300; csCost = 300;                             % bufferFloor 0.1, ef/cf 0.3
+csSlopeA = 100;   % bufferSlope 1.0
+csSlopeB = 50;    % bufferSlope 0.5
 
 baseNames = { ...
     'KPAX', ...
@@ -82,8 +82,8 @@ baseDisplay = { ...
     'KPAX', ...
     'KinoPaxPlus', ...
     'CleanCost (w0.9 k1.0 cap0.03)', ...
-    'CountingStars (slope 1.4)', ...
-    'CountingStars (slope 1.8)' ...
+    'CountingStars (slope 1.0)', ...
+    'CountingStars (slope 0.5)' ...
 };
 % color = planner identity: KPAX near-black, KinoPaxPlus blue, CleanCost crimson, the two
 % CountingStars points as two shades of a sixth (amber) color -- visually distinct from the three
@@ -92,8 +92,8 @@ baseColors = [ ...
     0.10 0.10 0.10;    % KPAX
     0.20 0.40 0.80;    % KinoPaxPlus
     0.70 0.15 0.20;    % CleanCost
-    0.90 0.60 0.15;    % CountingStars slope 1.4 (lighter amber)
-    0.55 0.35 0.05 ];  % CountingStars slope 1.8 (darker amber)
+    0.90 0.60 0.15;    % CountingStars slope 1.0 (lighter amber)
+    0.55 0.35 0.05 ];  % CountingStars slope 0.5 (darker amber)
 baseMarkers = {'s', 'd', 'p', 'o', '^'};
 
 % --- Build the series arrays: (planner, delta) pairs, planner-major so the legend and table group
@@ -233,7 +233,7 @@ for ei = 1:numel(environments)
 
         markerKey = sprintf(['lower-left is better (fast and cheap); width = delta (thin->thick = ' ...
                              'large->fine->tiny); \x25a1 KPAX, \x25c7 KinoPaxPlus, \x2606 CleanCost, ' ...
-                             '\x25cb CountingStars(1.4), \x25b3 CountingStars(1.8)']);
+                             '\x25cb CountingStars(1.0), \x25b3 CountingStars(0.5)']);
 
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Tradeoff Scatter (%s)', envTitle, costTitle), ...

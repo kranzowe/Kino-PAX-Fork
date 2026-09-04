@@ -12,8 +12,8 @@
 #   KPAX                     defaults
 #   KinoPaxPlus               defaults
 #   KinoPaxSTARCleanCost      r2 off, w 0.9, k 1.0, cap 0.03
-#   CountingStars (slope 1.4) explore_frac 0.3, cost_frac 0.3, bufferFloor 0.05
-#   CountingStars (slope 1.8) same, bufferSlope 1.8
+#   CountingStars (slope 1.0) explore_frac 0.3, cost_frac 0.3, bufferFloor 0.1
+#   CountingStars (slope 0.5) same, bufferSlope 0.5
 #
 # THREE DELTAS, ALL FIVE SERIES AT EACH:
 #   large  W_R1=10  C_R1=1  V_R1=3  ->  10^3 * 3^3 =  27,000 regions
@@ -240,8 +240,8 @@ echo "  Series (fixed, all 3 deltas x all 4 environments):"
 echo "    KPAX                      defaults"
 echo "    KinoPaxPlus                defaults"
 echo "    KinoPaxSTARCleanCost       r2 off, w 0.9, k 1.0, cap 0.03"
-echo "    CountingStars (slope 1.4)  explore_frac 0.3, cost_frac 0.3, bufferFloor 0.05"
-echo "    CountingStars (slope 1.8)  explore_frac 0.3, cost_frac 0.3, bufferFloor 0.05"
+echo "    CountingStars (slope 1.0)  explore_frac 0.3, cost_frac 0.3, bufferFloor 0.1"
+echo "    CountingStars (slope 0.5)  explore_frac 0.3, cost_frac 0.3, bufferFloor 0.1"
 echo "  10 runs per (series, delta, environment, metric)."
 echo "  Limits: MAX_TREE_SIZE 3,000,000 | 10s per-run timeout | 20,000 outer-loop iteration cap"
 echo "          (non-binding by design -- tree size and wall-clock are meant to stop every run)"

@@ -11,8 +11,8 @@
 //   KPAX                   defaults
 //   KinoPaxPlus             defaults
 //   KinoPaxSTARCleanCost    r2 off, w 0.9, k 1.0, cap 0.03 (countingstars_sweep.cu's CLEAN_BASE_*)
-//   CountingStars (bs 1.4)  explore_frac 0.3, cost_frac 0.3, bufferFloor 0.05, bufferSlope 1.4
-//   CountingStars (bs 1.8)  same, bufferSlope 1.8
+//   CountingStars (bs 1.0)  explore_frac 0.3, cost_frac 0.3, bufferFloor 0.1, bufferSlope 1.0
+//   CountingStars (bs 0.5)  same, bufferSlope 0.5
 //
 // EVERY SERIES RUNS AT EVERY DELTA -- unlike countingstars_sweep.cu, where only KinoPaxPlus runs
 // past the coarse discretization. There is no --only-kinopaxplus concept here because there is no
@@ -512,7 +512,7 @@ void runKinoPaxSTARCleanCostBenchmark(
 static const int CS_RAMP_FILL_ITERS = 700;
 
 // ========================================================================
-// CountingStars -- two fixed points (bufferSlope 1.4 and 1.8), same explore_frac/cost_frac/
+// CountingStars -- two fixed points (bufferSlope 1.0 and 0.5), same explore_frac/cost_frac/
 // bufferFloor. h_fillIters_ is set explicitly to CS_RAMP_FILL_ITERS, not left at its class default
 // (MAX_ITER): the ramp's x = itr/h_fillIters_ must track the REAL run length, and at
 // MAX_TREE_SIZE=3,000,000 with a 10s timeout that's ~700 iterations, well short of MAX_ITER (1000)
@@ -601,8 +601,8 @@ void runCountingStarsBenchmark(
     std::vector<RunResult>& all_results, const std::string& outputDir, const std::string& deltaLabel,
     int numRuns, int maxIterations, float maxTimeMs)
 {
-    static const float BUFFER_SLOPES[] = {1.4f, 1.8f};
-    static const float BUFFER_FLOOR    = 0.05f;
+    static const float BUFFER_SLOPES[] = {1.0f, 0.5f};
+    static const float BUFFER_FLOOR    = 0.1f;
     static const float EXPLORE_FRAC    = 0.3f;
     static const float COST_FRAC       = 0.3f;
 
@@ -664,8 +664,8 @@ int main(int argc, char* argv[])
     printf("Max iterations: %d (non-binding; MAX_TREE_SIZE / MAX_TIME_MS are the real limiters)\n", MAX_ITERATIONS);
     printf("Max time:       %.1f s\n", MAX_TIME_MS / 1000.0f);
     printf("Series:         KPAX, KinoPaxPlus, KinoPaxSTARCleanCost (w0.9 k1.0 cap0.03),\n");
-    printf("                CountingStars (bufferSlope 1.4), CountingStars (bufferSlope 1.8)\n");
-    printf("                explore_frac 0.3, cost_frac 0.3, bufferFloor 0.05 for both CountingStars points\n");
+    printf("                CountingStars (bufferSlope 1.0), CountingStars (bufferSlope 0.5)\n");
+    printf("                explore_frac 0.3, cost_frac 0.3, bufferFloor 0.1 for both CountingStars points\n");
     printf("=======================================================\n");
 
     // Start/goal states -- identical to countingstars_sweep.cu's, validated across every

@@ -1439,7 +1439,7 @@ int main(int argc, char* argv[])
     // read directly against the KPAX baseline, so the two want a matched noise level.
     const int NUM_KPAXCAP_RUNS     = NUM_KPAX_RUNS;
     const int MAX_ITERATIONS       = 1000;
-    const float MAX_TIME_MS      = 10000.0f;  // 6 second per-run timeout
+    const float MAX_TIME_MS      = 10000.0f;  // 10 second per-run timeout
 
     // Per-environment subfolder so house and zigzag can be plotted independently.
     std::string outputDir = "Data/Benchmarks/CountingStars/" + envName;
