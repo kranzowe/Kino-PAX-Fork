@@ -104,17 +104,10 @@
 // measures and stamps no door; pass 2 decides and is the only door writer. Both histograms and the
 // optimal count share ONE buffer, so v3's second signal costs no second round trip.
 //
-// THE R2 DOOR IS GONE; THE R2 MARKING SURVIVES. Novelty is ordinality now, so no door reads a
-// sub-cell. The claim is kept purely to feed h_touchedR2_ so r2_coverage_pct stays comparable with
-// the KPAX-family baselines at O(1) -- the alternative is a thrust::count over d_activeSubVertices_
-// every iteration, which is 2.1M elements at the coarse delta and 37.9M at `tiny`.
+// THE R2 DOOR AND THE R2 COVERAGE PIPELINE ARE BOTH GONE. Novelty is ordinality now, so no door ever
+// read a sub-cell, and the coverage metric it fed (r2_coverage_pct) was never plotted by anything --
+// so this planner carries no R2 machinery of its own at all.
 //
-// THE R2 MAPPING IS FIXED HERE AND ONLY HERE. Graph.cu's initializeRegions_kernel does not invert
-// getRegion, so its min-corners are wrong and every R2 identity built on them is scrambled. This
-// planner carries a corrected copy so the coverage metric counts the right cells; Graph.cu is left
-// alone so the existing baselines stay comparable. See the header, and check_region_math.py.
-//
-// Opts into Graph's dynamic score floor (1/N_active rather than a fixed EPSILON); see Graph.cuh.
 // Carries NO retroactive pruning.
 #include "planners/CountingStars.cuh"
 #include "config/config.h"
@@ -130,11 +123,6 @@
 CountingStars::CountingStars()
 {
     graph_ = Graph(W_SIZE);
-    // Opt into the mean-share score floor (1/N_active) instead of the legacy fixed EPSILON, which
-    // exceeds the score it floors by ~270x at 27k regions and caps the number of discriminated
-    // regions at 1/EPSILON = 100 regardless of grid size. KPAX deliberately keeps the legacy floor
-    // so it remains a fixed baseline.
-    graph_.h_dynamicScoreFloor_ = true;
 
     // KPAX exploration vectors
     d_frontier_                    = thrust::device_vector<bool>(MAX_TREE_SIZE);
@@ -159,11 +147,6 @@ CountingStars::CountingStars()
     d_unexploredSampleCosts_  = thrust::device_vector<float>(MAX_TREE_SIZE);
     d_goalSet_                = thrust::device_vector<bool>(MAX_TREE_SIZE);
     d_doorCounts_             = thrust::device_vector<unsigned long long>(CS_NUM_DOOR_SLOTS, 0ULL);
-    d_touchedR2Count_         = thrust::device_vector<uint>(1, 0u);
-
-    // CountingStars' OWN min-corner table -- see the header for why Graph.cu's is not usable.
-    d_minCornerCS_            = thrust::device_vector<float>(NUM_R1_REGIONS * STATE_DIM);
-
     // Per-R1, reset every iteration.
     d_regionCovered_          = thrust::device_vector<bool>(NUM_R1_REGIONS, false);
     // Per-R1, cumulative. THE ORDINALITY SOURCE: how many nodes this region has ever taken.
@@ -184,7 +167,6 @@ CountingStars::CountingStars()
     d_goalSetIdxs_            = thrust::device_vector<uint>(MAX_TREE_SIZE);
     d_goalSetScanIdx_         = thrust::device_vector<uint>(MAX_TREE_SIZE);
     d_iterations_             = thrust::device_vector<int>(MAX_TREE_SIZE);
-    d_pathCosts_              = thrust::device_vector<float>(MAX_TREE_SIZE * 3);
     d_controlPathsToGoal_     = thrust::device_vector<float>(MAX_ITER * SAMPLE_DIM);
 
     // Raw pointers
@@ -210,8 +192,6 @@ CountingStars::CountingStars()
     d_goalSetIdxs_ptr_            = thrust::raw_pointer_cast(d_goalSetIdxs_.data());
     d_goalSetScanIdx_ptr_         = thrust::raw_pointer_cast(d_goalSetScanIdx_.data());
     d_doorCounts_ptr_             = thrust::raw_pointer_cast(d_doorCounts_.data());
-    d_touchedR2Count_ptr_         = thrust::raw_pointer_cast(d_touchedR2Count_.data());
-    d_minCornerCS_ptr_            = thrust::raw_pointer_cast(d_minCornerCS_.data());
     d_regionCovered_ptr_          = thrust::raw_pointer_cast(d_regionCovered_.data());
     d_reactEligible_ptr_          = thrust::raw_pointer_cast(d_reactEligible_.data());
     d_regionNodeCount_ptr_        = thrust::raw_pointer_cast(d_regionNodeCount_.data());
@@ -221,15 +201,9 @@ CountingStars::CountingStars()
     d_candDistance_ptr_           = thrust::raw_pointer_cast(d_candDistance_.data());
     d_candDoor_ptr_               = thrust::raw_pointer_cast(d_candDoor_.data());
     d_iterations_ptr_             = thrust::raw_pointer_cast(d_iterations_.data());
-    d_pathCosts_ptr_              = thrust::raw_pointer_cast(d_pathCosts_.data());
     d_controlPathsToGoal_ptr_     = thrust::raw_pointer_cast(d_controlPathsToGoal_.data());
 
     cudaMalloc(&d_minCost_ptr_, sizeof(float));
-
-    // The corrected R1 min-corner table. Computed ONCE here, exactly as Graph does for its own --
-    // the corners are a pure function of the discretisation, not of the run. Everything that would
-    // otherwise pass graph_.d_minValueInRegion_ passes this instead; see the header for why.
-    CountingStars_initializeRegions_kernel<<<iDivUp(NUM_R1_REGIONS, h_blockSize_), h_blockSize_>>>(d_minCornerCS_ptr_);
 
     // Spatial hash grid for fast collision detection
     d_spatialHashGrid_ = createSpatialHashGrid();
@@ -301,7 +275,6 @@ CountingStars::CountingStars()
     h_distMax_             = 0.0f;
     h_budgetUsed_          = 0;
     h_admittedExplore_     = 0;
-    h_admittedCost_        = 0;
     h_admittedCostDist_    = 0;
     h_admittedBoth_        = 0;
     h_reactivated_         = 0;
@@ -310,13 +283,10 @@ CountingStars::CountingStars()
     h_reactCutoff_         = 0;
     h_pReactBoundary_      = 0.0f;
     h_reactCutoffDist_     = 0.0f;
-    h_dormantCount_        = 0;
     h_blockCeiling_        = 0.0f;
     h_blockScale_          = 1.0f;
     h_costScale_           = 0.0f;
-    h_touchedR2_           = 0;
     h_propAttempted_       = 0;
-    h_candidatesPreGate_   = 0;
     h_admittedOptFreshBoth_ = 0;
     h_admittedFloor_       = 0;
     for(int i = 0; i < CS_NUM_DOOR_SLOTS; i++) h_doorCounts_[i] = 0ULL;
@@ -354,13 +324,10 @@ void CountingStars::resetPlanner(float* h_initial, float* h_goal)
     // the compacted frontier, so a seed written here would be overwritten before it was read.
     thrust::fill(d_activeFrontierRepeatCount_.begin(), d_activeFrontierRepeatCount_.end(), 0);
 
-    // Graph state
-    thrust::fill(graph_.d_activeSubVertices_.begin(), graph_.d_activeSubVertices_.end(), false);
-    thrust::fill(graph_.d_vertexScoreArray_.begin(), graph_.d_vertexScoreArray_.end(), 0.0f);
-    thrust::fill(graph_.d_regionCoverage_.begin(), graph_.d_regionCoverage_.end(), 0.0f);
-    thrust::fill(graph_.d_counterArray_.begin(), graph_.d_counterArray_.end(), 0);
+    // Graph state. Only d_validCounterArray_ -- CountingStars never calls graph_.updateVertices(),
+    // so d_vertexScoreArray_/d_regionCoverage_/d_counterArray_/h_nActive_ are never populated by
+    // anything and there is nothing to reset.
     thrust::fill(graph_.d_validCounterArray_.begin(), graph_.d_validCounterArray_.end(), 0);
-    graph_.h_nActive_ = 0;
 
     // Tree state
     thrust::fill(d_treeSamples_.begin(), d_treeSamples_.end(), 0.0f);
@@ -395,7 +362,6 @@ void CountingStars::resetPlanner(float* h_initial, float* h_goal)
     thrust::fill(d_candDoor_.begin(), d_candDoor_.end(), CS_DOOR_NONE);
     thrust::fill(d_reactEligible_.begin(), d_reactEligible_.end(), false);
     thrust::fill(d_iterations_.begin(), d_iterations_.end(), 0);
-    thrust::fill(d_pathCosts_.begin(), d_pathCosts_.end(), 0.0f);
     thrust::fill(d_controlPathsToGoal_.begin(), d_controlPathsToGoal_.end(), 0.0f);
 
     h_treeSize_     = 1;
@@ -418,12 +384,9 @@ void CountingStars::resetPlanner(float* h_initial, float* h_goal)
     for(int i = 0; i < CS_NUM_DOOR_SLOTS; i++) h_doorCounts_[i] = 0ULL;
     for(int i = 0; i < CS_HIST_SIZE; i++) h_acceptHistogram_[i] = 0;
     h_propAttempted_        = 0;
-    h_candidatesPreGate_    = 0;
     h_frontierNextSize_     = 0;
     h_frontierRepeatSize_   = 0;
     h_costScale_            = 0.0f;
-    thrust::fill(d_touchedR2Count_.begin(), d_touchedR2Count_.end(), 0u);
-    h_touchedR2_            = 0;
     h_optimalCount_         = 0;
     h_ordCutoff_            = 0;
     h_pBoundary_            = 0.0f;
@@ -433,7 +396,6 @@ void CountingStars::resetPlanner(float* h_initial, float* h_goal)
     h_distMax_              = 0.0f;
     h_budgetUsed_           = 0;
     h_admittedExplore_      = 0;
-    h_admittedCost_         = 0;
     h_admittedCostDist_     = 0;
     h_admittedBoth_         = 0;
     h_admittedOptFreshBoth_ = 0;
@@ -444,7 +406,6 @@ void CountingStars::resetPlanner(float* h_initial, float* h_goal)
     h_reactCutoff_          = 0;
     h_pReactBoundary_       = 0.0f;
     h_reactCutoffDist_      = 0.0f;
-    h_dormantCount_         = 0;
     h_blockCeiling_         = 0.0f;
     h_blockScale_           = 1.0f;
 
@@ -743,12 +704,11 @@ void CountingStars::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCo
 
             CountingStars_propagateFrontier_kernel2<<<iDivUp(h_propIterations_ * h_frontierRepeatSize_, h_activeBlockSize_), h_activeBlockSize_>>>(
               d_frontier_ptr_, d_activeFrontierRepeatIdxs_ptr_, d_treeSamples_ptr_, d_unexploredSamples_ptr_, h_frontierRepeatSize_,
-              d_randomSeeds_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_obstacles_ptr, h_obstaclesCount, graph_.d_activeSubVertices_ptr_,
+              d_randomSeeds_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_obstacles_ptr, h_obstaclesCount,
               d_frontierNext_ptr_, graph_.d_validCounterArray_ptr_,
-              h_propIterations_, d_minCornerCS_ptr_,
+              h_propIterations_,
               d_treeSampleCosts_ptr_, d_minCostsR1_ptr_, d_maxCostsR1_ptr_, d_sumCostsR1_ptr_,
               d_frontierNextXR1s_ptr_, d_candDoor_ptr_,
-              d_touchedR2Count_ptr_,
               d_unexploredSampleCosts_ptr_, h_spatialHashGrid_);
 
             // kernel2 launches h_frontierRepeatSize_ * h_propIterations_ threads, one candidate each.
@@ -758,12 +718,10 @@ void CountingStars::propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCo
         {
             CountingStars_propagateFrontier_kernel1<<<iDivUp(h_frontierRepeatSize_ * h_activeBlockSize_, h_activeBlockSize_), h_activeBlockSize_>>>(
               d_frontier_ptr_, d_activeFrontierRepeatIdxs_ptr_, d_treeSamples_ptr_, d_unexploredSamples_ptr_, h_frontierRepeatSize_,
-              d_randomSeeds_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_obstacles_ptr, h_obstaclesCount, graph_.d_activeSubVertices_ptr_,
+              d_randomSeeds_ptr_, d_unexploredSamplesParentIdxs_ptr_, d_obstacles_ptr, h_obstaclesCount,
               d_frontierNext_ptr_, graph_.d_validCounterArray_ptr_,
-              d_minCornerCS_ptr_,
               d_treeSampleCosts_ptr_, d_minCostsR1_ptr_, d_maxCostsR1_ptr_, d_sumCostsR1_ptr_,
               d_frontierNextXR1s_ptr_, d_candDoor_ptr_,
-              d_touchedR2Count_ptr_,
               d_unexploredSampleCosts_ptr_, h_spatialHashGrid_);
 
             // kernel1 launches one block of h_activeBlockSize_ threads per repeat entry.
@@ -797,57 +755,6 @@ __global__ void CountingStars_assignFanout_kernel(uint frontierSize, uint* activ
 }
 
 /***************************/
-/* R1 MIN-CORNER INITIALISATION */
-/***************************/
-// The exact inverse of getRegion's encode:
-//
-//   r1 = wRegion * C_R1_LENGTH^C_DIM * V_R1_LENGTH^V_DIM + aRegion * V_R1_LENGTH^V_DIM + vRegion
-//
-// so the groups strip off in reverse significance -- velocity first, then attitude, and whatever
-// remains is workspace. Graph.cu's version reads them in the opposite order AND uses hardcoded
-// exponents (C_R1_LENGTH^2, V_R1_LENGTH^1) where the encode uses C_DIM and V_DIM, which collapses
-// NUM_R1_REGIONS regions onto far fewer distinct corners. Written entirely in config macros so it
-// stays correct at any discretisation; scripts/check_region_math.py proves it is a bijection.
-//
-// The WITHIN-group digit order below is the same as Graph.cu's and was never wrong: getRegion builds
-// each group with axis 0 as the most significant digit.
-__global__ void CountingStars_initializeRegions_kernel(float* minCorner)
-{
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
-    if(tid >= NUM_R1_REGIONS) return;
-
-    int cPow = 1;
-    for(int i = 0; i < C_DIM; ++i) cPow *= C_R1_LENGTH;
-    int vPow = 1;
-    for(int i = 0; i < V_DIM; ++i) vPow *= V_R1_LENGTH;
-
-    int vRegion = tid % vPow;
-    int aRegion = (tid / vPow) % cPow;
-    int wRegion = tid / (vPow * cPow);
-
-    int temp = wRegion;
-    for(int i = W_DIM - 1; i >= 0; --i)
-        {
-            minCorner[tid * STATE_DIM + i] = W_MIN + (temp % W_R1_LENGTH) * W_R1_SIZE;
-            temp /= W_R1_LENGTH;
-        }
-
-    temp = aRegion;
-    for(int i = C_DIM - 1; i >= 0; --i)
-        {
-            minCorner[tid * STATE_DIM + W_DIM + i] = C_MIN + (temp % C_R1_LENGTH) * C_R1_SIZE;
-            temp /= C_R1_LENGTH;
-        }
-
-    temp = vRegion;
-    for(int i = V_DIM - 1; i >= 0; --i)
-        {
-            minCorner[tid * STATE_DIM + W_DIM + C_DIM + i] = V_MIN + (temp % V_R1_LENGTH) * V_R1_SIZE;
-            temp /= V_R1_LENGTH;
-        }
-}
-
-/***************************/
 /* PROPAGATE FRONTIER KERNEL 1 */
 /***************************/
 // One Block Per Frontier Sample — CANDIDATE PRODUCER ONLY. No acceptance decision, no RNG draw:
@@ -856,11 +763,10 @@ __global__ void CountingStars_initializeRegions_kernel(float* minCorner)
 __global__ void CountingStars_propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
                                                    float* unexploredSamples, uint frontierSize, curandState* randomSeeds,
                                                    int* unexploredSamplesParentIdxs, float* obstacles, int obstaclesCount,
-                                                   int* activeSubVertices, bool* frontierNext,
-                                                   int* validVertexCounter, float* minCorner,
+                                                   bool* frontierNext,
+                                                   int* validVertexCounter,
                                                    float* treeSampleCosts, float* minCostsR1, float* maxCostsR1, float* sumCostsR1,
                                                    int* frontierNextXR1s, int* candDoor,
-                                                   uint* touchedR2Count,
                                                    float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid)
 {
     if(blockIdx.x >= frontierSize) return;
@@ -889,17 +795,15 @@ __global__ void CountingStars_propagateFrontier_kernel1(bool* frontier, uint* ac
     curandState randSeed             = randomSeeds[tid];
     bool valid                       = propagateAndCheckSpatialHash(s_x0, x1, &randSeed, spatialHashGrid, obstacles, obstaclesCount);
     int x1Vertex                     = getRegion(x1);
-    int x1SubVertex                  = getSubRegion(x1, x1Vertex, minCorner);
 
     // --- Update Graph statistics ---
     //
     // v3: NO PER-REGION COUNT OF *ATTEMPTS*. v2 opened with atomicAdd(&vertexCounter[x1Vertex], 1)
     // on every thread whether it collided or not -- the hottest atomic in the planner, one per
     // attempted propagation onto a per-region address -- and its only consumer was the collision
-    // fraction, a diagnostic. The host already knows both of that fraction's terms exactly:
-    // h_propAttempted_ from the launch geometry and h_candidatesPreGate_ from the post-propagate
-    // scan. So graph_.d_counterArray_ is left at zero here and nothing reads it; CountingStars never
-    // calls graph_.updateVertices(), which is the only other consumer in the family.
+    // fraction, a diagnostic nothing plots any more. So graph_.d_counterArray_ is left at zero here
+    // and nothing reads it; CountingStars never calls graph_.updateVertices(), which is the only
+    // other consumer in the family.
     if(valid)
         {
             atomicAdd(&validVertexCounter[x1Vertex], 1);
@@ -921,19 +825,6 @@ __global__ void CountingStars_propagateFrontier_kernel1(bool* frontier, uint* ac
             if(maxCostsR1[x1Vertex] < cost) atomicMaxFloat(&maxCostsR1[x1Vertex], cost);
             atomicAdd(&sumCostsR1[x1Vertex], cost);
 
-            // --- R2 MARKING, FOR THE COVERAGE METRIC ONLY. No door reads a sub-cell in v2;
-            // ordinality replaced novelty. This survives so r2_coverage_pct stays comparable with
-            // the KPAX-family baselines, and it stays in THIS form because the CAS's return value
-            // is what makes the running total exact: exactly one thread in the whole launch can
-            // turn a given cell from 0 to 1, so touchedR2Count gains exactly one per cell, ever.
-            //
-            // READ-THEN-CAS, not a bare CAS. The overwhelming majority of candidates land in cells
-            // that were claimed iterations ago, and a plain load rejects those without touching the
-            // atomic unit at all. The two are exactly equivalent: a cell only ever goes 0 -> 1, so a
-            // load that sees 1 can never be a stale rejection of a cell that is still free. ---
-            if(activeSubVertices[x1SubVertex] == 0 && atomicCAS(&activeSubVertices[x1SubVertex], 0, 1) == 0)
-                atomicAdd(touchedR2Count, 1u);
-
             // --- Record the candidate. No admission decision, no RNG draw. The door is CLEARED
             // rather than left alone: these slots are reused every iteration, and a stale door from
             // an earlier batch would be read by Part A as an admission. ---
@@ -953,12 +844,10 @@ __global__ void CountingStars_propagateFrontier_kernel1(bool* frontier, uint* ac
 __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
                                                    float* unexploredSamples, uint frontierSize, curandState* randomSeeds,
                                                    int* unexploredSamplesParentIdxs, float* obstacles, int obstaclesCount,
-                                                   int* activeSubVertices, bool* frontierNext,
+                                                   bool* frontierNext,
                                                    int* validVertexCounter, int iterations,
-                                                   float* minCorner,
                                                    float* treeSampleCosts, float* minCostsR1, float* maxCostsR1, float* sumCostsR1,
                                                    int* frontierNextXR1s, int* candDoor,
-                                                   uint* touchedR2Count,
                                                    float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid)
 {
     int tid       = blockIdx.x * blockDim.x + threadIdx.x;
@@ -979,7 +868,6 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
     curandState randSeed             = randomSeeds[tid];
     bool valid                       = propagateAndCheckSpatialHash(x0, x1, &randSeed, spatialHashGrid, obstacles, obstaclesCount);
     int x1Vertex                     = getRegion(x1);
-    int x1SubVertex                  = getSubRegion(x1, x1Vertex, minCorner);
 
     // --- Update Graph statistics. No attempt counter, and maxCostsR1 alongside the min (kernel 1). ---
     if(valid)
@@ -992,10 +880,6 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
             if(minCostsR1[x1Vertex] > cost) atomicMinFloat(&minCostsR1[x1Vertex], cost);
             if(maxCostsR1[x1Vertex] < cost) atomicMaxFloat(&maxCostsR1[x1Vertex], cost);
             atomicAdd(&sumCostsR1[x1Vertex], cost);
-
-            // --- R2 marking for the coverage metric only, read-then-CAS (see kernel 1). ---
-            if(activeSubVertices[x1SubVertex] == 0 && atomicCAS(&activeSubVertices[x1SubVertex], 0, 1) == 0)
-                atomicAdd(touchedR2Count, 1u);
 
             // --- Record the candidate (see kernel 1 for why the door is cleared here). ---
             candDoor[tid]              = CS_DOOR_NONE;
@@ -1108,9 +992,9 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
 // distances, so a dormant node above it clamps into the top bucket. That is harmless for this
 // selection and is not a shortcut worth removing: the arm takes the SMALLEST distances,
 // csCostBucket stays monotone (so csSolveCutoff's exact min(X, n) still holds), and everything in
-// the top bucket is the expensive tail being excluded anyway. h_reactCutoffDist_ and
-// h_dormantCount_ are logged so the one case where it would bite -- a cutoff pinned at the top
-// bucket, meaning the budget exceeds the population below distMax -- is visible rather than assumed.
+// the top bucket is the expensive tail being excluded anyway. h_reactCutoffDist_ is logged so the
+// one case where it would bite -- a cutoff pinned at the top bucket, meaning the budget exceeds the
+// population below distMax -- is visible rather than assumed.
 __global__ void CountingStars_reactScan_kernel(int treeSize, bool* frontier, bool* goalSet,
                                                int* treeXR1s, float* treeSampleCosts, float* minCostsR1,
                                                int* bestNodeIdxPerR1, float costScale, float distMax,
@@ -1498,15 +1382,6 @@ void CountingStars::updateFrontier()
     (d_frontierNext_[MAX_TREE_SIZE - 1]) ? ++h_frontierNextSize_ : 0;
     findInd<<<h_gridSize_, h_blockSize_>>>(MAX_TREE_SIZE, d_frontierNext_ptr_, d_frontierScanIdx_ptr_, d_activeFrontierIdxs_ptr_);
 
-    // Collision-free candidates the accept passes are about to judge. Captured here because the
-    // post-gate re-scan below overwrites h_frontierNextSize_ with the survivors.
-    //
-    // Do NOT reconstruct it as frontierRepeatSize * 32 * nu: h_propAttempted_ is set by two
-    // different formulas depending on which propagate path ran (repeatSize * 32 on kernel1,
-    // repeatSize * propIterations on kernel2), so that product is a no-op round trip in one branch
-    // and overstates by up to 32x in the other.
-    h_candidatesPreGate_ = h_frontierNextSize_;
-
     // Per-iteration accumulators the accept passes fill. regionCovered MUST be cleared here rather
     // than in propagate: it is written by accept pass 2 and read by Part B, both inside this call.
     thrust::fill(d_doorCounts_.begin(), d_doorCounts_.end(), 0ULL);
@@ -1554,7 +1429,6 @@ void CountingStars::updateFrontier()
     h_reactCutoff_     = 0;
     h_pReactBoundary_  = 0.0f;
     h_reactCutoffDist_ = 0.0f;
-    h_dormantCount_    = 0;
     for(int i = 0; i < CS_HIST_SIZE; i++) h_acceptHistogram_[i] = 0;
 
     // ================================================================================
@@ -1655,7 +1529,6 @@ void CountingStars::updateFrontier()
         cudaMemcpy(h_acceptHistogram_, d_acceptHistogram_ptr_, CS_HIST_SIZE * sizeof(int),
                    cudaMemcpyDeviceToHost);
 
-    h_dormantCount_ = (uint)h_acceptHistogram_[CS_HIST_DORMANT_SLOT];
     csSolveCutoff(h_acceptHistogram_ + CS_HIST_REACT_BASE, CS_COST_BUCKETS,
                   h_reactFrac_ * float(h_goalFrontierSize_), h_reactCutoff_, h_pReactBoundary_);
     // The readable form -- the bucket index only means anything against the distMax that produced
@@ -1717,7 +1590,6 @@ void CountingStars::updateFrontier()
     // --- Read back the door counts. One memcpy for the whole "what built this tree" answer. ---
     cudaMemcpy(h_doorCounts_, d_doorCounts_ptr_, CS_NUM_DOOR_SLOTS * sizeof(unsigned long long), cudaMemcpyDeviceToHost);
     h_admittedExplore_       = (uint)h_doorCounts_[CS_SLOT_EXPLORE];
-    h_admittedCost_          = (uint)h_doorCounts_[CS_SLOT_COST];
     h_admittedCostDist_      = (uint)h_doorCounts_[CS_SLOT_COSTDIST];
     h_admittedBoth_          = (uint)h_doorCounts_[CS_SLOT_BOTH];
     h_admittedOptFreshBoth_  = (uint)h_doorCounts_[CS_SLOT_OPT_FRESH_BOTH];
@@ -1732,7 +1604,6 @@ void CountingStars::updateFrontier()
     //
     // and it holds exactly, because pass 2 is the only door writer and every candidate takes exactly
     // one path through it (whether that path sets zero, one, or more than one bit).
-    cudaMemcpy(&h_touchedR2_, d_touchedR2Count_ptr_, sizeof(uint), cudaMemcpyDeviceToHost);
 
     // What the doors actually committed, from the REALISED counts rather than the plan: admissions
     // plus the guaranteed and drawn reactivations that survived Part B's skips. Read against
@@ -1764,7 +1635,7 @@ void CountingStars::getControlPathToGoal()
 
     CountingStars_getControlPathToGoal_kernel<<<iDivUp(h_solSetSize_, h_blockSize_), h_blockSize_>>>(
       d_controlPathsToGoal_ptr_, d_treeSamples_ptr_, d_treeSamplesParentIdxs_ptr_, d_goalSetIdxs_ptr_, h_solSetSize_,
-      d_pathCosts_ptr_, d_treeSampleCosts_ptr_, d_iterations_ptr_, d_minCost_ptr_);
+      d_treeSampleCosts_ptr_, d_minCost_ptr_);
 
     cudaMemcpy(&h_minCost_, d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpy(h_controlPathsToGoal_, d_controlPathsToGoal_ptr_, MAX_ITER * SAMPLE_DIM * sizeof(float),
@@ -1775,10 +1646,11 @@ void CountingStars::getControlPathToGoal()
 /***************************/
 /* GET CONTROL PATH TO GOAL KERNEL */
 /***************************/
-// Every goal thread records (idx, cost, iteration); only the min-cost goal reconstructs its full path.
+// Every goal thread checks its cost against the running min; only the min-cost goal reconstructs
+// its full path.
 __global__ void CountingStars_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSamples,
                                                      int* treeSamplesParentIdxs, uint* goalSetIdxs, int goalSetSize,
-                                                     float* pathCosts, float* treeSampleCosts, int* iterations,
+                                                     float* treeSampleCosts,
                                                      float* minCost)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1787,11 +1659,6 @@ __global__ void CountingStars_getControlPathToGoal_kernel(float* controlPathsToG
     int goalIdx = goalSetIdxs[tid];
     int x0Idx   = goalIdx;
     float cost  = treeSampleCosts[goalIdx];
-
-    int pathCostsIdx            = 3 * tid;
-    pathCosts[pathCostsIdx]     = goalIdx;
-    pathCosts[pathCostsIdx + 1] = cost;
-    pathCosts[pathCostsIdx + 2] = iterations[goalIdx];
 
     if(cost != *minCost) return;
     int i = 0;

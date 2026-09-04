@@ -376,12 +376,6 @@ public:
     float h_pReactBoundary_;
     float h_reactCutoffDist_;
 
-    // Dormant nodes the scan measured: the react histogram's population, and the denominator that
-    // makes the floor arm's yield (~ h_reactFloor_ * h_dormantCount_) interpretable. Diagnostic
-    // only -- nothing in the arithmetic needs it, because the cost arm gets its count from the
-    // histogram and the floor is a flat probability.
-    uint h_dormantCount_;
-
     // h_guaranteedReact_ IS GONE. It was the guarantee's PLANNED size, and it existed only because
     // v2's draw probability was a remainder -- (B - admitted - guaranteed)/treeSize -- so the count
     // had to be known before the kernel that spent it launched. v3's draw is a fixed share of B, so
@@ -412,7 +406,7 @@ public:
     thrust::device_vector<unsigned long long> d_doorCounts_;
     unsigned long long* d_doorCounts_ptr_;
     unsigned long long  h_doorCounts_[CS_NUM_DOOR_SLOTS];
-    uint h_admittedExplore_, h_admittedCost_, h_reactivated_, h_reactivatedBest_;
+    uint h_admittedExplore_, h_reactivated_, h_reactivatedBest_;
     uint h_admittedCostDist_, h_admittedBoth_;
     // v3.3: the new door's overlap counter and the admission floor's yield -- see the identity above.
     uint h_admittedOptFreshBoth_, h_admittedFloor_;
@@ -433,11 +427,10 @@ public:
     float h_blockCeiling_;
     float h_blockScale_;
 
-    // h_globalCollisionFrac_ IS GONE (v3.3). It was a pure diagnostic even in v3 -- computed for
-    // free from h_propAttempted_/h_candidatesPreGate_, consumed by nothing in this planner's own
-    // arithmetic -- and its CSV column (global_collision_frac) was never read by
-    // process_countingstars_and_plot.m. h_propAttempted_/h_candidatesPreGate_ themselves are NOT
-    // dead: they are exported separately as prop_attempted/prop_valid and those ARE plotted.
+    // h_globalCollisionFrac_ IS GONE (v3.3), and h_candidatesPreGate_ went with it (both were pure
+    // diagnostics: consumed by nothing in this planner's own arithmetic, and their CSV columns --
+    // global_collision_frac, prop_valid -- were never read by either plot script). h_propAttempted_
+    // stays: it's exported as prop_attempted, which IS plotted.
 
     // CleanCost's global cost scale: (mean cost over all valid samples) - (min over regions). It is
     // the DENOMINATOR of a candidate's distance, so it is what makes "distance 0" a scale-free
@@ -445,25 +438,13 @@ public:
     // door and a collapsed scale would otherwise be invisible.
     float h_costScale_;
 
-    // R2 sub-cells claimed so far, as a RUNNING TOTAL rather than a swept count.
+    // THE R2 COVERAGE PIPELINE IS GONE (it tracked propagation attempts, INCLUDING collisions,
+    // purely to feed r2_coverage_pct -- a CSV column nothing plotted). No door has ever read a
+    // sub-cell; novelty is ordinality, not R2 coverage.
     //
-    // THE R2 DOOR IS GONE; THE R2 MARKING SURVIVES. Novelty is ordinality now, so nothing in the
-    // admission path reads a sub-cell. The claim is kept purely so r2_coverage_pct stays comparable
-    // with the KPAX-family baselines, and it is kept in THIS form -- read-then-CAS, one increment
-    // per cell ever -- because the alternative is a thrust::count over d_activeSubVertices_ every
-    // iteration, which is O(NUM_R2_REGIONS): 2.1M elements at the coarse delta, 37.9M at `tiny`.
-    thrust::device_vector<uint> d_touchedR2Count_;
-    uint* d_touchedR2Count_ptr_;
-    uint  h_touchedR2_;
-
-    // Two denominators the planner already knows and would otherwise discard.
-    //   h_propAttempted_     propagation attempts this iteration, INCLUDING collisions
-    //   h_candidatesPreGate_ collision-free candidates the accept passes judge, captured before the
-    //                        post-gate re-scan overwrites h_frontierNextSize_. Exact on both
-    //                        propagate paths, unlike any reconstruction from h_propAttempted_
-    //                        (whose formula differs by branch).
+    // Exact on both propagate paths, unlike any reconstruction from a per-block launch geometry
+    // (whose formula differs by branch).
     uint h_propAttempted_;
-    uint h_candidatesPreGate_;
 
     float* h_controlPathsToGoal_;
 
@@ -489,28 +470,6 @@ public:
     thrust::device_vector<int> d_bestNodeIdxPerR1_;
     thrust::device_vector<int> d_treeXR1s_, d_frontierNextXR1s_;
     thrust::device_vector<bool> d_goalSet_;
-
-    // ==================================================================================
-    // COUNTINGSTARS' OWN R1 MIN-CORNER TABLE, and the reason it exists.
-    //
-    // getSubRegion measures a candidate's offset from its R1 region's minimum corner to find its R2
-    // sub-cell. Graph.cu's initializeRegions_kernel computes those corners with a decode that does
-    // NOT invert getRegion's encode: the digit order is reversed (wRegion is the most significant
-    // group in the encode, the least significant in the decode) AND the group moduli use hardcoded
-    // exponents C_R1_LENGTH^2 / V_R1_LENGTH^1 where the encode uses C_R1_LENGTH^C_DIM /
-    // V_R1_LENGTH^V_DIM. The collapse factor is C_R1_LENGTH^(C_DIM-2) * V_R1_LENGTH^(V_DIM-1) --
-    // 8x at the checked-in config, and it GROWS with a finer discretisation.
-    //
-    // So the corner belongs to a different region than the index names, getSubRegion's clamps pin
-    // the offset to an edge cell, and every R2 identity is wrong. It no longer decides anything here
-    // -- v2's doors never read a sub-cell -- but r2_coverage_pct is only comparable with the
-    // baselines if the cells being counted are the right ones, so the corrected table stays.
-    //
-    // Graph.cu is deliberately left alone: every existing baseline was measured against it. This
-    // planner carries a corrected copy and passes it wherever the others pass
-    // graph_.d_minValueInRegion_. scripts/check_region_math.py proves the corrected decode is a
-    // bijection and measures the shared one's collapse.
-    thrust::device_vector<float> d_minCornerCS_;
 
     // --- per-R1, RESET EVERY ITERATION ---
     //   d_regionCovered_  did an OPTIMAL admission land in this region this iteration? The
@@ -578,17 +537,16 @@ public:
 
     thrust::device_vector<uint> d_goalSetIdxs_, d_goalSetScanIdx_;
     thrust::device_vector<int> d_iterations_;
-    thrust::device_vector<float> d_pathCosts_, d_controlPathsToGoal_;
+    thrust::device_vector<float> d_controlPathsToGoal_;
 
     // --- raw pointers ---
     float *d_unexploredSamples_ptr_, *d_goalSample_ptr_, *d_unexploredSampleCosts_ptr_;
     float *d_minCostsR1_ptr_, *d_sumCostsR1_ptr_, *d_maxCostsR1_ptr_, *d_minCost_ptr_;
-    float *d_minCornerCS_ptr_;
     int   *d_regionNodeCount_ptr_, *d_acceptHistogram_ptr_;
     bool  *d_regionCovered_ptr_, *d_reactEligible_ptr_;
     int   *d_nodeBlocks_ptr_, *d_nodeDoor_ptr_, *d_candDoor_ptr_;
     float *d_candDistance_ptr_;
-    float *d_pathCosts_ptr_, *d_controlPathsToGoal_ptr_;
+    float *d_controlPathsToGoal_ptr_;
     bool *d_frontier_ptr_, *d_frontierNext_ptr_, *d_goalSet_ptr_;
     uint *d_activeFrontierIdxs_ptr_, *d_frontierScanIdx_ptr_, *d_activeFrontierRepeatCount_ptr_,
       *d_frontierRepeatScanIdx_ptr_, *d_activeFrontierRepeatIdxs_ptr_;
@@ -604,28 +562,20 @@ public:
 /**************************** DEVICE FUNCTIONS ****************************/
 
 /***************************/
-/* R1 MIN-CORNER INITIALISATION */
-/***************************/
-// The exact inverse of getRegion's encode, written entirely in config macros so it stays correct at
-// any discretisation. See d_minCornerCS_ above for why this exists rather than reusing Graph.cu's.
-__global__ void CountingStars_initializeRegions_kernel(float* minCorner);
-
-/***************************/
 /* PROPAGATE FRONTIER KERNEL 1 */
 /***************************/
-// Pure candidate producer plus COUNTING. It records every collision-free propagation, marks R2 cells
-// for the coverage metric, and accumulates the per-region cost statistics the accept passes divide
-// by -- but makes no admission decision. Counting with atomics is exact and order-independent, so it
-// does not violate the invariant that put the decision after propagate: that rule is about cost
-// STATISTICS being mid-flight, and minCostsR1 is still only read afterwards.
+// Pure candidate producer plus COUNTING. It records every collision-free propagation and
+// accumulates the per-region cost statistics the accept passes divide by -- but makes no admission
+// decision. Counting with atomics is exact and order-independent, so it does not violate the
+// invariant that put the decision after propagate: that rule is about cost STATISTICS being
+// mid-flight, and minCostsR1 is still only read afterwards.
 __global__ void CountingStars_propagateFrontier_kernel1(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
                                                    float* unexploredSamples, uint frontierSize, curandState* randomSeeds,
                                                    int* unexploredSamplesParentIdxs, float* obstacles, int obstaclesCount,
-                                                   int* activeSubVertices, bool* frontierNext,
-                                                   int* validVertexCounter, float* minCorner,
+                                                   bool* frontierNext,
+                                                   int* validVertexCounter,
                                                    float* treeSampleCosts, float* minCostsR1, float* maxCostsR1, float* sumCostsR1,
                                                    int* frontierNextXR1s, int* candDoor,
-                                                   uint* touchedR2Count,
                                                    float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid);
 
 /***************************/
@@ -634,12 +584,10 @@ __global__ void CountingStars_propagateFrontier_kernel1(bool* frontier, uint* ac
 __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* activeFrontierIdxs, float* treeSamples,
                                                    float* unexploredSamples, uint frontierSize, curandState* randomSeeds,
                                                    int* unexploredSamplesParentIdxs, float* obstacles, int obstaclesCount,
-                                                   int* activeSubVertices, bool* frontierNext,
+                                                   bool* frontierNext,
                                                    int* validVertexCounter, int iterations,
-                                                   float* minCorner,
                                                    float* treeSampleCosts, float* minCostsR1, float* maxCostsR1, float* sumCostsR1,
                                                    int* frontierNextXR1s, int* candDoor,
-                                                   uint* touchedR2Count,
                                                    float* unexploredSampleCosts, SpatialHashGrid spatialHashGrid);
 
 /***************************/
@@ -775,5 +723,5 @@ __global__ void CountingStars_assignFanout_kernel(uint frontierSize, uint* activ
 /***************************/
 __global__ void CountingStars_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSamples,
                                                      int* treeSamplesParentIdxs, uint* goalSetIdxs, int goalSetSize,
-                                                     float* pathCosts, float* treeSampleCosts, int* iterations,
+                                                     float* treeSampleCosts,
                                                      float* minCost);

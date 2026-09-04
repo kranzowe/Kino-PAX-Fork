@@ -191,9 +191,6 @@ struct IterationData
     int tree_size;
     float elapsed_time_ms;
     float best_cost;
-    int num_regions;          // NUM_R1_REGIONS for this build (all planners share it)
-    float r2_coverage_pct;    // % of R2 sub-regions ever activated (KPAX-family planners; NaN otherwise)
-    float mean_vertex_score;  // mean Syclop region score (KPAX-family planners; NaN otherwise)
     int reactivated;          // dormant tree nodes re-added to frontier this iter (KPAX-family planners; -1 otherwise)
     // --- normalization diagnostics ---
     float score_floor;        // Graph::h_scoreFloor_: EPSILON for legacy planners, 1/N_active for
@@ -223,7 +220,7 @@ struct IterationData
     //      RISING over a run is expected -- regions fill, so both signals get scarce. Pinned at 0
     //      means no candidate is ever good enough on that signal and the fraction is doing nothing.
     //
-    //      admitted_explore, admitted_cost AND admitted_costdist OVERLAP (v3.3: OPTIMAL now also
+    //      admitted_explore, optimal_count AND admitted_costdist OVERLAP (v3.3: OPTIMAL now also
     //      competes for FRESHEST). admitted_opt_fresh_both and admitted_both are what make them add
     //      back up:
     //      admitted == optimal_count + admitted_explore + admitted_costdist + admitted_floor
@@ -233,7 +230,6 @@ struct IterationData
     //      on every iteration. Kernel1 is retained by construction, so below 32 is a defect. v3.3:
     //      an admission-time block count is now popcount(door), 1 or 2 -- not a swept boost size.
     int   prop_attempted;         // propagations launched this iteration, collisions included
-    int   prop_valid;             // collision-free candidates the accept passes judged
     int   frontier_repeat_size;   // sum of the per-node block counts; x32 is the kernel1 attempt count
     // The budget's own arithmetic, as applied THIS iteration. optimal_count is what the uncapped
     // top door took before anything else was offered any of the budget; ord_cutoff and cost_cutoff
@@ -254,24 +250,12 @@ struct IterationData
     // VARIES row to row within one run -- it was always a per-iteration column, just constant under
     // v3's fixed B, so this is the first pass where plotting it against iteration is worth a panel.
     int   goal_frontier_size;
-    // v3.2: the ramp's two settings, constant per run. fill_frac is gone -- it was v3's single
-    // derived-B knob; bufferSlope/bufferFloor together replace it, with bufferSlope = 0 reproducing
-    // v3's constant B exactly.
-    float buffer_slope;
-    float buffer_floor;
-    // The three shares as applied. Settings rather than measurements, in the data so the panels can
-    // be read without parsing filenames. react_frac is derived (1 - explore - cost) and is logged so
-    // a caller that oversubscribed the budget is visible.
-    float explore_frac;
-    float cost_frac;
-    float react_frac;
-    // The cost door's cutoff. READ cost_cutoff_dist, NOT cost_cutoff: the bucket index is only
+    // The cost door's cutoff, as a DISTANCE rather than a bucket index -- the index is only
     // meaningful against the dist_max that produced it, and dist_max moves every iteration.
     //
     // cost_cutoff_dist collapsing toward dist_max / 2^21 means every candidate is landing in bucket
     // 0 and the boundary roll has degraded the door to a uniform draw among near-optimal candidates
     // -- the signal that the log bucket map has the wrong shape for this distribution.
-    int   cost_cutoff;
     float cost_cutoff_dist;
     float dist_max;
     // ---- v3.1: Part B's cost arm ----
@@ -280,23 +264,10 @@ struct IterationData
     // the CANDIDATE anchor, reused: a dormant node above it clamps into the top bucket, which is
     // harmless (this arm takes the SMALLEST distances) unless the cutoff itself pins there, which
     // means the budget exceeded the population below dist_max.
-    //
-    // dormant_count is the arm's population and the denominator that makes react_floor's yield
-    // (~ react_floor * dormant_count) readable.
-    int   react_cutoff;
     float react_cutoff_dist;
-    int   dormant_count;
-    // The completeness floor. A SETTING, and one that is deliberately not swept -- its job is to be
-    // non-zero. Logged so the value behind any run is auditable.
-    float react_floor;
-    // v3.3: THE ADMISSION completeness floor -- react_floor's counterpart for candidates. Same
-    // discipline: a setting, not swept, logged for auditability.
-    float accept_floor;
-    // Admissions by door, counted exactly on the device. admitted_cost is the OPTIMAL door
-    // (distance 0); admitted_costdist is v3's cost-distance door; admitted_both is the
-    // FRESHEST/CHEAPEST overlap.
+    // Admissions by door, counted exactly on the device. admitted_costdist is v3's cost-distance
+    // door; admitted_both is the FRESHEST/CHEAPEST overlap.
     int   admitted_explore;
-    int   admitted_cost;
     int   admitted_costdist;
     int   admitted_both;
     // v3.3: OPTIMAL's overlap with FRESHEST (OPTIMAL never overlaps CHEAPEST -- see
@@ -332,27 +303,15 @@ struct IterationData
 static void clearCountingStarsCols(IterationData& d)
 {
     d.prop_attempted = -1;
-    d.prop_valid = -1;
     d.frontier_repeat_size = -1;
     d.optimal_count = -1;
     d.ord_cutoff = -1;
     d.budget_used = -1;
     d.goal_frontier_size = -1;
-    d.buffer_slope = NAN;
-    d.buffer_floor = NAN;
-    d.explore_frac = NAN;
-    d.cost_frac = NAN;
-    d.react_frac = NAN;
-    d.cost_cutoff = -1;
     d.cost_cutoff_dist = NAN;
     d.dist_max = NAN;
-    d.react_cutoff = -1;
     d.react_cutoff_dist = NAN;
-    d.dormant_count = -1;
-    d.react_floor = NAN;
-    d.accept_floor = NAN;
     d.admitted_explore = -1;
-    d.admitted_cost = -1;
     d.admitted_costdist = -1;
     d.admitted_both = -1;
     d.admitted_opt_fresh_both = -1;
@@ -513,14 +472,14 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
     // score_floor / cost_scale are appended, not inserted -- the plot script reads columns by name
     // via getCol(), which returns [] for a missing one, so older CSVs still load.
     file << "iteration,frontier_size,tree_size,elapsed_time_ms,best_cost,"
-         << "num_regions,r2_coverage_pct,mean_vertex_score,reactivated,"
+         << "reactivated,"
          << "score_floor,cost_scale,"
-         << "prop_attempted,prop_valid,frontier_repeat_size,"
+         << "prop_attempted,frontier_repeat_size,"
          << "optimal_count,ord_cutoff,budget_used,"
-         << "goal_frontier_size,buffer_slope,buffer_floor,explore_frac,cost_frac,react_frac,"
-         << "cost_cutoff,cost_cutoff_dist,dist_max,"
-         << "react_cutoff,react_cutoff_dist,dormant_count,react_floor,accept_floor,"
-         << "admitted_explore,admitted_cost,admitted_costdist,admitted_both,"
+         << "goal_frontier_size,"
+         << "cost_cutoff_dist,dist_max,"
+         << "react_cutoff_dist,"
+         << "admitted_explore,admitted_costdist,admitted_both,"
          << "admitted_opt_fresh_both,admitted_floor,"
          << "reactivated_cost,reactivated_count,reactivated_best,"
          << "block_ceiling,block_scale\n";
@@ -532,35 +491,20 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
              << d.tree_size << ","
              << std::fixed << std::setprecision(3) << d.elapsed_time_ms << ","
              << std::fixed << std::setprecision(6) << d.best_cost << ","
-             << d.num_regions << ","
-             << std::fixed << std::setprecision(3) << d.r2_coverage_pct << ","
-             << std::fixed << std::setprecision(6) << d.mean_vertex_score << ","
              << d.reactivated << ","
              << std::fixed << std::setprecision(9) << d.score_floor << ","
              << std::fixed << std::setprecision(6) << d.cost_scale << ","
              << d.prop_attempted << ","
-             << d.prop_valid << ","
              << d.frontier_repeat_size << ","
              << d.optimal_count << ","
              << d.ord_cutoff << ","
              << d.budget_used << ","
              << d.goal_frontier_size << ","
-             << std::fixed << std::setprecision(4) << d.buffer_slope << ","
-             << std::fixed << std::setprecision(4) << d.buffer_floor << ","
-             << std::fixed << std::setprecision(4) << d.explore_frac << ","
-             << std::fixed << std::setprecision(4) << d.cost_frac << ","
-             << std::fixed << std::setprecision(4) << d.react_frac << ","
-             << d.cost_cutoff << ","
              << std::fixed << std::setprecision(9) << d.cost_cutoff_dist << ","
              << std::fixed << std::setprecision(9) << d.dist_max << ","
-             << d.react_cutoff << ","
              << std::fixed << std::setprecision(9) << d.react_cutoff_dist << ","
-             << d.dormant_count << ","
-             << std::scientific << std::setprecision(3) << d.react_floor << ","
-             << std::scientific << std::setprecision(3) << d.accept_floor << ","
              << std::fixed
              << d.admitted_explore << ","
-             << d.admitted_cost << ","
              << d.admitted_costdist << ","
              << d.admitted_both << ","
              << d.admitted_opt_fresh_both << ","
@@ -683,9 +627,6 @@ RunResult benchmarkKinoPaxPlus(
         d.tree_size     = planner.h_treeSize_;
         d.elapsed_time_ms = plannerMs;
         d.best_cost     = result.final_best_cost;
-        d.num_regions       = NUM_R1_REGIONS;
-        d.r2_coverage_pct   = NAN;   // KinoPaxPlus has no R2/vertexScore machinery
-        d.mean_vertex_score = NAN;
         d.reactivated       = -1;
         d.score_floor       = NAN;   // KinoPaxPlus uses KinoPaxPlusRegions, not Graph
         d.cost_scale        = NAN;
@@ -790,14 +731,6 @@ RunResult benchmarkKPAX(
         // New nodes live at idx >= oldTreeSize, so they are excluded.
         int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
                                              planner.d_frontier_.begin() + oldTreeSize, true);
-        // R2 coverage: fraction of sub-regions ever activated (activeSubVertices != 0).
-        int inactiveR2 = (int)thrust::count(planner.graph_.d_activeSubVertices_.begin(),
-                                            planner.graph_.d_activeSubVertices_.end(), 0);
-        float r2CoveragePct = 100.0f * float(NUM_R2_REGIONS - inactiveR2) / float(NUM_R2_REGIONS);
-        // Mean Syclop vertex score across all R1 regions.
-        float scoreSum  = thrust::reduce(planner.graph_.d_vertexScoreArray_.begin(),
-                                         planner.graph_.d_vertexScoreArray_.end(), 0.0f);
-        float meanScore = scoreSum / float(NUM_R1_REGIONS);
 
         IterationData d;
         clearCountingStarsCols(d);
@@ -806,9 +739,6 @@ RunResult benchmarkKPAX(
         d.tree_size     = planner.h_treeSize_;
         d.elapsed_time_ms = plannerMs;
         d.best_cost     = result.final_best_cost;
-        d.num_regions       = NUM_R1_REGIONS;
-        d.r2_coverage_pct   = r2CoveragePct;
-        d.mean_vertex_score = meanScore;
         d.reactivated       = reactivated;
         d.score_floor       = planner.graph_.h_scoreFloor_;
         d.cost_scale        = NAN;
@@ -1002,12 +932,6 @@ RunResult benchmarkKPAXCap(
         // --- Frontier diagnostics (outside the timed window; KPAXCap uses the KPAX Graph) ---
         int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
                                              planner.d_frontier_.begin() + oldTreeSize, true);
-        int inactiveR2 = (int)thrust::count(planner.graph_.d_activeSubVertices_.begin(),
-                                            planner.graph_.d_activeSubVertices_.end(), 0);
-        float r2CoveragePct = 100.0f * float(NUM_R2_REGIONS - inactiveR2) / float(NUM_R2_REGIONS);
-        float scoreSum  = thrust::reduce(planner.graph_.d_vertexScoreArray_.begin(),
-                                         planner.graph_.d_vertexScoreArray_.end(), 0.0f);
-        float meanScore = scoreSum / float(NUM_R1_REGIONS);
 
         IterationData d;
         clearCountingStarsCols(d);
@@ -1016,9 +940,6 @@ RunResult benchmarkKPAXCap(
         d.tree_size     = planner.h_treeSize_;
         d.elapsed_time_ms = plannerMs;
         d.best_cost     = result.final_best_cost;
-        d.num_regions       = NUM_R1_REGIONS;
-        d.r2_coverage_pct   = r2CoveragePct;
-        d.mean_vertex_score = meanScore;
         d.reactivated       = reactivated;
         d.score_floor       = planner.graph_.h_scoreFloor_;
         d.cost_scale        = NAN;
@@ -1188,12 +1109,6 @@ RunResult benchmarkCountingStars(
         // free check on all three arms of Part B.
         int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
                                              planner.d_frontier_.begin() + oldTreeSize, true);
-        // r2_coverage_pct from the planner's RUNNING COUNTER, not a sweep of d_activeSubVertices_.
-        // Identical value; the old thrust::count was O(NUM_R2_REGIONS) EVERY ITERATION -- 2.1M
-        // elements at the coarse delta and 37.9M at `tiny`.
-        float r2CoveragePct = 100.0f * float(planner.h_touchedR2_) / float(NUM_R2_REGIONS);
-        // NaN, not 0. A zero would read as "the scores collapsed"; there are no scores.
-        float meanScore = NAN;
 
         IterationData d;
         clearCountingStarsCols(d);
@@ -1202,9 +1117,6 @@ RunResult benchmarkCountingStars(
         d.tree_size     = planner.h_treeSize_;
         d.elapsed_time_ms = plannerMs;
         d.best_cost     = result.final_best_cost;
-        d.num_regions       = NUM_R1_REGIONS;
-        d.r2_coverage_pct   = r2CoveragePct;
-        d.mean_vertex_score = meanScore;
         d.reactivated       = reactivated;
         d.score_floor       = NAN;   // no Syclop score, so no floor
         // NOT NaN any more, and that is a real column here rather than a courtesy: costScale is the
@@ -1213,7 +1125,6 @@ RunResult benchmarkCountingStars(
         d.cost_scale        = planner.h_costScale_;
         // CountingStars readout.
         d.prop_attempted       = (int)planner.h_propAttempted_;
-        d.prop_valid           = (int)planner.h_candidatesPreGate_;
         d.frontier_repeat_size = (int)planner.h_frontierRepeatSize_;
         d.optimal_count        = (int)planner.h_optimalCount_;
         d.ord_cutoff           = planner.h_ordCutoff_;
@@ -1222,21 +1133,10 @@ RunResult benchmarkCountingStars(
         // echoed from the sweep's own axis -- which is what makes the column a check on the
         // derivation (does the realized ramp match slope*x+floor), not a copy of a setting.
         d.goal_frontier_size   = planner.h_goalFrontierSize_;
-        d.buffer_slope         = planner.h_bufferSlope_;
-        d.buffer_floor         = planner.h_bufferFloor_;
-        d.explore_frac         = planner.h_exploreFrac_;
-        d.cost_frac            = planner.h_costFrac_;
-        d.react_frac           = planner.h_reactFrac_;
-        d.cost_cutoff          = planner.h_costCutoff_;
         d.cost_cutoff_dist     = planner.h_costCutoffDist_;
         d.dist_max             = planner.h_distMax_;
-        d.react_cutoff         = planner.h_reactCutoff_;
         d.react_cutoff_dist    = planner.h_reactCutoffDist_;
-        d.dormant_count        = (int)planner.h_dormantCount_;
-        d.react_floor          = planner.h_reactFloor_;
-        d.accept_floor         = planner.h_acceptFloor_;
         d.admitted_explore     = (int)planner.h_admittedExplore_;
-        d.admitted_cost        = (int)planner.h_admittedCost_;
         d.admitted_costdist    = (int)planner.h_admittedCostDist_;
         d.admitted_both        = (int)planner.h_admittedBoth_;
         d.admitted_opt_fresh_both = (int)planner.h_admittedOptFreshBoth_;
@@ -1399,12 +1299,6 @@ RunResult benchmarkKinoPaxSTARCleanCost(
         // --- Frontier diagnostics (outside the timed window; CleanCost uses the KPAX Graph) ---
         int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
                                              planner.d_frontier_.begin() + oldTreeSize, true);
-        int inactiveR2 = (int)thrust::count(planner.graph_.d_activeSubVertices_.begin(),
-                                            planner.graph_.d_activeSubVertices_.end(), 0);
-        float r2CoveragePct = 100.0f * float(NUM_R2_REGIONS - inactiveR2) / float(NUM_R2_REGIONS);
-        float scoreSum  = thrust::reduce(planner.graph_.d_vertexScoreArray_.begin(),
-                                         planner.graph_.d_vertexScoreArray_.end(), 0.0f);
-        float meanScore = scoreSum / float(NUM_R1_REGIONS);
 
         IterationData d;
         clearCountingStarsCols(d);
@@ -1413,9 +1307,6 @@ RunResult benchmarkKinoPaxSTARCleanCost(
         d.tree_size     = planner.h_treeSize_;
         d.elapsed_time_ms = plannerMs;
         d.best_cost     = result.final_best_cost;
-        d.num_regions       = NUM_R1_REGIONS;
-        d.r2_coverage_pct   = r2CoveragePct;
-        d.mean_vertex_score = meanScore;
         d.reactivated       = reactivated;
         d.score_floor       = planner.graph_.h_scoreFloor_;
         d.cost_scale        = planner.h_costScale_;
