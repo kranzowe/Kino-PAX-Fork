@@ -2,34 +2,38 @@
 % Reads per-iteration CSVs produced by examples/gpu/countingstars_sweep.cu
 % (run via scripts/run_countingstars_sweep.sh).
 %
-% Series are (planner, delta) pairs. THIS PASS runs the coarse delta and the zigzag environment
-% only for the tuned arms; the two finer deltas run KinoPaxPlus alone (see deltaPlusOnly below and
-% DELTA_EXTRA_ARGS in run_countingstars_sweep.sh):
+% Series are (planner, delta) pairs. THIS PASS'S AXIS IS ANCESTOR-AWARENESS, and BOTH deltas
+% (coarse, fine) run the FULL comparison -- unlike earlier passes through this file, neither delta
+% is restricted to KinoPaxPlus alone (see deltaPlusOnly below and DELTA_EXTRA_ARGS in
+% run_countingstars_sweep.sh, both all-false this pass):
 %
-%   CountingStars         bufferSlope {1.0,1.3,1.6} x bufferFloor {0.05,0.2}
-%                         explore_frac=0.3, cost_frac=0.3 FIXED (not swept this pass)  =  6
+%   CountingStars         bufferSlope 1.2 (FIXED), bufferFloor 0.05 (FIXED),
+%                         explore_frac=0.3, cost_frac=0.3 (FIXED, not swept this pass),
+%                         ancestorAlpha {0.3,0.7} x ancestorWeight {0,0.25,0.5} -- THE SWEPT AXIS,
+%                         weight=0 counted once (alpha inert there)                    =  5
 %   KinoPaxSTARCleanCost  r2 OFF, w 0.9, k 1, cap 0.03  (one tuned reference point)     =  1
 %   KPAXCap               cap {0.03}                                                   =  1
 %   KPAX, KinoPaxPlus                                                                  =  2
 %                                                                                      -----
-%                                                                  at the coarse delta    10
-%   KinoPaxPlus at the two finer deltas                                                +  2
+%                                                                        per delta        9
+%                                                                       x 2 deltas    x  2
 %                                                                                      -----
-%                                                                                         12
+%                                                                                        18
 %
 % RUN ONCE PER COST METRIC TOO (length, effort -- see metrics below): each is a separate build and
 % a separate set of CSVs, so the series count above applies to each metric independently.
 %
-% CountingStars runs at the COARSE delta only -- that is what the discretization factor in the
-% grid above means, and it is enforced by DELTA_EXTRA_ARGS in run_countingstars_sweep.sh
-% (--only-kinopaxplus at the two finer deltas), mirrored by deltaPlusOnly below.
+% CountingStars/CleanCost/KPAXCap/KPAX ALL RUN AT BOTH DELTAS THIS PASS -- the whole point of the
+% ancestor-awareness sweep is the concern that CountingStars does worse than KinoPaxPlus at finer
+% discretizations specifically because it lacks ancestor pruning, which needs CountingStars (and
+% the other baselines) measured at the fine delta too, not KinoPaxPlus alone.
 %
 % WHAT THIS SWEEP IS ASKING. v3's sweep showed the standard explore-vs-refine tradeoff: a small
 % constant buffer (fill_frac = 0.25) found a first solution fast but converged to a worse final
 % cost; a large one (0.75) was the reverse. Rather than pick one point on that tradeoff, v3.2 makes
 % the buffer VARY over the run:
 %
-%     x         = itr / MAX_ITER                              (fraction of the run elapsed)
+%     x         = itr / fill_iters                            (fraction of the run elapsed)
 %     B_frac(x) = bufferSlope * x + bufferFloor
 %     B(x)      = floor(B_frac(x) * MAX_TREE_SIZE / MAX_ITER)  -- RECOMPUTED EVERY ITERATION
 %
@@ -102,11 +106,11 @@
 % SCORE AT ALL -- it never reads vertexScores, h_scoreFloor_, h_nActive_ or regionCoverage in any
 % decision -- so it writes NaN there and simply does not draw on that panel.
 %
-% ENCODING: colour = bufferFloor (near-black smallest -> pale largest); line style = bufferSlope
-% (solid = bufferSlope 0, v3's constant-B control); scatter marker = 'o' (fixed -- explore_frac and
-% cost_frac no longer vary, so there is no third axis to give its own marker); line width = delta.
-% v3.3: maxBlocks is gone -- fan-out is door-count, not a swept boost size, so there is no fourth
-% axis it used to hold fixed. CleanCost is crimson, KPAXCap grey-green,
+% ENCODING THIS PASS: colour = ancestorWeight (pale = 0, the off-default -> near-black strongest
+% blend); line style = ancestorAlpha (solid = 0.3, dashed = 0.7); scatter marker = 'o' (fixed --
+% explore_frac and cost_frac no longer vary, so there is no third axis to give its own marker); line
+% width = delta. bufferSlope/bufferFloor are FIXED this pass, so neither holds a visual channel any
+% more. CleanCost is crimson, KPAXCap grey-green,
 % KPAX near-black, KinoPaxPlus blue -- all four drawn thicker as reference anchors. Every legend
 % here is CLICKABLE - click an entry to hide/show that series.
 %
@@ -142,74 +146,74 @@ metricTitles = {'Workspace Path Length', 'Control Effort'};
 metricYLabels = {'Path Cost (workspace path length)', 'Path Cost (control effort)'};
 
 % Delta axis — OVERLAID inside each figure, encoded as line WIDTH. The filename token is
-% sprintf('%s_%s', delta, metric), e.g. 'fine_control_length'.
-deltas      = {'large', 'fine', 'tiny'};
-deltaTitles = {'27k', '216k W-refined', '593k V-refined'};
-deltaWidths = [1.0, 1.8, 2.6];
+% sprintf('%s_%s', delta, metric), e.g. 'fine_length'. TWO THIS PASS -- "tiny" dropped, and both run
+% the full comparison (see deltaPlusOnly below).
+deltas      = {'large', 'fine'};
+deltaTitles = {'27k (coarse)', '216k (fine)'};
+deltaWidths = [1.0, 2.2];
 
-% WHICH ARMS EXIST AT EACH DELTA. Index 0 runs the full sweep; the two finer deltas run
-% KINOPAXPLUS ONLY, because KinoPaxPlus is the planner whose whole advantage is a tiny frontier at
-% a fine discretisation, so it is the one baseline that has to be measured at all three. Re-running
-% the CountingStars grid there would triple the sweep to answer a question the coarse delta already
-% answers.
+% WHICH ARMS EXIST AT EACH DELTA. BOTH FALSE THIS PASS -- unlike earlier passes through this file,
+% neither delta is restricted to KinoPaxPlus alone. The whole point of sweeping ancestor-awareness
+% is the concern that CountingStars does worse than KinoPaxPlus at finer discretizations precisely
+% because it lacks ancestor pruning, which needs CountingStars (and the other baselines) measured
+% at the fine delta too.
 %
 % MUST MATCH DELTA_EXTRA_ARGS in run_countingstars_sweep.sh: "--only-kinopaxplus" there is a true
 % here. When these drift, loadRuns() silently finds no files and reports "0 runs" for the orphaned
 % series rather than erroring -- the failure mode that wastes a whole sweep.
 % cross_check_countingstars_grid.py asserts it.
-deltaPlusOnly = [false, true, true];
+deltaPlusOnly = [false, false];
 
 capDerived     = 3;       % label token for cap = 0.03 (CAP_DERIVED in the benchmark)
 % --single-point is not used by this sweep, so any delta that runs an arm runs its full axis.
-deltaSingleCap = [false, false, false];
+deltaSingleCap = [false, false];
 
-deltaLabel = '3 deltas overlaid';
+deltaLabel = '2 deltas overlaid (coarse, fine)';
 
-% CountingStars v3.2 grid - must match BUFFER_SLOPES / BUFFER_FLOORS / EXPLORE_FRACS / COST_FRACS
-% in countingstars_sweep.cu. Values are the label tokens exactly as they appear in the filenames:
-% bufferSlope/bufferFloor as round(100 x float), the two shares as round(1000 x float).
+% CountingStars grid THIS PASS: bufferSlope/bufferFloor/explore_frac/cost_frac are ALL FIXED
+% (single-element arrays) -- an earlier pass already characterized the ramp on its own. The SWEPT
+% AXIS is ancestor-awareness: csAncestorAlphas x csAncestorWeights. Values are the label tokens
+% exactly as they appear in the filenames: bs/bf/aa/aw as round(100 x float), ef/cf as
+% round(1000 x float) -- see countingStarsLabel() in the benchmark.
+%
 % cross_check_countingstars_grid.py asserts these stay in step with the .cu and the .sh; when they
 % drift, MATLAB reports "0 runs" for the orphaned series rather than erroring, which is the failure
 % mode that silently wastes a whole sweep.
 %
-% B IS A RAMP, RECOMPUTED EVERY ITERATION, and it is a CSV COLUMN. The planner computes
+% B IS STILL A RAMP, RECOMPUTED EVERY ITERATION (unchanged this pass), and it is a CSV COLUMN:
 %
-%     x = itr/MAX_ITER,   B(x) = floor((bufferSlope*x + bufferFloor) * MAX_TREE_SIZE / MAX_ITER)
+%     x = itr/fill_iters,  B(x) = floor((bufferSlope*x + bufferFloor) * MAX_TREE_SIZE / fill_iters)
 %
-% -- v3's single fill_frac is gone; bufferSlope/bufferFloor together replace it, with
-% bufferSlope = 0 reproducing v3's constant B exactly (B(x) = bufferFloor for every x). B travels
-% in the data as goal_frontier_size, which NOW GENUINELY VARIES ROW TO ROW within a run instead of
-% being constant -- see the new "goal_frontier_size vs iteration" figure below, which did not exist
-% under v3 because that column was always a flat line not worth its own panel.
+% B travels in the data as goal_frontier_size, which VARIES ROW TO ROW within a run -- see the
+% "goal_frontier_size vs iteration" figure below.
 %
 % KinoPaxPlus divides the whole budget over a frontier its pruning keeps tiny
 % (bf = MAX_TREE_SIZE/(F*32), 40,000 propagations per node at F = 10), which is the number
 % prop_attempted/frontier_size is read against.
 %
-% csExploreFracs / csCostFracs ARE round(1000 x frac) TOKENS, not 100x -- see countingStarsLabel()
-% in the benchmark. FIXED AT 0.3 EACH THIS PASS (single-element arrays, not swept) -- isolates the
-% slope/floor grid's own effect, kept as single-element arrays rather than bare scalars so
-% re-expanding either axis later needs no shape change to the loop below.
+% ANCESTOR-AWARENESS BLENDS THE CHEAPEST/REACTIVATION DISTANCE with a per-node lineage EMA
+% (h_ancestorAlpha_'s decay rate) at weight h_ancestorWeight_ -- see csBlendDistance in
+% CountingStars.cuh. ancestorWeight = 0 is the mechanism's EXACT off-default (a free structural
+% control against every nonzero point, same convention as bufferSlope = 0 in earlier passes);
+% ancestorAlpha is INERT there (the EMA it decays has no effect until a nonzero weight reads it),
+% so only csAncestorAlphas(1) rides in once at weight = 0 rather than repeating an identical run
+% once per alpha -- mirrored below by the `aWeight == 0 && aAlpha ~= csAncestorAlphas(1)` skip.
 %
-% csBufferSlopes / csBufferFloors STAY AT 100x, matching v3's csFillFracs convention -- both are
-% coarse axes (slope up to 1.6, floor up to 0.2) where `bs160`/`bf20` read directly as 1.6/0.2.
-%
-% (bufferSlope, bufferFloor) = (0, 0) IS THE DEEPEST ABLATION ARM: it makes B a constant 0
-% (floored to 1), so the cutoff solve returns cutoff 0 / pBoundary 0 for all three budgeted doors.
-% OPTIMAL and the region-best GUARANTEE remain UNCAPPED regardless of B, so the frontier is still
-% optimal + guarantee + a trickle draw, not empty.
-%
-csBufferSlopes = [100 130 160];
-csBufferFloors = [5 20];
+csBufferSlopes = [120];
+csBufferFloors = [5];
 csExploreFracs = [300];
 csCostFracs    = [300];
+csAncestorAlphas  = [30 70];
+csAncestorWeights = [0 25 50];
 
 % The derived operating point that --single-point selects. EVERY component must be a member of its
 % list, because the flag selects BY VALUE -- a derived point outside the grid would run nothing.
-csDerivedBufferSlope = 130;        % bufferSlope 1.3 -> round(100 * 1.3); middle of csBufferSlopes
-csDerivedBufferFloor = 5;          % bufferFloor 0.05 -> round(100 * 0.05); a member of csBufferFloors
-csDerivedExploreFrac = 300;        % explore_frac 0.3 -> round(1000 * 0.3); the only grid value now
-csDerivedCostFrac    = 300;        % cost_frac 0.3 -> round(1000 * 0.3); the only grid value now
+csDerivedBufferSlope   = 120;   % bufferSlope 1.2 -> round(100 * 1.2); csBufferSlopes' only member
+csDerivedBufferFloor   = 5;     % bufferFloor 0.05 -> round(100 * 0.05); csBufferFloors' only member
+csDerivedExploreFrac   = 300;   % explore_frac 0.3 -> round(1000 * 0.3); the only grid value now
+csDerivedCostFrac      = 300;   % cost_frac 0.3 -> round(1000 * 0.3); the only grid value now
+csDerivedAncestorAlpha  = 30;   % a member of csAncestorAlphas; no tuning data yet
+csDerivedAncestorWeight = 25;   % a member of csAncestorWeights; no tuning data yet
 
 % CleanCost baseline point - one series, the well-tuned operating point. Same label format as the
 % cost sweep, so its historical CSVs load here unchanged.
@@ -222,28 +226,25 @@ cleanBaseCap = 3;
 % (100 x the float), exactly as they appear in the filenames.
 kpaxCapCaps = [3];
 
-% TWO REAL AXES NOW, TWO STYLE CHANNELS. v3 had three swept fractions and three channels
-% (colour/style/marker); v3.2 fixes explore_frac and cost_frac, leaving only bufferSlope and
-% bufferFloor to encode, so the marker channel is retired -- inventing a third visual channel for
-% an axis that no longer varies would be noise, not information.
+% TWO REAL AXES, TWO STYLE CHANNELS -- bufferSlope/bufferFloor/explore_frac/cost_frac are all fixed
+% this pass, so ancestorWeight/ancestorAlpha take over the colour/style channels they used to hold.
+% The marker channel stays retired: ef/cf still don't vary, so there is no third axis for it.
 %
-% colour = bufferFloor, because it is the ramp's starting value -- what fill_frac WAS, and the
-% closest analogue to v3's own colour channel; DARKER IS A SMALLER STARTING BUDGET. Every B on this
-% grid stays below NUM_R1_REGIONS for at least part of a run, so the ramp does not cleanly separate
-% "soft" from "binding" -- it separates HOW LONG each series binds for before nActive overtakes it,
-% and that window now itself grows over the run wherever bufferSlope > 0.
+% colour = ancestorWeight, because it is THIS PASS'S HEADLINE AXIS -- the blend's strength.
+% DARKER IS A STRONGER BLEND (more trust in the lineage aggregate, less in the node's own live
+% distance); weight = 0 (no blend at all, the exact off-default) is palest.
 %
-% ONE ROW PER csBufferFloors ENTRY -- MUST STAY IN SYNC WITH IT, since fillColors(fi, :) below is
-% indexed straight off numel(csBufferFloors). csBufferFloors is currently [5 20] (bufferFloor
-% 0.05, 0.2), so two rows.
-%   rows: floor 0.05 (B0 ~ 150, smallest starting B), floor 0.2 (B0 ~ 600, largest starting B)
-fillColors   = [0.08 0.08 0.08;    % floor 0.05   smallest starting B
-                0.55 0.68 0.84];   % floor 0.2    largest starting B
-% style = bufferSlope. ONE ENTRY PER csBufferSlopes ENTRY -- MUST STAY IN SYNC WITH IT, since
-% fracStyles{bi} below is indexed straight off numel(csBufferSlopes). csBufferSlopes is currently
-% [100 130 160] (bufferSlope 1.0, 1.3, 1.6), so three styles -- no dedicated "structural control"
-% (bufferSlope = 0) any more -- see the `sSlope == min(csBufferSlopes)` comment below.
-fracStyles   = {'-', '--', ':'};   % bufferSlope = 1.0, 1.3, 1.6 (in csBufferSlopes order)
+% ONE ROW PER csAncestorWeights ENTRY -- MUST STAY IN SYNC WITH IT, since fillColors(wi, :) below is
+% indexed straight off numel(csAncestorWeights). csAncestorWeights is currently [0 25 50], so three
+% rows.
+fillColors   = [0.75 0.75 0.75;    % weight 0.00   no blend (the off-default)
+                0.45 0.55 0.75;    % weight 0.25   moderate blend
+                0.10 0.10 0.10];   % weight 0.50   strongest blend on this grid
+% style = ancestorAlpha (the EMA's decay rate -- how many generations of lineage the aggregate
+% weighs). ONE ENTRY PER csAncestorAlphas ENTRY -- MUST STAY IN SYNC WITH IT, since fracStyles{ai}
+% below is indexed straight off numel(csAncestorAlphas). csAncestorAlphas is currently [30 70]
+% (ancestorAlpha 0.3, 0.7), so two styles.
+fracStyles   = {'-', '--'};   % ancestorAlpha = 0.3, 0.7 (in csAncestorAlphas order)
 
 % marker = (explore_frac, cost_frac) PAIR, combined into one channel. Both are single-element
 % arrays this pass (fixed at 0.3 each), so this channel is inert right now -- every CountingStars
@@ -264,7 +265,7 @@ cleanColor = [0.70 0.15 0.20];
 mossRamp  = [0.58 0.73 0.53;     % cap 0.03 (lighter)
              0.24 0.44 0.26];    % cap 0.10 (darker)
 
-% --- Build the series arrays: (planner, delta) pairs, 27 in total ---
+% --- Build the series arrays: (planner, delta) pairs ---
 % plannerDeltaIdx carries each series' delta so loadRuns can build its own filename token; the
 % style channel is delta, so every series of one delta shares a line style.
 plannerNames    = {};
@@ -275,14 +276,11 @@ plannerMarkers  = {};
 plannerWidths   = [];
 plannerBaseline = [];   % logical: drawn as a thick reference anchor / large scatter marker
 plannerDeltaIdx = [];   % index into `deltas`
-% Each series' bufferFloor token, NaN for anything that is not a CountingStars arm. Used as the
-% colour lookup and as the "is this CountingStars" NaN guard at several panels below.
-%
-% B ITSELF IS NOT CARRIED HERE ANY MORE. v2 had to, because B was a per-run setting and not in the
-% data; v3 derives it inside the planner and logs it as the goal_frontier_size COLUMN, so the budget
-% figure reads its divisor straight out of the CSV. That removes the last place the plot script had
-% to know a piece of the planner's arithmetic.
-plannerBufferFloor = [];
+% Each series' ancestorWeight token, NaN for anything that is not a CountingStars arm. Used as the
+% colour lookup and as the "is this CountingStars" NaN guard at several panels below. (Named for
+% ancestorWeight now, not bufferFloor -- that axis is fixed this pass and colour follows the axis
+% that actually varies; every downstream use only checks isnan(), so the rename is safe.)
+plannerAncestorWeight = [];
 
 for di = 1:numel(deltas)
     dWidth = deltaWidths(di);
@@ -292,10 +290,11 @@ for di = 1:numel(deltas)
 
     if ~dPlus
 
-    % --- CountingStars: bufferSlope x bufferFloor, a full factorial. explore_frac/cost_frac are
-    % single-element arrays (fixed at 0.3 this pass), so the (ei, ci) inner loop and efCfMarkers
-    % lookup are trivial right now -- kept general so re-expanding either axis needs no shape
-    % change here, only more marker shapes in efCfMarkers. ---
+    % --- CountingStars: ancestorAlpha x ancestorWeight, a full factorial MINUS the alpha repeat at
+    % weight=0 (alpha is inert there -- see countingStarsSkip() in the benchmark). bufferSlope/
+    % bufferFloor/explore_frac/cost_frac are all single-element arrays (fixed this pass), so those
+    % loops are trivial -- kept general so re-expanding any axis needs no shape change here, only
+    % more marker shapes in efCfMarkers. ---
     numEfCf = numel(csExploreFracs) * numel(csCostFracs);
     assert(numEfCf <= numel(efCfMarkers), ...
         sprintf(['efCfMarkers has %d entries but csExploreFracs x csCostFracs needs %d -- add more ' ...
@@ -304,47 +303,54 @@ for di = 1:numel(deltas)
         for fi = 1:numel(csBufferFloors)
             for ei = 1:numel(csExploreFracs)
                 for ci = 1:numel(csCostFracs)
+                for ai = 1:numel(csAncestorAlphas)
+                for wi = 1:numel(csAncestorWeights)
                     sSlope = csBufferSlopes(bi);
                     sFloor = csBufferFloors(fi);
                     eFrac  = csExploreFracs(ei);
                     cFrac  = csCostFracs(ci);
+                    aAlpha = csAncestorAlphas(ai);
+                    aWeight = csAncestorWeights(wi);
                     efCfIdx = (ei - 1) * numel(csCostFracs) + ci;   % combined (ei, ci) -> one marker
 
-                    % Mirror countingStarsSkip(): --single-point is the only skip.
+                    % Mirror countingStarsSkip(): the alpha-redundancy skip at weight=0, then
+                    % --single-point.
+                    if aWeight == 0 && aAlpha ~= csAncestorAlphas(1)
+                        continue;
+                    end
                     if dOne && ~(sSlope == csDerivedBufferSlope && sFloor == csDerivedBufferFloor ...
-                                 && eFrac == csDerivedExploreFrac && cFrac == csDerivedCostFrac)
+                                 && eFrac == csDerivedExploreFrac && cFrac == csDerivedCostFrac ...
+                                 && aAlpha == csDerivedAncestorAlpha && aWeight == csDerivedAncestorWeight)
                         continue;
                     end
 
-                    plannerNames{end + 1}   = sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d', ...
-                                                      sSlope, sFloor, eFrac, cFrac); %#ok<SAGROW>
-                    % ef/cf ARE IN THE LEGEND TEXT NOW -- with both axes swept, "slope1.4 floor0.1"
-                    % alone would print four times over in one legend with no way to tell which
-                    % marker is which; the exact fractions make every entry unique on their own.
-                    plannerDisplay{end + 1} = sprintf('CS slope%g floor%g ef%g cf%g [%s]', ...
-                                                      sSlope / 100, sFloor / 100, ...
-                                                      eFrac / 1000, cFrac / 1000, dTag); %#ok<SAGROW>
-                    plannerColors(end + 1, :) = fillColors(fi, :);     %#ok<SAGROW>
-                    plannerStyles{end + 1}    = fracStyles{bi};        %#ok<SAGROW>
+                    plannerNames{end + 1}   = sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d_aa%d_aw%d', ...
+                                                      sSlope, sFloor, eFrac, cFrac, aAlpha, aWeight); %#ok<SAGROW>
+                    % ONLY ancestorAlpha/ancestorWeight IN THE LEGEND TEXT -- bufferSlope/
+                    % bufferFloor/explore_frac/cost_frac are fixed this pass, so repeating them in
+                    % every entry would be noise, not information.
+                    plannerDisplay{end + 1} = sprintf('CS aa%g aw%g [%s]', ...
+                                                      aAlpha / 100, aWeight / 100, dTag); %#ok<SAGROW>
+                    plannerColors(end + 1, :) = fillColors(wi, :);     %#ok<SAGROW>
+                    plannerStyles{end + 1}    = fracStyles{ai};        %#ok<SAGROW>
                     plannerMarkers{end + 1}   = efCfMarkers{efCfIdx};  %#ok<SAGROW>
-                    % The SMALLEST bufferSlope in the grid is drawn thicker at every bufferFloor, as
-                    % the closest-to-flat reference every steeper-ramped series is read against.
-                    % v3's literal bufferSlope = 0 (the exact constant-B control) is NOT on this
-                    % grid -- csBufferSlopes has been through more than one revision already and
-                    % has never contained 0 -- so a hardcoded `sSlope == 0` would silently thicken
-                    % NOTHING and every series would draw at the same width. min() reads whatever
-                    % csBufferSlopes currently is, so this stays correct across future revisions.
-                    if sSlope == min(csBufferSlopes)
+                    % ancestorWeight = 0 (THE OFF-DEFAULT) IS DRAWN THICKER, as the closest-to-live
+                    % reference every blended series is read against -- same convention as
+                    % bufferSlope = 0 in earlier passes through this file. min() reads whatever
+                    % csAncestorWeights currently is, so this stays correct across future revisions.
+                    if aWeight == min(csAncestorWeights)
                         plannerWidths(end + 1) = dWidth + 0.8;         %#ok<SAGROW>
                     else
                         plannerWidths(end + 1) = dWidth;               %#ok<SAGROW>
                     end
                     plannerBaseline(end + 1) = false;                  %#ok<SAGROW>
                     plannerDeltaIdx(end + 1) = di;                     %#ok<SAGROW>
-                    plannerBufferFloor(end + 1) = sFloor;              %#ok<SAGROW>
+                    plannerAncestorWeight(end + 1) = aWeight;          %#ok<SAGROW>
+                end
                 end
             end
         end
+    end
     end
 
     % --- CleanCost baseline: ONE point, the reference the CountingStars grid is read against ---
@@ -358,7 +364,7 @@ for di = 1:numel(deltas)
     plannerWidths(end + 1)    = dWidth + 0.6;    %#ok<SAGROW>
     plannerBaseline(end + 1)  = true;            %#ok<SAGROW>
     plannerDeltaIdx(end + 1)  = di;              %#ok<SAGROW>
-    plannerBufferFloor(end + 1) = NaN;              %#ok<SAGROW>
+    plannerAncestorWeight(end + 1) = NaN;              %#ok<SAGROW>
 
     % --- KPAXCap: the control arm for the cap itself, read against the KPAX baseline below ---
     for ci = 1:numel(kpaxCapCaps)
@@ -371,7 +377,7 @@ for di = 1:numel(deltas)
         plannerWidths(end + 1)    = dWidth + 0.6;       %#ok<SAGROW>
         plannerBaseline(end + 1)  = true;               %#ok<SAGROW>
         plannerDeltaIdx(end + 1)  = di;                 %#ok<SAGROW>
-        plannerBufferFloor(end + 1) = NaN;                %#ok<SAGROW>
+        plannerAncestorWeight(end + 1) = NaN;                %#ok<SAGROW>
     end
 
     % --- KPAX baseline. Gated with the rest: a --only-kinopaxplus delta does not run it. ---
@@ -383,13 +389,16 @@ for di = 1:numel(deltas)
     plannerWidths   = [plannerWidths,  dWidth + 1.1];                                     %#ok<AGROW>
     plannerBaseline = [plannerBaseline, true];                                            %#ok<AGROW>
     plannerDeltaIdx = [plannerDeltaIdx, di];                                              %#ok<AGROW>
-    plannerBufferFloor = [plannerBufferFloor, NaN];                                             %#ok<AGROW>
+    plannerAncestorWeight = [plannerAncestorWeight, NaN];                                             %#ok<AGROW>
 
     end   % ~dPlus
 
-    % --- KinoPaxPlus. THE ONLY ARM THAT RUNS AT EVERY DELTA, which is the entire reason the two
-    % finer deltas exist in this sweep: its advantage is a tiny frontier at a fine discretisation,
-    % and a small F is exactly what CountingStars' goal_frontier_size is trying to buy directly. ---
+    % --- KinoPaxPlus. Placed outside the `if ~dPlus` guard for structural parity with earlier
+    % passes through this file (deltaPlusOnly is all-false this pass, so every arm above already
+    % runs at every delta too -- see the header for why: the ancestor-awareness question needs
+    % CountingStars measured at the fine delta, not KinoPaxPlus alone). Its advantage is a tiny
+    % frontier at a fine discretisation, and a small F is exactly what CountingStars'
+    % goal_frontier_size is trying to buy directly -- the comparison this whole pass is about. ---
     plannerNames    = [plannerNames,   {'KinoPaxPlus'}];                                  %#ok<AGROW>
     plannerDisplay  = [plannerDisplay, {sprintf('KinoPaxPlus [%s]', dTag)}];              %#ok<AGROW>
     plannerColors   = [plannerColors;  0.20 0.40 0.80];                                   %#ok<AGROW>
@@ -398,7 +407,7 @@ for di = 1:numel(deltas)
     plannerWidths   = [plannerWidths,  dWidth + 1.1];                                     %#ok<AGROW>
     plannerBaseline = [plannerBaseline, true];                                            %#ok<AGROW>
     plannerDeltaIdx = [plannerDeltaIdx, di];                                              %#ok<AGROW>
-    plannerBufferFloor = [plannerBufferFloor, NaN];                                             %#ok<AGROW>
+    plannerAncestorWeight = [plannerAncestorWeight, NaN];                                             %#ok<AGROW>
 end
 
 numRunsPer = 50 * ones(1, numel(plannerNames));   % max runs searched (missing files skipped)
@@ -427,7 +436,7 @@ for ei = 1:numel(environments)
         fprintf('\n=== Environment: %s | Cost metric: %s ===\n', env, costTitle);
 
         % --- Load every (planner, delta) series for this cost metric ---
-        % Each series builds its own delta_metric token, so the three deltas overlay in one figure.
+        % Each series builds its own delta_metric token, so the two deltas overlay in one figure.
         R = cell(1, nPlanner);
         for pi = 1:nPlanner
             tok   = sprintf('%s_%s', deltas{plannerDeltaIdx(pi)}, metric);
@@ -501,7 +510,7 @@ for ei = 1:numel(environments)
                'Position', [100 100 900 560]);
         hold on;
         for pi = 1:nPlanner
-            if isnan(plannerBufferFloor(pi)), continue; end   % not a CountingStars series
+            if isnan(plannerAncestorWeight(pi)), continue; end   % not a CountingStars series
             plotMeanIter(R{pi}, @(t) getCol(t, 'goal_frontier_size'), ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
         end
@@ -523,18 +532,21 @@ for ei = 1:numel(environments)
         %                          exceeded B on their own. EXPECTED at every point on this grid,
         %                          because both are bounded by the region count and not by B: one
         %                          node per region can be a region best, one per uncovered region
-        %                          can be guaranteed. B(x) = floor((slope*x+floor) *
-        %                          MAX_TREE_SIZE/MAX_ITER) ranges roughly 0-8500 here (bufferFloor
-        %                          0-0.2 at x=0, bufferSlope+bufferFloor up to 1.7 at x=1) against
-        %                          27,000 regions -- B NOW MOVES WITHIN A RUN, not just across
-        %                          series, so this ratio has two moving parts.
+        %                          can be guaranteed. bufferSlope/bufferFloor are FIXED this pass
+        %                          (1.2, 0.05), so B(x) = floor((slope*x+floor) *
+        %                          MAX_TREE_SIZE/fill_iters) ranges ~214 (x=0) to ~5357 (x=1) at the
+        %                          coarse delta's 27,000 regions -- the SAME range at every series
+        %                          this pass, since the ramp itself is not what's swept; only the
+        %                          ancestor-aware blend varies. B still moves WITHIN a run (the ramp
+        %                          is unchanged), just not across series any more.
         %
         % SO READ THIS AS A CURVE, NOT A NUMBER. B binds EARLY in a run and then stops, at an
-        % iteration that moves with the WHOLE RAMP SHAPE, not a single fill_frac any more. The
-        % iteration where the curve crosses 1 IS the measurement -- early is exactly where
-        % time-to-first-solution is decided. If the bufferSlope=0 curves are indistinguishable from
-        % the ramped ones even early, capping the guarantee (KinoPaxPlus's hysteresis is the
-        % precedent) is the next lever, not another ramp.
+        % iteration that moves with the WHOLE RAMP SHAPE. The iteration where the curve crosses 1 IS
+        % the measurement -- early is exactly where time-to-first-solution is decided. If the
+        % ancestorWeight=0 curves are indistinguishable from the nonzero-weight ones even early,
+        % that is direct evidence the blend is not moving anything -- capping the guarantee
+        % (KinoPaxPlus's hysteresis is the precedent) is the next lever to check, not a stronger
+        % blend.
         %
         % B COMES OUT OF THE DATA. It is the goal_frontier_size column, written by the planner that
         % derived it, so this divides by what the run actually used rather than by what the label
@@ -544,7 +556,7 @@ for ei = 1:numel(environments)
                'Position', [120 120 1400 620]);
         subplot(1, 2, 1); hold on;
         for pi = 1:nPlanner
-            if isnan(plannerBufferFloor(pi)), continue; end   % not a CountingStars series
+            if isnan(plannerAncestorWeight(pi)), continue; end   % not a CountingStars series
             plotMeanIter(R{pi}, @(t) safeRatio(getCol(t, 'budget_used'), ...
                                                getCol(t, 'goal_frontier_size')), ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
@@ -657,7 +669,7 @@ for ei = 1:numel(environments)
         %                       [0, distMax] instead of the log one.
         subplot(1, 3, 2); hold on;
         for pi = 1:nPlanner
-            if isnan(plannerBufferFloor(pi)), continue; end   % not a CountingStars series
+            if isnan(plannerAncestorWeight(pi)), continue; end   % not a CountingStars series
             plotMeanIter(R{pi}, @(t) safeRatio(getCol(t, 'cost_cutoff_dist'), ...
                                                getCol(t, 'dist_max')), ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
@@ -685,7 +697,7 @@ for ei = 1:numel(environments)
         %                           arm is genuinely picking the cheapest dormant nodes.
         subplot(1, 3, 3); hold on;
         for pi = 1:nPlanner
-            if isnan(plannerBufferFloor(pi)), continue; end   % not a CountingStars series
+            if isnan(plannerAncestorWeight(pi)), continue; end   % not a CountingStars series
             plotMeanIter(R{pi}, @(t) safeRatio(getCol(t, 'react_cutoff_dist'), ...
                                                getCol(t, 'dist_max')), ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
@@ -718,7 +730,7 @@ for ei = 1:numel(environments)
                'Position', [160 160 900 560]);
         hold on;
         for pi = 1:nPlanner
-            if isnan(plannerBufferFloor(pi)), continue; end   % not a CountingStars series
+            if isnan(plannerAncestorWeight(pi)), continue; end   % not a CountingStars series
             plotMeanIter(R{pi}, @(t) safeRatio(getCol(t, 'admitted_both'), ...
                                                sumCols(t, 'admitted_explore', 'admitted_costdist')), ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
@@ -985,7 +997,7 @@ for ei = 1:numel(environments)
         % escapes are only resolved by a formatting call, and this string is substituted into the
         % titles below via %s -- which inserts it verbatim rather than re-interpreting it. Built as
         % a plain [...] it would print the escape sequences literally.
-        markerKey = sprintf(['lower-left is better (fast and cheap); darker = smaller bufferFloor; ' ...
+        markerKey = sprintf(['lower-left is better (fast and cheap); darker = stronger ancestorWeight blend; ' ...
                              '\x25cb CountingStars, ' ...
                              '\x2606 CleanCost, \x25bd KPAXCap, \x25a1 KPAX, \x25c7 KinoPaxPlus']);
 
@@ -1025,7 +1037,7 @@ fprintf('\nAll figures generated (%d total). Click a legend entry to hide/show t
 function runs = loadRuns(dataDir, env, planner, delta, numRuns)
     % Load one (planner, delta) series' per-run CSVs; missing files are skipped.
     % 'delta' is the full filename token, e.g. 'large_length' or 'fine_control_effort' -- the
-    % caller builds it from the series' own delta, which is what lets the three deltas overlay.
+    % caller builds it from the series' own delta, which is what lets the two deltas overlay.
     runs = {};
     for ri = 0:(numRuns - 1)
         switch planner

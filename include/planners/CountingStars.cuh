@@ -137,6 +137,23 @@ __host__ __device__ inline int csCostBucket(float d, float distMax)
     return (bi < CS_COST_BUCKETS - 1) ? bi : (CS_COST_BUCKETS - 1);
 }
 
+// ANCESTOR-AWARENESS (opt-in). Blends a node's/candidate's own LIVE distance (freshly recomputed
+// every iteration from the CURRENT region minimum -- see csNodeDistance) with a FROZEN per-node
+// lineage aggregate (h_ancestorQuality_, an EMA over ancestors' own distances at THEIR insertion
+// time -- see Part A of CountingStars_updateFrontier_kernel) before the result is bucketed. ONE
+// DEFINITION, called from accept pass 1 (candidates) and reactScan/Part B (dormant tree nodes) --
+// same discipline as csNodeDistance/csCostBucket, so no call site can disagree about the blend.
+//
+// ancestorWeight == 0 is EXACT IDENTITY: (1-0)*live + 0*quality == live bit-for-bit (multiplying by
+// exactly 1.0f and exactly 0.0f introduces no rounding), which is what makes it a genuine no-op
+// rather than merely close to one. Every call site additionally gates on `ancestorWeight > 0.0f`
+// before calling this, so the off-default path never even reads the extra array.
+__host__ __device__ inline float csBlendDistance(float liveDistance, float ancestorQuality, float ancestorWeight)
+{
+    float d = (1.0f - ancestorWeight) * liveDistance + ancestorWeight * ancestorQuality;
+    return (d > 0.0f) ? d : CS_MIN_DISTANCE;
+}
+
 class CountingStars : public Planner
 {
 public:
@@ -258,6 +275,35 @@ public:
     // at 0. This is the door that did not exist in v2 -- see CS_COST_BUCKETS for why it is a
     // histogram and not the sort that kept breaking.
     float h_costFrac_;
+
+    // ==================================================================================
+    // ANCESTOR-AWARENESS (opt-in, default off). CHEAPEST admission and reactivation currently
+    // decide purely on a node's OWN cost relative to its region's best -- nothing about its
+    // lineage. TWO KNOBS, not one, because they answer different questions:
+    //
+    //   h_ancestorAlpha_   HOW THE LINEAGE AGGREGATE ITSELF IS BUILT, recursively, down the tree.
+    //                      ancestorQuality[child] = alpha*selfDistance[parent] + (1-alpha)*
+    //                      ancestorQuality[parent] -- see Part A. alpha=1 is a pure one-generation
+    //                      lookback; small alpha is a slow-moving average over many generations.
+    //                      Inert until h_ancestorWeight_ > 0. MUST stay in (0, 1] -- outside that
+    //                      range the recurrence is no longer a bounded convex combination, and
+    //                      csBlendDistance's floor would silently map a negative result to
+    //                      CS_MIN_DISTANCE rather than surface the misconfiguration. Enforced by
+    //                      the sweep script's array bounds, not defensively here.
+    //   h_ancestorWeight_  THE TOGGLE. How much a single decision trusts the lineage aggregate
+    //                      over the node's own live reading: effectiveDistance = (1-w)*live +
+    //                      w*ancestorQuality (csBlendDistance). w=0 is exact identity -- see
+    //                      csBlendDistance's own comment.
+    //
+    // Fixing alpha at 0.9 vs 0.1 produces a shallow vs. deep aggregate regardless of w; no choice
+    // of w reproduces the other's shape -- collapsing these into one knob would force "how deep is
+    // the lineage's memory" and "how much do I trust that memory" to always move together.
+    //
+    // Neither is touched by resetPlanner() -- set once before it, same convention as
+    // h_bufferSlope_/h_costFrac_ etc.
+    // ==================================================================================
+    float h_ancestorAlpha_;
+    float h_ancestorWeight_;
 
     // ==================================================================================
     // v3.3: FAN-OUT IS DOOR-COUNT, FULL STOP. Blocks are decided AT ADMISSION and stored per node;
@@ -509,6 +555,26 @@ public:
     // --- per-node, TREE-INDEXED, written once at admission ---
     thrust::device_vector<int> d_nodeBlocks_, d_nodeDoor_;
 
+    // ANCESTOR-AWARENESS bookkeeping, written UNCONDITIONALLY by Part A for every inserted node,
+    // regardless of which door admitted it -- see Part A's own comment for why this must not be
+    // gated by door type (KinoPaxSTARTrueWeightedCost's ancestorBad has exactly this bug: an early
+    // `if(!admitBest[treeIdx]) return;` starves the write for most nodes).
+    //
+    //   d_nodeSelfDistance_  THIS node's own csNodeDistance, frozen at ITS OWN insertion. Cannot be
+    //                        recomputed later: minCostsR1[r] only ever improves and costScale is a
+    //                        live per-iteration scalar, so neither preserves what it was at this
+    //                        node's birth. Read only by Part A, only for a PARENT being consulted
+    //                        by its new child.
+    //   d_ancestorQuality_   The EMA recurrence's output (see h_ancestorAlpha_). Read by Part A
+    //                        (parent's value -> child's), accept pass 1 (parent's value, for a
+    //                        candidate), reactScan/Part B (the node's own value).
+    //
+    // Both seeded to CS_MIN_DISTANCE (constructor + resetPlanner) -- exactly what csNodeDistance
+    // degenerates to on reset-time inputs (cost 0, minCostsR1 == MAX_FLOAT, costScale == 0), so the
+    // root's "no ancestors to blend" case and the harmless default for unused slots are the same
+    // number; no second index-0-specific fill is needed (unlike d_frontier_'s).
+    thrust::device_vector<float> d_nodeSelfDistance_, d_ancestorQuality_;
+
     // v3.1: THE REACTIVATION POPULATION, written by the scan and read by Part B's cost arm.
     //
     // WHY IT IS AN ARRAY RATHER THAN A PREDICATE PART B RE-EVALUATES. Eligibility is
@@ -531,9 +597,18 @@ public:
     //                    pass 1 over the compacted candidate list and read by pass 2 over the same
     //                    list, so every slot pass 2 touches was written this iteration.
     //   d_candDoor_      pass 2's verdict, and pass 2 is its ONLY writer among the accept passes --
-    //                    which is what keeps the door counters free of double counting. ---
+    //                    which is what keeps the door counters free of double counting.
+    //   d_candEffectiveDistance_  ancestor-blended distance (csBlendDistance over d_candDistance_
+    //                    and the candidate's parent's d_ancestorQuality_), fed to CS_HIST_COST_BASE
+    //                    bucketing instead of the raw distance. DELIBERATELY SEPARATE from
+    //                    d_candDistance_: pass 2's `isOptimal = (candDistance[idx] == 0.0f)` must
+    //                    keep reading the RAW array -- blending a literally-optimal candidate
+    //                    (distance exactly 0) with a nonzero ancestorQuality would silently
+    //                    misclassify it as non-optimal. One value used for two jobs (a zero-mark
+    //                    and a bucketed magnitude) is exactly the bug this separation avoids. ---
     thrust::device_vector<float> d_candDistance_;
     thrust::device_vector<int>   d_candDoor_;
+    thrust::device_vector<float> d_candEffectiveDistance_;
 
     thrust::device_vector<uint> d_goalSetIdxs_, d_goalSetScanIdx_;
     thrust::device_vector<int> d_iterations_;
@@ -546,6 +621,7 @@ public:
     bool  *d_regionCovered_ptr_, *d_reactEligible_ptr_;
     int   *d_nodeBlocks_ptr_, *d_nodeDoor_ptr_, *d_candDoor_ptr_;
     float *d_candDistance_ptr_;
+    float *d_nodeSelfDistance_ptr_, *d_ancestorQuality_ptr_, *d_candEffectiveDistance_ptr_;
     float *d_controlPathsToGoal_ptr_;
     bool *d_frontier_ptr_, *d_frontierNext_ptr_, *d_goalSet_ptr_;
     uint *d_activeFrontierIdxs_ptr_, *d_frontierScanIdx_ptr_, *d_activeFrontierRepeatCount_ptr_,
@@ -611,8 +687,9 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
 // it. Two launches, both O(candidates), and the split is what makes the budget exact.
 __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                  float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
+                                                 int* unexploredSamplesParentIdxs, float* ancestorQuality, float ancestorWeight,
                                                  int* regionNodeCount, float costScale, float distMax,
-                                                 float* candDistance, int* acceptHistogram);
+                                                 float* candDistance, float* candEffectiveDistance, int* acceptHistogram);
 
 /***************************/
 /* ACCEPT PASS 2 - the ONLY admission decision */
@@ -651,7 +728,8 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
 // deduplicated against.
 __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                  int* frontierNextXR1s, int* regionNodeCount,
-                                                 float* candDistance, bool* frontierNext, int* candDoor,
+                                                 float* candDistance, float* candEffectiveDistance,
+                                                 bool* frontierNext, int* candDoor,
                                                  bool* regionCovered, curandState* randomSeeds,
                                                  int ordCutoff, float pBoundary,
                                                  int costCutoff, float pCostBoundary, float distMax,
@@ -678,6 +756,7 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
 __global__ void CountingStars_reactScan_kernel(int treeSize, bool* frontier, bool* goalSet,
                                                int* treeXR1s, float* treeSampleCosts, float* minCostsR1,
                                                int* bestNodeIdxPerR1, float costScale, float distMax,
+                                               float* ancestorQuality, float ancestorWeight,
                                                bool* reactEligible, int* acceptHistogram);
 
 /***************************/
@@ -702,6 +781,7 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
                                int* iterations, int iteration,
                                bool* reactEligible, float costScale, float distMax,
                                int reactCutoff, float pReactBoundary, float reactFloor,
+                               float* nodeSelfDistance, float* ancestorQuality, float ancestorAlpha, float ancestorWeight,
                                unsigned long long* doorCounts);
 
 /***************************/

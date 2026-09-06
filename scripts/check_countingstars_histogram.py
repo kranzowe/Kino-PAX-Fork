@@ -30,6 +30,10 @@ It also checks two things around the histograms that have the same "fails silent
      fixed numerator over a non-increasing region minimum, so it only ever grows and a node once
      above the cutoff can NEVER come back. h_reactFloor_ is what restores completeness, and it looks
      exactly like a magic constant somebody would tidy away. This is the check that stops them.
+  5. THE ANCESTOR-AWARE BLEND (opt-in) IS A GENUINE NO-OP AT WEIGHT=0, STAYS MONOTONE (so the same
+     top-X exactness in item 2 above keeps holding for the blended value), and its EMA recurrence
+     stays bounded only for alpha in (0, 1] -- see csBlendDistance / h_ancestorWeight_ /
+     h_ancestorAlpha_ in the header.
 
 And the budget the solves are handed: react_frac = 1 - explore_frac - cost_frac is floored at 0 in
 the planner, so an oversubscribed grid point does not fail -- it silently switches reactivation off.
@@ -44,6 +48,7 @@ Exit 0 = SELECTION SOUND, 1 = SELECTION UNSOUND.
 """
 import math
 import os
+import random
 import re
 import sys
 
@@ -63,7 +68,9 @@ cuh, cu, sweep = read(CUH), read(CU), read(SWEEP)
 
 
 def cuh_const(name, ctype='int'):
-    mo = re.search(r'static const %s\s+%s\s*=\s*(-?\d+\.?\d*)f?\s*;' % (ctype, name), cuh)
+    # Exponent suffix is optional (most of these constants are plain small numbers) but
+    # CS_MIN_DISTANCE is written 1e-37f, which the plain digit-only form can't match.
+    mo = re.search(r'static const %s\s+%s\s*=\s*(-?\d+\.?\d*(?:[eE][-+]?\d+)?)f?\s*;' % (ctype, name), cuh)
     if not mo:
         sys.exit('FATAL: %s not found in %s' % (name, CUH))
     return float(mo.group(1))
@@ -79,6 +86,7 @@ def cu_array(text, name, path):
 ORD_BUCKETS = int(cuh_const('CS_ORD_BUCKETS'))
 COST_BUCKETS = int(cuh_const('CS_COST_BUCKETS'))
 LOG_SCALE = cuh_const('CS_COST_LOG_SCALE', 'float')
+MIN_DISTANCE = cuh_const('CS_MIN_DISTANCE', 'float')
 
 
 def cuh_slot(name):
@@ -124,6 +132,12 @@ if not re.search(r'h_reactFrac_ = fmaxf\(0\.0f, 1\.0f - h_exploreFrac_ - h_costF
 # is what lets the exactness proof below cover it without a second set of cases.
 if not re.search(r'csSolveCutoff\(h_acceptHistogram_ \+ CS_HIST_REACT_BASE, CS_COST_BUCKETS,', cu):
     sys.exit('FATAL: the reactivation cutoff solve in %s no longer matches this script' % CU)
+# Ancestor-awareness (opt-in): pin both the blend formula and the EMA recurrence that feeds it.
+if not re.search(r'float d = \(1\.0f - ancestorWeight\) \* liveDistance \+ ancestorWeight \* ancestorQuality;', cuh):
+    sys.exit('FATAL: csBlendDistance in %s no longer matches this script\'s mirror' % CUH)
+if not re.search(r'ancestorQuality\[x1TreeIdx\]\s*=\s*ancestorAlpha \* nodeSelfDistance\[x0Idx\] '
+                r'\+ \(1\.0f - ancestorAlpha\) \* ancestorQuality\[x0Idx\];', cu):
+    sys.exit('FATAL: the ancestor-quality EMA recurrence in %s no longer matches this script' % CU)
 
 
 # ---------------------------------------------------------------- the mirrors
@@ -398,6 +412,71 @@ if not (REACT_FLOOR > 0.0):
 if REACT_FLOOR >= 1.0:
     problems.append('COMPLETENESS FLOOR IS %g: at >= 1 every dormant node is reactivated every '
                     'iteration and the frontier is the whole tree.' % REACT_FLOOR)
+
+# ================================================================= 8. ancestor-aware blend (opt-in)
+#
+# csBlendDistance blends a node's own LIVE distance with its FROZEN lineage aggregate
+# (ancestorQuality) before either the CHEAPEST door or reactivation buckets it. Three properties
+# have to hold, none visible in a diff:
+#
+#   1. WEIGHT = 0 IS EXACT IDENTITY. Every call site additionally gates on `weight > 0.0f` before
+#      ever reading ancestorQuality, but the blend itself must ALSO collapse to the live value
+#      exactly -- what makes the toggle a genuine off-switch rather than merely close to one.
+#   2. MONOTONE IN THE LIVE DISTANCE, for any fixed quality/weight -- csSolveCutoff's exact top-X
+#      property (section 1, over the raw distance) has to keep holding for the BLENDED value fed to
+#      csCostBucket, or the scan stops being an exact selection.
+#   3. THE EMA RECURRENCE (ancestorQuality[child] = alpha*self[parent] + (1-alpha)*quality[parent],
+#      computed once per node in Part A) STAYS BOUNDED for alpha in (0, 1]. It is a convex
+#      combination by construction only inside that range; outside it, it is an extrapolation that
+#      can compound unboundedly over tree depth, and csBlendDistance's own floor would silently map
+#      a resulting negative value to CS_MIN_DISTANCE rather than surface the misconfiguration.
+def blend_distance(live, quality, weight):
+    """Mirrors csBlendDistance() in the header."""
+    d = (1.0 - weight) * live + weight * quality
+    return d if d > 0.0 else MIN_DISTANCE
+
+
+for live in (MIN_DISTANCE, 1e-6, 0.017, 1.0, 3.7, 1e3, 1e9):
+    cases += 1
+    got = blend_distance(live, 42.0, 0.0)
+    if got != live:
+        problems.append('csBlendDistance NOT IDENTITY at weight=0: live=%g quality=42 -> %g'
+                        % (live, got))
+
+for quality in (MIN_DISTANCE, 1e-6, 1.0, 1e6):
+    for weight in (0.0, 0.1, 0.5, 0.9, 1.0):
+        prev = -1.0
+        grid = [MIN_DISTANCE * (2.0 ** i) for i in range(0, 100, 2)] + [1e-6, 0.017, 1.0, 3.7, 1e3, 1e9]
+        grid.sort()
+        for live in grid:
+            cases += 1
+            d = blend_distance(live, quality, weight)
+            if d < prev:
+                problems.append('csBlendDistance NOT MONOTONE in live at quality=%g weight=%g: '
+                                'd=%g after %g (live=%g)' % (quality, weight, d, prev, live))
+            prev = d
+
+# EMA recurrence boundedness: a convex combination of positive self-distances stays within their
+# span, by induction, for alpha in (0, 1] -- checked over random chains rather than proven inline,
+# since the recurrence lives in Part A of CountingStars_updateFrontier_kernel (pinned above), not a
+# shared csXxx() helper this script otherwise mirrors directly.
+rng = random.Random(12345)
+for alpha in (0.05, 0.1, 0.5, 0.9, 1.0):
+    for _ in range(20):
+        depth = rng.randint(1, 200)
+        self_dists = [rng.uniform(MIN_DISTANCE, 1e6) for _ in range(depth)]
+        quality = MIN_DISTANCE   # the root's seed (see d_ancestorQuality_'s constructor fill)
+        lo = hi = MIN_DISTANCE
+        for s in self_dists:
+            quality = alpha * s + (1.0 - alpha) * quality
+            lo = min(lo, s)
+            hi = max(hi, s)
+            cases += 1
+            tol = 1e-6 * max(abs(hi), abs(lo), 1.0)
+            if not (lo - tol <= quality <= hi + tol):
+                problems.append('EMA RECURRENCE OUT OF BOUNDS at alpha=%g depth=%d: quality=%g not '
+                                'in [%g, %g]' % (alpha, depth, quality, lo, hi))
+
 
 print('histogram    : ord[%d,%d) opt[%d] cost[%d,%d) react[%d,%d) dormant[%d]  size %d'
       % (HIST_ORD_BASE, HIST_ORD_BASE + ORD_BUCKETS, HIST_OPT_SLOT,

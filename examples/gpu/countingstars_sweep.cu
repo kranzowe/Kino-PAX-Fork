@@ -21,36 +21,51 @@
 static bool        g_dumpViz = false;
 static std::string g_vizDir;
 
-// ---- CountingStars grid: RAMP SLOPE x RAMP FLOOR, explore/cost FIXED ----
+// ---- CountingStars grid: RAMP SLOPE AND FLOOR FIXED, ANCESTOR-AWARENESS SWEPT ----
 //
-// B IS NOW A RAMP, NOT A SINGLE DERIVED POINT. v3 computed B once, at reset:
+// THIS PASS'S AXIS IS THE ANCESTOR-AWARE BLEND, NOT THE RAMP. Every earlier pass through this file
+// swept (bufferSlope, bufferFloor) to characterize B's ramp on its own; that question has an answer
+// good enough to build on for now, so both are FIXED at one point (see BUFFER_SLOPES/BUFFER_FLOORS
+// below) and held constant across every run in this file. What varies here is whether, and how
+// strongly, admission (CHEAPEST) and reactivation trust a node's LINEAGE rather than just its own
+// cost -- see h_ancestorAlpha_/h_ancestorWeight_ in CountingStars.cuh and ANCESTOR_ALPHAS/
+// ANCESTOR_WEIGHTS below.
 //
-//     B = floor(fill_frac * MAX_TREE_SIZE / MAX_ITER)
+// B ITSELF IS STILL A RAMP, recomputed every iteration -- that mechanism is unchanged:
 //
-// which traded off against itself in the sweep results: a small constant B found a first solution
-// fast but converged worse; a large one was the reverse. v3.2 makes B a function of how far into the
-// run this iteration is, so the search can behave like the small buffer early and the large buffer
-// late instead of picking one point on that tradeoff for the whole run:
-//
-//     x         = itr / MAX_ITER                             (fraction of the run elapsed)
+//     x         = itr / fill_iters                             (fraction of the run elapsed)
 //     B_frac(x) = bufferSlope * x + bufferFloor
-//     B(x)      = floor(B_frac(x) * MAX_TREE_SIZE / MAX_ITER)
-//
-// bufferSlope = 0 REPRODUCES v3 EXACTLY -- B_frac(x) = bufferFloor for every x -- so that subgrid is
-// a free, structural comparison against the old fixed-buffer design, not a separate baseline that
-// has to be swept again. (bufferSlope, bufferFloor) = (0, 0) reproduces v3's OPTIMAL + GUARANTEE
-// only control arm: both doors are UNCAPPED regardless of B, so B = 0 (floored to 1 by the planner)
-// just switches the FRESHEST / CHEAPEST / reactivation-CHEAPEST doors off, on purpose.
+//     B(x)      = floor(B_frac(x) * MAX_TREE_SIZE / fill_iters)
 //
 // READ goal_frontier_size OUT OF THE CSV rather than deriving it here. It is a PER-ITERATION column
-// now (it always was, but was constant across a run under v3 and so never worth plotting on its own
-// -- see process_countingstars_and_plot.m's new goal_frontier_size-vs-iteration panel), precisely so
-// a second copy of this arithmetic does not have to live in the plot script.
-static const float BUFFER_SLOPES[] = {1.0f, 1.3f, 1.6f};
+// (see process_countingstars_and_plot.m's goal_frontier_size-vs-iteration panel), precisely so a
+// second copy of this arithmetic does not have to live in the plot script.
+static const float BUFFER_SLOPES[] = {1.2f};
 static const int NUM_BUFFER_SLOPES = sizeof(BUFFER_SLOPES) / sizeof(BUFFER_SLOPES[0]);
 
-static const float BUFFER_FLOORS[] = {0.05f, 0.2f};
+static const float BUFFER_FLOORS[] = {0.05f};
 static const int NUM_BUFFER_FLOORS = sizeof(BUFFER_FLOORS) / sizeof(BUFFER_FLOORS[0]);
+
+// ---- ANCESTOR-AWARENESS grid: THE HEADLINE AXIS THIS PASS ----
+//
+// h_ancestorWeight_ = 0 is the exact off-default (see csBlendDistance in CountingStars.cuh) -- kept
+// as the first element of ANCESTOR_WEIGHTS so it rides in as a free structural control, same
+// convention as bufferSlope = 0 in earlier passes through this file.
+//
+// h_ancestorAlpha_ IS INERT AT WEIGHT = 0: the EMA it decays has no effect on anything until a
+// nonzero weight reads it, so sweeping alpha there would just repeat an identical run once per
+// alpha value. countingStarsSkip() below is the single place that redundancy is skipped -- every
+// alpha but ANCESTOR_ALPHAS[0] is skipped at weight = 0, so that one no-op run rides in once,
+// exactly like bufferSlope = 0 elsewhere in this file.
+//
+// SMALL ON PURPOSE: 2 alphas x (1 + 2 nonzero weights) = 6 CountingStars points per (environment,
+// delta), not a full factorial -- this is a first look at whether the mechanism helps at all, not a
+// tuning pass.
+static const float ANCESTOR_ALPHAS[] = {0.3f, 0.7f};
+static const int NUM_ANCESTOR_ALPHAS = sizeof(ANCESTOR_ALPHAS) / sizeof(ANCESTOR_ALPHAS[0]);
+
+static const float ANCESTOR_WEIGHTS[] = {0.0f, 0.25f, 0.5f};
+static const int NUM_ANCESTOR_WEIGHTS = sizeof(ANCESTOR_WEIGHTS) / sizeof(ANCESTOR_WEIGHTS[0]);
 
 // How many iterations a run actually completes inside the 10s wall-clock cap at
 // MAX_TREE_SIZE = 3,000,000 (empirical). The ramp's x = itr/fill_iters must track the REAL run
@@ -64,8 +79,8 @@ static const int NUM_BUFFER_FLOORS = sizeof(BUFFER_FLOORS) / sizeof(BUFFER_FLOOR
 static const int CS_RAMP_FILL_ITERS = 700;
 
 // Share of B given to the FRESHEST door (lowest region ordinality), and to CHEAPEST (smallest cost
-// distance). FIXED AT 0.3 EACH THIS PASS, not swept -- isolates the slope/floor grid's own effect.
-// react_frac = 1 - 0.3 - 0.3 = 0.4, comfortably nonnegative.
+// distance). FIXED AT 0.3 EACH THIS PASS, not swept -- isolates the ancestor-awareness grid's own
+// effect. react_frac = 1 - 0.3 - 0.3 = 0.4, comfortably nonnegative.
 //
 // The label tokens are round(1000 x frac), matching v2's `_f` convention -- see countingStarsLabel().
 static const float EXPLORE_FRACS[] = {0.3f};
@@ -100,11 +115,16 @@ static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0
 // nothing at all. cross_check_countingstars_grid.py asserts exactly that.
 //
 // CS_DERIVED_EXPLORE_FRAC / CS_DERIVED_COST_FRAC MUST equal EXPLORE_FRACS[0] / COST_FRACS[0] now
-// that those are single-element arrays (0.3f) again.
-static const float CS_DERIVED_BUFFER_SLOPE = 1.3f;   // middle of {1.0, 1.3, 1.6}; no tuning data yet
-static const float CS_DERIVED_BUFFER_FLOOR = 0.05f;  // a member of {0.05, 0.2}; no tuning data yet
-static const float CS_DERIVED_EXPLORE_FRAC = 0.3f;
-static const float CS_DERIVED_COST_FRAC    = 0.3f;
+// that those are single-element arrays (0.3f) again. CS_DERIVED_BUFFER_SLOPE/_FLOOR must equal
+// BUFFER_SLOPES[0]/BUFFER_FLOORS[0] now that those are single-element too (this pass fixes them).
+// CS_DERIVED_ANCESTOR_ALPHA/_WEIGHT are new, and must be members of ANCESTOR_ALPHAS/
+// ANCESTOR_WEIGHTS for the same reason.
+static const float CS_DERIVED_BUFFER_SLOPE   = 1.2f;    // BUFFER_SLOPES' only member this pass
+static const float CS_DERIVED_BUFFER_FLOOR   = 0.05f;   // BUFFER_FLOORS' only member this pass
+static const float CS_DERIVED_EXPLORE_FRAC   = 0.3f;
+static const float CS_DERIVED_COST_FRAC      = 0.3f;
+static const float CS_DERIVED_ANCESTOR_ALPHA  = 0.3f;   // a member of ANCESTOR_ALPHAS; no tuning data yet
+static const float CS_DERIVED_ANCESTOR_WEIGHT = 0.25f;  // a member of ANCESTOR_WEIGHTS; no tuning data yet
 static const float CAP_DERIVED             = 0.03f;
 
 static bool g_singlePoint = false;
@@ -116,17 +136,22 @@ static bool capSkip(float cap)
 
 // Single source of truth for the CountingStars grid's shape: the runner and the banner both call
 // it, so the printed point count can never drift from the grid actually executed.
-static bool countingStarsSkip(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac)
+static bool countingStarsSkip(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac,
+                              float ancestorAlpha, float ancestorWeight)
 {
-    // FULL FACTORIAL: 3 slope x 2 floor x 1 explore x 1 cost = 6 points. --single-point is the only
-    // skip. The two fraction axes cannot sum above 0.6 on this grid (both fixed at 0.3), so nothing
-    // is skipped for a negative react_frac -- but cross_check_countingstars_grid.py asserts it
-    // rather than trusting the values.
+    // 2 alphas x 3 weights, MINUS the alpha=0.7 repeat at weight=0 (see the runner's `ai > 0`
+    // guard) = 5 points x 1 slope x 1 floor x 1 explore x 1 cost = 5. --single-point is the only
+    // OTHER skip. The two fraction axes cannot sum above 0.6 on this grid (both fixed at 0.3), so
+    // nothing is skipped for a negative react_frac -- but cross_check_countingstars_grid.py asserts
+    // it rather than trusting the values.
+    if(ancestorWeight == 0.0f && fabsf(ancestorAlpha - ANCESTOR_ALPHAS[0]) > 1e-6f) return true;
     if(!g_singlePoint) return false;
     return fabsf(bufferSlope - CS_DERIVED_BUFFER_SLOPE) > 1e-6f
         || fabsf(bufferFloor - CS_DERIVED_BUFFER_FLOOR) > 1e-6f
         || fabsf(exploreFrac - CS_DERIVED_EXPLORE_FRAC) > 1e-6f
-        || fabsf(costFrac - CS_DERIVED_COST_FRAC) > 1e-6f;
+        || fabsf(costFrac - CS_DERIVED_COST_FRAC) > 1e-6f
+        || fabsf(ancestorAlpha - CS_DERIVED_ANCESTOR_ALPHA) > 1e-6f
+        || fabsf(ancestorWeight - CS_DERIVED_ANCESTOR_WEIGHT) > 1e-6f;
 }
 
 static int countingStarsPointCount()
@@ -136,7 +161,10 @@ static int countingStarsPointCount()
     for(int fi = 0; fi < NUM_BUFFER_FLOORS; fi++)
     for(int ei = 0; ei < NUM_EXPLORE_FRACS; ei++)
     for(int ci = 0; ci < NUM_COST_FRACS; ci++)
-        if(!countingStarsSkip(BUFFER_SLOPES[si], BUFFER_FLOORS[fi], EXPLORE_FRACS[ei], COST_FRACS[ci])) n++;
+    for(int ai = 0; ai < NUM_ANCESTOR_ALPHAS; ai++)
+    for(int wi = 0; wi < NUM_ANCESTOR_WEIGHTS; wi++)
+        if(!countingStarsSkip(BUFFER_SLOPES[si], BUFFER_FLOORS[fi], EXPLORE_FRACS[ei], COST_FRACS[ci],
+                              ANCESTOR_ALPHAS[ai], ANCESTOR_WEIGHTS[wi])) n++;
     return n;
 }
 
@@ -149,33 +177,32 @@ static int capAxisPointCount(const float* caps, int nCaps)
     return n;
 }
 
-// "CountingStars_bs180_bf5_ef300_cf300". MUST start with a name loadRuns() dispatches on.
+// "CountingStars_bs120_bf5_ef300_cf300_aa30_aw25". MUST start with a name loadRuns() dispatches on.
 //
-//   bs   bufferSlope, round(100 x float)
-//   bf   bufferFloor, round(100 x float)   -- B(x) is DERIVED from these, and goal_frontier_size is
-//                                             a per-ITERATION CSV column, not a per-run constant
-//   ef   explore_frac, round(1000 x float)  -- fixed at 0.3 this pass, still tokened (see below)
-//   cf   cost_frac,    round(1000 x float)  -- fixed at 0.3 this pass, still tokened (see below)
+//   bs   bufferSlope, round(100 x float)    -- fixed at 1.2 this pass, still tokened (see below)
+//   bf   bufferFloor, round(100 x float)    -- fixed at 0.05 this pass, still tokened
+//   ef   explore_frac, round(1000 x float)  -- fixed at 0.3 this pass, still tokened
+//   cf   cost_frac,    round(1000 x float)  -- fixed at 0.3 this pass, still tokened
+//   aa   h_ancestorAlpha_, round(100 x float)   -- NEW, this pass's swept axis
+//   aw   h_ancestorWeight_, round(100 x float)  -- NEW, this pass's swept axis; 0 is the off-default
 //
-// THE `_mb` TOKEN IS GONE (v3.3) with maxBlocks itself -- fan-out is door-count now, not a swept
-// boost size, so there is nothing left for that token to carry. v3.2's CSVs are
-// `_bs..._bf..._ef..._cf..._mb...` and cannot collide with this 4-token shape, so they simply stop
-// loading -- intended for a planner whose fan-out mechanism changed, not a loss.
+// bs/bf/aa/aw STAY AT 100x, matching v3's `ff` convention. ef/cf STAY AT 1000x, matching v3's `_f`
+// convention. ALL FOUR OF bs/bf/ef/cf TOKENS STAY IN THE LABEL EVEN THOUGH FIXED THIS PASS: a later
+// rerun at different fixed values does not collide with these CSVs under the same name.
 //
-// bs/bf STAY AT 100x, matching v3's `ff` -- both are coarse axes (bufferSlope up to 2.2, bufferFloor
-// up to 0.2) where `bs220`/`bf20` read directly as 2.2/0.2. ef/cf STAY AT 1000x, matching v3's `_f`
-// convention, unchanged by this pass.
-//
-// ef/cf TOKENS STAY IN THE LABEL EVEN THOUGH FIXED THIS PASS: a later rerun at different fixed
-// values does not collide with these CSVs under the same name.
-static std::string countingStarsLabel(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac)
+// v3.3's CSVs are `_bs..._bf..._ef..._cf...` (no aa/aw) and cannot collide with this 6-token shape,
+// so they simply stop loading -- intended for an axis that did not exist before, not a loss.
+static std::string countingStarsLabel(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac,
+                                      float ancestorAlpha, float ancestorWeight)
 {
-    char buf[160];
-    snprintf(buf, sizeof(buf), "CountingStars_bs%d_bf%d_ef%d_cf%d",
+    char buf[192];
+    snprintf(buf, sizeof(buf), "CountingStars_bs%d_bf%d_ef%d_cf%d_aa%d_aw%d",
              (int)lroundf(100.0f * bufferSlope),
              (int)lroundf(100.0f * bufferFloor),
              (int)lroundf(1000.0f * exploreFrac),
-             (int)lroundf(1000.0f * costFrac));
+             (int)lroundf(1000.0f * costFrac),
+             (int)lroundf(100.0f * ancestorAlpha),
+             (int)lroundf(100.0f * ancestorWeight));
     return std::string(buf);
 }
 
@@ -1041,6 +1068,8 @@ RunResult benchmarkCountingStars(
     float bufferFloor,
     float exploreFrac,
     float costFrac,
+    float ancestorAlpha,
+    float ancestorWeight,
     const std::string& label)
 {
     // Override the planner's defaults for this run. resetPlanner (called below) does not touch the
@@ -1051,7 +1080,8 @@ RunResult benchmarkCountingStars(
     // derivation for these assignments to precede any more. They still have to land BEFORE
     // resetPlanner() though, exactly as h_reactFloor_/h_acceptFloor_ already rely on --
     // resetPlanner() reads none of the ramp fields itself, but updateFrontier() reads them on the
-    // very first iteration of the run that follows.
+    // very first iteration of the run that follows. Same discipline for h_ancestorAlpha_/
+    // h_ancestorWeight_ -- Part A reads them on the very first insertion of the run that follows.
     //
     // h_fillIters_ IS SET TO CS_RAMP_FILL_ITERS, NOT LEFT AT ITS MAX_ITER DEFAULT. It used to be
     // left alone deliberately -- setting it to maxIterations (this benchmark's own, much larger
@@ -1060,11 +1090,13 @@ RunResult benchmarkCountingStars(
     // and a 10s wall-clock cap, a real run only completes ~700 iterations, well short of MAX_ITER
     // (1000) -- x = itr/h_fillIters_ would never reach 1 and B would never reach its ramp maximum
     // for a run's entire duration. CS_RAMP_FILL_ITERS is that real run length instead.
-    planner.h_fillIters_   = CS_RAMP_FILL_ITERS;
-    planner.h_bufferSlope_ = bufferSlope;
-    planner.h_bufferFloor_ = bufferFloor;
-    planner.h_exploreFrac_ = exploreFrac;
-    planner.h_costFrac_    = costFrac;
+    planner.h_fillIters_    = CS_RAMP_FILL_ITERS;
+    planner.h_bufferSlope_  = bufferSlope;
+    planner.h_bufferFloor_  = bufferFloor;
+    planner.h_exploreFrac_  = exploreFrac;
+    planner.h_costFrac_     = costFrac;
+    planner.h_ancestorAlpha_  = ancestorAlpha;
+    planner.h_ancestorWeight_ = ancestorWeight;
 
     RunResult result;
     result.delta_label = label;
@@ -1200,32 +1232,42 @@ void runCountingStarsBenchmark(
     for(int fi = 0; fi < NUM_BUFFER_FLOORS; fi++)
     for(int ei = 0; ei < NUM_EXPLORE_FRACS; ei++)
     for(int ci = 0; ci < NUM_COST_FRACS; ci++)
+    for(int ai = 0; ai < NUM_ANCESTOR_ALPHAS; ai++)
+    for(int wi = 0; wi < NUM_ANCESTOR_WEIGHTS; wi++)
     {
-        const float bufferSlope = BUFFER_SLOPES[si];
-        const float bufferFloor = BUFFER_FLOORS[fi];
-        const float exploreFrac = EXPLORE_FRACS[ei];
-        const float costFrac    = COST_FRACS[ci];
+        const float bufferSlope    = BUFFER_SLOPES[si];
+        const float bufferFloor    = BUFFER_FLOORS[fi];
+        const float exploreFrac    = EXPLORE_FRACS[ei];
+        const float costFrac       = COST_FRACS[ci];
+        const float ancestorAlpha  = ANCESTOR_ALPHAS[ai];
+        const float ancestorWeight = ANCESTOR_WEIGHTS[wi];
 
-        if(countingStarsSkip(bufferSlope, bufferFloor, exploreFrac, costFrac)) continue;
+        if(countingStarsSkip(bufferSlope, bufferFloor, exploreFrac, costFrac,
+                             ancestorAlpha, ancestorWeight)) continue;
 
-        const std::string label = countingStarsLabel(bufferSlope, bufferFloor, exploreFrac, costFrac);
+        const std::string label = countingStarsLabel(bufferSlope, bufferFloor, exploreFrac, costFrac,
+                                                      ancestorAlpha, ancestorWeight);
 
-        // B's RANGE over the run, not a single value: B(x=0) = floor, B(x=1) = slope + floor.
-        int bStart = (int)floorf(bufferFloor * float(MAX_TREE_SIZE) / float(MAX_ITER));
-        int bEnd   = (int)floorf((bufferSlope + bufferFloor) * float(MAX_TREE_SIZE) / float(MAX_ITER));
+        // B's RANGE over the run, not a single value: B(x=0) = floor, B(x=1) = slope + floor. Uses
+        // CS_RAMP_FILL_ITERS, matching what planner.h_fillIters_ is actually set to below -- not
+        // MAX_ITER, which is not the ramp's real denominator any more (see CS_RAMP_FILL_ITERS).
+        int bStart = (int)floorf(bufferFloor * float(MAX_TREE_SIZE) / float(CS_RAMP_FILL_ITERS));
+        int bEnd   = (int)floorf((bufferSlope + bufferFloor) * float(MAX_TREE_SIZE) / float(CS_RAMP_FILL_ITERS));
         printf("  --- bufferSlope = %.2f, bufferFloor = %.2f (B: %d -> %d), explore_frac = %.3f, "
-               "cost_frac = %.3f, react_frac = %.3f (%s) ---\n",
+               "cost_frac = %.3f, react_frac = %.3f, ancestorAlpha = %.2f, ancestorWeight = %.2f (%s) ---\n",
                bufferSlope, bufferFloor, bStart, bEnd,
-               exploreFrac, costFrac, 1.0f - exploreFrac - costFrac, label.c_str());
+               exploreFrac, costFrac, 1.0f - exploreFrac - costFrac,
+               ancestorAlpha, ancestorWeight, label.c_str());
         CountingStars planner;
         for(int run = 0; run < numRuns; run++)
         {
             RunResult result = benchmarkCountingStars(planner, deltaLabel, environment_name, run,
                                                  h_initial, h_goal, d_obstacles,
                                                  numObstacles, maxIterations, maxTimeMs,
-                                                 bufferSlope, bufferFloor, exploreFrac, costFrac, label);
-            printf("  bs=%.2f bf=%.2f ef=%.3f cf=%.3f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-                   bufferSlope, bufferFloor, exploreFrac, costFrac,
+                                                 bufferSlope, bufferFloor, exploreFrac, costFrac,
+                                                 ancestorAlpha, ancestorWeight, label);
+            printf("  bs=%.2f bf=%.2f ef=%.3f cf=%.3f aa=%.2f aw=%.2f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                   bufferSlope, bufferFloor, exploreFrac, costFrac, ancestorAlpha, ancestorWeight,
                    run + 1, numRuns, result.total_time_seconds,
                    result.total_iterations, result.final_tree_size, result.first_solution_iteration,
                    result.first_solution_cost, result.final_best_cost);
@@ -1479,21 +1521,30 @@ int main(int argc, char* argv[])
         printf("} x cost_frac {");
         for(int i = 0; i < NUM_COST_FRACS; i++)
             printf("%s%.2f", i ? ", " : "", COST_FRACS[i]);
+        printf("}\n                x ancestorAlpha {");
+        for(int i = 0; i < NUM_ANCESTOR_ALPHAS; i++)
+            printf("%s%.2f", i ? ", " : "", ANCESTOR_ALPHAS[i]);
+        printf("} x ancestorWeight {");
+        for(int i = 0; i < NUM_ANCESTOR_WEIGHTS; i++)
+            printf("%s%.2f", i ? ", " : "", ANCESTOR_WEIGHTS[i]);
         printf("}\n");
-        printf("                B IS A RAMP, RECOMPUTED EVERY ITERATION:\n"
-               "                  x = itr/MAX_ITER, B(x) = floor((slope*x + floor) * MAX_TREE_SIZE / MAX_ITER)\n"
+        printf("                THIS PASS'S HEADLINE AXIS IS ANCESTOR-AWARENESS: bufferSlope/\n"
+               "                bufferFloor/explore_frac/cost_frac are all FIXED (single-element\n"
+               "                arrays above) -- see h_ancestorAlpha_/h_ancestorWeight_ in\n"
+               "                CountingStars.cuh. ancestorWeight=0 is the exact off-default, kept\n"
+               "                as a free structural control; ancestorAlpha is inert there, so only\n"
+               "                its first value rides in once rather than repeating an identical run.\n");
+        printf("                B IS STILL A RAMP, RECOMPUTED EVERY ITERATION (unchanged this pass):\n"
+               "                  x = itr/fill_iters, B(x) = floor((slope*x + floor) * MAX_TREE_SIZE / fill_iters)\n"
                "                  B(x=0) = floor(bufferFloor * ...) = ");
         for(int i = 0; i < NUM_BUFFER_FLOORS; i++)
-            printf("%s%d", i ? " / " : "", (int)floorf(BUFFER_FLOORS[i] * float(MAX_TREE_SIZE) / float(MAX_ITER)));
+            printf("%s%d", i ? " / " : "", (int)floorf(BUFFER_FLOORS[i] * float(MAX_TREE_SIZE) / float(CS_RAMP_FILL_ITERS)));
         printf("\n                  B(x=1) = floor((slope+floor) * ...), at bufferSlope=%.2f = ", BUFFER_SLOPES[NUM_BUFFER_SLOPES - 1]);
         for(int i = 0; i < NUM_BUFFER_FLOORS; i++)
             printf("%s%d", i ? " / " : "", (int)floorf((BUFFER_SLOPES[NUM_BUFFER_SLOPES - 1] + BUFFER_FLOORS[i])
-                                                        * float(MAX_TREE_SIZE) / float(MAX_ITER)));
+                                                        * float(MAX_TREE_SIZE) / float(CS_RAMP_FILL_ITERS)));
         printf("\n");
-        printf("                bufferSlope = 0 REPRODUCES v3's CONSTANT B EXACTLY -- that subgrid\n"
-               "                is a free, structural comparison against the old fixed-buffer\n"
-               "                design, not a separate baseline to sweep again.\n"
-               "                THREE FIXED SHARES OF B: explore_frac to the FRESHEST door,\n"
+        printf("                THREE FIXED SHARES OF B: explore_frac to the FRESHEST door,\n"
                "                cost_frac to the CHEAPEST door (smallest cost distance, chosen\n"
                "                by a log-bucketed histogram rather than the sort that kept\n"
                "                breaking), and 1 - explore - cost to the uniform DRAW. The two\n"
@@ -1504,20 +1555,19 @@ int main(int argc, char* argv[])
                "                top of those shares. Both are bounded by NUM_R1_REGIONS (%d) rather\n"
                "                than by B, so B binds only ABOVE that count; below it budget_used\n"
                "                runs over B and the two fractions steer a minority of the frontier.\n"
-               "                v3.3: OPTIMAL ALSO COMPETES FOR FRESHEST now (only CHEAPEST stays\n"
-               "                closed to it). FAN-OUT IS DOOR-COUNT: a node gets one propagation\n"
-               "                block per door that admitted it (popcount of the door mask), full\n"
-               "                stop -- no region-thinness signal, no swept boost size.\n"
+               "                FAN-OUT IS DOOR-COUNT: a node gets one propagation block per door\n"
+               "                that admitted it (popcount of the door mask), full stop.\n"
+               "                ANCESTOR-AWARENESS BLENDS THE CHEAPEST/REACTIVATION DISTANCE with a\n"
+               "                per-node lineage EMA (h_ancestorAlpha_'s decay rate) at weight\n"
+               "                h_ancestorWeight_ -- see csBlendDistance. A node with an optimal\n"
+               "                lineage but a locally-so-so cost reads CHEAPER than its raw distance\n"
+               "                alone would say, and vice versa.\n"
                "                READ FIRST: the goal_frontier_size-vs-iteration panel (does the\n"
                "                realized ramp match slope*x+floor), then\n"
-               "                budget_used/goal_frontier_size as a CURVE against a now-MOVING\n"
-               "                target, then admitted_costdist against admitted_explore, then\n"
-               "                cost_cutoff_dist against dist_max -- a collapse toward dist_max/2^21\n"
-               "                means every candidate is in bucket 0 and the cost door has degraded\n"
-               "                to a uniform draw.\n"
-               "                (bufferSlope, bufferFloor) = (0, 0) IS THE DEEPEST CONTROL: a\n"
-               "                constant B = 0 (floored to 1), so the frontier is optimal +\n"
-               "                guarantee + a trickle draw and nothing else.\n"
+               "                budget_used/goal_frontier_size as a curve, then admitted_costdist\n"
+               "                against admitted_explore, then the tradeoff scatter across\n"
+               "                ancestorWeight -- does the mechanism actually move final cost or\n"
+               "                time-to-first-solution at either discretization.\n"
                "                -> %d points x %d runs = %d runs\n",
                NUM_R1_REGIONS, csPoints, NUM_CS_RUNS, csPoints * NUM_CS_RUNS);
         printf("CleanCost:      r2 OFF, w %.2f, k %.2f, cap %.2f = 1 point x %d runs = %d runs\n",

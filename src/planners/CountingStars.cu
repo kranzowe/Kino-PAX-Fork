@@ -158,9 +158,14 @@ CountingStars::CountingStars()
     // Per-node, tree-indexed, written once at admission.
     d_nodeBlocks_             = thrust::device_vector<int>(MAX_TREE_SIZE, 1);
     d_nodeDoor_               = thrust::device_vector<int>(MAX_TREE_SIZE, CS_DOOR_NONE);
+    // Ancestor-awareness (opt-in). Seeded to CS_MIN_DISTANCE -- see the header field comment for why
+    // this is both the root's correct seed and a harmless default for unused slots.
+    d_nodeSelfDistance_       = thrust::device_vector<float>(MAX_TREE_SIZE, CS_MIN_DISTANCE);
+    d_ancestorQuality_        = thrust::device_vector<float>(MAX_TREE_SIZE, CS_MIN_DISTANCE);
     // Per-candidate, unexplored-sample-slot indexed.
     d_candDistance_           = thrust::device_vector<float>(MAX_TREE_SIZE, 0.0f);
     d_candDoor_               = thrust::device_vector<int>(MAX_TREE_SIZE, CS_DOOR_NONE);
+    d_candEffectiveDistance_  = thrust::device_vector<float>(MAX_TREE_SIZE, 0.0f);
     // v3.1: the reactivation population, written by the scan and read by Part B's cost arm.
     d_reactEligible_          = thrust::device_vector<bool>(MAX_TREE_SIZE, false);
 
@@ -200,6 +205,9 @@ CountingStars::CountingStars()
     d_nodeDoor_ptr_               = thrust::raw_pointer_cast(d_nodeDoor_.data());
     d_candDistance_ptr_           = thrust::raw_pointer_cast(d_candDistance_.data());
     d_candDoor_ptr_               = thrust::raw_pointer_cast(d_candDoor_.data());
+    d_nodeSelfDistance_ptr_       = thrust::raw_pointer_cast(d_nodeSelfDistance_.data());
+    d_ancestorQuality_ptr_        = thrust::raw_pointer_cast(d_ancestorQuality_.data());
+    d_candEffectiveDistance_ptr_  = thrust::raw_pointer_cast(d_candEffectiveDistance_.data());
     d_iterations_ptr_             = thrust::raw_pointer_cast(d_iterations_.data());
     d_controlPathsToGoal_ptr_     = thrust::raw_pointer_cast(d_controlPathsToGoal_.data());
 
@@ -248,6 +256,11 @@ CountingStars::CountingStars()
     h_exploreFrac_ = 0.1f;
     h_costFrac_    = 0.6f;
     h_reactFrac_   = fmaxf(0.0f, 1.0f - h_exploreFrac_ - h_costFrac_);
+
+    // Ancestor-awareness: OFF by default (weight 0 is exact identity -- see csBlendDistance).
+    // alpha is inert until weight > 0; 0.5 is an untuned default, sweep both together.
+    h_ancestorAlpha_  = 0.5f;
+    h_ancestorWeight_ = 0.0f;
 
     // v3.1: the completeness floor. NOT A TUNING KNOB and deliberately not an axis -- its job is to
     // be non-zero. See h_reactFloor_ in the header for why a pure top-K reactivation is not
@@ -358,8 +371,11 @@ void CountingStars::resetPlanner(float* h_initial, float* h_goal)
     // just an ordinary single-block node like anything else.
     thrust::fill(d_nodeBlocks_.begin(), d_nodeBlocks_.end(), 1);
     thrust::fill(d_nodeDoor_.begin(), d_nodeDoor_.end(), CS_DOOR_NONE);
+    thrust::fill(d_nodeSelfDistance_.begin(), d_nodeSelfDistance_.end(), CS_MIN_DISTANCE);
+    thrust::fill(d_ancestorQuality_.begin(), d_ancestorQuality_.end(), CS_MIN_DISTANCE);
     thrust::fill(d_candDistance_.begin(), d_candDistance_.end(), 0.0f);
     thrust::fill(d_candDoor_.begin(), d_candDoor_.end(), CS_DOOR_NONE);
+    thrust::fill(d_candEffectiveDistance_.begin(), d_candEffectiveDistance_.end(), 0.0f);
     thrust::fill(d_reactEligible_.begin(), d_reactEligible_.end(), false);
     thrust::fill(d_iterations_.begin(), d_iterations_.end(), 0);
     thrust::fill(d_controlPathsToGoal_.begin(), d_controlPathsToGoal_.end(), 0.0f);
@@ -920,8 +936,9 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
 // so the flag written into candDistance is 0 for exactly the set the comparison selects.
 __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                  float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
+                                                 int* unexploredSamplesParentIdxs, float* ancestorQuality, float ancestorWeight,
                                                  int* regionNodeCount, float costScale, float distMax,
-                                                 float* candDistance, int* acceptHistogram)
+                                                 float* candDistance, float* candEffectiveDistance, int* acceptHistogram)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if(tid >= frontierNextSize) return;
@@ -937,6 +954,9 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
         {
             // OPTIMAL. Uncapped.
             candDistance[idx] = 0.0f;
+            // Hygiene only -- never read downstream for an optimal candidate (pass 2's isOptimal
+            // check reads candDistance, not this).
+            candEffectiveDistance[idx] = 0.0f;
             // Slot CS_HIST_OPT_SLOT is NOT a bucket -- it is the optimal count, riding in the same
             // buffer so the host reads everything back in one synchronising memcpy. Neither cutoff
             // scan touches it.
@@ -964,11 +984,23 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
     float d = csNodeDistance(cost, m, costScale);
     candDistance[idx] = d;
 
+    // ANCESTOR-AWARENESS (opt-in, see csBlendDistance/h_ancestorWeight_). The candidate itself has no
+    // ancestorQuality yet (it isn't a tree node until Part A admits it) -- its PARENT already is one,
+    // so we blend against the parent's already-written aggregate. candEffectiveDistance carries this
+    // to pass 2; candDistance (raw) is untouched and stays the isOptimal-check's only input.
+    float effD = d;
+    if(ancestorWeight > 0.0f)
+        {
+            int parentTreeIdx = unexploredSamplesParentIdxs[idx];
+            effD = csBlendDistance(d, ancestorQuality[parentTreeIdx], ancestorWeight);
+        }
+    candEffectiveDistance[idx] = effD;
+
     // --- BOTH VOTES. csOrdBucket / csCostBucket are the single definitions of the two bucket maps
     // (see the header); pass 2 calls the very same functions, so the two passes cannot disagree
     // about which bucket a candidate is in -- which they could when each spelled the clamp out. ---
     atomicAdd(&acceptHistogram[CS_HIST_ORD_BASE  + csOrdBucket(regionNodeCount[xR1])], 1);
-    atomicAdd(&acceptHistogram[CS_HIST_COST_BASE + csCostBucket(d, distMax)], 1);
+    atomicAdd(&acceptHistogram[CS_HIST_COST_BASE + csCostBucket(effD, distMax)], 1);
 }
 
 /***************************/
@@ -998,6 +1030,7 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
 __global__ void CountingStars_reactScan_kernel(int treeSize, bool* frontier, bool* goalSet,
                                                int* treeXR1s, float* treeSampleCosts, float* minCostsR1,
                                                int* bestNodeIdxPerR1, float costScale, float distMax,
+                                               float* ancestorQuality, float ancestorWeight,
                                                bool* reactEligible, int* acceptHistogram)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1020,10 +1053,12 @@ __global__ void CountingStars_reactScan_kernel(int treeSize, bool* frontier, boo
 
     reactEligible[tid] = true;
     atomicAdd(&acceptHistogram[CS_HIST_DORMANT_SLOT], 1);
-    atomicAdd(&acceptHistogram[CS_HIST_REACT_BASE
-                               + csCostBucket(csNodeDistance(treeSampleCosts[tid], minCostsR1[xR1], costScale),
-                                              distMax)],
-              1);
+    // ANCESTOR-AWARENESS (opt-in). This node is already a tree member, so its own ancestorQuality
+    // was already written when IT was inserted (Part A) -- no extra lookup needed, unlike a
+    // candidate. See csBlendDistance/h_ancestorWeight_.
+    float liveD = csNodeDistance(treeSampleCosts[tid], minCostsR1[xR1], costScale);
+    float effD  = (ancestorWeight > 0.0f) ? csBlendDistance(liveD, ancestorQuality[tid], ancestorWeight) : liveD;
+    atomicAdd(&acceptHistogram[CS_HIST_REACT_BASE + csCostBucket(effD, distMax)], 1);
 }
 
 /***************************/
@@ -1071,7 +1106,8 @@ __global__ void CountingStars_reactScan_kernel(int treeSize, bool* frontier, boo
 // histogram it was never counted in.
 __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                  int* frontierNextXR1s, int* regionNodeCount,
-                                                 float* candDistance, bool* frontierNext, int* candDoor,
+                                                 float* candDistance, float* candEffectiveDistance,
+                                                 bool* frontierNext, int* candDoor,
                                                  bool* regionCovered, curandState* randomSeeds,
                                                  int ordCutoff, float pBoundary,
                                                  int costCutoff, float pCostBoundary, float distMax,
@@ -1085,6 +1121,9 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
     int xR1 = frontierNextXR1s[idx];
 
     int  mask      = CS_DOOR_NONE;
+    // MUST read the RAW candDistance, never candEffectiveDistance -- 0 is the optimal mark, and
+    // ancestor-blending a literally-optimal candidate with a nonzero ancestorQuality would silently
+    // misclassify it as non-optimal. See candEffectiveDistance's header comment.
     bool isOptimal = (candDistance[idx] == 0.0f);
     if(isOptimal)
         {
@@ -1099,7 +1138,7 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
     // skipped structurally for an optimal candidate (see above). ---
     int  ob        = csOrdBucket(regionNodeCount[xR1]);
     bool takeOrd   = (ob < ordCutoff);
-    int  cb        = isOptimal ? -1 : csCostBucket(candDistance[idx], distMax);
+    int  cb        = isOptimal ? -1 : csCostBucket(candEffectiveDistance[idx], distMax);
     bool takeCost  = (!isOptimal) && (cb < costCutoff);
 
     // One state, at most two draws, one store -- even for a candidate sitting on both boundaries.
@@ -1168,6 +1207,7 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
                                int* iterations, int iteration,
                                bool* reactEligible, float costScale, float distMax,
                                int reactCutoff, float pReactBoundary, float reactFloor,
+                               float* nodeSelfDistance, float* ancestorQuality, float ancestorAlpha, float ancestorWeight,
                                unsigned long long* doorCounts)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1188,6 +1228,18 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
             float cost = unexploredSampleCosts[x1UnexploredIdx];
             int xR1    = frontierNextXR1s[x1UnexploredIdx];
             int door   = candDoor[x1UnexploredIdx];
+
+            // ANCESTOR-AWARENESS bookkeeping (opt-in, see h_ancestorWeight_/h_ancestorAlpha_).
+            // UNCONDITIONAL for every inserted node, regardless of which door admitted it -- gating
+            // this by door type is the exact bug KinoPaxSTARTrueWeightedCost's ancestorBad has (an
+            // early `if(!admitBest[treeIdx]) return;` starves the write for most nodes). selfDist is
+            // frozen NOW because it can never be recomputed later: minCostsR1[xR1] only ever improves
+            // and costScale is a live per-iteration scalar, so neither preserves what it was at this
+            // node's birth. x0Idx is always a fully-initialized index here -- either the root (seeded
+            // by resetPlanner, never touched by Part A) or a node from a strictly earlier iteration.
+            float selfDist = csNodeDistance(cost, minCostsR1[xR1], costScale);
+            nodeSelfDistance[x1TreeIdx] = selfDist;
+            ancestorQuality[x1TreeIdx]  = ancestorAlpha * nodeSelfDistance[x0Idx] + (1.0f - ancestorAlpha) * ancestorQuality[x0Idx];
 
             // Transfer to tree
             treeSamplesParentIdxs[x1TreeIdx] = x0Idx;
@@ -1321,8 +1373,14 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
             // against a cutoff it did not contribute to. ---
             if(reactEligible[treeIdx])
                 {
-                    int rb = csCostBucket(csNodeDistance(treeSampleCosts[treeIdx], minCostsR1[xR1], costScale),
-                                          distMax);
+                    // ANCESTOR-AWARENESS (opt-in). This tree node's own ancestorQuality was already
+                    // written when it was inserted by Part A -- no extra lookup needed. See
+                    // csBlendDistance/h_ancestorWeight_.
+                    float liveD = csNodeDistance(treeSampleCosts[treeIdx], minCostsR1[xR1], costScale);
+                    float effD  = (ancestorWeight > 0.0f)
+                                      ? csBlendDistance(liveD, ancestorQuality[treeIdx], ancestorWeight)
+                                      : liveD;
+                    int rb = csCostBucket(effD, distMax);
                     bool take = (rb < reactCutoff);
                     if(!take && rb == reactCutoff && pReactBoundary > 0.0f)
                         take = (curand_uniform(&seed) < pReactBoundary);
@@ -1449,6 +1507,7 @@ void CountingStars::updateFrontier()
               h_treeSize_, d_frontier_ptr_, d_goalSet_ptr_,
               d_treeXR1s_ptr_, d_treeSampleCosts_ptr_, d_minCostsR1_ptr_,
               d_bestNodeIdxPerR1_ptr_, h_costScale_, h_distMax_,
+              d_ancestorQuality_ptr_, h_ancestorWeight_,
               d_reactEligible_ptr_, d_acceptHistogram_ptr_);
         }
 
@@ -1463,8 +1522,9 @@ void CountingStars::updateFrontier()
             CountingStars_acceptPass1_kernel<<<iDivUp(h_frontierNextSize_, h_blockSize_), h_blockSize_>>>(
               d_activeFrontierIdxs_ptr_, h_frontierNextSize_,
               d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_unexploredSampleCosts_ptr_,
+              d_unexploredSamplesParentIdxs_ptr_, d_ancestorQuality_ptr_, h_ancestorWeight_,
               d_regionNodeCount_ptr_, h_costScale_, h_distMax_,
-              d_candDistance_ptr_, d_acceptHistogram_ptr_);
+              d_candDistance_ptr_, d_candEffectiveDistance_ptr_, d_acceptHistogram_ptr_);
 
             // STILL ONE SYNCHRONISING COPY, and that is what the shared buffer buys: both
             // histograms and the optimal count come back together. This stall sits mid-iteration
@@ -1503,7 +1563,7 @@ void CountingStars::updateFrontier()
             CountingStars_acceptPass2_kernel<<<iDivUp(h_frontierNextSize_, h_blockSize_), h_blockSize_>>>(
               d_activeFrontierIdxs_ptr_, h_frontierNextSize_,
               d_frontierNextXR1s_ptr_, d_regionNodeCount_ptr_,
-              d_candDistance_ptr_, d_frontierNext_ptr_, d_candDoor_ptr_,
+              d_candDistance_ptr_, d_candEffectiveDistance_ptr_, d_frontierNext_ptr_, d_candDoor_ptr_,
               d_regionCovered_ptr_, d_randomSeeds_ptr_,
               h_ordCutoff_, h_pBoundary_,
               h_costCutoff_, h_pCostBoundary_, h_distMax_,
@@ -1585,6 +1645,7 @@ void CountingStars::updateFrontier()
       d_iterations_ptr_, h_itr_,
       d_reactEligible_ptr_, h_costScale_, h_distMax_,
       h_reactCutoff_, h_pReactBoundary_, h_reactFloor_,
+      d_nodeSelfDistance_ptr_, d_ancestorQuality_ptr_, h_ancestorAlpha_, h_ancestorWeight_,
       d_doorCounts_ptr_);
 
     // --- Read back the door counts. One memcpy for the whole "what built this tree" answer. ---
