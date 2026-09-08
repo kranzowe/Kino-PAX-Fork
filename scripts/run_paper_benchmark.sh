@@ -12,13 +12,15 @@
 #   KPAX                     defaults
 #   KinoPaxPlus               defaults
 #   KinoPaxSTARCleanCost      r2 off, w 0.9, k 1.0, cap 0.03
-#   CountingStars (slope 1.0) explore_frac 0.3, cost_frac 0.3, bufferFloor 0.1
+#   CountingStars (slope 1.0) explore_frac 0.2, cost_frac 0.2, bufferFloor 0.05 OPTIMALTOGGLE ON (so optimal
+# nodes count toward reactivation budget)
 #   CountingStars (slope 0.5) same, bufferSlope 0.5
+#   CountingStars (slope 1.5) same, bufferSlope 1.5
 #
 # THREE DELTAS, ALL FIVE SERIES AT EACH:
 #   large  W_R1=10  C_R1=1  V_R1=3  ->  10^3 * 3^3 =  27,000 regions
-#   fine   W_R1=20  C_R1=1  V_R1=3  ->  20^3 * 3^3 = 216,000 regions
-#   tiny   W_R1=15  C_R1=1  V_R1=4  ->  15^3 * 4^3 = 216,000 regions
+#   fine   W_R1=20  C_R1=1  V_R1=3  ->  15^3 * 3^3 = 216,000 regions
+#   tiny   W_R1=16  C_R1=1  V_R1=4  ->  18^3 * 4^3 = 373,000 regions
 # "fine" and "tiny" are a CONTROLLED PAIR at the identical region count, refined on different axes
 # (workspace vs. velocity) -- same convention as countingstars_sweep.cu's fine/fine_control pair.
 # C_R1 stays at 1 everywhere: this config sets C_DIM 0, so control refinement has nowhere to act
@@ -28,7 +30,8 @@
 # from 0.10 to 0.02 wide (include/config/obstacles/zigzag/obstacles.csv) to match narrowPassage's
 # clearance exactly -- expect both to show materially lower success rates than empty/house.
 #
-# TWO COST METRICS (length, effort), each its own full build.
+# TWO COST METRICS (length, effort), each its own full build. FOR THIS RUN  WILL ONLY DO LENGTH
+# DISABLE EFFORT for now.
 #
 # MAX_TREE_SIZE (3,000,000) and the per-run wall-clock cap (10s, compiled into
 # examples/gpu/paper_benchmark.cu as MAX_TIME_MS) are meant to be the actual stop conditions. The
@@ -43,7 +46,7 @@
 # limiters) has x pinned at 1 and B plateaued at its ramp maximum for the rest of the run --
 # already-supported, intended behavior, not a new edge case.
 #
-# SCALE: 5 series x 3 deltas x 4 environments x 2 cost metrics x 10 runs = 1,200 runs, each capped
+# SCALE: 6 series x 3 deltas x 4 environments x 1 cost metrics x 5 runs = 360 runs, each capped
 # at 10s. Worst case a few hours; most runs stop earlier (tree-full or an early success).
 #
 # NUM_R1_REGIONS and COST_MODE are both COMPILE-TIME, so neither can vary within one binary. Same
