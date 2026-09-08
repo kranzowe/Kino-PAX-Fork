@@ -285,6 +285,10 @@ CountingStars::CountingStars()
     // differs from h_reactFloor_'s and why it defaults an order of magnitude higher.
     h_acceptFloor_ = 1e-4f;
 
+    // Default false reproduces today's unconditional, un-budgeted guarantee exactly. See
+    // h_reactGuaranteeBudgeted_ in the header.
+    h_reactGuaranteeBudgeted_ = false;
+
     // ---- Fan-out. Blocks a node gets are popcount(door), decided at admission; see the header. ----
     // rep is a plain COUNT OF BLOCKS with no alignment constraint -- repeatInd writes rep integer
     // entries and kernel1 launches one 32-thread block per entry, so a node at 2 gets
@@ -1114,6 +1118,7 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
 __global__ void CountingStars_reactScan_kernel(int treeSize, bool* frontier, bool* goalSet,
                                                int* treeXR1s, float* treeSampleCosts, float* minCostsR1,
                                                int* bestNodeIdxPerR1, float costScale, float distMax,
+                                               bool guaranteeBudgeted,
                                                bool* reactEligible, int* acceptHistogram)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1128,7 +1133,13 @@ __global__ void CountingStars_reactScan_kernel(int treeSize, bool* frontier, boo
         }
 
     int xR1 = treeXR1s[tid];
-    if(tid == bestNodeIdxPerR1[xR1])
+    // guaranteeBudgeted == false (default): !false == true, so this is exactly today's
+    // `if(tid == bestNodeIdxPerR1[xR1])` -- byte-for-byte unchanged. guaranteeBudgeted == true:
+    // this exclusion never fires -- the region-best node falls through to the SAME vote every
+    // other dormant node already casts below, and Part B's ARM 1 (the guarantee) is gated to never
+    // fire either, so it must win a react_frac * B slot like anything else. See
+    // h_reactGuaranteeBudgeted_ in the header.
+    if(!guaranteeBudgeted && tid == bestNodeIdxPerR1[xR1])
         {
             reactEligible[tid] = false;
             return;
@@ -1284,6 +1295,7 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
                                int* iterations, int iteration,
                                bool* reactEligible, float costScale, float distMax,
                                int reactCutoff, float pReactBoundary, float reactFloor,
+                               bool guaranteeBudgeted,
                                unsigned long long* doorCounts)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1393,7 +1405,13 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
             // atomicExch, so ties resolve arbitrarily -- exactly one node per region, which is what
             // this arm wants. A Part A write racing this read can only move the guarantee by one
             // node for one iteration, and the covered case is gated by regionCovered anyway.
-            if(!regionCovered[xR1] && treeIdx == bestNodeIdxPerR1[xR1])
+            // guaranteeBudgeted == false (default): !false == true, so this is exactly today's
+            // `if(!regionCovered[xR1] && treeIdx == bestNodeIdxPerR1[xR1])` -- unchanged.
+            // guaranteeBudgeted == true: this arm never fires, for any region, this iteration --
+            // the region-best node falls through to the CHEAPEST arm below (reactEligible was left
+            // true for it by the scan) and must win a react_frac * B slot like anything else. See
+            // h_reactGuaranteeBudgeted_ in the header.
+            if(!guaranteeBudgeted && !regionCovered[xR1] && treeIdx == bestNodeIdxPerR1[xR1])
                 {
                     frontier[treeIdx]   = true;
                     nodeDoor[treeIdx]   = CS_DOORBIT_GUAR;
@@ -1574,7 +1592,7 @@ void CountingStars::updateFrontier()
             CountingStars_reactScan_kernel<<<iDivUp(h_treeSize_, h_blockSize_), h_blockSize_>>>(
               h_treeSize_, d_frontier_ptr_, d_goalSet_ptr_,
               d_treeXR1s_ptr_, d_treeSampleCosts_ptr_, d_minCostsR1_ptr_,
-              d_bestNodeIdxPerR1_ptr_, h_costScale_, h_distMax_,
+              d_bestNodeIdxPerR1_ptr_, h_costScale_, h_distMax_, h_reactGuaranteeBudgeted_,
               d_reactEligible_ptr_, d_acceptHistogram_ptr_);
         }
 
@@ -1711,7 +1729,7 @@ void CountingStars::updateFrontier()
       d_minCost_ptr_, d_unexploredSampleCosts_ptr_, d_goalSet_ptr_,
       d_iterations_ptr_, h_itr_,
       d_reactEligible_ptr_, h_costScale_, h_distMax_,
-      h_reactCutoff_, h_pReactBoundary_, h_reactFloor_,
+      h_reactCutoff_, h_pReactBoundary_, h_reactFloor_, h_reactGuaranteeBudgeted_,
       d_doorCounts_ptr_);
 
     // --- Read back the door counts. One memcpy for the whole "what built this tree" answer. ---

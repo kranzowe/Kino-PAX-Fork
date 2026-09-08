@@ -368,6 +368,32 @@ public:
     // ==================================================================================
     float h_acceptFloor_;
 
+    // ==================================================================================
+    // TOGGLE: FOLD THE REGION-BEST GUARANTEE INTO THE REACTIVATION BUDGET.
+    //
+    // ARM 1 (CS_DOORBIT_GUAR, "the guarantee") is uncapped by construction -- up to one node per
+    // R1 region, every iteration, with no roll and no reference to h_reactFrac_ * B. At MORE
+    // regions (a finer discretization), this is proportionally MORE free, budget-exempt
+    // reactivation every iteration -- the thing under suspicion for over-reactivating "optimal"
+    // nodes at fine deltas.
+    //
+    // h_reactGuaranteeBudgeted_ = false (DEFAULT) reproduces that exactly, byte-for-byte, unchanged
+    // from every point already run. true folds the tracked region-best node into the SAME
+    // population CountingStars_reactScan_kernel already measures and the SAME cutoff ARM 2 already
+    // spends against -- no new histogram, no new bucket map, no new formula. It must win a
+    // react_frac * B slot like any other dormant node, and can now be starved of reactivation
+    // entirely if the budget is smaller than the number of currently-optimal-or-near-optimal nodes
+    // across all regions -- exactly the curbing effect this toggle exists to measure.
+    //
+    // Named around "guarantee", not "optimal": CS_DOORBIT_OPTIMAL / h_admittedCost_ already name a
+    // different, unrelated mechanism (the CANDIDATE-side cost <= minCostsR1[r] admission test in
+    // accept pass 2). This toggle only touches the DORMANT-NODE reactivation guarantee.
+    //
+    // NOT reset by resetPlanner() -- same discipline as h_reactFloor_/h_acceptFloor_/h_exploreFrac_/
+    // h_costFrac_: a caller sets it once before resetPlanner() and it holds for the run.
+    // ==================================================================================
+    bool h_reactGuaranteeBudgeted_;
+
     // The reactivation cutoff and its boundary probability, solved from the react histogram by the
     // same csSolveCutoff the other two doors use. h_reactCutoffDist_ is the DISTANCE the bucket
     // corresponds to -- the readable one, since the index only means anything against the distMax
@@ -730,6 +756,7 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
 __global__ void CountingStars_reactScan_kernel(int treeSize, bool* frontier, bool* goalSet,
                                                int* treeXR1s, float* treeSampleCosts, float* minCostsR1,
                                                int* bestNodeIdxPerR1, float costScale, float distMax,
+                                               bool guaranteeBudgeted,
                                                bool* reactEligible, int* acceptHistogram);
 
 /***************************/
@@ -754,6 +781,7 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
                                int* iterations, int iteration,
                                bool* reactEligible, float costScale, float distMax,
                                int reactCutoff, float pReactBoundary, float reactFloor,
+                               bool guaranteeBudgeted,
                                unsigned long long* doorCounts);
 
 /***************************/

@@ -7,22 +7,27 @@
 # are deliberately NOT in this sweep -- COMBO is the thing being replaced and its own sweep still
 # exists; TrueStar answers a cap question this planner does not ask.
 #
-# Per (environment, cost metric) at the COARSE delta:
-#   CountingStars   bufferSlope {1.4, 1.8, 2.2} x bufferFloor {0.05, 0.2}
-#                   explore_frac and cost_frac FIXED at 0.3 each (not swept this pass)
-#                   = 6 points (FULL FACTORIAL, coarse delta only) x 5 runs = 30 runs
+# THIS PASS'S AXIS IS THE GUARANTEE-BUDGET TOGGLE, NOT THE RAMP. bufferSlope/bufferFloor are FIXED
+# at one point (1.2, 0.05) rather than swept -- an earlier pass already characterized the ramp on
+# its own. What varies here is h_reactGuaranteeBudgeted_: whether the region-best GUARANTEE arm
+# keeps its unconditional, budget-free reactivation (false, matching every point run before this
+# pass) or gets folded into the SAME cost-distance histogram/budget the CHEAPEST reactivation arm
+# already uses (true). See CountingStars.cuh.
 #
-#                   maxBlocks IS GONE (v3.3): fan-out is door-count now (nodeBlocks = popcount of
-#                   the doors that admitted a node), not a swept boost size, so there is nothing
-#                   left on this axis to hold fixed.
+# Per (environment, cost metric), AT EACH OF TWO DISCRETIZATIONS (coarse and fine -- see
+# DELTA_LABELS below; BOTH run the full comparison, unlike earlier passes where only the coarse
+# delta did):
+#   CountingStars   bufferSlope 1.2 (fixed), bufferFloor 0.05 (fixed),
+#                   explore_frac and cost_frac FIXED at 0.3 each (not swept this pass),
+#                   guaranteeBudgeted {false, true} = 2 points x 5 runs = 10 runs
 #   CleanCost       r2 OFF, w 0.9, k 1, cap 0.03            = 1 point  x 5 runs
 #   KPAXCap         cap {0.03}                              = 1 point  x 5 runs
 #   KPAX                                                    = 1 point  x 5 runs
 #   KinoPaxPlus                                             = 1 point  x 5 runs
 #
 # TWO COST METRICS THIS PASS (length, effort), each its own full build -- see COST_LABELS/
-# COST_MODES below -- so every run count above is doubled in practice: 60 CountingStars runs
-# total across both metrics, one environment (zigzag).
+# COST_MODES below -- so every run count above is doubled in practice, AND doubled again across
+# the two deltas: 40 CountingStars runs total, one environment (zigzag).
 #
 # ============================================================================================
 # WHAT CHANGED FROM v2, AND WHY THIS SWEEP EXISTS
@@ -146,11 +151,13 @@
 #      beat the best bufferSlope = 0 point on time-to-first-solution AND close the final-cost gap
 #      against CleanCost. bufferSlope = 0 points are the direct, structural control.
 #
-# THE TWO FINER DELTAS RUN KINOPAXPLUS ONLY (--only-kinopaxplus), and that is the point of having
-# them: KinoPaxPlus is the planner whose whole advantage is a tiny frontier at a fine
-# discretisation, so it is the one baseline that must be measured at all three. Re-running the
-# CountingStars grid there would triple the sweep to answer a question the coarse delta already
-# answers.
+# BOTH DELTAS RUN THE FULL COMPARISON THIS PASS -- NOT --only-kinopaxplus at the finer one, unlike
+# earlier passes through this file. The whole point of sweeping the guarantee-budget toggle is the
+# concern that CountingStars over-reactivates "optimal" nodes specifically at finer
+# discretizations (more R1 regions means proportionally more free, budget-exempt GUARANTEE
+# reactivation every iteration); answering that needs CountingStars (both toggle settings) AND
+# KinoPaxPlus BOTH measured at the fine delta, not KinoPaxPlus alone. The grid stays small (2
+# CountingStars points) specifically so running it twice (once per delta) is still cheap.
 #
 # Runs on BOTH environments, each written to its own subfolder under
 # Data/Benchmarks/CountingStars/<env>/ so they can be plotted independently.
@@ -173,14 +180,9 @@
 # C_DIM 0, so getRegion / getSubRegion skip the C dimension entirely -- raising C_R1 would change
 # nothing at all. The control-side refinement rides on V_R1.
 #
-# Deltas (Model 1: W_DIM=3, C_DIM=0, V_DIM=3):
-#   large   W_R1=10  C_R1=1  V_R1=3  ->  10^3 * 3^3 =  27,000   (full sweep)
-#   fine    W_R1=20  C_R1=1  V_R1=3  ->  20^3 * 3^3 = 216,000   (KinoPaxPlus only)
-#   tiny    W_R1=14  C_R1=1  V_R1=6  ->  14^3 * 6^3 = 592,704   (KinoPaxPlus only)
-#
-# "tiny" names the CELL, not the count: it is the FINEST of the three at 592,704 regions. Watch it
-# for the per-region arrays -- every NUM_R1_REGIONS allocation and every full-array fill scales with
-# this, and graph_.updateVertices() runs a kernel over all of them with 64 sub-vertex reads each.
+# Deltas (Model 1: W_DIM=3, C_DIM=0, V_DIM=3), TWO THIS PASS -- "tiny" dropped, see above:
+#   large (coarse)  W_R1=10  C_R1=1  V_R1=3  ->  10^3 * 3^3 =  27,000   (full comparison)
+#   fine            W_R1=20  C_R1=1  V_R1=3  ->  20^3 * 3^3 = 216,000   (full comparison)
 #
 # Original config.h is backed up and restored on exit/error.
 #
@@ -200,21 +202,17 @@ CONFIG_FILE="$PROJECT_DIR/include/config/config.h"
 CONFIG_BACKUP="$CONFIG_FILE.bak"
 BUILD_DIR="$PROJECT_DIR/build"
 
-# Deltas: parallel arrays of label / W_R1 / C_R1 / V_R1.
-# Index 0 runs the full sweep; every later index runs KinoPaxPlus only. One build per (delta, cost
-# metric), cached, so restoring or trimming the list changes only the loop bounds.
-DELTA_LABELS=("large" "fine" "tiny")
-DELTA_W_R1S=(10 20 14)
-DELTA_C_R1S=(1  1  1)   # inert for Model 1 (C_DIM 0); control refinement rides on V_R1
-DELTA_V_R1S=(3  3  6)
-# Index 0 runs the FULL sweep -- CountingStars grid, KPAX, KPAXCap, KinoPaxPlus, CleanCost.
-# Indices 1 and 2 run KINOPAXPLUS ONLY, which is the point of having them: KinoPaxPlus is the
-# planner whose whole advantage is a tiny frontier at a fine discretisation, so it is the one
-# baseline that has to be measured at all three. Re-running the CountingStars grid there would
-# triple the sweep to answer a question the coarse delta already answers.
-DELTA_EXTRA_ARGS=("" "--only-kinopaxplus" "--only-kinopaxplus")
+# Deltas: parallel arrays of label / W_R1 / C_R1 / V_R1. BOTH run the FULL comparison this pass
+# (see DELTA_EXTRA_ARGS) -- the guarantee-budget question is specifically about the fine delta, so
+# there is no "--only-kinopaxplus" arm to skip it with here. One build per (delta, cost metric),
+# cached, so restoring or trimming the list changes only the loop bounds.
+DELTA_LABELS=("large" "fine")
+DELTA_W_R1S=(10 20)
+DELTA_C_R1S=(1  1)   # inert for Model 1 (C_DIM 0); control refinement rides on V_R1
+DELTA_V_R1S=(3  3)
+DELTA_EXTRA_ARGS=("" "")
 
-# --- Coarse delta only (uncomment to restore; comment out the six lines above) ---
+# --- Coarse delta only (uncomment to restore; comment out the four lines above) ---
 # DELTA_LABELS=("large")
 # DELTA_W_R1S=(10)
 # DELTA_C_R1S=(1)
@@ -401,20 +399,16 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  CountingStars:  bufferSlope {1.4,1.8,2.2} x bufferFloor {0.05,0.2}"
+echo "  CountingStars:  bufferSlope 1.2 (FIXED), bufferFloor 0.05 (FIXED)"
 echo "                  explore_frac=0.3, cost_frac=0.3 (FIXED, not swept this pass)"
-echo "                  = 6 points (full factorial, coarse delta only)"
-echo "                  Filenames: _bs<round(100*slope)>_bf<round(100*floor)>_ef300_cf300,"
-echo "                  e.g. CountingStars_bs180_bf5_ef300_cf300."
-echo "                  v3.2 CSVs are _bs<..>_bf<..>_ef<..>_cf<..>_mb<n> and cannot collide with this"
-echo "                  shape, so they simply stop loading -- intended for a fan-out mechanism that"
-echo "                  changed (v3.3: door-count, no more maxBlocks), not a loss."
-echo "                  B IS NOW A RAMP, RECOMPUTED EVERY ITERATION:"
-echo "                    x = itr/MAX_ITER, B(x) = floor((slope*x + floor) * MAX_TREE_SIZE/MAX_ITER)"
-echo "                  bufferSlope = 0 REPRODUCES v3's CONSTANT B EXACTLY -- that subgrid is a"
-echo "                  free, structural comparison against the old fixed-buffer design. B rides"
-echo "                  into every CSV as the goal_frontier_size column, now genuinely varying row"
-echo "                  to row within a run rather than constant."
+echo "                  guaranteeBudgeted {false,true} -- THIS PASS'S AXIS"
+echo "                  = 2 points x BOTH deltas"
+echo "                  Filenames: _bs120_bf5_ef300_cf300_rg<on|off>,"
+echo "                  e.g. CountingStars_bs120_bf5_ef300_cf300_rgoff."
+echo "                  v3.3 CSVs (no rg token) cannot collide with this shape, so they simply stop"
+echo "                  loading -- intended for an axis that did not exist before, not a loss."
+echo "                  B IS STILL A RAMP, RECOMPUTED EVERY ITERATION (unchanged this pass):"
+echo "                    x = itr/fill_iters, B(x) = floor((slope*x + floor) * MAX_TREE_SIZE/fill_iters)"
 echo "                  FIVE DOORS PLUS A FLAT ADMISSION FLOOR, three of the five on a fixed share of B:"
 echo "                    OPTIMAL    distance 0, i.e. cost <= minCostsR1[r].  UNCAPPED, first claim."
 echo "                               v3.3: also competes for FRESHEST rather than returning early."
@@ -446,26 +440,31 @@ echo "                  FRESHEST, CHEAPEST AND (v3.3) OPTIMAL select over the SA
 echo "                  independent signals -- a candidate can clear more than one, and it is still"
 echo "                  ONE tree node: every door that admits it buys ONE propagation block"
 echo "                  (nodeBlocks = popcount(door) in Part A), not a duplicate node."
-echo "                  (bufferSlope, bufferFloor) = (0, 0) IS THE DEEPEST ABLATION ARM -- the"
-echo "                  cutoff solve returns cutoff 0 and the three budgeted doors admit nothing;"
-echo "                  OPTIMAL + GUARANTEE remain uncapped, so the frontier is not empty."
-echo "                  THE TWO UNCAPPED DOORS ARE BOUNDED BY NUM_R1_REGIONS (27,000 at the coarse"
-echo "                  delta) rather than by B, so B binds only ABOVE that count; every point on"
-echo "                  this grid is below it, so B binds early and then stops."
+echo "                  guaranteeBudgeted=true IS THIS PASS'S ABLATION ARM: the region-best GUARANTEE"
+echo "                  arm's node loses its unconditional pass and is folded into the SAME"
+echo "                  CS_HIST_REACT_BASE histogram/cutoff the CHEAPEST reactivation arm already"
+echo "                  uses -- it must win a react_frac * B slot like anything else, and can now be"
+echo "                  starved of reactivation entirely if the budget is smaller than the number of"
+echo "                  currently-optimal-or-near-optimal nodes across all regions. Expected to bite"
+echo "                  harder at the fine delta (far more regions)."
+echo "                  RNG NOTE: the guarantee arm never draws from randomSeeds, so a"
+echo "                  guaranteeBudgeted=true run's RNG stream diverges from a false run's from the"
+echo "                  first region-best node onward -- compare AGGREGATE columns across repeated"
+echo "                  runs, not per-iteration CSVs node-for-node."
 echo "                  FAN-OUT IS DOOR-COUNT (v3.3), FULL STOP: nodeBlocks = popcount(door), no"
 echo "                  region-thinness signal and no swept boost size left -- the region-keyed rule"
 echo "                  KPAXCap and CleanCost use is gone from this planner."
 echo "                  READ FIRST: goal_frontier_size vs iteration (does the realized ramp match"
-echo "                  the intended shape), then frontier_repeat_size/frontier_size (realised mean"
-echo "                  rep), then budget_used/goal_frontier_size as a CURVE against a now-moving"
-echo "                  target, then admitted_costdist against admitted_explore, then"
-echo "                  cost_cutoff_dist against dist_max."
+echo "                  the intended shape), then the tradeoff scatter across guaranteeBudgeted at"
+echo "                  each delta -- does the toggle move final cost or time-to-first-solution, and"
+echo "                  does that answer change between coarse and fine."
 echo "  CleanCost:      r2 OFF, w 0.9, k 1, cap 0.03 = 1 point (baseline)"
 echo "  KPAXCap:        cap {0.03} = 1 point"
 echo "  Score floor:    dynamic 1/N_active for KPAXCap/CleanCost; legacy EPSILON for KPAX."
 echo "                  COUNTINGSTARS HAS NO SCORE FLOOR AND USES NO EPSILON: it never reads"
 echo "                  vertexScores, h_scoreFloor_, h_nActive_ or regionCoverage in any decision."
-echo "  Baselines: KPAX (coarse delta), KinoPaxPlus (ALL THREE deltas -- the point of having them)"
+echo "  Baselines: KPAX, CleanCost, KPAXCap, KinoPaxPlus -- ALL FIVE SERIES AT BOTH DELTAS this pass,"
+echo "             not KinoPaxPlus-only at the finer one (see the header for why)."
 echo "======================================================="
 
 # =============================================================================
@@ -530,7 +529,7 @@ for CL in "${COST_LABELS[@]}"; do
         for d in "${!DELTA_LABELS[@]}"; do
             DL="${DELTA_LABELS[$d]}"
             EXTRA="${DELTA_EXTRA_ARGS[$d]}"
-            # Only the full-sweep delta dumps viz; a KinoPaxPlus-only pass has nothing extra to show.
+            # Both deltas run the full comparison this pass, so both dump viz when enabled.
             if [ -z "$EXTRA" ]; then
                 PASS_FLAGS="$VIZ_FLAG"
             else

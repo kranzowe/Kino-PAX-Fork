@@ -58,11 +58,27 @@ def cu_array(name, ctype='float'):
     return [float(x) for x in re.findall(r'-?\d+\.?\d*', mo.group(1))]
 
 
+def cu_bool_array(name):
+    """Like cu_array, but for `static const bool NAME[] = {false, true};` -- cu_array's
+    number-only regex can't match true/false literals."""
+    mo = re.search(r'static const bool %s\[\]\s*=\s*\{([^}]*)\}' % name, cu)
+    if not mo:
+        sys.exit('FATAL: %s[] not found in %s' % (name, CU))
+    return [w.strip() == 'true' for w in mo.group(1).split(',')]
+
+
 def cu_scalar(name, ctype='float'):
     mo = re.search(r'static const %s\s+%s\s*=\s*(-?\d+\.?\d*)f?' % (ctype, name), cu)
     if not mo:
         sys.exit('FATAL: %s not found in %s' % (name, CU))
     return float(mo.group(1))
+
+
+def cu_bool_scalar(name):
+    mo = re.search(r'static const bool\s+%s\s*=\s*(true|false)' % name, cu)
+    if not mo:
+        sys.exit('FATAL: %s not found in %s' % (name, CU))
+    return mo.group(1) == 'true'
 
 
 def sh_array(name):
@@ -111,9 +127,11 @@ def m_bools(name):
 def sh_config_int(name):
     """Read a #define out of the write_config heredoc in the .sh.
 
-    B is DERIVED from MAX_TREE_SIZE and MAX_ITER, and both are written into config.h by this script
-    rather than living in the repo's checked-in config -- so the only honest place to read them for
-    the derived-B assertion is the heredoc that writes them.
+    MAX_TREE_SIZE is written into config.h by this script rather than living in the repo's checked-in
+    config -- so the only honest place to read it for the derived-B assertion is the heredoc that
+    writes it. (B's OTHER input, the ramp's fill_iters denominator, is CS_RAMP_FILL_ITERS -- a
+    benchmark constant in countingstars_sweep.cu, not a config.h #define; see cu_scalar's use of it
+    below, not this helper.)
     """
     mo = re.search(r'^#define\s+%s\s+(\d+)' % re.escape(name), sh, re.M)
     if not mo:
@@ -145,12 +163,14 @@ cu_slope  = cu_array('BUFFER_SLOPES')
 cu_floor  = cu_array('BUFFER_FLOORS')
 cu_efrac  = cu_array('EXPLORE_FRACS')
 cu_cfrac  = cu_array('COST_FRACS')
+cu_guarantee = cu_bool_array('GUARANTEE_BUDGETED')
 cu_kcap   = cu_array('KPAXCAP_CAPS')
 cu_cap_derived = cu_scalar('CAP_DERIVED')
 cu_dslope = cu_scalar('CS_DERIVED_BUFFER_SLOPE')
 cu_dfloor = cu_scalar('CS_DERIVED_BUFFER_FLOOR')
 cu_def = cu_scalar('CS_DERIVED_EXPLORE_FRAC')
 cu_dcf = cu_scalar('CS_DERIVED_COST_FRAC')
+cu_dguarantee = cu_bool_scalar('CS_DERIVED_GUARANTEE_BUDGETED')
 
 cu_clean = {}
 for fld, key in (('CLEAN_BASE_W', 'w'), ('CLEAN_BASE_K', 'k'), ('CLEAN_BASE_CAP', 'cap')):
@@ -178,6 +198,11 @@ for val, lst, a, b in ((cu_dslope, cu_slope, 'CS_DERIVED_BUFFER_SLOPE', 'BUFFER_
                        (cu_cap_derived, cu_kcap, 'CAP_DERIVED', 'KPAXCAP_CAPS')):
     if not any(abs(v - val) < 1e-6 for v in lst):
         problems.append('%s (%g) is not in %s %s' % (a, val, b, lst))
+# Bools compared separately -- Python bool arithmetic (True==1/False==0) would work fine mixed
+# into the numeric tuple above, but keeping it explicit is clearer than relying on that coercion.
+if cu_dguarantee not in cu_guarantee:
+    problems.append('CS_DERIVED_GUARANTEE_BUDGETED (%s) is not in GUARANTEE_BUDGETED %s'
+                    % (cu_dguarantee, cu_guarantee))
 
 # --- Assertion 2: the axes must stay in their meaningful ranges.
 #
@@ -212,17 +237,24 @@ for ef in cu_efrac:
 # --- Assertion 2c: informational only, not a "problems" check -- see the module docstring for why
 # the old strict "B < 1 is bad" framing no longer applies (bufferFloor = 0 is now intentional). Logs
 # the ramp's minimum (at x = 0, i.e. bufferFloor alone -- the true infimum since slope >= 0 on every
-# swept combination) so a reader can see it without re-deriving it, using the same MAX_TREE_SIZE /
-# MAX_ITER read out of the .sh heredoc that write the ramp's real denominator.
+# swept combination) so a reader can see it without re-deriving it.
+#
+# THE DENOMINATOR IS CS_RAMP_FILL_ITERS, NOT MAX_ITER. benchmarkCountingStars() sets
+# planner.h_fillIters_ = CS_RAMP_FILL_ITERS explicitly before every run (it no longer relies on
+# CountingStars' MAX_ITER-defaulted field) -- see that function's own comment for why: at
+# MAX_TREE_SIZE=3,000,000 and a 10s timeout, a real run only completes ~700 iterations, well short
+# of MAX_ITER, so leaving h_fillIters_ at the class default would make this preview describe a ramp
+# the benchmark never actually runs.
 cfg_tree = sh_config_int('MAX_TREE_SIZE')
-cfg_iter = sh_config_int('MAX_ITER')
-ramp_min_info = ['floor(%g * %d / %d) = %d' % (fl, cfg_tree, cfg_iter, int(fl * cfg_tree / cfg_iter))
+cfg_fill_iters = int(cu_scalar('CS_RAMP_FILL_ITERS', ctype='int'))
+ramp_min_info = ['floor(%g * %d / %d) = %d' % (fl, cfg_tree, cfg_fill_iters, int(fl * cfg_tree / cfg_fill_iters))
                  for fl in cu_floor]
 
 
-def cs_label(slope, floor, efrac, cfrac):
+def cs_label(slope, floor, efrac, cfrac, guaranteed):
     """Mirrors countingStarsLabel() in the benchmark."""
-    return 'CountingStars_bs%d_bf%d_ef%d_cf%d' % (tok(slope), tok(floor), ftok(efrac), ftok(cfrac))
+    return 'CountingStars_bs%d_bf%d_ef%d_cf%d_rg%s' % (tok(slope), tok(floor), ftok(efrac), ftok(cfrac),
+                                                        'on' if guaranteed else 'off')
 
 
 cu_pairs = set()
@@ -233,7 +265,8 @@ for d, plus_only in zip(sh_deltas, sh_plus_only):
             for floor in cu_floor:
                 for efrac in cu_efrac:
                     for cfrac in cu_cfrac:
-                        cu_pairs.add((cs_label(slope, floor, efrac, cfrac), d))
+                        for guaranteed in cu_guarantee:
+                            cu_pairs.add((cs_label(slope, floor, efrac, cfrac, guaranteed), d))
         cu_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                       % (cu_clean['r2'], cu_clean['w'], cu_clean['k'], cu_clean['cap']), d))
         for c in cu_kcap:
@@ -246,6 +279,7 @@ m_slope   = m_ints('csBufferSlopes')
 m_floor   = m_ints('csBufferFloors')
 m_efrac   = m_ints('csExploreFracs')
 m_cfrac   = m_ints('csCostFracs')
+m_guarantee = m_ints('csGuaranteeBudgeted')   # numeric 0/1 in the .m, not a bool array
 m_kcap    = m_ints('kpaxCapCaps')
 m_deltas  = m_cellstr('deltas')
 m_plus_only = m_bools('deltaPlusOnly')
@@ -253,6 +287,7 @@ m_dslope = m_scalar_int('csDerivedBufferSlope')
 m_dfloor = m_scalar_int('csDerivedBufferFloor')
 m_def = m_scalar_int('csDerivedExploreFrac')
 m_dcf = m_scalar_int('csDerivedCostFrac')
+m_dguarantee = m_scalar_int('csDerivedGuaranteeBudgeted')
 m_clean = {
     'r2': m_str('cleanBaseR2'),
     'w': m_scalar_int('cleanBaseW'),
@@ -267,8 +302,9 @@ for d, plus_only in zip(m_deltas, m_plus_only):
             for floor in m_floor:
                 for efrac in m_efrac:
                     for cfrac in m_cfrac:
-                        m_pairs.add(('CountingStars_bs%d_bf%d_ef%d_cf%d'
-                                     % (slope, floor, efrac, cfrac), d))
+                        for guaranteed in m_guarantee:
+                            m_pairs.add(('CountingStars_bs%d_bf%d_ef%d_cf%d_rg%s'
+                                         % (slope, floor, efrac, cfrac, 'on' if guaranteed else 'off'), d))
         m_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                      % (m_clean['r2'], m_clean['w'], m_clean['k'], m_clean['cap']), d))
         for c in m_kcap:
@@ -280,12 +316,12 @@ for d, plus_only in zip(m_deltas, m_plus_only):
 only_cu = sorted(cu_pairs - m_pairs)
 only_m = sorted(m_pairs - cu_pairs)
 
-if (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf)) \
-        != (m_dslope, m_dfloor, m_def, m_dcf):
-    problems.append('DERIVED POINT DRIFT: .cu (bs%d, bf%d, ef%d, cf%d) != '
-                    '.m (bs%d, bf%d, ef%d, cf%d)'
-                    % (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf),
-                       m_dslope, m_dfloor, m_def, m_dcf))
+if (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf), int(cu_dguarantee)) \
+        != (m_dslope, m_dfloor, m_def, m_dcf, m_dguarantee):
+    problems.append('DERIVED POINT DRIFT: .cu (bs%d, bf%d, ef%d, cf%d, rg%d) != '
+                    '.m (bs%d, bf%d, ef%d, cf%d, rg%d)'
+                    % (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf), int(cu_dguarantee),
+                       m_dslope, m_dfloor, m_def, m_dcf, m_dguarantee))
 
 if sh_deltas != m_deltas:
     problems.append('DELTA_LABELS %s (%s) != deltas %s (%s)' % (sh_deltas, SH, m_deltas, M))
