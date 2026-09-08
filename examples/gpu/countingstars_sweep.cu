@@ -21,19 +21,24 @@
 static bool        g_dumpViz = false;
 static std::string g_vizDir;
 
-// ---- CountingStars grid: RAMP SLOPE AND FLOOR FIXED, THE GUARANTEE-BUDGET TOGGLE SWEPT ----
+// ---- CountingStars grid: RAMP AND THE REACTIVATION GUARANTEE FIXED, ANCESTOR BIAS SWEPT ----
 //
-// THIS PASS'S AXIS IS h_reactGuaranteeBudgeted_, NOT THE RAMP. Earlier passes through this file
-// swept (bufferSlope, bufferFloor) to characterize B's ramp on its own; that question has an
-// answer good enough to build on for now, so both are FIXED at one point (see BUFFER_SLOPES/
-// BUFFER_FLOORS below) and held constant across every run in this file. What varies here is
-// whether the region-best GUARANTEE arm keeps its unconditional, budget-free reactivation (the
-// default, matching every point run before this pass) or gets folded into the SAME cost-distance
-// histogram/budget the CHEAPEST reactivation arm already uses -- see h_reactGuaranteeBudgeted_ in
-// CountingStars.cuh. The concern this tests: at a fine discretization there are far more R1
-// regions, so the GUARANTEE arm's "one free reactivation per region, every iteration" is
-// proportionally far more reactivation happening completely outside any budget -- possibly the
-// "too many optimal nodes reactivated" effect motivating this pass.
+// THIS PASS'S AXIS IS h_ancestorWeight_/h_ancestorAlpha_ (see ANCESTOR_BIAS below), NOT THE RAMP
+// and NOT the reactivation guarantee. Two earlier passes through this file already answered those
+// questions well enough to build on: (bufferSlope, bufferFloor) is FIXED at one point (see
+// BUFFER_SLOPES/BUFFER_FLOORS below), and the region-best GUARANTEE arm's unconditional,
+// budget-free reactivation is GONE PERMANENTLY -- folded into the SAME cost-distance
+// histogram/budget the CHEAPEST reactivation arm uses, with no toggle left for it (see
+// CS_DOORBIT_GUAR in CountingStars.cuh). That fold measurably curbed the over-reactivation of
+// "optimal" nodes at fine discretizations this file's grid exists to characterize.
+//
+// What varies here is whether CHEAPEST admission/reactivation additionally biases its cost-distance
+// vote toward a node's LINEAGE -- an EMA over its ancestors' own distances at their insertion time,
+// see csBlendDistance/h_ancestorWeight_ in CountingStars.cuh -- rather than purely the node's own
+// live distance. The concern this tests: even with the guarantee folded into the budget, a fine
+// discretization's larger region count means the budget still only reactivates a SUBSET of
+// near-optimal nodes each iteration; biasing that subset toward nodes with a good lineage, rather
+// than picking among cost-tied nodes arbitrarily, may spend the same budget more usefully.
 //
 // B ITSELF IS STILL A RAMP, recomputed every iteration -- that mechanism is unchanged:
 //
@@ -50,13 +55,23 @@ static const int NUM_BUFFER_SLOPES = sizeof(BUFFER_SLOPES) / sizeof(BUFFER_SLOPE
 static const float BUFFER_FLOORS[] = {0.05f};
 static const int NUM_BUFFER_FLOORS = sizeof(BUFFER_FLOORS) / sizeof(BUFFER_FLOORS[0]);
 
-// ---- GUARANTEE-BUDGET grid: THE HEADLINE AXIS THIS PASS ----
+// ---- ANCESTOR-BIAS grid: THE HEADLINE AXIS THIS PASS ----
 //
-// false is the exact off-default (see h_reactGuaranteeBudgeted_ in CountingStars.cuh) -- kept
-// first so it reads as the free structural control every earlier point already ran under, same
-// convention this file already uses for other axes' own "0"/off point.
-static const bool GUARANTEE_BUDGETED[] = {false, true};
-static const int NUM_GUARANTEE_BUDGETED = sizeof(GUARANTEE_BUDGETED) / sizeof(GUARANTEE_BUDGETED[0]);
+// A single on/off toggle at ONE FIXED (alpha, weight) point, not a 2D sweep -- deliberately kept
+// simple. false is the exact off-default (h_ancestorWeight_ = 0 is exact identity, see
+// csBlendDistance in CountingStars.cuh) -- kept first so it reads as the free structural control
+// every earlier point already ran under, same convention this file uses for its other axes' "off"
+// point. true sets (h_ancestorAlpha_, h_ancestorWeight_) = (CS_ANCESTOR_ALPHA_ON,
+// CS_ANCESTOR_WEIGHT_ON) below.
+static const bool ANCESTOR_BIAS[] = {false, true};
+static const int NUM_ANCESTOR_BIAS = sizeof(ANCESTOR_BIAS) / sizeof(ANCESTOR_BIAS[0]);
+
+// The fixed (alpha, weight) point ANCESTOR_BIAS = true runs at -- an equal blend (0.5) of live
+// distance and a moderate-lookback (0.5) lineage EMA. Round numbers, chosen to be legible and to
+// produce an effect large enough to read against run-to-run noise; not tuned. See
+// h_ancestorAlpha_/h_ancestorWeight_ in CountingStars.cuh for what each one means.
+static const float CS_ANCESTOR_ALPHA_ON  = 0.5f;
+static const float CS_ANCESTOR_WEIGHT_ON = 0.5f;
 
 // How many iterations a run actually completes inside the 10s wall-clock cap at
 // MAX_TREE_SIZE = 3,000,000 (empirical). The ramp's x = itr/fill_iters must track the REAL run
@@ -105,13 +120,12 @@ static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0
 // CS_DERIVED_EXPLORE_FRAC / CS_DERIVED_COST_FRAC MUST equal EXPLORE_FRACS[0] / COST_FRACS[0] now
 // that those are single-element arrays (0.3f) again. CS_DERIVED_BUFFER_SLOPE/_FLOOR must equal
 // BUFFER_SLOPES[0]/BUFFER_FLOORS[0] now that those are single-element too (this pass fixes them).
-// CS_DERIVED_GUARANTEE_BUDGETED is new, and must be a member of GUARANTEE_BUDGETED for the same
-// reason.
-static const float CS_DERIVED_BUFFER_SLOPE      = 1.2f;    // BUFFER_SLOPES' only member this pass
-static const float CS_DERIVED_BUFFER_FLOOR      = 0.05f;   // BUFFER_FLOORS' only member this pass
-static const float CS_DERIVED_EXPLORE_FRAC      = 0.3f;
-static const float CS_DERIVED_COST_FRAC         = 0.3f;
-static const bool  CS_DERIVED_GUARANTEE_BUDGETED = false;  // a member of GUARANTEE_BUDGETED
+// CS_DERIVED_ANCESTOR_BIAS is new, and must be a member of ANCESTOR_BIAS for the same reason.
+static const float CS_DERIVED_BUFFER_SLOPE  = 1.2f;    // BUFFER_SLOPES' only member this pass
+static const float CS_DERIVED_BUFFER_FLOOR  = 0.05f;   // BUFFER_FLOORS' only member this pass
+static const float CS_DERIVED_EXPLORE_FRAC  = 0.3f;
+static const float CS_DERIVED_COST_FRAC     = 0.3f;
+static const bool  CS_DERIVED_ANCESTOR_BIAS = false;   // a member of ANCESTOR_BIAS
 static const float CAP_DERIVED             = 0.03f;
 
 static bool g_singlePoint = false;
@@ -124,9 +138,9 @@ static bool capSkip(float cap)
 // Single source of truth for the CountingStars grid's shape: the runner and the banner both call
 // it, so the printed point count can never drift from the grid actually executed.
 static bool countingStarsSkip(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac,
-                              bool guaranteeBudgeted)
+                              bool ancestorBias)
 {
-    // 1 slope x 1 floor x 1 explore x 1 cost x 2 guaranteeBudgeted = 2 points. --single-point is
+    // 1 slope x 1 floor x 1 explore x 1 cost x 2 ancestorBias = 2 points. --single-point is
     // the only OTHER skip. The two fraction axes cannot sum above 0.6 on this grid (both fixed at
     // 0.3), so nothing is skipped for a negative react_frac -- but
     // cross_check_countingstars_grid.py asserts it rather than trusting the values.
@@ -135,7 +149,7 @@ static bool countingStarsSkip(float bufferSlope, float bufferFloor, float explor
         || fabsf(bufferFloor - CS_DERIVED_BUFFER_FLOOR) > 1e-6f
         || fabsf(exploreFrac - CS_DERIVED_EXPLORE_FRAC) > 1e-6f
         || fabsf(costFrac - CS_DERIVED_COST_FRAC) > 1e-6f
-        || guaranteeBudgeted != CS_DERIVED_GUARANTEE_BUDGETED;
+        || ancestorBias != CS_DERIVED_ANCESTOR_BIAS;
 }
 
 static int countingStarsPointCount()
@@ -145,9 +159,9 @@ static int countingStarsPointCount()
     for(int fi = 0; fi < NUM_BUFFER_FLOORS; fi++)
     for(int ei = 0; ei < NUM_EXPLORE_FRACS; ei++)
     for(int ci = 0; ci < NUM_COST_FRACS; ci++)
-    for(int gi = 0; gi < NUM_GUARANTEE_BUDGETED; gi++)
+    for(int ai = 0; ai < NUM_ANCESTOR_BIAS; ai++)
         if(!countingStarsSkip(BUFFER_SLOPES[si], BUFFER_FLOORS[fi], EXPLORE_FRACS[ei], COST_FRACS[ci],
-                              GUARANTEE_BUDGETED[gi])) n++;
+                              ANCESTOR_BIAS[ai])) n++;
     return n;
 }
 
@@ -160,33 +174,35 @@ static int capAxisPointCount(const float* caps, int nCaps)
     return n;
 }
 
-// "CountingStars_bs120_bf5_ef300_cf300_rgoff". MUST start with a name loadRuns() dispatches on.
+// "CountingStars_bs120_bf5_ef300_cf300_aboff". MUST start with a name loadRuns() dispatches on.
 //
 //   bs   bufferSlope, round(100 x float)    -- fixed at 1.2 this pass, still tokened (see below)
 //   bf   bufferFloor, round(100 x float)    -- fixed at 0.05 this pass, still tokened
 //   ef   explore_frac, round(1000 x float)  -- fixed at 0.3 this pass, still tokened
 //   cf   cost_frac,    round(1000 x float)  -- fixed at 0.3 this pass, still tokened
-//   rg   h_reactGuaranteeBudgeted_, "on"/"off" -- NEW, this pass's swept axis. "on"/"off" rather
-//        than a numeric token because it is a bool, not a scaled float -- matching this file's own
-//        cleanLabel() precedent (r2on/r2off) rather than inventing a 0/1 numeric convention for
-//        something that was never a float.
+//   ab   ancestor bias, "on"/"off" -- NEW, this pass's swept axis. "on"/"off" rather than a numeric
+//        token because it is a bool at ONE fixed (alpha, weight) point, not a scaled float --
+//        matching this file's own cleanLabel() precedent (r2on/r2off). The now-permanent
+//        reactivation-guarantee fold gets no token: it is no longer a toggle, so there is nothing
+//        left to distinguish in a filename (see the old `_rg` token, retired with it).
 //
 // bs/bf STAY AT 100x, matching v3's `ff` convention. ef/cf STAY AT 1000x, matching v3's `_f`
 // convention. ALL FOUR OF bs/bf/ef/cf TOKENS STAY IN THE LABEL EVEN THOUGH FIXED THIS PASS: a later
 // rerun at different fixed values does not collide with these CSVs under the same name.
 //
-// v3.3's CSVs are `_bs..._bf..._ef..._cf...` (no rg) and cannot collide with this 5-token shape, so
-// they simply stop loading -- intended for an axis that did not exist before, not a loss.
+// The previous pass's CSVs are `_bs..._bf..._ef..._cf..._rgon`/`_rgoff` and cannot collide with
+// this `_ab...` shape, so they simply stop loading -- intended for an axis that no longer exists,
+// not a loss.
 static std::string countingStarsLabel(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac,
-                                      bool guaranteeBudgeted)
+                                      bool ancestorBias)
 {
     char buf[192];
-    snprintf(buf, sizeof(buf), "CountingStars_bs%d_bf%d_ef%d_cf%d_rg%s",
+    snprintf(buf, sizeof(buf), "CountingStars_bs%d_bf%d_ef%d_cf%d_ab%s",
              (int)lroundf(100.0f * bufferSlope),
              (int)lroundf(100.0f * bufferFloor),
              (int)lroundf(1000.0f * exploreFrac),
              (int)lroundf(1000.0f * costFrac),
-             guaranteeBudgeted ? "on" : "off");
+             ancestorBias ? "on" : "off");
     return std::string(buf);
 }
 
@@ -1113,8 +1129,9 @@ void runKPAXCapBenchmark(
 // ========================================================================
 // CountingStars v3 benchmark + runner.
 // A DERIVED NODE BUDGET split by three fixed shares: explore_frac to the freshest regions,
-// cost_frac to the smallest cost distances, and the rest to a uniform draw -- with the optimal door
-// and the region-best guarantee uncapped on top.
+// cost_frac to the smallest cost distances, and the rest to a uniform draw -- with only the optimal
+// door uncapped on top (the region-best guarantee that used to also be uncapped is gone; see
+// CS_DOORBIT_GUAR in CountingStars.cuh).
 // ========================================================================
 RunResult benchmarkCountingStars(
     CountingStars& planner,
@@ -1131,7 +1148,7 @@ RunResult benchmarkCountingStars(
     float bufferFloor,
     float exploreFrac,
     float costFrac,
-    bool guaranteeBudgeted,
+    bool ancestorBias,
     const std::string& label)
 {
     // Override the planner's defaults for this run. resetPlanner (called below) does not touch the
@@ -1142,8 +1159,9 @@ RunResult benchmarkCountingStars(
     // derivation for these assignments to precede any more. They still have to land BEFORE
     // resetPlanner() though, exactly as h_reactFloor_/h_acceptFloor_ already rely on --
     // resetPlanner() reads none of the ramp fields itself, but updateFrontier() reads them on the
-    // very first iteration of the run that follows. Same discipline for h_reactGuaranteeBudgeted_ --
-    // Part B reads it on the very first reactivation decision of the run that follows.
+    // very first iteration of the run that follows. Same discipline for h_ancestorAlpha_/
+    // h_ancestorWeight_ -- Part A/reactScan/accept pass 1 all read them on the very first iteration
+    // of the run that follows.
     //
     // h_fillIters_ IS SET TO CS_RAMP_FILL_ITERS, NOT LEFT AT ITS MAX_ITER DEFAULT. It used to be
     // left alone deliberately -- setting it to maxIterations (this benchmark's own, much larger
@@ -1157,7 +1175,12 @@ RunResult benchmarkCountingStars(
     planner.h_bufferFloor_ = bufferFloor;
     planner.h_exploreFrac_ = exploreFrac;
     planner.h_costFrac_    = costFrac;
-    planner.h_reactGuaranteeBudgeted_ = guaranteeBudgeted;
+    // The toggle lives at the benchmark layer, not as a planner-level bool: ancestorBias simply
+    // selects between the off-default point and the ONE fixed on-point (CS_ANCESTOR_ALPHA_ON,
+    // CS_ANCESTOR_WEIGHT_ON) -- see ANCESTOR_BIAS above for why this stays a simple on/off toggle
+    // rather than a 2D sweep of the two underlying floats.
+    planner.h_ancestorAlpha_  = ancestorBias ? CS_ANCESTOR_ALPHA_ON  : 0.5f;
+    planner.h_ancestorWeight_ = ancestorBias ? CS_ANCESTOR_WEIGHT_ON : 0.0f;
 
     RunResult result;
     result.delta_label = label;
@@ -1208,13 +1231,15 @@ RunResult benchmarkCountingStars(
 
         // --- Frontier diagnostics (outside the timed window) ---
         // reactivated counts frontier bits among the PRE-EXISTING tree, i.e. exactly Part B's
-        // output -- and v3.1 gave Part B a THIRD arm, so the identity is
+        // output. Part B has TWO arms now (the region-best guarantee that made it three is gone),
+        // so the identity is
         //
         //     reactivated  ==  reactivated_best + reactivated_cost + reactivated_count
         //
-        // NOT reactivated_count alone, which is now only the completeness floor. The two sides are
-        // computed independently (a thrust::count here, atomicAdds in the kernel), so the sum is a
-        // free check on all three arms of Part B.
+        // with reactivated_best a free runtime invariant that must read exactly 0 every iteration
+        // (its arm cannot fire any more). NOT reactivated_count alone, which is the completeness
+        // floor. The two sides are computed independently (a thrust::count here, atomicAdds in the
+        // kernel), so the sum is a free check on both live arms.
         int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
                                              planner.d_frontier_.begin() + oldTreeSize, true);
         // r2_coverage_pct from the planner's RUNNING COUNTER, not a sweep of d_activeSubVertices_.
@@ -1314,18 +1339,18 @@ void runCountingStarsBenchmark(
     for(int fi = 0; fi < NUM_BUFFER_FLOORS; fi++)
     for(int ei = 0; ei < NUM_EXPLORE_FRACS; ei++)
     for(int ci = 0; ci < NUM_COST_FRACS; ci++)
-    for(int gi = 0; gi < NUM_GUARANTEE_BUDGETED; gi++)
+    for(int ai = 0; ai < NUM_ANCESTOR_BIAS; ai++)
     {
-        const float bufferSlope       = BUFFER_SLOPES[si];
-        const float bufferFloor       = BUFFER_FLOORS[fi];
-        const float exploreFrac       = EXPLORE_FRACS[ei];
-        const float costFrac          = COST_FRACS[ci];
-        const bool  guaranteeBudgeted = GUARANTEE_BUDGETED[gi];
+        const float bufferSlope  = BUFFER_SLOPES[si];
+        const float bufferFloor  = BUFFER_FLOORS[fi];
+        const float exploreFrac  = EXPLORE_FRACS[ei];
+        const float costFrac     = COST_FRACS[ci];
+        const bool  ancestorBias = ANCESTOR_BIAS[ai];
 
-        if(countingStarsSkip(bufferSlope, bufferFloor, exploreFrac, costFrac, guaranteeBudgeted)) continue;
+        if(countingStarsSkip(bufferSlope, bufferFloor, exploreFrac, costFrac, ancestorBias)) continue;
 
         const std::string label = countingStarsLabel(bufferSlope, bufferFloor, exploreFrac, costFrac,
-                                                      guaranteeBudgeted);
+                                                      ancestorBias);
 
         // B's RANGE over the run, not a single value: B(x=0) = floor, B(x=1) = slope + floor. Uses
         // CS_RAMP_FILL_ITERS, matching what planner.h_fillIters_ is actually set to above -- not
@@ -1333,10 +1358,10 @@ void runCountingStarsBenchmark(
         int bStart = (int)floorf(bufferFloor * float(MAX_TREE_SIZE) / float(CS_RAMP_FILL_ITERS));
         int bEnd   = (int)floorf((bufferSlope + bufferFloor) * float(MAX_TREE_SIZE) / float(CS_RAMP_FILL_ITERS));
         printf("  --- bufferSlope = %.2f, bufferFloor = %.2f (B: %d -> %d), explore_frac = %.3f, "
-               "cost_frac = %.3f, react_frac = %.3f, guaranteeBudgeted = %s (%s) ---\n",
+               "cost_frac = %.3f, react_frac = %.3f, ancestorBias = %s (%s) ---\n",
                bufferSlope, bufferFloor, bStart, bEnd,
                exploreFrac, costFrac, 1.0f - exploreFrac - costFrac,
-               guaranteeBudgeted ? "true" : "false", label.c_str());
+               ancestorBias ? "true" : "false", label.c_str());
         CountingStars planner;
         for(int run = 0; run < numRuns; run++)
         {
@@ -1344,9 +1369,9 @@ void runCountingStarsBenchmark(
                                                  h_initial, h_goal, d_obstacles,
                                                  numObstacles, maxIterations, maxTimeMs,
                                                  bufferSlope, bufferFloor, exploreFrac, costFrac,
-                                                 guaranteeBudgeted, label);
-            printf("  bs=%.2f bf=%.2f ef=%.3f cf=%.3f rg=%s Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-                   bufferSlope, bufferFloor, exploreFrac, costFrac, guaranteeBudgeted ? "on" : "off",
+                                                 ancestorBias, label);
+            printf("  bs=%.2f bf=%.2f ef=%.3f cf=%.3f ab=%s Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                   bufferSlope, bufferFloor, exploreFrac, costFrac, ancestorBias ? "on" : "off",
                    run + 1, numRuns, result.total_time_seconds,
                    result.total_iterations, result.final_tree_size, result.first_solution_iteration,
                    result.first_solution_cost, result.final_best_cost);
@@ -1609,18 +1634,22 @@ int main(int argc, char* argv[])
         printf("} x cost_frac {");
         for(int i = 0; i < NUM_COST_FRACS; i++)
             printf("%s%.2f", i ? ", " : "", COST_FRACS[i]);
-        printf("}\n                x guaranteeBudgeted {");
-        for(int i = 0; i < NUM_GUARANTEE_BUDGETED; i++)
-            printf("%s%s", i ? ", " : "", GUARANTEE_BUDGETED[i] ? "true" : "false");
+        printf("}\n                x ancestorBias {");
+        for(int i = 0; i < NUM_ANCESTOR_BIAS; i++)
+            printf("%s%s", i ? ", " : "", ANCESTOR_BIAS[i] ? "true" : "false");
         printf("}\n");
-        printf("                THIS PASS'S HEADLINE AXIS IS THE GUARANTEE-BUDGET TOGGLE:\n"
+        printf("                THIS PASS'S HEADLINE AXIS IS ANCESTOR BIAS:\n"
                "                bufferSlope/bufferFloor/explore_frac/cost_frac are all FIXED\n"
-               "                (single-element arrays above) -- see h_reactGuaranteeBudgeted_ in\n"
-               "                CountingStars.cuh. false is the exact off-default, matching every\n"
-               "                point run before this pass; true folds the region-best GUARANTEE\n"
-               "                arm's node into the SAME cost-distance histogram/budget the\n"
-               "                CHEAPEST reactivation arm already uses, so it must win a\n"
-               "                react_frac * B slot instead of an unconditional free pass.\n");
+               "                (single-element arrays above), and the region-best GUARANTEE arm\n"
+               "                that an earlier pass made an ablatable toggle is now GONE\n"
+               "                PERMANENTLY -- folded into the CHEAPEST reactivation histogram with\n"
+               "                no toggle left (see CS_DOORBIT_GUAR in CountingStars.cuh). false is\n"
+               "                the exact off-default (h_ancestorWeight_ = 0 is exact identity, see\n"
+               "                csBlendDistance); true biases CHEAPEST admission/reactivation's\n"
+               "                cost-distance vote toward a node's LINEAGE -- an EMA over its\n"
+               "                ancestors' own distances at their insertion time -- at the single\n"
+               "                fixed point (alpha, weight) = (%.2f, %.2f), rather than a 2D sweep.\n",
+               CS_ANCESTOR_ALPHA_ON, CS_ANCESTOR_WEIGHT_ON);
         printf("                B IS A RAMP, RECOMPUTED EVERY ITERATION:\n"
                "                  x = itr/fill_iters, B(x) = floor((slope*x + floor) * MAX_TREE_SIZE / fill_iters)\n"
                "                  B(x=0) = floor(bufferFloor * ...) = ");
@@ -1632,16 +1661,18 @@ int main(int argc, char* argv[])
                                                         * float(MAX_TREE_SIZE) / float(CS_RAMP_FILL_ITERS)));
         printf("\n");
         printf("                THREE FIXED SHARES OF B: explore_frac to the FRESHEST door,\n"
-               "                cost_frac to the CHEAPEST door (smallest cost distance, chosen\n"
-               "                by a log-bucketed histogram rather than the sort that kept\n"
-               "                breaking), and 1 - explore - cost to the uniform DRAW. The two\n"
-               "                selection doors are a UNION over one candidate pool, so\n"
-               "                admitted_explore and admitted_costdist overlap and admitted_both is\n"
-               "                what makes them add back up.\n"
-               "                THE OPTIMAL DOOR AND THE PART B GUARANTEE ARE UNCAPPED and spend on\n"
-               "                top of those shares. Both are bounded by NUM_R1_REGIONS (%d) rather\n"
-               "                than by B, so B binds only ABOVE that count; below it budget_used\n"
-               "                runs over B and the two fractions steer a minority of the frontier.\n"
+               "                cost_frac to the CHEAPEST door (smallest, optionally ancestor-\n"
+               "                blended, cost distance, chosen by a log-bucketed histogram rather\n"
+               "                than the sort that kept breaking), and 1 - explore - cost to the\n"
+               "                uniform DRAW. The two selection doors are a UNION over one\n"
+               "                candidate pool, so admitted_explore and admitted_costdist overlap\n"
+               "                and admitted_both is what makes them add back up.\n"
+               "                ONLY THE OPTIMAL DOOR IS UNCAPPED now and spends on top of those\n"
+               "                shares -- the region-best guarantee that used to also be uncapped\n"
+               "                is gone (see ancestorBias above). OPTIMAL is bounded by\n"
+               "                NUM_R1_REGIONS (%d) rather than by B, so B binds only ABOVE that\n"
+               "                count; below it budget_used runs over B and the two fractions steer\n"
+               "                a minority of the frontier.\n"
                "                v3.3: OPTIMAL ALSO COMPETES FOR FRESHEST now (only CHEAPEST stays\n"
                "                closed to it). FAN-OUT IS DOOR-COUNT: a node gets one propagation\n"
                "                block per door that admitted it (popcount of the door mask), full\n"
@@ -1652,17 +1683,18 @@ int main(int argc, char* argv[])
                "                target, then admitted_costdist against admitted_explore, then\n"
                "                cost_cutoff_dist against dist_max -- a collapse toward dist_max/2^21\n"
                "                means every candidate is in bucket 0 and the cost door has degraded\n"
-               "                to a uniform draw.\n"
-               "                guaranteeBudgeted = true is THIS PASS'S ABLATION ARM: the region-\n"
-               "                best node loses its unconditional pass and can now be starved of\n"
-               "                reactivation entirely if the budget is smaller than the number of\n"
-               "                currently-optimal-or-near-optimal nodes across all regions --\n"
-               "                exactly the curbing effect this pass exists to measure, expected\n"
-               "                to bite harder at the fine delta (far more regions).\n"
-               "                RNG NOTE: the guarantee arm never draws from randomSeeds, so a\n"
-               "                guaranteeBudgeted=true run's RNG stream diverges from a false run's\n"
-               "                from the first region-best node onward -- compare AGGREGATE columns\n"
-               "                across the NUM_CS_RUNS repeats, not per-iteration CSVs node-for-node.\n"
+               "                to a uniform draw. reactivated_best should read exactly 0 on every\n"
+               "                iteration of every run -- its arm cannot fire any more; a nonzero\n"
+               "                value means something regressed.\n"
+               "                ancestorBias = true IS THIS PASS'S ABLATION ARM: does biasing the\n"
+               "                CHEAPEST budget toward good-lineage nodes spend an already-scarce\n"
+               "                reactivation budget more usefully at a fine discretization, where\n"
+               "                the budget only ever covers a SUBSET of near-optimal nodes.\n"
+               "                RNG NOTE: ancestor blending can shift which nodes land exactly on a\n"
+               "                cutoff bucket boundary, so a node whose boundary roll fires under\n"
+               "                one setting and not the other has its OWN curandState advance\n"
+               "                differently between the two -- compare AGGREGATE columns across the\n"
+               "                NUM_CS_RUNS repeats, not per-iteration CSVs node-for-node.\n"
                "                -> %d points x %d runs = %d runs\n",
                NUM_R1_REGIONS, csPoints, NUM_CS_RUNS, csPoints * NUM_CS_RUNS);
         printf("CleanCost:      r2 OFF, w %.2f, k %.2f, cap %.2f = 1 point x %d runs = %d runs\n",

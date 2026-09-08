@@ -2,14 +2,18 @@
 % Reads per-iteration CSVs produced by examples/gpu/countingstars_sweep.cu
 % (run via scripts/run_countingstars_sweep.sh).
 %
-% Series are (planner, delta) pairs. THIS PASS'S AXIS IS THE GUARANTEE-BUDGET TOGGLE, and BOTH
-% deltas (coarse, fine) run the FULL comparison -- unlike earlier passes through this file, neither
-% delta is restricted to KinoPaxPlus alone (see deltaPlusOnly below and DELTA_EXTRA_ARGS in
-% run_countingstars_sweep.sh, both all-false this pass):
+% Series are (planner, delta) pairs. THIS PASS'S AXIS IS ANCESTOR BIAS, and BOTH deltas (coarse,
+% fine) run the FULL comparison -- unlike earlier passes through this file, neither delta is
+% restricted to KinoPaxPlus alone (see deltaPlusOnly below and DELTA_EXTRA_ARGS in
+% run_countingstars_sweep.sh, both all-false this pass). The region-best GUARANTEE arm that a
+% LATER pass made an ablatable toggle (h_reactGuaranteeBudgeted_) is now GONE PERMANENTLY -- folded
+% into the CHEAPEST reactivation budget with no toggle left for it (see CS_DOORBIT_GUAR in
+% CountingStars.cuh); that fold measurably curbed the over-reactivation this sweep exists to
+% characterize:
 %
 %   CountingStars         bufferSlope 1.2 (FIXED), bufferFloor 0.05 (FIXED),
 %                         explore_frac=0.3, cost_frac=0.3 (FIXED, not swept this pass),
-%                         guaranteeBudgeted {false,true} -- THE SWEPT AXIS                =  2
+%                         ancestorBias {false,true} -- THE SWEPT AXIS                    =  2
 %   KinoPaxSTARCleanCost  r2 OFF, w 0.9, k 1, cap 0.03  (one tuned reference point)       =  1
 %   KPAXCap               cap {0.03}                                                     =  1
 %   KPAX, KinoPaxPlus                                                                    =  2
@@ -22,10 +26,11 @@
 % RUN ONCE PER COST METRIC TOO (length, effort -- see metrics below): each is a separate build and
 % a separate set of CSVs, so the series count above applies to each metric independently.
 %
-% CountingStars/CleanCost/KPAXCap/KPAX ALL RUN AT BOTH DELTAS THIS PASS -- the whole point of the
-% guarantee-budget sweep is the concern that CountingStars over-reactivates "optimal" nodes
-% specifically at finer discretizations, which needs CountingStars (and the other baselines)
-% measured at the fine delta too, not KinoPaxPlus alone.
+% CountingStars/CleanCost/KPAXCap/KPAX ALL RUN AT BOTH DELTAS THIS PASS. Even with the guarantee
+% folded into the budget, a fine discretization's larger region count means the budget still only
+% reactivates a SUBSET of near-optimal nodes each iteration; this sweep asks whether biasing that
+% subset toward good-lineage nodes (ancestorBias) helps more at fine than at coarse -- which needs
+% CountingStars (and the other baselines) measured at the fine delta too, not KinoPaxPlus alone.
 %
 % WHAT THIS SWEEP IS ASKING. v3's sweep showed the standard explore-vs-refine tradeoff: a small
 % constant buffer (fill_frac = 0.25) found a first solution fast but converged to a worse final
@@ -76,27 +81,22 @@
 %                               beat the best bufferSlope=0 point on time-to-first-solution AND
 %                               close the final-cost gap against CleanCost.
 %
-% (bufferSlope, bufferFloor) = (0, 0) IS THE DEEPEST CONTROL and is drawn thicker at every
-% bufferFloor row: a constant B = 0 (floored to 1), so the three budgeted doors admit nothing every
-% iteration and the frontier is optimal + guarantee + a trickle draw. If nothing beats it, none of
-% the three budgeted doors is earning its share.
+% bufferSlope/bufferFloor ARE FIXED THIS PASS (1.2, 0.05), NOT SWEPT -- an earlier pass already
+% characterized the ramp; this grid isolates ancestor bias's own effect by holding it still.
 %
-% WHERE B BINDS -- AND EVERY B ON THIS GRID IS BELOW THE THRESHOLD. Two doors are uncapped and BOTH
-% are bounded by NUM_R1_REGIONS rather than by B: OPTIMAL (at most one region best per region per
-% iteration) and GUARANTEE (at most one node per uncovered region). So B stops binding once nActive
+% WHERE B BINDS. OPTIMAL is the only uncapped door and is bounded by NUM_R1_REGIONS rather than by
+% B (at most one region best per region per iteration) -- the region-best GUARANTEE that used to
+% also be uncapped and bounded the same way is gone, folded permanently into the CHEAPEST
+% reactivation budget (see CS_DOORBIT_GUAR in CountingStars.cuh). So B stops binding once nActive
 % passes it, and every point on this ramp's range stays under the coarse delta's 27,000.
 %
-% THAT IS THE POINT, NOT A PROBLEM. B binds EARLY in a run and then stops, at an iteration that now
+% THAT IS THE POINT, NOT A PROBLEM. B binds EARLY in a run and then stops, at an iteration that
 % moves with the WHOLE RAMP SHAPE (bufferSlope and bufferFloor together) rather than a single
 % fill_frac, and early is exactly where time-to-first-solution is decided. Read
 % budget_used/goal_frontier_size as a CURVE rather than a single number: the iteration where it
 % crosses 1 is the measurement, and a late-run overshoot is expected at every point -- more so now,
 % since B itself is climbing over the run. This is also what "tree growth is less controlled once
 % min cost is always accepted" amounts to.
-%
-% If the bufferSlope=0 curves are indistinguishable from the ramped ones even early, that is direct
-% evidence that capping the guarantee (KinoPaxPlus's hysteresis is the precedent -- un-prune a
-% region best only after ~5 idle iterations) is the next lever, not a different ramp.
 %
 % SCORE FLOOR. Graph's Syclop floor is 1/N_active (the mean share) rather than a fixed
 % EPSILON = 1e-2, which exceeded the score it floored by ~270x and capped the number of
@@ -105,7 +105,7 @@
 % SCORE AT ALL -- it never reads vertexScores, h_scoreFloor_, h_nActive_ or regionCoverage in any
 % decision -- so it writes NaN there and simply does not draw on that panel.
 %
-% ENCODING THIS PASS: colour AND line style both = guaranteeBudgeted (pale/solid = false, the
+% ENCODING THIS PASS: colour AND line style both = ancestorBias (pale/solid = false, the
 % off-default; near-black/dashed = true, the ablation) -- redundant on purpose, since it is the
 % only axis left to distinguish CountingStars series from each other. scatter marker = 'o' (fixed
 % -- explore_frac and cost_frac don't vary, so there is no third axis to give its own marker); line
@@ -153,10 +153,10 @@ deltaTitles = {'27k (coarse)', '216k (fine)'};
 deltaWidths = [1.0, 2.2];
 
 % WHICH ARMS EXIST AT EACH DELTA. BOTH FALSE THIS PASS -- unlike earlier passes through this file,
-% neither delta is restricted to KinoPaxPlus alone. The whole point of sweeping the
-% guarantee-budget toggle is the concern that CountingStars over-reactivates "optimal" nodes
-% specifically at finer discretizations, which needs CountingStars (and the other baselines)
-% measured at the fine delta too.
+% neither delta is restricted to KinoPaxPlus alone. Ancestor bias's expected effect is specifically
+% about finer discretizations (the reactivation budget covers a smaller SUBSET of near-optimal
+% nodes as the region count grows), which needs CountingStars (and the other baselines) measured at
+% the fine delta too.
 %
 % MUST MATCH DELTA_EXTRA_ARGS in run_countingstars_sweep.sh: "--only-kinopaxplus" there is a true
 % here. When these drift, loadRuns() silently finds no files and reports "0 runs" for the orphaned
@@ -171,10 +171,11 @@ deltaSingleCap = [false, false];
 deltaLabel = '2 deltas overlaid (coarse, fine)';
 
 % CountingStars grid THIS PASS: bufferSlope/bufferFloor/explore_frac/cost_frac are ALL FIXED
-% (single-element arrays) -- an earlier pass already characterized the ramp on its own. The SWEPT
-% AXIS is the guarantee-budget toggle: csGuaranteeBudgeted. Values are the label tokens exactly as
-% they appear in the filenames: bs/bf as round(100 x float), ef/cf as round(1000 x float) -- see
-% countingStarsLabel() in the benchmark.
+% (single-element arrays) -- an earlier pass already characterized the ramp on its own, and the
+% region-best GUARANTEE that a LATER pass made an ablatable toggle is now GONE PERMANENTLY (see
+% CS_DOORBIT_GUAR in CountingStars.cuh). The SWEPT AXIS is ancestor bias: csAncestorBias. Values
+% are the label tokens exactly as they appear in the filenames: bs/bf as round(100 x float), ef/cf
+% as round(1000 x float) -- see countingStarsLabel() in the benchmark.
 %
 % cross_check_countingstars_grid.py asserts these stay in step with the .cu and the .sh; when they
 % drift, MATLAB reports "0 runs" for the orphaned series rather than erroring, which is the failure
@@ -191,19 +192,19 @@ deltaLabel = '2 deltas overlaid (coarse, fine)';
 % (bf = MAX_TREE_SIZE/(F*32), 40,000 propagations per node at F = 10), which is the number
 % prop_attempted/frontier_size is read against.
 %
-% THE GUARANTEE-BUDGET TOGGLE (h_reactGuaranteeBudgeted_ in CountingStars.cuh): false (the
-% off-default, matching every point run before this pass) leaves the region-best GUARANTEE arm
-% unconditional and budget-free, exactly as today. true folds that same node into the SAME
-% cost-distance histogram/cutoff the CHEAPEST reactivation arm already uses, so it must win a
-% react_frac * B slot instead of an automatic pass -- and can be starved of reactivation entirely
-% when the budget is smaller than the number of currently-optimal-or-near-optimal nodes across all
-% regions. Expected to matter more at the fine delta (far more regions).
+% ANCESTOR BIAS (csBlendDistance/h_ancestorWeight_ in CountingStars.cuh): false (the off-default)
+% leaves CHEAPEST admission/reactivation deciding purely on a node's own LIVE cost distance, exactly
+% as with the guarantee-fold alone. true blends that distance with a FROZEN per-node lineage EMA
+% (ancestors' own distances at their insertion time) at one fixed (alpha, weight) point before the
+% same histogram buckets it -- so a good-lineage node's vote gets cheaper, a bad-lineage node's more
+% expensive, without changing the budget or the cutoff mechanics at all. Expected to matter more at
+% the fine delta, where the budget covers a smaller subset of near-optimal nodes to begin with.
 %
 csBufferSlopes      = [120];
 csBufferFloors      = [5];
 csExploreFracs      = [300];
 csCostFracs         = [300];
-csGuaranteeBudgeted = [0 1];   % 0 = false (off-default), 1 = true (the ablation arm)
+csAncestorBias = [0 1];   % 0 = false (off-default), 1 = true (the ablation arm)
 
 % The derived operating point that --single-point selects. EVERY component must be a member of its
 % list, because the flag selects BY VALUE -- a derived point outside the grid would run nothing.
@@ -211,7 +212,7 @@ csDerivedBufferSlope      = 120;   % bufferSlope 1.2 -> round(100 * 1.2); csBuff
 csDerivedBufferFloor      = 5;     % bufferFloor 0.05 -> round(100 * 0.05); csBufferFloors' only member
 csDerivedExploreFrac      = 300;   % explore_frac 0.3 -> round(1000 * 0.3); the only grid value now
 csDerivedCostFrac         = 300;   % cost_frac 0.3 -> round(1000 * 0.3); the only grid value now
-csDerivedGuaranteeBudgeted = 0;    % a member of csGuaranteeBudgeted (false); no tuning data yet
+csDerivedAncestorBias = 0;    % a member of csAncestorBias (false); no tuning data yet
 
 % CleanCost baseline point - one series, the well-tuned operating point. Same label format as the
 % cost sweep, so its historical CSVs load here unchanged.
@@ -225,21 +226,21 @@ cleanBaseCap = 3;
 kpaxCapCaps = [3];
 
 % ONE REAL AXIS THIS PASS, ENCODED REDUNDANTLY IN BOTH COLOUR AND STYLE -- bufferSlope/bufferFloor/
-% explore_frac/cost_frac are all fixed, so guaranteeBudgeted is the only thing left to distinguish
+% explore_frac/cost_frac are all fixed, so ancestorBias is the only thing left to distinguish
 % CountingStars series from each other, and a boolean is worth making unmistakable at a glance
 % rather than splitting color/style across two channels the way earlier (two-continuous-axis)
 % passes through this file had to.
 %
-% colour = guaranteeBudgeted: PALE is false (the off-default, today's unconditional guarantee);
-% NEAR-BLACK is true (the ablation -- the guarantee now competes for budget like anything else).
-% ONE ROW PER csGuaranteeBudgeted ENTRY -- MUST STAY IN SYNC WITH IT, since fillColors(gi, :) below
-% is indexed straight off numel(csGuaranteeBudgeted).
-fillColors   = [0.65 0.70 0.80;    % guaranteeBudgeted = false (off-default)
-                0.10 0.10 0.10];   % guaranteeBudgeted = true  (the ablation arm)
-% style = guaranteeBudgeted too (solid = false, dashed = true) -- redundant with colour on purpose,
+% colour = ancestorBias: PALE is false (the off-default -- CHEAPEST decides on live distance alone);
+% NEAR-BLACK is true (the ablation -- CHEAPEST's vote is blended with the lineage EMA). ONE ROW PER
+% csAncestorBias ENTRY -- MUST STAY IN SYNC WITH IT, since fillColors(ai, :) below is indexed
+% straight off numel(csAncestorBias).
+fillColors   = [0.65 0.70 0.80;    % ancestorBias = false (off-default)
+                0.10 0.10 0.10];   % ancestorBias = true  (the ablation arm)
+% style = ancestorBias too (solid = false, dashed = true) -- redundant with colour on purpose,
 % the same discipline this file already uses for its baseline planners (distinct colour AND
-% marker). ONE ENTRY PER csGuaranteeBudgeted ENTRY, same indexing as fillColors.
-fracStyles   = {'-', '--'};   % guaranteeBudgeted = false, true (in csGuaranteeBudgeted order)
+% marker). ONE ENTRY PER csAncestorBias ENTRY, same indexing as fillColors.
+fracStyles   = {'-', '--'};   % ancestorBias = false, true (in csAncestorBias order)
 
 % marker = (explore_frac, cost_frac) PAIR, combined into one channel. Both are single-element
 % arrays this pass (fixed at 0.3 each), so this channel is inert right now -- every CountingStars
@@ -271,16 +272,16 @@ plannerMarkers  = {};
 plannerWidths   = [];
 plannerBaseline = [];   % logical: drawn as a thick reference anchor / large scatter marker
 plannerDeltaIdx = [];   % index into `deltas`
-% Each series' guaranteeBudgeted token, NaN for anything that is not a CountingStars arm. Used as
+% Each series' ancestorBias token, NaN for anything that is not a CountingStars arm. Used as
 % the colour/style lookup and as the "is this CountingStars" NaN guard at several panels below.
-% (Named for guaranteeBudgeted now, not bufferFloor -- that axis is fixed this pass and colour
-% follows the axis that actually varies; every downstream use only checks isnan(), so the rename
-% is safe.)
+% (Named for ancestorBias now, not guaranteeBudgeted -- that toggle is retired permanently and
+% colour follows the axis that actually varies this pass; every downstream use only checks
+% isnan(), so the rename is safe.)
 %
 % B ITSELF IS NOT CARRIED HERE. v2 had to, because B was a per-run setting and not in the data; v3
 % derives it inside the planner and logs it as the goal_frontier_size COLUMN, so the budget figure
 % reads its divisor straight out of the CSV.
-plannerGuaranteeBudgeted = [];
+plannerAncestorBias = [];
 
 for di = 1:numel(deltas)
     dWidth = deltaWidths(di);
@@ -290,7 +291,7 @@ for di = 1:numel(deltas)
 
     if ~dPlus
 
-    % --- CountingStars: guaranteeBudgeted, the only real axis this pass. bufferSlope/bufferFloor/
+    % --- CountingStars: ancestorBias, the only real axis this pass. bufferSlope/bufferFloor/
     % explore_frac/cost_frac are all single-element arrays (fixed), so those loops are trivial --
     % kept general so re-expanding any axis needs no shape change here, only more marker shapes in
     % efCfMarkers. ---
@@ -298,49 +299,49 @@ for di = 1:numel(deltas)
     assert(numEfCf <= numel(efCfMarkers), ...
         sprintf(['efCfMarkers has %d entries but csExploreFracs x csCostFracs needs %d -- add more ' ...
                  'marker shapes to efCfMarkers before growing either axis.'], numel(efCfMarkers), numEfCf));
-    rgStr = {'off', 'on'};   % csGuaranteeBudgeted value (0/1) -> countingStarsLabel()'s rg token
+    abStr = {'off', 'on'};   % csAncestorBias value (0/1) -> countingStarsLabel()'s ab token
     for bi = 1:numel(csBufferSlopes)
         for fi = 1:numel(csBufferFloors)
             for ei = 1:numel(csExploreFracs)
                 for ci = 1:numel(csCostFracs)
-                for gi = 1:numel(csGuaranteeBudgeted)
+                for ai = 1:numel(csAncestorBias)
                     sSlope = csBufferSlopes(bi);
                     sFloor = csBufferFloors(fi);
                     eFrac  = csExploreFracs(ei);
                     cFrac  = csCostFracs(ci);
-                    gBudget = csGuaranteeBudgeted(gi);
+                    aBias = csAncestorBias(ai);
                     efCfIdx = (ei - 1) * numel(csCostFracs) + ci;   % combined (ei, ci) -> one marker
 
                     % Mirror countingStarsSkip(): --single-point is the only skip.
                     if dOne && ~(sSlope == csDerivedBufferSlope && sFloor == csDerivedBufferFloor ...
                                  && eFrac == csDerivedExploreFrac && cFrac == csDerivedCostFrac ...
-                                 && gBudget == csDerivedGuaranteeBudgeted)
+                                 && aBias == csDerivedAncestorBias)
                         continue;
                     end
 
-                    plannerNames{end + 1}   = sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d_rg%s', ...
-                                                      sSlope, sFloor, eFrac, cFrac, rgStr{gBudget + 1}); %#ok<SAGROW>
-                    % ONLY guaranteeBudgeted IN THE LEGEND TEXT -- bufferSlope/bufferFloor/
+                    plannerNames{end + 1}   = sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d_ab%s', ...
+                                                      sSlope, sFloor, eFrac, cFrac, abStr{aBias + 1}); %#ok<SAGROW>
+                    % ONLY ancestorBias IN THE LEGEND TEXT -- bufferSlope/bufferFloor/
                     % explore_frac/cost_frac are fixed this pass, so repeating them in every entry
                     % would be noise, not information.
-                    plannerDisplay{end + 1} = sprintf('CS guaranteeBudgeted=%s [%s]', ...
-                                                      rgStr{gBudget + 1}, dTag); %#ok<SAGROW>
-                    plannerColors(end + 1, :) = fillColors(gi, :);     %#ok<SAGROW>
-                    plannerStyles{end + 1}    = fracStyles{gi};        %#ok<SAGROW>
+                    plannerDisplay{end + 1} = sprintf('CS ancestorBias=%s [%s]', ...
+                                                      abStr{aBias + 1}, dTag); %#ok<SAGROW>
+                    plannerColors(end + 1, :) = fillColors(ai, :);     %#ok<SAGROW>
+                    plannerStyles{end + 1}    = fracStyles{ai};        %#ok<SAGROW>
                     plannerMarkers{end + 1}   = efCfMarkers{efCfIdx};  %#ok<SAGROW>
-                    % guaranteeBudgeted = false (THE OFF-DEFAULT) IS DRAWN THICKER, as the
+                    % ancestorBias = false (THE OFF-DEFAULT) IS DRAWN THICKER, as the
                     % closest-to-today reference the ablation (true) is read against -- same
                     % convention this file already uses for its own structural controls. min()
-                    % reads whatever csGuaranteeBudgeted currently is, so this stays correct across
+                    % reads whatever csAncestorBias currently is, so this stays correct across
                     % future revisions.
-                    if gBudget == min(csGuaranteeBudgeted)
+                    if aBias == min(csAncestorBias)
                         plannerWidths(end + 1) = dWidth + 0.8;         %#ok<SAGROW>
                     else
                         plannerWidths(end + 1) = dWidth;               %#ok<SAGROW>
                     end
                     plannerBaseline(end + 1) = false;                  %#ok<SAGROW>
                     plannerDeltaIdx(end + 1) = di;                     %#ok<SAGROW>
-                    plannerGuaranteeBudgeted(end + 1) = gBudget;        %#ok<SAGROW>
+                    plannerAncestorBias(end + 1) = aBias;        %#ok<SAGROW>
                 end
                 end
             end
@@ -358,7 +359,7 @@ for di = 1:numel(deltas)
     plannerWidths(end + 1)    = dWidth + 0.6;    %#ok<SAGROW>
     plannerBaseline(end + 1)  = true;            %#ok<SAGROW>
     plannerDeltaIdx(end + 1)  = di;              %#ok<SAGROW>
-    plannerGuaranteeBudgeted(end + 1) = NaN;              %#ok<SAGROW>
+    plannerAncestorBias(end + 1) = NaN;              %#ok<SAGROW>
 
     % --- KPAXCap: the control arm for the cap itself, read against the KPAX baseline below ---
     for ci = 1:numel(kpaxCapCaps)
@@ -371,7 +372,7 @@ for di = 1:numel(deltas)
         plannerWidths(end + 1)    = dWidth + 0.6;       %#ok<SAGROW>
         plannerBaseline(end + 1)  = true;               %#ok<SAGROW>
         plannerDeltaIdx(end + 1)  = di;                 %#ok<SAGROW>
-        plannerGuaranteeBudgeted(end + 1) = NaN;                %#ok<SAGROW>
+        plannerAncestorBias(end + 1) = NaN;                %#ok<SAGROW>
     end
 
     % --- KPAX baseline. Gated with the rest: a --only-kinopaxplus delta does not run it. ---
@@ -383,13 +384,13 @@ for di = 1:numel(deltas)
     plannerWidths   = [plannerWidths,  dWidth + 1.1];                                     %#ok<AGROW>
     plannerBaseline = [plannerBaseline, true];                                            %#ok<AGROW>
     plannerDeltaIdx = [plannerDeltaIdx, di];                                              %#ok<AGROW>
-    plannerGuaranteeBudgeted = [plannerGuaranteeBudgeted, NaN];                                             %#ok<AGROW>
+    plannerAncestorBias = [plannerAncestorBias, NaN];                                             %#ok<AGROW>
 
     end   % ~dPlus
 
     % --- KinoPaxPlus. Placed outside the `if ~dPlus` guard for structural parity with earlier
     % passes through this file (deltaPlusOnly is all-false this pass, so every arm above already
-    % runs at every delta too -- see the header for why: the guarantee-budget question needs
+    % runs at every delta too -- see the header for why: ancestor bias's expected effect needs
     % CountingStars measured at the fine delta, not KinoPaxPlus alone). Its advantage is a tiny
     % frontier at a fine discretisation, and a small F is exactly what CountingStars'
     % goal_frontier_size is trying to buy directly -- the comparison this whole pass is about. ---
@@ -401,7 +402,7 @@ for di = 1:numel(deltas)
     plannerWidths   = [plannerWidths,  dWidth + 1.1];                                     %#ok<AGROW>
     plannerBaseline = [plannerBaseline, true];                                            %#ok<AGROW>
     plannerDeltaIdx = [plannerDeltaIdx, di];                                              %#ok<AGROW>
-    plannerGuaranteeBudgeted = [plannerGuaranteeBudgeted, NaN];                                             %#ok<AGROW>
+    plannerAncestorBias = [plannerAncestorBias, NaN];                                             %#ok<AGROW>
 end
 
 numRunsPer = 50 * ones(1, numel(plannerNames));   % max runs searched (missing files skipped)
@@ -506,7 +507,7 @@ for ei = 1:numel(environments)
                'Position', [100 100 900 560]);
         hold on;
         for pi = 1:nPlanner
-            if isnan(plannerGuaranteeBudgeted(pi)), continue; end   % not a CountingStars series
+            if isnan(plannerAncestorBias(pi)), continue; end   % not a CountingStars series
             plotMeanIter(R{pi}, @(t) getCol(t, 'goal_frontier_size'), ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
         end
@@ -527,15 +528,12 @@ for ei = 1:numel(environments)
         %   budget_used / B  > 1   OVERSHOOT -- the uncapped OPTIMAL candidate door already exceeded
         %                          B on its own, bounded by the region count rather than by B: one
         %                          node per region can be a region best. EXPECTED at every point on
-        %                          this grid regardless of guaranteeBudgeted.
-        %                          AT guaranteeBudgeted=false (this pass's off-default), the
-        %                          GUARANTEE reactivation arm is ALSO uncapped this same way, adding
-        %                          to the overshoot. AT guaranteeBudgeted=true, the GUARANTEE arm's
-        %                          node is folded into the SAME budgeted histogram CHEAPEST already
-        %                          uses -- it no longer contributes its own separate overshoot, so
-        %                          expect a SMALLER budget_used/B ratio at true than at false,
-        %                          especially at the fine delta (far more regions -> far more
-        %                          guarantee-arm reactivations being curbed).
+        %                          this grid regardless of ancestorBias -- OPTIMAL is the only
+        %                          uncapped door now (the region-best GUARANTEE that used to also
+        %                          be uncapped is gone, folded permanently into CHEAPEST's budget;
+        %                          see CS_DOORBIT_GUAR in CountingStars.cuh), so there is only ONE
+        %                          source of overshoot left, and it does not vary with ancestorBias
+        %                          -- blending changes WHICH nodes CHEAPEST picks, not how many.
         %                          bufferSlope/bufferFloor are FIXED this pass (1.2, 0.05), so
         %                          B(x) = floor((slope*x+floor) * MAX_TREE_SIZE/fill_iters) ranges
         %                          ~214 (x=0) to ~5357 (x=1) at the coarse delta's 27,000 regions --
@@ -546,10 +544,10 @@ for ei = 1:numel(environments)
         % SO READ THIS AS A CURVE, NOT A NUMBER. B binds EARLY in a run and then stops, at an
         % iteration that moves with the WHOLE RAMP SHAPE. The iteration where the curve crosses 1 IS
         % the measurement -- early is exactly where time-to-first-solution is decided. If the
-        % guaranteeBudgeted=true curve is indistinguishable from the false curve even early, the
-        % toggle is not moving anything at this delta -- KinoPaxPlus's hysteresis precedent (un-prune
-        % a region best only after ~5 idle iterations) would be a softer next lever than the full
-        % on/off swap this pass tests.
+        % ancestorBias=true curve is indistinguishable from the false curve even early, biasing
+        % CHEAPEST toward good-lineage nodes is not moving the budget-met curve at this delta --
+        % which does not rule out a final-cost or time-to-first-solution effect (see the tradeoff
+        % scatters), only that the budget-vs-B relationship itself is insensitive to the blend.
         %
         % B COMES OUT OF THE DATA. It is the goal_frontier_size column, written by the planner that
         % derived it, so this divides by what the run actually used rather than by what the label
@@ -559,7 +557,7 @@ for ei = 1:numel(environments)
                'Position', [120 120 1400 620]);
         subplot(1, 2, 1); hold on;
         for pi = 1:nPlanner
-            if isnan(plannerGuaranteeBudgeted(pi)), continue; end   % not a CountingStars series
+            if isnan(plannerAncestorBias(pi)), continue; end   % not a CountingStars series
             plotMeanIter(R{pi}, @(t) safeRatio(getCol(t, 'budget_used'), ...
                                                getCol(t, 'goal_frontier_size')), ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
@@ -581,12 +579,15 @@ for ei = 1:numel(environments)
         %   admitted_costdist  THE NEW DOOR, spending cost_frac * B on the smallest cost distances.
         %                      Pinned at 0 while cost_frac > 0 means the cutoff solve is degenerate;
         %                      sitting at cost_frac * B every iteration means it works as designed.
-        %   reactivated_best   the guarantee, REALISED and counted on the device. (v2's PLANNED
-        %                      count, guaranteed_react, is gone with the remainder it used to size.)
-        %   reactivated_cost   v3.1's CHEAPEST reactivation arm, spending the WHOLE react_frac * B
-        %                      budget on the cheapest dormant nodes. This is the arm CleanCost has
-        %                      and v3 did not; it should carry essentially all of Part B's
-        %                      non-guarantee volume.
+        %   reactivated_best   the region-best GUARANTEE's old realised count. Its arm is gone
+        %                      permanently (folded into reactivated_cost below), so this should
+        %                      read exactly 0 on every iteration of every run now -- a free
+        %                      runtime invariant, not a diagnostic worth reading for content.
+        %   reactivated_cost   v3.1's CHEAPEST reactivation arm (ancestor-blended when
+        %                      ancestorBias), spending the WHOLE react_frac * B budget on the
+        %                      cheapest dormant nodes, region bests included. This is the arm
+        %                      CleanCost has and v3 did not; it should carry essentially all of
+        %                      Part B's volume now.
         %   reactivated_count  the COMPLETENESS FLOOR alone -- ~ react_floor * dormant_count, so
         %                      ~30 nodes. It was the uniform draw through v3. LARGE HERE MEANS the
         %                      floor is doing reach work it was not sized for.
@@ -595,8 +596,8 @@ for ei = 1:numel(environments)
         %                      track ~accept_floor * candidates_this_iteration; large here means the
         %                      floor is doing reach work rather than plugging the gap.
         %
-        % The `reactivated` column is all THREE Part B arms, so it should equal
-        % reactivated_best + reactivated_cost + reactivated_count.
+        % The `reactivated` column is Part B's two live arms, so it should equal
+        % reactivated_best (always 0 now) + reactivated_cost + reactivated_count.
         %
         % v3.3: OPTIMAL, EXPLORE AND COSTDIST ALL OVERLAP now. admitted_explore and admitted_costdist
         % are a union over one candidate pool as before; OPTIMAL now also competes for FRESHEST, so
@@ -624,8 +625,8 @@ for ei = 1:numel(environments)
         end
         set(gca, 'YScale', 'log'); grid on;
         xlabel('Iteration'); ylabel('nodes');
-        title({'optimal (thick solid), explore (dashed), cheapest (thin solid), guarantee (dash-dot),', ...
-               'cheap-reactivation (thin dashed), reactivation floor (dotted), admission floor (thin dotted)'});
+        title({'optimal (thick solid), explore (dashed), cheapest (thin solid), reactivated\_best (dash-dot,', ...
+               'always ~0 now -- its arm is retired), cheap-reactivation (thin dashed), reactivation floor (dotted), admission floor (thin dotted)'});
 
         %% ---------- FIGURE: is freshness still scarce ----------
         % ord_cutoff is the freshness threshold the remaining budget bought this iteration: a
@@ -672,7 +673,7 @@ for ei = 1:numel(environments)
         %                       [0, distMax] instead of the log one.
         subplot(1, 3, 2); hold on;
         for pi = 1:nPlanner
-            if isnan(plannerGuaranteeBudgeted(pi)), continue; end   % not a CountingStars series
+            if isnan(plannerAncestorBias(pi)), continue; end   % not a CountingStars series
             plotMeanIter(R{pi}, @(t) safeRatio(getCol(t, 'cost_cutoff_dist'), ...
                                                getCol(t, 'dist_max')), ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
@@ -700,7 +701,7 @@ for ei = 1:numel(environments)
         %                           arm is genuinely picking the cheapest dormant nodes.
         subplot(1, 3, 3); hold on;
         for pi = 1:nPlanner
-            if isnan(plannerGuaranteeBudgeted(pi)), continue; end   % not a CountingStars series
+            if isnan(plannerAncestorBias(pi)), continue; end   % not a CountingStars series
             plotMeanIter(R{pi}, @(t) safeRatio(getCol(t, 'react_cutoff_dist'), ...
                                                getCol(t, 'dist_max')), ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
@@ -733,7 +734,7 @@ for ei = 1:numel(environments)
                'Position', [160 160 900 560]);
         hold on;
         for pi = 1:nPlanner
-            if isnan(plannerGuaranteeBudgeted(pi)), continue; end   % not a CountingStars series
+            if isnan(plannerAncestorBias(pi)), continue; end   % not a CountingStars series
             plotMeanIter(R{pi}, @(t) safeRatio(getCol(t, 'admitted_both'), ...
                                                sumCols(t, 'admitted_explore', 'admitted_costdist')), ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
@@ -807,12 +808,11 @@ for ei = 1:numel(environments)
         % `reactivated` counts frontier bits among the PRE-EXISTING tree, i.e. exactly Part B's
         % output, so this is the share of the frontier that is re-expansion rather than new nodes.
         %
-        % READ THIS PANEL FIRST WHEN KERNEL1 FAILS EARLY. Part B's guarantee is unconditional for
-        % an UNCOVERED region, so F has a floor at the number of regions the optimal door missed.
-        % Since rep >= 1, frontierRepeatSize >= F, and kernel2 is forced once 32*F > remaining
-        % whatever the budget says. A curve pinned near 100% means F is reactivation-dominated: the
-        % admissions are a rounding error next to the guarantee and the draw, and B is being met by
-        % re-expansion rather than by new ground.
+        % READ THIS PANEL FIRST WHEN KERNEL1 FAILS EARLY. A curve pinned near 100% means F is
+        % reactivation-dominated: admissions are a rounding error next to Part B's cost arm and
+        % floor, and B is being met by re-expansion rather than by new ground. (An UNCONDITIONAL
+        % region-best guarantee used to put a floor on F at the number of regions the optimal door
+        % missed; that arm is gone, folded permanently into the budgeted reactivation below.)
         subplot(1, 3, 3); hold on;
         for pi = 1:nPlanner
             plotMeanIter(R{pi}, @(t) 100 * safeRatio(getCol(t, 'reactivated'), ...
@@ -821,7 +821,7 @@ for ei = 1:numel(environments)
         end
         ylim([0 105]);
         xlabel('Iteration'); ylabel('% of frontier from Part B'); grid on;
-        title({'Frontier composition: reactivated / frontier\_size', 'near 100% = the region-best guarantee dominates F'});
+        title({'Frontier composition: reactivated / frontier\_size', 'near 100% = Part B''s reactivation dominates F'});
         clickableLegend();
 
         %% ---------- FIGURE: is the frontier small ----------
@@ -1000,7 +1000,7 @@ for ei = 1:numel(environments)
         % escapes are only resolved by a formatting call, and this string is substituted into the
         % titles below via %s -- which inserts it verbatim rather than re-interpreting it. Built as
         % a plain [...] it would print the escape sequences literally.
-        markerKey = sprintf(['lower-left is better (fast and cheap); darker/dashed = guaranteeBudgeted=true; ' ...
+        markerKey = sprintf(['lower-left is better (fast and cheap); darker/dashed = ancestorBias=true; ' ...
                              '\x25cb CountingStars, ' ...
                              '\x2606 CleanCost, \x25bd KPAXCap, \x25a1 KPAX, \x25c7 KinoPaxPlus']);
 
