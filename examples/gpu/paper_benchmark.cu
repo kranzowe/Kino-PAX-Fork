@@ -7,12 +7,13 @@
 // and results table for the paper. There is nothing to tune here, so there is nothing to diagnose --
 // the per-iteration CSV carries only what the outcome-comparison plots actually read.
 //
-// THE FIVE SERIES, fixed for the whole file:
+// THE SIX SERIES, fixed for the whole file:
 //   KPAX                   defaults
 //   KinoPaxPlus             defaults
 //   KinoPaxSTARCleanCost    r2 off, w 0.9, k 1.0, cap 0.03 (countingstars_sweep.cu's CLEAN_BASE_*)
-//   CountingStars (bs 1.0)  explore_frac 0.3, cost_frac 0.3, bufferFloor 0.1, bufferSlope 1.0
+//   CountingStars (bs 1.0)  explore_frac 0.2, cost_frac 0.2, bufferFloor 0.05, bufferSlope 1.0
 //   CountingStars (bs 0.5)  same, bufferSlope 0.5
+//   CountingStars (bs 1.5)  same, bufferSlope 1.5
 //
 // EVERY SERIES RUNS AT EVERY DELTA -- unlike countingstars_sweep.cu, where only KinoPaxPlus runs
 // past the coarse discretization. There is no --only-kinopaxplus concept here because there is no
@@ -512,7 +513,7 @@ void runKinoPaxSTARCleanCostBenchmark(
 static const int CS_RAMP_FILL_ITERS = 700;
 
 // ========================================================================
-// CountingStars -- two fixed points (bufferSlope 1.0 and 0.5), same explore_frac/cost_frac/
+// CountingStars -- three fixed points (bufferSlope 1.0, 0.5 and 1.5), same explore_frac/cost_frac/
 // bufferFloor. h_fillIters_ is set explicitly to CS_RAMP_FILL_ITERS, not left at its class default
 // (MAX_ITER): the ramp's x = itr/h_fillIters_ must track the REAL run length, and at
 // MAX_TREE_SIZE=3,000,000 with a 10s timeout that's ~700 iterations, well short of MAX_ITER (1000)
@@ -601,10 +602,10 @@ void runCountingStarsBenchmark(
     std::vector<RunResult>& all_results, const std::string& outputDir, const std::string& deltaLabel,
     int numRuns, int maxIterations, float maxTimeMs)
 {
-    static const float BUFFER_SLOPES[] = {1.0f, 0.5f};
-    static const float BUFFER_FLOOR    = 0.1f;
-    static const float EXPLORE_FRAC    = 0.3f;
-    static const float COST_FRAC       = 0.3f;
+    static const float BUFFER_SLOPES[] = {1.0f, 0.5f, 1.5f};
+    static const float BUFFER_FLOOR    = 0.05f;
+    static const float EXPLORE_FRAC    = 0.2f;
+    static const float COST_FRAC       = 0.2f;
 
     printf("\n========================================\n");
     printf("COUNTINGSTARS: %s | Delta: %s | Regions: %d\n", environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
@@ -643,7 +644,7 @@ int main(int argc, char* argv[])
     std::string obstaclePath = (argc > 2) ? argv[2] : "../include/config/obstacles/empty/obstacles.csv";
     std::string envName      = (argc > 3) ? argv[3] : "empty";
 
-    const int   NUM_RUNS        = 10;
+    const int   NUM_RUNS        = 5;
     const int   MAX_ITERATIONS  = 20000;      // non-binding -- see the file header
     const float MAX_TIME_MS     = 10000.0f;   // 10 second per-run timeout
 
@@ -664,8 +665,8 @@ int main(int argc, char* argv[])
     printf("Max iterations: %d (non-binding; MAX_TREE_SIZE / MAX_TIME_MS are the real limiters)\n", MAX_ITERATIONS);
     printf("Max time:       %.1f s\n", MAX_TIME_MS / 1000.0f);
     printf("Series:         KPAX, KinoPaxPlus, KinoPaxSTARCleanCost (w0.9 k1.0 cap0.03),\n");
-    printf("                CountingStars (bufferSlope 1.0), CountingStars (bufferSlope 0.5)\n");
-    printf("                explore_frac 0.3, cost_frac 0.3, bufferFloor 0.1 for both CountingStars points\n");
+    printf("                CountingStars (bufferSlope 1.0, 0.5, 1.5)\n");
+    printf("                explore_frac 0.2, cost_frac 0.2, bufferFloor 0.05 for all three CountingStars points\n");
     printf("=======================================================\n");
 
     // Start/goal states -- identical to countingstars_sweep.cu's, validated across every

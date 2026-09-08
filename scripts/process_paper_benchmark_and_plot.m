@@ -4,9 +4,9 @@
 %
 % A FIXED COMPARISON, not a sweep -- there is no grid here, so the series list below is NOT built
 % from nested loops over swept parameters the way process_countingstars_and_plot.m's is. It is
-% five already-chosen operating points (KPAX, KinoPaxPlus, KinoPaxSTARCleanCost, CountingStars at
-% bufferSlope 1.0, CountingStars at bufferSlope 0.5), each run at all three deltas -- 15 series
-% total, overlaid inside each figure. Same three panels as
+% six already-chosen operating points (KPAX, KinoPaxPlus, KinoPaxSTARCleanCost, CountingStars at
+% bufferSlope 1.0, 0.5 and 1.5), each run at all three deltas -- 18 series total, overlaid inside
+% each figure. Same three panels as
 % process_countingstars_summary_plots.m (this script's direct ancestor -- loadRuns and every plot
 % helper below are copies of its versions), plus a results table this one adds:
 %
@@ -48,53 +48,62 @@ envTitles    = {'Empty'};
 % environments = {'narrowPassage'};  envTitles = {'Narrow Passage'};
 % environments = {'zigzag'};         envTitles = {'Zigzag Corridor (tightened)'};
 
-% Cost metric axis -- one build each, so one set of figures each. BOTH this pass.
-metrics       = {'length', 'effort'};
-metricTitles  = {'Workspace Path Length', 'Control Effort'};
-metricYLabels = {'Path Cost (workspace path length)', 'Path Cost (control effort)'};
+% Cost metric axis -- one build each, so one set of figures each. LENGTH ONLY this pass -- effort
+% is disabled for now (see run_paper_benchmark.sh), not removed; restore the commented-out line
+% below once effort CSVs exist again.
+metrics       = {'length'};
+metricTitles  = {'Workspace Path Length'};
+metricYLabels = {'Path Cost (workspace path length)'};
+% metrics       = {'length', 'effort'};
+% metricTitles  = {'Workspace Path Length', 'Control Effort'};
+% metricYLabels = {'Path Cost (workspace path length)', 'Path Cost (control effort)'};
 
 % Delta axis -- OVERLAID inside each figure, encoded as line WIDTH. The filename token is
-% sprintf('%s_%s', delta, metric), e.g. 'fine_effort'. "fine" and "tiny" are a CONTROLLED PAIR at
-% the identical 216,000-region count, refined on different axes (workspace vs. velocity) -- see
-% run_paper_benchmark.sh.
+% sprintf('%s_%s', delta, metric), e.g. 'fine_effort'. "fine" and "tiny" refine different axes
+% (workspace vs. velocity) -- see run_paper_benchmark.sh -- but are NO LONGER an identical-region-
+% count pair this pass (216,000 vs 373,248).
 deltas      = {'large', 'fine', 'tiny'};
-deltaTitles = {'27k', '216k W-refined', '216k V-refined'};
+deltaTitles = {'27k', '216k W-refined', '373k V-refined'};
 deltaWidths = [1.0, 1.8, 2.6];
 
 maxTreeSize = 3000000;   % MAX_TREE_SIZE in config.h -- denominator for the table's Final Tree (%)
 
-% --- The five FIXED series (not swept). Label tokens must match examples/gpu/paper_benchmark.cu's
+% --- The six FIXED series (not swept). Label tokens must match examples/gpu/paper_benchmark.cu's
 % cleanLabel() / countingStarsLabel() exactly: round(100 x float) for w/k/cap/bs/bf, round(1000 x
 % float) for ef/cf. ---
 cleanR2 = 'off'; cleanW = 90; cleanK = 100; cleanCap = 3;                 % w0.9 k1.0 cap0.03
-csFloor = 10; csExplore = 300; csCost = 300;                             % bufferFloor 0.1, ef/cf 0.3
+csFloor = 5; csExplore = 200; csCost = 200;                              % bufferFloor 0.05, ef/cf 0.2
 csSlopeA = 100;   % bufferSlope 1.0
 csSlopeB = 50;    % bufferSlope 0.5
+csSlopeC = 150;   % bufferSlope 1.5
 
 baseNames = { ...
     'KPAX', ...
     'KinoPaxPlus', ...
     sprintf('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d', cleanR2, cleanW, cleanK, cleanCap), ...
     sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d', csSlopeA, csFloor, csExplore, csCost), ...
-    sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d', csSlopeB, csFloor, csExplore, csCost) ...
+    sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d', csSlopeB, csFloor, csExplore, csCost), ...
+    sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d', csSlopeC, csFloor, csExplore, csCost) ...
 };
 baseDisplay = { ...
     'KPAX', ...
     'KinoPaxPlus', ...
     'CleanCost (w0.9 k1.0 cap0.03)', ...
     'CountingStars (slope 1.0)', ...
-    'CountingStars (slope 0.5)' ...
+    'CountingStars (slope 0.5)', ...
+    'CountingStars (slope 1.5)' ...
 };
-% color = planner identity: KPAX near-black, KinoPaxPlus blue, CleanCost crimson, the two
-% CountingStars points as two shades of a sixth (amber) color -- visually distinct from the three
-% single-color baselines while still reading as "the same planner family."
+% color = planner identity: KPAX near-black, KinoPaxPlus blue, CleanCost crimson, the three
+% CountingStars points as three shades of a sixth (amber) color -- visually distinct from the
+% three single-color baselines while still reading as "the same planner family."
 baseColors = [ ...
     0.10 0.10 0.10;    % KPAX
     0.20 0.40 0.80;    % KinoPaxPlus
     0.70 0.15 0.20;    % CleanCost
-    0.90 0.60 0.15;    % CountingStars slope 1.0 (lighter amber)
-    0.55 0.35 0.05 ];  % CountingStars slope 0.5 (darker amber)
-baseMarkers = {'s', 'd', 'p', 'o', '^'};
+    0.95 0.70 0.20;    % CountingStars slope 1.0 (lightest amber)
+    0.75 0.48 0.10;    % CountingStars slope 0.5 (mid amber)
+    0.45 0.28 0.03 ];  % CountingStars slope 1.5 (darkest amber)
+baseMarkers = {'s', 'd', 'p', 'o', '^', 'v'};
 
 % --- Build the series arrays: (planner, delta) pairs, planner-major so the legend and table group
 % all three deltas together per planner. ---
@@ -127,7 +136,7 @@ for si = 1:numel(baseNames)
 end
 
 numRunsPer = 20 * ones(1, numel(plannerNames));   % max runs searched (missing files skipped); the
-                                                    % harness writes 10, this just leaves headroom
+                                                    % harness writes 5, this just leaves headroom
                                                     % for a manual rerun without editing this file
 
 MAX_FLOAT_THRESH = 1e30;   % best_cost sentinel (MAX_FLOAT / INFINITY) -> NaN
@@ -233,7 +242,8 @@ for ei = 1:numel(environments)
 
         markerKey = sprintf(['lower-left is better (fast and cheap); width = delta (thin->thick = ' ...
                              'large->fine->tiny); \x25a1 KPAX, \x25c7 KinoPaxPlus, \x2606 CleanCost, ' ...
-                             '\x25cb CountingStars(1.0), \x25b3 CountingStars(0.5)']);
+                             '\x25cb CountingStars(1.0), \x25b3 CountingStars(0.5), ' ...
+                             '\x25bd CountingStars(1.5)']);
 
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Tradeoff Scatter (%s)', envTitle, costTitle), ...
