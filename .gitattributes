@@ -1,0 +1,11 @@
+# This codebase runs on Linux (SLURM clusters, Jetson) but is edited from Windows checkouts too.
+# Without this file, Windows' core.autocrlf=true converts LF -> CRLF on checkout -- harmless for
+# most source files, but FATAL for anything with a #!/bin/bash shebang: a trailing \r on that first
+# line makes the kernel look for an interpreter literally named "/bin/bash\r", which does not exist,
+# so a CRLF-corrupted .sh/.sbatch script submitted to SLURM (via sbatch) simply fails to run. Forcing
+# LF on checkout, independent of the checking-out machine's OS or its core.autocrlf setting, is what
+# actually fixes that -- reflowing a working tree back to LF once (git add --renormalize .) is not
+# durable on its own, because the next checkout on a CRLF-configured machine reintroduces it.
+* text=auto eol=lf
+*.sh text eol=lf
+*.sbatch text eol=lf

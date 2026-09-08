@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Assert CountingStars' region decode is the exact inverse of getRegion's encode.
+"""Assert the region decode math, and that CountingStars carries none of its own R2 machinery.
 
 WHY THIS EXISTS. `getRegion` (src/graphs/Graph.cu) packs a state into an R1 index; a separate kernel
-must unpack that index back into the region's minimum corner, because `getSubRegion` measures a
-candidate's offset from that corner to find its R2 sub-region. If the two disagree, the corner
-belongs to a different region than the index names, the offset is measured against the wrong origin,
-and `getSubRegion`'s per-axis clamps quietly pin the result to an edge cell. Nothing fails; the R2
-identities are simply wrong, and everything downstream -- activeSubVertices, regionCoverage, KPAX's
-seeding door, and CountingStars' entire explore door -- reads a scrambled signal.
+must unpack that index back into the region's minimum corner if anything needs `getSubRegion` to
+measure a candidate's offset from that corner and find its R2 sub-region. If the two disagree, the
+corner belongs to a different region than the index names, the offset is measured against the wrong
+origin, and `getSubRegion`'s per-axis clamps quietly pin the result to an edge cell -- nothing fails,
+the R2 identities are simply wrong.
 
-`initializeRegions_kernel` in Graph.cu does disagree, in two independent ways:
+`initializeRegions_kernel` in Graph.cu does disagree with `getRegion`'s encode, in two independent
+ways:
 
   * DIGIT ORDER REVERSED. The encode makes wRegion the MOST significant group; the decode reads it
     from the LEAST significant end.
@@ -17,13 +17,15 @@ seeding door, and CountingStars' entire explore door -- reads a scrambled signal
     C_R1_LENGTH**C_DIM and V_R1_LENGTH**V_DIM.
 
 The collapse factor is C_R1_LENGTH**(C_DIM-2) * V_R1_LENGTH**(V_DIM-1), so it is 8x at the
-checked-in config and GROWS with a finer discretisation -- which is exactly where the sweep is
-headed. This script measures that collapse rather than asserting the number, so it stays true at any
-config.
+checked-in config and GROWS with a finer discretisation. This script measures that collapse rather
+than asserting the number, so it stays true at any config. Graph.cu is deliberately NOT fixed: every
+existing baseline (KPAX, KPAXCap, ...) was measured against it, and changing it would move them all.
 
-Graph.cu is deliberately NOT fixed: every existing baseline was measured against it, and changing it
-would move them all. CountingStars carries its own corrected copy, and this script is what says the
-copy is right.
+COUNTINGSTARS USED TO CARRY A CORRECTED COPY of the decode above, purely to feed `getSubRegion` for
+an R2 coverage diagnostic (r2_coverage_pct) that nothing plotted. Both are gone now: CountingStars
+calls neither `getSubRegion` nor any min-corner table at all -- ordinality replaced novelty as the
+freshness signal a whole planner version ago, and no door has read a sub-cell since. Check 5 below
+now asserts that absence rather than the copy's correctness.
 
 Run from anywhere:  python scripts/check_region_math.py
 Exit 0 = REGION MATH OK, 1 = REGION MATH BROKEN.
@@ -154,21 +156,23 @@ cur_corners = {(tuple(a), tuple(b), tuple(c))
 collapse = NUM_R1 / len(cur_corners) if cur_corners else 0
 predicted = (CL ** max(0, C_DIM - 2)) * (VL ** max(0, V_DIM - 1))
 
-# --- 5. If CountingStars exists, check it is not just calling the shared broken kernel. ---
+# --- 5. If CountingStars exists, check it carries NO min-corner / R2 machinery of its own -- the
+# dead-structure removal took getSubRegion, CountingStars_initializeRegions_kernel and d_minCornerCS_
+# out entirely, so any of them reappearing means R2 tracking (or a broken copy of it) crept back in. ---
 cs_note = ''
 if os.path.exists(CS):
     cs = open(CS, encoding='utf-8').read()
-    # Match an actual LAUNCH of the shared kernel, not a mention of it. The shared name is a suffix
-    # of the prefixed one, so the lookbehind excludes CountingStars' own; requiring `<<<` excludes
-    # the header comment that explains why the shared one is not used.
-    if re.search(r'(?<!CountingStars_)initializeRegions_kernel\s*<<<', cs):
-        problems.append('CountingStars.cu references the shared initializeRegions_kernel -- it must '
-                        'use its own corrected init, or the explore door reads scrambled R2 cells')
-    if 'graph_.d_minValueInRegion_ptr_' in cs:
-        problems.append('CountingStars.cu passes graph_.d_minValueInRegion_ptr_ -- the corrected '
-                        'corners are d_minCornerCS_ptr_, and the shared table is the broken one')
-    if 'CountingStars_initializeRegions' not in cs:
-        problems.append('CountingStars.cu has no CountingStars_initializeRegions kernel')
+    if 'getSubRegion' in cs:
+        problems.append('CountingStars.cu calls getSubRegion -- it was removed along with the R2 '
+                        'coverage pipeline; a call site means either that removal was incomplete or '
+                        'R2 tracking is being reintroduced without a corrected min-corner table')
+    if re.search(r'initializeRegions_kernel', cs):
+        problems.append('CountingStars.cu references an initializeRegions_kernel (shared or its own '
+                        '-- both are gone) -- if R2 tracking is being reintroduced it needs the '
+                        'corrected decode back, not the shared broken one')
+    if 'd_minCornerCS_' in cs or 'graph_.d_minValueInRegion_ptr_' in cs:
+        problems.append('CountingStars.cu references a min-corner table -- neither its own corrected '
+                        'one nor the shared broken one should exist now that nothing calls getSubRegion')
 else:
     cs_note = '  (CountingStars.cu not present yet -- skipped check 5)'
 
