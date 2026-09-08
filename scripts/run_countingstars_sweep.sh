@@ -7,23 +7,19 @@
 # are deliberately NOT in this sweep -- COMBO is the thing being replaced and its own sweep still
 # exists; TrueStar answers a cap question this planner does not ask.
 #
-# THIS PASS'S AXIS IS ANCESTOR BIAS, NOT THE RAMP AND NOT THE REACTIVATION GUARANTEE.
-# bufferSlope/bufferFloor are FIXED at one point (1.2, 0.05) rather than swept -- an earlier pass
-# already characterized the ramp on its own. The region-best GUARANTEE arm that a LATER pass made
-# an ablatable toggle (h_reactGuaranteeBudgeted_) is now GONE PERMANENTLY: it is folded into the
-# SAME cost-distance histogram/budget the CHEAPEST reactivation arm uses, with no toggle left for
-# it -- that fold measurably curbed the over-reactivation of "optimal" nodes this sweep exists to
-# characterize. What varies THIS pass is h_ancestorWeight_/h_ancestorAlpha_: whether CHEAPEST
-# admission/reactivation additionally biases its cost-distance vote toward a node's LINEAGE (an EMA
-# over its ancestors' own distances at their insertion time) rather than purely the node's own live
-# distance. See csBlendDistance/h_ancestorWeight_ in CountingStars.cuh.
+# THIS PASS'S AXIS IS THE GUARANTEE-BUDGET TOGGLE, NOT THE RAMP. bufferSlope/bufferFloor are FIXED
+# at one point (1.2, 0.05) rather than swept -- an earlier pass already characterized the ramp on
+# its own. What varies here is h_reactGuaranteeBudgeted_: whether the region-best GUARANTEE arm
+# keeps its unconditional, budget-free reactivation (false, matching every point run before this
+# pass) or gets folded into the SAME cost-distance histogram/budget the CHEAPEST reactivation arm
+# already uses (true). See CountingStars.cuh.
 #
 # Per (environment, cost metric), AT EACH OF TWO DISCRETIZATIONS (coarse and fine -- see
 # DELTA_LABELS below; BOTH run the full comparison, unlike earlier passes where only the coarse
 # delta did):
 #   CountingStars   bufferSlope 1.2 (fixed), bufferFloor 0.05 (fixed),
 #                   explore_frac and cost_frac FIXED at 0.3 each (not swept this pass),
-#                   ancestorBias {false, true} = 2 points x 5 runs = 10 runs
+#                   guaranteeBudgeted {false, true} = 2 points x 5 runs = 10 runs
 #   CleanCost       r2 OFF, w 0.9, k 1, cap 0.03            = 1 point  x 5 runs
 #   KPAXCap         cap {0.03}                              = 1 point  x 5 runs
 #   KPAX                                                    = 1 point  x 5 runs
@@ -62,9 +58,8 @@
 #
 # 3. THE BUDGET SPLITS THREE WAYS BY FIXED FRACTION, not "one share plus a remainder":
 #    explore_frac to freshness, cost_frac to cheapness, and react_frac = 1 - explore - cost to
-#    reactivation. All three are fractions of B ITSELF; only OPTIMAL stays uncapped and spends on
-#    top (the region-best GUARANTEE that used to also be uncapped is gone -- folded permanently
-#    into the reactivation budget, see CS_DOORBIT_GUAR in CountingStars.cuh).
+#    reactivation. All three are fractions of B ITSELF; OPTIMAL and the region-best GUARANTEE stay
+#    uncapped and spend on top.
 #
 # 4. v3.1: REACTIVATION IS COST-SELECTIVE, and that is the change this pass is really testing.
 #    v2 and v3 spent react_frac * B on a UNIFORM draw over the tree. CleanCost weights the same arm
@@ -105,24 +100,27 @@
 #    any device kernel directly), so making it dynamic cost no device array, no new kernel, and no
 #    new synchronisation -- it is one floating-point formula recomputed once per iteration.
 #
-# bufferSlope/bufferFloor ARE FIXED THIS PASS (1.2, 0.05), NOT SWEPT -- an earlier pass already
-# characterized the ramp; this grid isolates ancestor bias's own effect by holding it still.
+# (bufferSlope, bufferFloor) = (0, 0) IS THE DEEPEST ABLATION ARM, not a degenerate case: it makes
+# B a constant 0 (floored to 1 by the planner), so the FRESHEST / CHEAPEST / reactivation-CHEAPEST
+# doors get zero budget every iteration. OPTIMAL and the region-best GUARANTEE are UNCAPPED
+# regardless of B, so the frontier is still optimal + guarantee + a trickle draw, not empty. If no
+# other point beats it, none of the three budgeted doors is earning its share.
 # ============================================================================================
 #
 # THE GRID SITS ENTIRELY BELOW NUM_R1_REGIONS (27,000 at the coarse delta), and that is the honest
-# limit on what it can measure. OPTIMAL is the only uncapped door and is bounded by the region
-# count rather than by B (at most one region best per region per iteration) -- the region-best
-# GUARANTEE that used to also be uncapped and bounded the same way is gone, folded permanently into
-# the CHEAPEST reactivation budget (see CS_DOORBIT_GUAR in CountingStars.cuh). So B binds EARLY in
-# a run and then stops, at an iteration that moves with the WHOLE RAMP shape (bufferSlope and
-# bufferFloor together) rather than a single fill_frac -- and early is exactly where
-# time-to-first-solution is decided.
+# limit on what it can measure. TWO doors are uncapped and BOTH are bounded by the region count
+# rather than by B: OPTIMAL (at most one region best per region per iteration) and the GUARANTEE (at
+# most one node per uncovered region). So B binds EARLY in a run and then stops, at an iteration that
+# now moves with the WHOLE RAMP shape (bufferSlope and bufferFloor together) rather than a single
+# fill_frac -- and early is exactly where time-to-first-solution is decided.
 #
 # That is what "tree growth is less controlled once min cost is always accepted" amounts to, and it
 # is a measurement rather than a defect. Read budget_used/goal_frontier_size as a CURVE over
 # iterations: the iteration where it crosses 1 IS the measurement, and a late-run overshoot is
 # expected at every point -- MORE SO NOW, since B itself is climbing over the run rather than
-# holding still, so the ratio has two moving parts instead of one.
+# holding still, so the ratio has two moving parts instead of one. If the bufferSlope = 0 curves are
+# indistinguishable from the ramped ones even early, capping the guarantee (KinoPaxPlus's hysteresis
+# is the precedent) is the next lever, not a different ramp.
 #
 # READ IN THIS ORDER:
 #   1. goal_frontier_size vs iteration, FIRST. Confirms the realized ramp actually matches
@@ -154,13 +152,12 @@
 #      against CleanCost. bufferSlope = 0 points are the direct, structural control.
 #
 # BOTH DELTAS RUN THE FULL COMPARISON THIS PASS -- NOT --only-kinopaxplus at the finer one, unlike
-# earlier passes through this file. The concern ancestor bias is meant to address is specifically a
-# fine-discretization one: even with the guarantee folded into the budget, a finer delta's larger
-# region count means the budget still only reactivates a SUBSET of near-optimal nodes each
-# iteration, and biasing that subset toward good lineages may or may not help more at fine than at
-# coarse. Answering that needs CountingStars (both toggle settings) AND KinoPaxPlus BOTH measured
-# at the fine delta, not KinoPaxPlus alone. The grid stays small (2 CountingStars points)
-# specifically so running it twice (once per delta) is still cheap.
+# earlier passes through this file. The whole point of sweeping the guarantee-budget toggle is the
+# concern that CountingStars over-reactivates "optimal" nodes specifically at finer
+# discretizations (more R1 regions means proportionally more free, budget-exempt GUARANTEE
+# reactivation every iteration); answering that needs CountingStars (both toggle settings) AND
+# KinoPaxPlus BOTH measured at the fine delta, not KinoPaxPlus alone. The grid stays small (2
+# CountingStars points) specifically so running it twice (once per delta) is still cheap.
 #
 # Runs on BOTH environments, each written to its own subfolder under
 # Data/Benchmarks/CountingStars/<env>/ so they can be plotted independently.
@@ -206,8 +203,8 @@ CONFIG_BACKUP="$CONFIG_FILE.bak"
 BUILD_DIR="$PROJECT_DIR/build"
 
 # Deltas: parallel arrays of label / W_R1 / C_R1 / V_R1. BOTH run the FULL comparison this pass
-# (see DELTA_EXTRA_ARGS) -- ancestor bias's expected effect is specifically about the fine delta,
-# so there is no "--only-kinopaxplus" arm to skip it with here. One build per (delta, cost metric),
+# (see DELTA_EXTRA_ARGS) -- the guarantee-budget question is specifically about the fine delta, so
+# there is no "--only-kinopaxplus" arm to skip it with here. One build per (delta, cost metric),
 # cached, so restoring or trimming the list changes only the loop bounds.
 DELTA_LABELS=("large" "fine")
 DELTA_W_R1S=(10 20)
@@ -404,24 +401,21 @@ done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
 echo "  CountingStars:  bufferSlope 1.2 (FIXED), bufferFloor 0.05 (FIXED)"
 echo "                  explore_frac=0.3, cost_frac=0.3 (FIXED, not swept this pass)"
-echo "                  ancestorBias {false,true} -- THIS PASS'S AXIS, at one fixed"
-echo "                  (alpha,weight)=(0.5,0.5) on-point, not a 2D sweep"
+echo "                  guaranteeBudgeted {false,true} -- THIS PASS'S AXIS"
 echo "                  = 2 points x BOTH deltas"
-echo "                  Filenames: _bs120_bf5_ef300_cf300_ab<on|off>,"
-echo "                  e.g. CountingStars_bs120_bf5_ef300_cf300_aboff."
-echo "                  Earlier CSVs (_rgon/_rgoff token, no ab token) cannot collide with this"
-echo "                  shape, so they simply stop loading -- intended for a retired axis, not a loss."
+echo "                  Filenames: _bs120_bf5_ef300_cf300_rg<on|off>,"
+echo "                  e.g. CountingStars_bs120_bf5_ef300_cf300_rgoff."
+echo "                  v3.3 CSVs (no rg token) cannot collide with this shape, so they simply stop"
+echo "                  loading -- intended for an axis that did not exist before, not a loss."
 echo "                  B IS STILL A RAMP, RECOMPUTED EVERY ITERATION (unchanged this pass):"
 echo "                    x = itr/fill_iters, B(x) = floor((slope*x + floor) * MAX_TREE_SIZE/fill_iters)"
-echo "                  FOUR DOORS PLUS A FLAT ADMISSION FLOOR, two of the four on a fixed share of B."
-echo "                  THE REGION-BEST GUARANTEE DOOR IS GONE PERMANENTLY -- folded into CHEAPEST's"
-echo "                  budget, no toggle left for it (see CS_DOORBIT_GUAR in CountingStars.cuh):"
+echo "                  FIVE DOORS PLUS A FLAT ADMISSION FLOOR, three of the five on a fixed share of B:"
 echo "                    OPTIMAL    distance 0, i.e. cost <= minCostsR1[r].  UNCAPPED, first claim."
 echo "                               v3.3: also competes for FRESHEST rather than returning early."
 echo "                    FRESHEST   explore_frac * B, from the least-populated regions"
-echo "                    CHEAPEST   cost_frac * B, from the smallest (ancestor-blended when"
-echo "                               ancestorBias) cost distances -- region bests included"
-echo "                    REACTIVATE react_frac * B, to the CHEAPEST DORMANT NODES (same blend)"
+echo "                    CHEAPEST   cost_frac * B, from the smallest cost distances"
+echo "                    GUARANTEE  each active region best, if OPTIMAL did not cover it.  UNCAPPED"
+echo "                    REACTIVATE react_frac * B, to the CHEAPEST DORMANT NODES"
 echo "                    ADMIT FLOOR (v3.3) every candidate at accept_floor = 1e-4, only when nothing"
 echo "                               else admitted it -- a completeness guarantee, not a reach tool"
 echo "                    REACT FLOOR every dormant node at react_floor = 1e-5, ON TOP of the budget"
@@ -430,13 +424,6 @@ echo "                  arm by cost, and that was the one cost mechanism this li
 echo "                  volumes already matched, so it was selectivity not throughput. Part B is the"
 echo "                  only thing that re-expands the tree INTERIOR, which is where cost refinement"
 echo "                  happens."
-echo "                  ANCESTOR BIAS (THIS PASS'S AXIS): blends a node's/candidate's own LIVE cost"
-echo "                  distance with a FROZEN per-node lineage EMA (ancestors' own distances at"
-echo "                  their insertion time) before CHEAPEST admission/reactivation bucket it --"
-echo "                  see csBlendDistance/h_ancestorWeight_ in CountingStars.cuh. weight=0 (false)"
-echo "                  is exact identity. The concern this tests: the budget only ever reactivates a"
-echo "                  SUBSET of near-optimal nodes at a fine delta (more regions, same budget), and"
-echo "                  biasing that subset toward good-lineage nodes may spend it more usefully."
 echo "                  THE REACTIVATION FLOOR IS A CORRECTNESS CONSTANT, not a knob: a node's cost"
 echo "                  distance only ever grows (fixed cost over a non-increasing region min), so"
 echo "                  under a pure top-K a node above the cutoff is dead permanently and its"
@@ -445,29 +432,32 @@ echo "                  THE ADMISSION FLOOR (v3.3) makes the same guarantee for 
 echo "                  collision-free candidate keeps a nonzero admission chance whatever its"
 echo "                  region's state, at 1e-4 -- an order of magnitude above the reactivation"
 echo "                  floor, since its pool is per-iteration and far smaller than the whole tree."
-echo "                  CLEAR THE OUTPUT FOLDER FIRST IF A PREVIOUS PASS RAN -- the label shape"
-echo "                  changed again, so old and new CSVs would otherwise coexist under different"
-echo "                  names rather than colliding, which is fine but confusing to plot together."
+echo "                  CLEAR THE OUTPUT FOLDER FIRST IF A PREVIOUS v3/v3.1/v3.2 PASS RAN -- the"
+echo "                  label shape changed again, so old and new CSVs would otherwise coexist under"
+echo "                  different names rather than colliding, which is fine but confusing to plot"
+echo "                  together."
 echo "                  FRESHEST, CHEAPEST AND (v3.3) OPTIMAL select over the SAME candidate pool on"
 echo "                  independent signals -- a candidate can clear more than one, and it is still"
 echo "                  ONE tree node: every door that admits it buys ONE propagation block"
 echo "                  (nodeBlocks = popcount(door) in Part A), not a duplicate node."
-echo "                  ancestorBias=true IS THIS PASS'S ABLATION ARM: does biasing the CHEAPEST"
-echo "                  budget toward good-lineage nodes spend an already-scarce reactivation budget"
-echo "                  more usefully at a fine discretization. reactivated_best should read exactly"
-echo "                  0 on every iteration of every run now -- its arm cannot fire any more."
-echo "                  RNG NOTE: ancestor blending can shift which nodes land exactly on a cutoff"
-echo "                  bucket boundary, so a node whose boundary roll fires under one setting and"
-echo "                  not the other has its OWN curandState advance differently between the two --"
-echo "                  compare AGGREGATE columns across repeated runs, not per-iteration CSVs"
-echo "                  node-for-node."
+echo "                  guaranteeBudgeted=true IS THIS PASS'S ABLATION ARM: the region-best GUARANTEE"
+echo "                  arm's node loses its unconditional pass and is folded into the SAME"
+echo "                  CS_HIST_REACT_BASE histogram/cutoff the CHEAPEST reactivation arm already"
+echo "                  uses -- it must win a react_frac * B slot like anything else, and can now be"
+echo "                  starved of reactivation entirely if the budget is smaller than the number of"
+echo "                  currently-optimal-or-near-optimal nodes across all regions. Expected to bite"
+echo "                  harder at the fine delta (far more regions)."
+echo "                  RNG NOTE: the guarantee arm never draws from randomSeeds, so a"
+echo "                  guaranteeBudgeted=true run's RNG stream diverges from a false run's from the"
+echo "                  first region-best node onward -- compare AGGREGATE columns across repeated"
+echo "                  runs, not per-iteration CSVs node-for-node."
 echo "                  FAN-OUT IS DOOR-COUNT (v3.3), FULL STOP: nodeBlocks = popcount(door), no"
 echo "                  region-thinness signal and no swept boost size left -- the region-keyed rule"
 echo "                  KPAXCap and CleanCost use is gone from this planner."
 echo "                  READ FIRST: goal_frontier_size vs iteration (does the realized ramp match"
-echo "                  the intended shape), then the tradeoff scatter across ancestorBias at each"
-echo "                  delta -- does the toggle move final cost or time-to-first-solution, and does"
-echo "                  that answer change between coarse and fine."
+echo "                  the intended shape), then the tradeoff scatter across guaranteeBudgeted at"
+echo "                  each delta -- does the toggle move final cost or time-to-first-solution, and"
+echo "                  does that answer change between coarse and fine."
 echo "  CleanCost:      r2 OFF, w 0.9, k 1, cap 0.03 = 1 point (baseline)"
 echo "  KPAXCap:        cap {0.03} = 1 point"
 echo "  Score floor:    dynamic 1/N_active for KPAXCap/CleanCost; legacy EPSILON for KPAX."

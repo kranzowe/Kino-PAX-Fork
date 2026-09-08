@@ -22,13 +22,11 @@ react_frac at 0 rather than failing, which makes it silent. Asserted below.
 v3.2 CHANGES WHAT "B" MEANS, AND THE OLD "B < 1 IS BAD" ASSERTION WITH IT. B used to be a single
 fill_frac, required strictly > 0 because 0 meant a permanently empty budget-driven frontier. B is
 now a per-iteration RAMP -- B_frac(x) = bufferSlope*x + bufferFloor -- and (bufferSlope,
-bufferFloor) = (0, 0) would be an INTENTIONAL grid point rather than a bug (OPTIMAL stays uncapped
-regardless of B, so the frontier is never actually empty -- the region-best GUARANTEE that used to
-also stay uncapped this same way is gone, folded permanently into the budgeted reactivation; see
-CS_DOORBIT_GUAR in CountingStars.cuh). So "does B round to 0" is no longer inherently a bug; what
-still matters is that neither axis goes NEGATIVE, which the code's floor-at-1 clamp would silently
-mask into a positive B that looks fine. That is asserted below in place of the old strict-positivity
-check.
+bufferFloor) = (0, 0) is an INTENTIONAL grid point (the deepest ablation arm: OPTIMAL and the
+region-best GUARANTEE stay uncapped regardless of B, so the frontier is never actually empty). So
+"does B round to 0" is no longer inherently a bug; what still matters is that neither axis goes
+NEGATIVE, which the code's floor-at-1 clamp would silently mask into a positive B that looks fine.
+That is asserted below in place of the old strict-positivity check.
 
 Run from anywhere:  python scripts/cross_check_countingstars_grid.py
 Exit 0 = GRIDS MATCH, 1 = GRIDS DIVERGE.
@@ -165,14 +163,14 @@ cu_slope  = cu_array('BUFFER_SLOPES')
 cu_floor  = cu_array('BUFFER_FLOORS')
 cu_efrac  = cu_array('EXPLORE_FRACS')
 cu_cfrac  = cu_array('COST_FRACS')
-cu_ancestor = cu_bool_array('ANCESTOR_BIAS')
+cu_guarantee = cu_bool_array('GUARANTEE_BUDGETED')
 cu_kcap   = cu_array('KPAXCAP_CAPS')
 cu_cap_derived = cu_scalar('CAP_DERIVED')
 cu_dslope = cu_scalar('CS_DERIVED_BUFFER_SLOPE')
 cu_dfloor = cu_scalar('CS_DERIVED_BUFFER_FLOOR')
 cu_def = cu_scalar('CS_DERIVED_EXPLORE_FRAC')
 cu_dcf = cu_scalar('CS_DERIVED_COST_FRAC')
-cu_dancestor = cu_bool_scalar('CS_DERIVED_ANCESTOR_BIAS')
+cu_dguarantee = cu_bool_scalar('CS_DERIVED_GUARANTEE_BUDGETED')
 
 cu_clean = {}
 for fld, key in (('CLEAN_BASE_W', 'w'), ('CLEAN_BASE_K', 'k'), ('CLEAN_BASE_CAP', 'cap')):
@@ -202,9 +200,9 @@ for val, lst, a, b in ((cu_dslope, cu_slope, 'CS_DERIVED_BUFFER_SLOPE', 'BUFFER_
         problems.append('%s (%g) is not in %s %s' % (a, val, b, lst))
 # Bools compared separately -- Python bool arithmetic (True==1/False==0) would work fine mixed
 # into the numeric tuple above, but keeping it explicit is clearer than relying on that coercion.
-if cu_dancestor not in cu_ancestor:
-    problems.append('CS_DERIVED_ANCESTOR_BIAS (%s) is not in ANCESTOR_BIAS %s'
-                    % (cu_dancestor, cu_ancestor))
+if cu_dguarantee not in cu_guarantee:
+    problems.append('CS_DERIVED_GUARANTEE_BUDGETED (%s) is not in GUARANTEE_BUDGETED %s'
+                    % (cu_dguarantee, cu_guarantee))
 
 # --- Assertion 2: the axes must stay in their meaningful ranges.
 #
@@ -253,10 +251,10 @@ ramp_min_info = ['floor(%g * %d / %d) = %d' % (fl, cfg_tree, cfg_fill_iters, int
                  for fl in cu_floor]
 
 
-def cs_label(slope, floor, efrac, cfrac, ancestor_bias):
+def cs_label(slope, floor, efrac, cfrac, guaranteed):
     """Mirrors countingStarsLabel() in the benchmark."""
-    return 'CountingStars_bs%d_bf%d_ef%d_cf%d_ab%s' % (tok(slope), tok(floor), ftok(efrac), ftok(cfrac),
-                                                        'on' if ancestor_bias else 'off')
+    return 'CountingStars_bs%d_bf%d_ef%d_cf%d_rg%s' % (tok(slope), tok(floor), ftok(efrac), ftok(cfrac),
+                                                        'on' if guaranteed else 'off')
 
 
 cu_pairs = set()
@@ -267,8 +265,8 @@ for d, plus_only in zip(sh_deltas, sh_plus_only):
             for floor in cu_floor:
                 for efrac in cu_efrac:
                     for cfrac in cu_cfrac:
-                        for ancestor_bias in cu_ancestor:
-                            cu_pairs.add((cs_label(slope, floor, efrac, cfrac, ancestor_bias), d))
+                        for guaranteed in cu_guarantee:
+                            cu_pairs.add((cs_label(slope, floor, efrac, cfrac, guaranteed), d))
         cu_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                       % (cu_clean['r2'], cu_clean['w'], cu_clean['k'], cu_clean['cap']), d))
         for c in cu_kcap:
@@ -281,7 +279,7 @@ m_slope   = m_ints('csBufferSlopes')
 m_floor   = m_ints('csBufferFloors')
 m_efrac   = m_ints('csExploreFracs')
 m_cfrac   = m_ints('csCostFracs')
-m_ancestor = m_ints('csAncestorBias')   # numeric 0/1 in the .m, not a bool array
+m_guarantee = m_ints('csGuaranteeBudgeted')   # numeric 0/1 in the .m, not a bool array
 m_kcap    = m_ints('kpaxCapCaps')
 m_deltas  = m_cellstr('deltas')
 m_plus_only = m_bools('deltaPlusOnly')
@@ -289,7 +287,7 @@ m_dslope = m_scalar_int('csDerivedBufferSlope')
 m_dfloor = m_scalar_int('csDerivedBufferFloor')
 m_def = m_scalar_int('csDerivedExploreFrac')
 m_dcf = m_scalar_int('csDerivedCostFrac')
-m_dancestor = m_scalar_int('csDerivedAncestorBias')
+m_dguarantee = m_scalar_int('csDerivedGuaranteeBudgeted')
 m_clean = {
     'r2': m_str('cleanBaseR2'),
     'w': m_scalar_int('cleanBaseW'),
@@ -304,9 +302,9 @@ for d, plus_only in zip(m_deltas, m_plus_only):
             for floor in m_floor:
                 for efrac in m_efrac:
                     for cfrac in m_cfrac:
-                        for ancestor_bias in m_ancestor:
-                            m_pairs.add(('CountingStars_bs%d_bf%d_ef%d_cf%d_ab%s'
-                                         % (slope, floor, efrac, cfrac, 'on' if ancestor_bias else 'off'), d))
+                        for guaranteed in m_guarantee:
+                            m_pairs.add(('CountingStars_bs%d_bf%d_ef%d_cf%d_rg%s'
+                                         % (slope, floor, efrac, cfrac, 'on' if guaranteed else 'off'), d))
         m_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
                      % (m_clean['r2'], m_clean['w'], m_clean['k'], m_clean['cap']), d))
         for c in m_kcap:
@@ -318,12 +316,12 @@ for d, plus_only in zip(m_deltas, m_plus_only):
 only_cu = sorted(cu_pairs - m_pairs)
 only_m = sorted(m_pairs - cu_pairs)
 
-if (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf), int(cu_dancestor)) \
-        != (m_dslope, m_dfloor, m_def, m_dcf, m_dancestor):
-    problems.append('DERIVED POINT DRIFT: .cu (bs%d, bf%d, ef%d, cf%d, ab%d) != '
-                    '.m (bs%d, bf%d, ef%d, cf%d, ab%d)'
-                    % (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf), int(cu_dancestor),
-                       m_dslope, m_dfloor, m_def, m_dcf, m_dancestor))
+if (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf), int(cu_dguarantee)) \
+        != (m_dslope, m_dfloor, m_def, m_dcf, m_dguarantee):
+    problems.append('DERIVED POINT DRIFT: .cu (bs%d, bf%d, ef%d, cf%d, rg%d) != '
+                    '.m (bs%d, bf%d, ef%d, cf%d, rg%d)'
+                    % (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf), int(cu_dguarantee),
+                       m_dslope, m_dfloor, m_def, m_dcf, m_dguarantee))
 
 if sh_deltas != m_deltas:
     problems.append('DELTA_LABELS %s (%s) != deltas %s (%s)' % (sh_deltas, SH, m_deltas, M))

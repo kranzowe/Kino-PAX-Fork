@@ -26,10 +26,7 @@ static const int CS_DOOR_NONE = 0;
 static const int CS_DOORBIT_OPTIMAL = 1 << 0;
 static const int CS_DOORBIT_FRESH   = 1 << 1;   // ordinality cutoff -- a candidate OR a reactivated node
 static const int CS_DOORBIT_CHEAP   = 1 << 2;   // cost-distance cutoff -- a candidate OR a reactivated node
-// Part B's old region-best guarantee. UNUSED (never set): the arm was folded permanently into the
-// budgeted CHEAPEST reactivation histogram -- see CountingStars_reactScan_kernel/Part B. Kept, not
-// renumbered, so CSV door-mask values from earlier runs stay decodable against this same bit layout.
-static const int CS_DOORBIT_GUAR    = 1 << 3;
+static const int CS_DOORBIT_GUAR    = 1 << 3;   // Part B only: the region-best guarantee
 static const int CS_DOORBIT_FLOOR   = 1 << 4;   // the completeness floor -- a candidate OR a reactivation
 
 // Ordinality buckets in the freshness histogram. A candidate's ordinality is its REGION's node
@@ -138,23 +135,6 @@ __host__ __device__ inline int csCostBucket(float d, float distMax)
     if(!(b > 0.0f)) return 0;
     int bi = (int)b;
     return (bi < CS_COST_BUCKETS - 1) ? bi : (CS_COST_BUCKETS - 1);
-}
-
-// ANCESTOR-AWARENESS (opt-in). Blends a node's/candidate's own LIVE distance (freshly recomputed
-// every iteration from the CURRENT region minimum -- see csNodeDistance) with a FROZEN per-node
-// lineage aggregate (h_ancestorQuality_, an EMA over ancestors' own distances at THEIR insertion
-// time -- see Part A of CountingStars_updateFrontier_kernel) before the result is bucketed. ONE
-// DEFINITION, called from accept pass 1 (candidates) and reactScan/Part B (dormant tree nodes) --
-// same discipline as csNodeDistance/csCostBucket, so no call site can disagree about the blend.
-//
-// ancestorWeight == 0 is EXACT IDENTITY: (1-0)*live + 0*quality == live bit-for-bit (multiplying by
-// exactly 1.0f and exactly 0.0f introduces no rounding), which is what makes it a genuine no-op
-// rather than merely close to one. Every call site additionally gates on `ancestorWeight > 0.0f`
-// before calling this, so the off-default path never even reads the extra array.
-__host__ __device__ inline float csBlendDistance(float liveDistance, float ancestorQuality, float ancestorWeight)
-{
-    float d = (1.0f - ancestorWeight) * liveDistance + ancestorWeight * ancestorQuality;
-    return (d > 0.0f) ? d : CS_MIN_DISTANCE;
 }
 
 class CountingStars : public Planner
@@ -389,27 +369,30 @@ public:
     float h_acceptFloor_;
 
     // ==================================================================================
-    // ANCESTOR-AWARENESS (opt-in, default off). CHEAPEST admission and reactivation decide purely
-    // on a node's OWN cost relative to its region's best -- nothing about its lineage. TWO KNOBS,
-    // not one, because they answer different questions:
+    // TOGGLE: FOLD THE REGION-BEST GUARANTEE INTO THE REACTIVATION BUDGET.
     //
-    //   h_ancestorAlpha_   HOW THE LINEAGE AGGREGATE ITSELF IS BUILT, recursively, down the tree.
-    //                      ancestorQuality[child] = alpha*selfDistance[parent] + (1-alpha)*
-    //                      ancestorQuality[parent] -- see Part A. alpha=1 is a pure one-generation
-    //                      lookback; small alpha is a slow-moving average over many generations.
-    //                      Inert until h_ancestorWeight_ > 0.
-    //   h_ancestorWeight_  THE TOGGLE. How much a single decision trusts the lineage aggregate
-    //                      over the node's own live reading: effectiveDistance = (1-w)*live +
-    //                      w*ancestorQuality (csBlendDistance). w=0 is exact identity -- see
-    //                      csBlendDistance's own comment. The sweep exposes this pair as a single
-    //                      on/off toggle at one fixed (alpha, weight) point rather than a 2D sweep
-    //                      -- see CS_ANCESTOR_ALPHA_ON/CS_ANCESTOR_WEIGHT_ON in countingstars_sweep.cu.
+    // ARM 1 (CS_DOORBIT_GUAR, "the guarantee") is uncapped by construction -- up to one node per
+    // R1 region, every iteration, with no roll and no reference to h_reactFrac_ * B. At MORE
+    // regions (a finer discretization), this is proportionally MORE free, budget-exempt
+    // reactivation every iteration -- the thing under suspicion for over-reactivating "optimal"
+    // nodes at fine deltas.
     //
-    // Neither is touched by resetPlanner() -- set once before it, same convention as
-    // h_bufferSlope_/h_costFrac_ etc.
+    // h_reactGuaranteeBudgeted_ = false (DEFAULT) reproduces that exactly, byte-for-byte, unchanged
+    // from every point already run. true folds the tracked region-best node into the SAME
+    // population CountingStars_reactScan_kernel already measures and the SAME cutoff ARM 2 already
+    // spends against -- no new histogram, no new bucket map, no new formula. It must win a
+    // react_frac * B slot like any other dormant node, and can now be starved of reactivation
+    // entirely if the budget is smaller than the number of currently-optimal-or-near-optimal nodes
+    // across all regions -- exactly the curbing effect this toggle exists to measure.
+    //
+    // Named around "guarantee", not "optimal": CS_DOORBIT_OPTIMAL / h_admittedCost_ already name a
+    // different, unrelated mechanism (the CANDIDATE-side cost <= minCostsR1[r] admission test in
+    // accept pass 2). This toggle only touches the DORMANT-NODE reactivation guarantee.
+    //
+    // NOT reset by resetPlanner() -- same discipline as h_reactFloor_/h_acceptFloor_/h_exploreFrac_/
+    // h_costFrac_: a caller sets it once before resetPlanner() and it holds for the run.
     // ==================================================================================
-    float h_ancestorAlpha_;
-    float h_ancestorWeight_;
+    bool h_reactGuaranteeBudgeted_;
 
     // The reactivation cutoff and its boundary probability, solved from the react histogram by the
     // same csSolveCutoff the other two doors use. h_reactCutoffDist_ is the DISTANCE the bucket
@@ -529,8 +512,6 @@ public:
     // comes from the graph counter, which the fan-out rule already reads.
     thrust::device_vector<float> d_minCostsR1_, d_sumCostsR1_, d_maxCostsR1_;
     thrust::device_vector<float> d_unexploredSampleCosts_;
-    // Written by Part A (atomicExch on every new region best); unread now for the same reason as
-    // d_regionCovered_ above -- see that comment.
     thrust::device_vector<int> d_bestNodeIdxPerR1_;
     thrust::device_vector<int> d_treeXR1s_, d_frontierNextXR1s_;
     thrust::device_vector<bool> d_goalSet_;
@@ -558,11 +539,10 @@ public:
     thrust::device_vector<float> d_minCornerCS_;
 
     // --- per-R1, RESET EVERY ITERATION ---
-    //   d_regionCovered_  did an OPTIMAL admission land in this region this iteration? WRITTEN ONLY
-    //                     now -- its one reader was Part B's region-best guarantee, which is gone
-    //                     (folded permanently into the budgeted reactivation histogram). Kept rather
-    //                     than removed for this pass; a candidate for a later cleanup alongside
-    //                     d_bestNodeIdxPerR1_ below, whose only readers were the same two arms.
+    //   d_regionCovered_  did an OPTIMAL admission land in this region this iteration? The
+    //                     guarantee in Part B is deduplicated against it, so a region whose best
+    //                     was already re-admitted through the top door does not also spend a
+    //                     guarantee slot on the older node it superseded.
     //
     // d_candCounts_ USED TO LIVE HERE and is gone: it took an atomicAdd from every collision-free
     // candidate -- millions per iteration -- and was never read by anything.
@@ -596,26 +576,6 @@ public:
     // --- per-node, TREE-INDEXED, written once at admission ---
     thrust::device_vector<int> d_nodeBlocks_, d_nodeDoor_;
 
-    // ANCESTOR-AWARENESS bookkeeping (opt-in), written UNCONDITIONALLY by Part A for every inserted
-    // node, regardless of which door admitted it -- see Part A's own comment for why this must not
-    // be gated by door type (KinoPaxSTARTrueWeightedCost's ancestorBad has exactly this bug: an
-    // early `if(!admitBest[treeIdx]) return;` starves the write for most nodes).
-    //
-    //   d_nodeSelfDistance_  THIS node's own csNodeDistance, frozen at ITS OWN insertion. Cannot be
-    //                        recomputed later: minCostsR1[r] only ever improves and costScale is a
-    //                        live per-iteration scalar, so neither preserves what it was at this
-    //                        node's birth. Read only by Part A, only for a PARENT being consulted
-    //                        by its new child.
-    //   d_ancestorQuality_   The EMA recurrence's output (see h_ancestorAlpha_). Read by Part A
-    //                        (parent's value -> child's), accept pass 1 (parent's value, for a
-    //                        candidate), reactScan/Part B (the node's own value).
-    //
-    // Both seeded to CS_MIN_DISTANCE (constructor + resetPlanner) -- exactly what csNodeDistance
-    // degenerates to on reset-time inputs (cost 0, minCostsR1 == MAX_FLOAT, costScale == 0), so the
-    // root's "no ancestors to blend" case and the harmless default for unused slots are the same
-    // number; no second index-0-specific fill is needed (unlike d_frontier_'s).
-    thrust::device_vector<float> d_nodeSelfDistance_, d_ancestorQuality_;
-
     // v3.1: THE REACTIVATION POPULATION, written by the scan and read by Part B's cost arm.
     //
     // WHY IT IS AN ARRAY RATHER THAN A PREDICATE PART B RE-EVALUATES. Eligibility is
@@ -638,18 +598,9 @@ public:
     //                    pass 1 over the compacted candidate list and read by pass 2 over the same
     //                    list, so every slot pass 2 touches was written this iteration.
     //   d_candDoor_      pass 2's verdict, and pass 2 is its ONLY writer among the accept passes --
-    //                    which is what keeps the door counters free of double counting.
-    //   d_candEffectiveDistance_  ancestor-blended distance (csBlendDistance over d_candDistance_
-    //                    and the candidate's parent's d_ancestorQuality_), fed to CS_HIST_COST_BASE
-    //                    bucketing instead of the raw distance. DELIBERATELY SEPARATE from
-    //                    d_candDistance_: pass 2's `isOptimal = (candDistance[idx] == 0.0f)` must
-    //                    keep reading the RAW array -- blending a literally-optimal candidate
-    //                    (distance exactly 0) with a nonzero ancestorQuality would silently
-    //                    misclassify it as non-optimal. One value used for two jobs (a zero-mark
-    //                    and a bucketed magnitude) is exactly the bug this separation avoids. ---
+    //                    which is what keeps the door counters free of double counting. ---
     thrust::device_vector<float> d_candDistance_;
     thrust::device_vector<int>   d_candDoor_;
-    thrust::device_vector<float> d_candEffectiveDistance_;
 
     thrust::device_vector<uint> d_goalSetIdxs_, d_goalSetScanIdx_;
     thrust::device_vector<int> d_iterations_;
@@ -663,7 +614,6 @@ public:
     bool  *d_regionCovered_ptr_, *d_reactEligible_ptr_;
     int   *d_nodeBlocks_ptr_, *d_nodeDoor_ptr_, *d_candDoor_ptr_;
     float *d_candDistance_ptr_;
-    float *d_nodeSelfDistance_ptr_, *d_ancestorQuality_ptr_, *d_candEffectiveDistance_ptr_;
     float *d_pathCosts_ptr_, *d_controlPathsToGoal_ptr_;
     bool *d_frontier_ptr_, *d_frontierNext_ptr_, *d_goalSet_ptr_;
     uint *d_activeFrontierIdxs_ptr_, *d_frontierScanIdx_ptr_, *d_activeFrontierRepeatCount_ptr_,
@@ -739,9 +689,8 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
 // it. Two launches, both O(candidates), and the split is what makes the budget exact.
 __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                  float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
-                                                 int* unexploredSamplesParentIdxs, float* ancestorQuality, float ancestorWeight,
                                                  int* regionNodeCount, float costScale, float distMax,
-                                                 float* candDistance, float* candEffectiveDistance, int* acceptHistogram);
+                                                 float* candDistance, int* acceptHistogram);
 
 /***************************/
 /* ACCEPT PASS 2 - the ONLY admission decision */
@@ -780,8 +729,7 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
 // deduplicated against.
 __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                  int* frontierNextXR1s, int* regionNodeCount,
-                                                 float* candDistance, float* candEffectiveDistance,
-                                                 bool* frontierNext, int* candDoor,
+                                                 float* candDistance, bool* frontierNext, int* candDoor,
                                                  bool* regionCovered, curandState* randomSeeds,
                                                  int ordCutoff, float pBoundary,
                                                  int costCutoff, float pCostBoundary, float distMax,
@@ -794,14 +742,11 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
 // One thread per tree node. The Part B counterpart of accept pass 1: it MEASURES the dormant
 // population and decides nothing.
 //
-// ELIGIBLE == dormant (`!frontier`) and still expandable (`!goalSet`), full stop -- every dormant
-// node, including a region's current best, competes in the same cost-distance histogram Part B's
-// cost arm spends against; the region-best exclusion this used to apply is gone (folded
-// permanently into that same budget).
-//
 // It writes two things -- a per-node eligibility flag and a vote in the reactivation histogram --
-// and it is the SINGLE WRITER of the population Part B's cost arm then selects from, the same
-// discipline that makes accept pass 1 the single measurer of the candidate pool.
+// and it is the SINGLE WRITER of the population Part B's cost arm then selects from. That matters,
+// because eligibility depends on bestNodeIdxPerR1, which Part A atomicExch's in the same launch as
+// Part B; Part B could not re-derive the same answer, so the arm would be selecting from a
+// population its own histogram never measured.
 //
 // LAUNCHED BESIDE ACCEPT PASS 1, and the placement is what makes the third selection free. Every
 // input is settled the moment propagate returns: frontier[0, treeSize) is not written again until
@@ -811,17 +756,16 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
 __global__ void CountingStars_reactScan_kernel(int treeSize, bool* frontier, bool* goalSet,
                                                int* treeXR1s, float* treeSampleCosts, float* minCostsR1,
                                                int* bestNodeIdxPerR1, float costScale, float distMax,
-                                               float* ancestorQuality, float ancestorWeight,
+                                               bool guaranteeBudgeted,
                                                bool* reactEligible, int* acceptHistogram);
 
 /***************************/
 /* FRONTIER UPDATE KERNEL */
 /***************************/
 // Part A inserts admitted candidates and stamps each with its block count -- v3.3:
-// nodeBlocks[i] = popcount(candDoor[i]), no other rule. Part B fills the rest, in TWO arms: the
-// whole reactivation budget spent on the CHEAPEST dormant nodes (ancestor-blended, see
-// h_ancestorWeight_), then an unconditional completeness floor. The region-best guarantee that used
-// to run ahead of these as its own unbudgeted arm is gone -- see CS_DOORBIT_GUAR.
+// nodeBlocks[i] = popcount(candDoor[i]), no other rule. Part B fills the rest, in THREE arms since
+// v3.1: the region-best guarantee, then the whole reactivation budget spent on the CHEAPEST dormant
+// nodes, then an unconditional completeness floor.
 //
 // EVERY BRANCH THAT SETS frontier[i] = true MUST WRITE nodeBlocks[i]. A missed one leaves the node
 // carrying whatever block count the previous occupant of its tree slot had.
@@ -837,7 +781,7 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
                                int* iterations, int iteration,
                                bool* reactEligible, float costScale, float distMax,
                                int reactCutoff, float pReactBoundary, float reactFloor,
-                               float* nodeSelfDistance, float* ancestorQuality, float ancestorAlpha, float ancestorWeight,
+                               bool guaranteeBudgeted,
                                unsigned long long* doorCounts);
 
 /***************************/
