@@ -71,7 +71,7 @@ metricYLabels = {'Path Cost (workspace path length)'};
 % pair (262,144 vs 729,000); each moved independently to the values countingstars_sweep.cu's
 % tuning pass used.
 deltas      = {'large', 'fine', 'tiny'};
-deltaTitles = {'9k', '262k W-refined', '729k V-refined'};
+deltaTitles = {'9k', '262k W-refined', '614k V-refined'};
 deltaWidths = [1.0, 1.8, 2.6];
 
 maxTreeSize = 3000000;   % MAX_TREE_SIZE in config.h -- denominator for the table's Final Tree (%)

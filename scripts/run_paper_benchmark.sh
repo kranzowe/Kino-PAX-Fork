@@ -30,7 +30,7 @@
 # THREE DELTAS, ALL FIVE SERIES AT EACH:
 #   large  W_R1=7   C_R1=1  V_R1=3  ->   7^3 * 3^3 =   9,261 regions
 #   fine   W_R1=16  C_R1=1  V_R1=4  ->  16^3 * 4^3 = 262,144 regions
-#   tiny   W_R1=18  C_R1=1  V_R1=5  ->  18^3 * 5^3 = 729,000 regions
+#   tiny   W_R1=17  C_R1=1  V_R1=5  ->  17^3 * 5^3 = 614,000 regions
 # "fine" and "tiny" refine different axes (workspace vs. velocity) -- same convention as
 # countingstars_sweep.cu's fine/fine_control pair -- but are NOT an identical-region-count pair;
 # each moved independently to the values countingstars_sweep.cu's tuning pass used.
@@ -82,7 +82,7 @@ BUILD_DIR="$PROJECT_DIR/build"
 # Deltas: parallel arrays of label / W_R1 / C_R1 / V_R1. Every series in paper_benchmark.cu runs at
 # every delta -- there is no arm partition to configure here.
 DELTA_LABELS=("large" "fine" "tiny")
-DELTA_W_R1S=(7 16 18)
+DELTA_W_R1S=(7 16 17)
 DELTA_C_R1S=(1  1  1)   # inert for Model 1 (C_DIM 0); control refinement rides on V_R1
 DELTA_V_R1S=(3  4  5)
 
