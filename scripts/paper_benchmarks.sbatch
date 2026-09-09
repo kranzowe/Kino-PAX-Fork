@@ -8,5 +8,5 @@
 #SBATCH --output=paper_benchmarks-%j.out
 #SBATCH --error=paper_benchmarks-%j.err
 
-cd "$(dirname "${BASH_SOURCE[0]}")"
+cd "$SLURM_SUBMIT_DIR"
 bash run_paper_benchmark.sh
