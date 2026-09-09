@@ -762,7 +762,11 @@ KinoPaxPlus_getControlPathToGoal_kernel(float* controlPathsToGoal, float* treeSa
 
     if(cost != *minCost) return;
     int i = 0;  // --- Iteration counter ---
-    while(x0Idx != -1)
+    // i < MAX_ITER guards controlPathsToGoal, sized to exactly MAX_ITER * SAMPLE_DIM in the
+    // Planner base ctor -- without this, a root-to-goal lineage deeper than MAX_ITER tree-edges
+    // writes past the end of the buffer. See KPAX.cu's identical walk and KinoPaxSTARTrue's, which
+    // already carries this same guard.
+    while(x0Idx != -1 && i < MAX_ITER)
         {
             for(int j = 0; j < SAMPLE_DIM; j++)
                 {
@@ -807,7 +811,15 @@ __global__ void KinoPaxPlus_getControlPathToGoalPathsCollect_kernel(float* contr
     pathCosts[pathCostsIdx + 2] = iterations[goalIdx];
     if(cost != *minCost) return;
     int i = 0;  // --- Iteration counter ---
-    while(x0Idx != -1)
+    // i < MAX_ITER bounds THIS call's own write span the same way KPAX.cu / the kernel above do.
+    // It does NOT make this kernel's addressing safe on its own, though: the outer
+    // `numSols * itr * SAMPLE_DIM` offset grows with itr (the planner's running iteration count)
+    // and numSols, against a buffer sized to a flat MAX_ITER * SAMPLE_DIM -- that offset alone
+    // already exceeds the buffer for any nontrivial itr/numSols, independent of this loop. Not
+    // fixed here: this function isn't reached by paper_benchmark.cu (which never calls
+    // getControlPathToGoalPathsCollect for KinoPaxPlus) and looks like unfinished diagnostic code
+    // (see the "TODO: Remove this" markers a few lines up) rather than a live code path.
+    while(x0Idx != -1 && i < MAX_ITER)
         {
             for(int j = 0; j < SAMPLE_DIM; j++)
                 {

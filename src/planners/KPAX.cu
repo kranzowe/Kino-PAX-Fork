@@ -420,7 +420,13 @@ updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* activeFrontierNe
                             controlPathToGoal[i * SAMPLE_DIM + j] = x1[j];
                         }
                     i++;
-                    while(x0Idx != -1)
+                    // i < MAX_ITER guards controlPathToGoal, which Planner's ctor sizes to exactly
+                    // MAX_ITER * SAMPLE_DIM -- without this, a root-to-node lineage deeper than
+                    // MAX_ITER tree-edges (routine in a low-obstacle environment run past MAX_ITER
+                    // iterations) writes past the end of that buffer. See KinoPaxSTARTrue's
+                    // identical walk (KinoPaxSTARTrue.cu's getControlPathToGoal kernel), which
+                    // already carries this same guard.
+                    while(x0Idx != -1 && i < MAX_ITER)
                         {
                             for(int j = 0; j < SAMPLE_DIM; j++)
                                 {
