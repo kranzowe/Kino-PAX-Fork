@@ -1,19 +1,32 @@
-// PAPER BENCHMARK -- a fixed, six-way comparison, not a sweep.
+// PAPER BENCHMARK -- a fixed, seven-way comparison, not a sweep.
 //
 // countingstars_sweep.cu exists to TUNE CountingStars: it sweeps a grid of its internal knobs and
 // logs two dozen door/cutoff/budget diagnostic columns to explain WHY a point on that grid behaves
-// the way it does. This tool has a different job: five ALREADY-CHOSEN operating points, run
+// the way it does. This tool has a different job: seven ALREADY-CHOSEN operating points, run
 // identically across every environment and every discretization, to produce the headline figures
 // and results table for the paper. There is nothing to tune here, so there is nothing to diagnose --
 // the per-iteration CSV carries only what the outcome-comparison plots actually read.
 //
-// THE SIX SERIES, fixed for the whole file:
-//   KPAX                   defaults
-//   KinoPaxPlus             defaults
-//   KinoPaxSTARCleanCost    r2 off, w 0.9, k 1.0, cap 0.03 (countingstars_sweep.cu's CLEAN_BASE_*)
-//   CountingStars (bs 1.0)  explore_frac 0.2, cost_frac 0.2, bufferFloor 0.05, bufferSlope 1.0
-//   CountingStars (bs 0.5)  same, bufferSlope 0.5
-//   CountingStars (bs 1.5)  same, bufferSlope 1.5
+// THE SEVEN SERIES, fixed for the whole file:
+//   KPAX                    defaults
+//   KinoPaxPlus              defaults
+//   KinoPaxSTARTrue (anc0)   h_syclopCap_ 1.0 (no cap), h_ancestorPrune_ 0 -- the pure OR-fusion
+//                            of KPAX's exploration accept and KinoPaxPlus's region-best accept,
+//                            no cost shaping at all (== stock KinoPaxSTARNoGoalBias)
+//   KinoPaxSTARTrue (anc1)   same, h_ancestorPrune_ 1 -- adds only the cost-guarded stale-best
+//                            prune on top; isolates what that prune buys over the pure fusion
+//   CountingStars (bs 1.0)   explore_frac 0.2, cost_frac 0.2, bufferFloor 0.05, bufferSlope 1.0
+//   CountingStars (bs 0.5)   same, bufferSlope 0.5
+//   CountingStars (bs 1.5)   same, bufferSlope 1.5
+//
+// KinoPaxSTARTrue REPLACES KinoPaxSTARCleanCost AS THE NON-COUNTINGSTARS "STAR" REFERENCE (this
+// pass): CleanCost is a well-tuned, cost-shaped operating point, which told a "beats one already-
+// tuned competitor" story rather than the "beats the naive fusion of its two parents" story this
+// comparison wants. Both KinoPaxSTARTrue points hold h_syclopCap_ at 1.0 (a genuine no-op per the
+// class's own comment) -- only h_ancestorPrune_ varies between them, isolating exactly what the
+// guarded prune buys on top of the naive fusion, before CountingStars' own machinery enters the
+// picture. countingstars_sweep.cu keeps its own, independent KinoPaxSTARCleanCost baseline point
+// (CLEAN_BASE_*) for a different purpose (tuning CountingStars' own grid) -- unaffected by this.
 //
 // CountingStars HERE IS THE PERMANENTLY-BUDGETED VARIANT (merged in from
 // TogglingOptimalReactivation): the region-best reactivation guarantee that used to run
@@ -53,7 +66,7 @@
 #include <cstdio>
 #include "planners/KinoPaxPlus.cuh"
 #include "planners/KPAX.cuh"
-#include "planners/KinoPaxSTARCleanCost.cuh"
+#include "planners/KinoPaxSTARTrue.cuh"
 #include "planners/CountingStars.cuh"
 
 // ========================================================================
@@ -129,11 +142,11 @@ std::string countingStarsLabel(float bufferSlope, float bufferFloor, float explo
     return std::string(buf);
 }
 
-std::string cleanLabel(bool r2Accept, float w, float k, float cap)
+std::string trueLabel(float syclopCap, int ancestorPrune)
 {
     char buf[96];
-    snprintf(buf, sizeof(buf), "KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d",
-             r2Accept ? "on" : "off", (int)lroundf(100.0f * w), (int)lroundf(100.0f * k), (int)lroundf(100.0f * cap));
+    snprintf(buf, sizeof(buf), "KinoPaxSTARTrue_cap%d_anc%d",
+             (int)lroundf(100.0f * syclopCap), ancestorPrune);
     return std::string(buf);
 }
 
@@ -404,17 +417,19 @@ void runKPAXBenchmark(
 }
 
 // ========================================================================
-// KinoPaxSTARCleanCost -- one fixed, well-tuned point (r2 off, w 0.9, k 1.0, cap 0.03).
+// KinoPaxSTARTrue -- two fixed naive points, both KPAX's exploration accept OR-fused with
+// KinoPaxPlus's region-best accept, no cost shaping (h_syclopCap_ pinned at 1.0, a genuine no-op
+// per the class's own comment). Only h_ancestorPrune_ varies: 0 is the pure fusion (== stock
+// KinoPaxSTARNoGoalBias exactly, per KinoPaxSTARTrue's own constructor comment), 1 adds the
+// cost-guarded stale-best prune on top -- isolating exactly what that prune buys.
 // ========================================================================
-RunResult benchmarkKinoPaxSTARCleanCost(
-    KinoPaxSTARCleanCost& planner, const std::string& deltaLabel, const std::string& environment, int runNumber,
+RunResult benchmarkKinoPaxSTARTrue(
+    KinoPaxSTARTrue& planner, const std::string& deltaLabel, const std::string& environment, int runNumber,
     float* h_initial, float* h_goal, float* d_obstacles, uint numObstacles, int maxIterations, float maxTimeMs,
-    float costWeight, float costPruneExp, float acceptCapMul, bool r2SeedAccept, const std::string& label)
+    float syclopCap, int ancestorPrune, const std::string& label)
 {
-    planner.h_costWeight_   = costWeight;
-    planner.h_costPruneExp_ = costPruneExp;
-    planner.h_acceptCapMul_ = acceptCapMul;
-    planner.h_r2SeedAccept_ = r2SeedAccept;
+    planner.h_syclopCap_     = syclopCap;
+    planner.h_ancestorPrune_ = ancestorPrune;
 
     RunResult result;
     result.delta_label = label;
@@ -480,37 +495,41 @@ RunResult benchmarkKinoPaxSTARCleanCost(
     return result;
 }
 
-void runKinoPaxSTARCleanCostBenchmark(
+void runKinoPaxSTARTrueBenchmark(
     const std::string& environment_name, float* h_initial, float* h_goal, float* d_obstacles, uint numObstacles,
     std::vector<RunResult>& all_results, const std::string& outputDir, const std::string& deltaLabel,
     int numRuns, int maxIterations, float maxTimeMs)
 {
+    // Both points hold the cap at its no-op default -- only ancestorPrune varies, isolating the
+    // guarded prune's own effect on top of the naive fusion. See the file header for the story.
+    static const int   ANCESTOR_PRUNE_VALUES[] = {0, 1};
+    static const float SYCLOP_CAP = 1.0f;
+
     printf("\n========================================\n");
-    printf("KINOPAXSTARCLEANCOST: %s | Delta: %s | Regions: %d\n", environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
+    printf("KINOPAXSTARTRUE: %s | Delta: %s | Regions: %d\n", environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
     printf("========================================\n");
 
-    const bool  r2  = false;
-    const float w   = 0.9f;
-    const float k   = 1.0f;
-    const float cap = 0.03f;
-    const std::string label = cleanLabel(r2, w, k, cap);
-
-    printf("  --- r2 = %s, w = %.2f, k = %.2f, cap = %.2f (%s) ---\n", r2 ? "on" : "off", w, k, cap, label.c_str());
-    KinoPaxSTARCleanCost planner;
-    for(int run = 0; run < numRuns; run++)
+    for(int ancestorPrune : ANCESTOR_PRUNE_VALUES)
     {
-        RunResult result = benchmarkKinoPaxSTARCleanCost(planner, deltaLabel, environment_name, run,
-                                             h_initial, h_goal, d_obstacles, numObstacles, maxIterations, maxTimeMs,
-                                             w, k, cap, r2, label);
-        printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-               run + 1, numRuns, result.total_time_seconds, result.total_iterations,
-               result.final_tree_size, result.first_solution_iteration,
-               result.first_solution_cost, result.final_best_cost);
-        writePerIterationCSV(result, outputDir);
-        all_results.push_back(result);
+        const std::string label = trueLabel(SYCLOP_CAP, ancestorPrune);
 
-        if(run < numRuns - 1)
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        printf("  --- syclopCap = %.2f, ancestorPrune = %d (%s) ---\n", SYCLOP_CAP, ancestorPrune, label.c_str());
+        KinoPaxSTARTrue planner;
+        for(int run = 0; run < numRuns; run++)
+        {
+            RunResult result = benchmarkKinoPaxSTARTrue(planner, deltaLabel, environment_name, run,
+                                                 h_initial, h_goal, d_obstacles, numObstacles, maxIterations, maxTimeMs,
+                                                 SYCLOP_CAP, ancestorPrune, label);
+            printf("  anc=%d Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                   ancestorPrune, run + 1, numRuns, result.total_time_seconds, result.total_iterations,
+                   result.final_tree_size, result.first_solution_iteration,
+                   result.first_solution_cost, result.final_best_cost);
+            writePerIterationCSV(result, outputDir);
+            all_results.push_back(result);
+
+            if(run < numRuns - 1)
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
     }
 }
 
@@ -676,7 +695,7 @@ int main(int argc, char* argv[])
     printf("Runs per series: %d\n", NUM_RUNS);
     printf("Max iterations: %d (non-binding; MAX_TREE_SIZE / MAX_TIME_MS are the real limiters)\n", MAX_ITERATIONS);
     printf("Max time:       %.1f s\n", MAX_TIME_MS / 1000.0f);
-    printf("Series:         KPAX, KinoPaxPlus, KinoPaxSTARCleanCost (w0.9 k1.0 cap0.03),\n");
+    printf("Series:         KPAX, KinoPaxPlus, KinoPaxSTARTrue (cap1.0 anc0, cap1.0 anc1),\n");
     printf("                CountingStars (bufferSlope 1.0, 0.5, 1.5)\n");
     printf("                explore_frac 0.2, cost_frac 0.2, bufferFloor 0.05 for all three CountingStars points\n");
     printf("=======================================================\n");
@@ -705,7 +724,7 @@ int main(int argc, char* argv[])
                      all_results, outputDir, deltaLabel, NUM_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
     runKinoPaxPlusBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
                             all_results, outputDir, deltaLabel, NUM_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
-    runKinoPaxSTARCleanCostBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
+    runKinoPaxSTARTrueBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
                             all_results, outputDir, deltaLabel, NUM_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
     runCountingStarsBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
                             all_results, outputDir, deltaLabel, NUM_RUNS, MAX_ITERATIONS, MAX_TIME_MS);

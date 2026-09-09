@@ -2,16 +2,23 @@
 # =============================================================================
 # Paper Benchmark Runner
 #
-# A FIXED, FIVE-WAY COMPARISON, not a sweep. Every series below is an already-chosen operating
+# A FIXED, SEVEN-WAY COMPARISON, not a sweep. Every series below is an already-chosen operating
 # point; the only things varying across runs are discretization, environment, and cost metric.
 # Modeled on run_countingstars_sweep.sh's two-phase build-then-run structure, but simpler: there is
 # no per-delta arm partition (--only-kinopaxplus has no equivalent here) because every series runs
 # at every delta -- that is the comparison this suite exists to make.
 #
-# THE SIX SERIES (fixed inside examples/gpu/paper_benchmark.cu, not swept here):
+# THE SEVEN SERIES (fixed inside examples/gpu/paper_benchmark.cu, not swept here):
 #   KPAX                     defaults
 #   KinoPaxPlus               defaults
-#   KinoPaxSTARCleanCost      r2 off, w 0.9, k 1.0, cap 0.03
+#   KinoPaxSTARTrue (anc0)    h_syclopCap_ 1.0 (no cap), h_ancestorPrune_ 0 -- the pure OR-fusion
+#                             of KPAX's exploration accept and KinoPaxPlus's region-best accept,
+#                             no cost shaping at all (== stock KinoPaxSTARNoGoalBias). Replaces
+#                             KinoPaxSTARCleanCost as the non-CountingStars "STAR" reference this
+#                             pass -- CleanCost told a "beats one already-tuned competitor" story;
+#                             this tells "beats the naive fusion of its two parents" instead.
+#   KinoPaxSTARTrue (anc1)    same, h_ancestorPrune_ 1 -- adds only the cost-guarded stale-best
+#                             prune on top; isolates what that prune buys over the pure fusion.
 #   CountingStars (slope 1.0) explore_frac 0.2, cost_frac 0.2, bufferFloor 0.05. Runs on the
 #                             optimal-reactivation-toggle-permanently-on CountingStars (region-best
 #                             nodes count toward the reactivation budget rather than reactivating
@@ -49,7 +56,7 @@
 # limiters) has x pinned at 1 and B plateaued at its ramp maximum for the rest of the run --
 # already-supported, intended behavior, not a new edge case.
 #
-# SCALE: 6 series x 3 deltas x 4 environments x 1 cost metrics x 5 runs = 360 runs, each capped
+# SCALE: 7 series x 3 deltas x 4 environments x 1 cost metrics x 5 runs = 420 runs, each capped
 # at 10s. Worst case a few hours; most runs stop earlier (tree-full or an early success).
 #
 # NUM_R1_REGIONS and COST_MODE are both COMPILE-TIME, so neither can vary within one binary. Same
@@ -242,13 +249,14 @@ echo "  Model: 1 (6D Double Integrator)"
 echo "  Environments: ${ENV_NAMES[*]}  (separate output subfolders)"
 for i in "${!DELTA_LABELS[@]}"; do
     R=$(( DELTA_W_R1S[i]**3 * DELTA_V_R1S[i]**3 ))
-    echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | all 6 series"
+    echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | all 7 series"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
 echo "  Series (fixed, all 3 deltas x all 4 environments):"
 echo "    KPAX                      defaults"
 echo "    KinoPaxPlus                defaults"
-echo "    KinoPaxSTARCleanCost       r2 off, w 0.9, k 1.0, cap 0.03"
+echo "    KinoPaxSTARTrue (anc0)     h_syclopCap_ 1.0 (no cap), h_ancestorPrune_ 0 -- naive OR-fusion"
+echo "    KinoPaxSTARTrue (anc1)     same, h_ancestorPrune_ 1 -- + cost-guarded stale-best prune"
 echo "    CountingStars (slope 1.0)  explore_frac 0.2, cost_frac 0.2, bufferFloor 0.05"
 echo "    CountingStars (slope 0.5)  explore_frac 0.2, cost_frac 0.2, bufferFloor 0.05"
 echo "    CountingStars (slope 1.5)  explore_frac 0.2, cost_frac 0.2, bufferFloor 0.05"
@@ -257,7 +265,7 @@ echo "  Limits: MAX_TREE_SIZE 3,000,000 | 10s per-run timeout | 20,000 outer-loo
 echo "          (non-binding by design -- tree size and wall-clock are meant to stop every run)"
 echo "  config.h MAX_ITER stays at 1000 (unchanged) -- see the header comment in this script and"
 echo "  in examples/gpu/paper_benchmark.cu for why raising it would corrupt CountingStars' buffer ramp."
-echo "  Total: 6 x 3 x 4 x 1 x 5 = 360 runs"
+echo "  Total: 7 x 3 x 4 x 1 x 5 = 420 runs"
 echo "======================================================="
 
 # =============================================================================
@@ -304,7 +312,7 @@ fi
 
 # =============================================================================
 # RUN — one pass per cost metric x environment x delta, using the cached binaries. Each invocation
-# internally runs all 6 series x 5 runs.
+# internally runs all 7 series x 5 runs.
 # =============================================================================
 cd "$BUILD_DIR"
 for CL in "${COST_LABELS[@]}"; do
