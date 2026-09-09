@@ -1,99 +1,98 @@
-%% CountingStars v3.2 Sweep Visualization - the buffer becomes a per-iteration ramp
+%% CountingStars v3.4 Sweep Visualization - the OPTIMAL-accept budgeting toggle
 % Reads per-iteration CSVs produced by examples/gpu/countingstars_sweep.cu
 % (run via scripts/run_countingstars_sweep.sh).
 %
-% Series are (planner, delta) pairs. THIS PASS runs the coarse delta and the zigzag environment
-% only for the tuned arms; the two finer deltas run KinoPaxPlus alone (see deltaPlusOnly below and
-% DELTA_EXTRA_ARGS in run_countingstars_sweep.sh):
+% Series are (planner, delta) pairs. THIS PASS'S AXIS IS optimalAcceptBudgeted, and BOTH deltas
+% (coarse `large`, finest `tiny`) run the FULL comparison -- unlike earlier passes through this
+% file, neither delta is restricted to KinoPaxPlus alone (see deltaPlusOnly below and
+% DELTA_EXTRA_ARGS in run_countingstars_sweep.sh, both all-false this pass):
 %
-%   CountingStars         bufferSlope {1.0,1.3,1.6} x bufferFloor {0.05,0.2}
-%                         explore_frac=0.3, cost_frac=0.3 FIXED (not swept this pass)  =  6
+%   CountingStars         bufferSlope {0.5,1.0,1.5,2.0} x bufferFloor {0.1,0.3},
+%                         explore_frac=0.2 FIXED, cost_frac {0.3,0.6},
+%                         optimalAcceptBudgeted {false,true} -- THE SWEPT AXIS          =  32
 %   KinoPaxSTARCleanCost  r2 OFF, w 0.9, k 1, cap 0.03  (one tuned reference point)     =  1
 %   KPAXCap               cap {0.03}                                                   =  1
 %   KPAX, KinoPaxPlus                                                                  =  2
 %                                                                                      -----
-%                                                                  at the coarse delta    10
-%   KinoPaxPlus at the two finer deltas                                                +  2
+%                                                                        per delta        36
+%                                                                       x 2 deltas    x   2
 %                                                                                      -----
-%                                                                                         12
+%                                                                                          72
 %
-% RUN ONCE PER COST METRIC TOO (length, effort -- see metrics below): each is a separate build and
-% a separate set of CSVs, so the series count above applies to each metric independently.
+% RUN ONCE PER COST METRIC TOO -- effort ONLY this pass (length dropped, see metrics below): the
+% series count above applies to this one build.
 %
-% CountingStars runs at the COARSE delta only -- that is what the discretization factor in the
-% grid above means, and it is enforced by DELTA_EXTRA_ARGS in run_countingstars_sweep.sh
-% (--only-kinopaxplus at the two finer deltas), mirrored by deltaPlusOnly below.
+% CountingStars/CleanCost/KPAXCap/KPAX ALL RUN AT BOTH DELTAS THIS PASS -- the whole point of the
+% optimal-accept-budget sweep is the concern that CountingStars over-admits "optimal" candidates
+% for free, which needs CountingStars (and the other baselines) measured at the fine delta too, not
+% KinoPaxPlus alone.
 %
-% WHAT THIS SWEEP IS ASKING. v3's sweep showed the standard explore-vs-refine tradeoff: a small
-% constant buffer (fill_frac = 0.25) found a first solution fast but converged to a worse final
-% cost; a large one (0.75) was the reverse. Rather than pick one point on that tradeoff, v3.2 makes
-% the buffer VARY over the run:
+% WHAT THIS SWEEP IS ASKING. The OPTIMAL door (a candidate at distance 0 from its region's minimum)
+% is UNCAPPED by default -- every such candidate is admitted, however many show up in one
+% iteration, completely outside the budget. optimalAcceptBudgeted folds it into the SAME
+% cost-distance histogram/cutoff CHEAPEST already spends against instead: it always lands in cost
+% bucket 0 (csCostBucket(0.0f, distMax) == 0 for any distMax), and has to clear that cutoff/
+% boundary-roll like anything else -- "the cheapest of the cheap" rather than free. false (default)
+% reproduces today's unconditional admission byte-for-byte. Because this changes candidate
+% admission fundamentally, bufferSlope/bufferFloor (the B ramp) and cost_frac are swept ALONGSIDE
+% the toggle this pass, not fixed at one point:
 %
-%     x         = itr / MAX_ITER                              (fraction of the run elapsed)
+%     x         = itr / fill_iters                             (fraction of the run elapsed)
 %     B_frac(x) = bufferSlope * x + bufferFloor
-%     B(x)      = floor(B_frac(x) * MAX_TREE_SIZE / MAX_ITER)  -- RECOMPUTED EVERY ITERATION
-%
-% bufferSlope = 0 REPRODUCES v3's CONSTANT B EXACTLY (B_frac(x) = bufferFloor for every x), so that
-% subgrid is a free, structural comparison against the old fixed-buffer design, not a separate
-% baseline swept again -- though bufferSlope = 0 is not itself on the current grid (see
-% csBufferSlopes below). explore_frac/cost_frac were fixed at 0.3 each in the pass that isolated the
-% ramp's own effect (v3.2); they are swept again now, 2 values each.
+%     B(x)      = floor(B_frac(x) * MAX_TREE_SIZE / fill_iters)  -- RECOMPUTED EVERY ITERATION
 %
 % B IS A PURE HOST SCALAR (read only inside updateFrontier(), never by propagateFrontier() or any
 % device kernel directly), so making it dynamic cost no device array, no new kernel, and no new
 % synchronisation -- one floating-point formula recomputed once per iteration. B rides in the data
-% as the goal_frontier_size column, now genuinely VARYING row to row within a run rather than
-% constant -- the first pass where plotting it against iteration is worth its own panel.
+% as the goal_frontier_size column, which VARIES row to row within a run.
 %
 % Read the figures in this order:
 %
-%   0. goal_frontier_size vs iteration     NEW THIS PASS, and read FIRST: confirms the realized
-%                               ramp actually matches slope*x+floor before reading anything that
-%                               depends on B. A flat line at every bufferSlope=0 series is the
-%                               direct sanity check that the mechanism is wired correctly.
+%   0. goal_frontier_size vs iteration     Read FIRST: confirms the realized ramp actually matches
+%                               slope*x+floor before reading anything that depends on B.
 %   1. frontier_repeat_size / frontier_size    sanity: the realised mean rep. v3.3: fan-out is
 %                               door-count (nodeBlocks = popcount(door)), so this should sit very
 %                               close to 1 always -- at most 2 doors ever co-fire on one candidate.
 %   2. budget_used / goal_frontier_size, AS A CURVE against a now-MOVING target. See the note on
 %                               where B binds.
-%   3. admitted_costdist        THE CHEAPEST DOOR'S ACTUAL SHARE, against admitted_explore and
-%                               optimal_count. Pinned at 0 means the cutoff solve is degenerate;
+%   3. optimal_count against admitted_cost   THIS PASS'S HEADLINE READ. They coincide when
+%                               optimalAcceptBudgeted is false; the gap when true is the number of
+%                               optimal candidates the budget starved -- the whole point of the
+%                               toggle.
+%   4. admitted_costdist        THE CHEAPEST DOOR'S ACTUAL SHARE, against admitted_explore and
+%                               admitted_cost. Pinned at 0 means the cutoff solve is degenerate;
 %                               equal to cost_frac * B every iteration means it is working as
 %                               designed.
-%   4. cost_cutoff_dist / dist_max             whether the log bucket map has the right shape. A
+%   5. cost_cutoff_dist / dist_max             whether the log bucket map has the right shape. A
 %                               collapse to the 2^-21 floor means every candidate is in bucket 0 and
 %                               the door has degraded to a uniform draw among near-optimal
 %                               candidates -- switch csCostBucket to linear, a one-line change.
-%   5. admitted_both overlap    0 = the two selection signals are independent (both doors buying
-%                               something); 1 = one fraction is being spent twice.
-%   6. ord_cutoff               rising = regions filling, freshness getting scarce. 0 = explore_frac
+%   6. admitted_both / admitted_opt_fresh_both overlap    0 = the signals are independent; 1 = one
+%                               fraction is being spent twice.
+%   7. ord_cutoff               rising = regions filling, freshness getting scarce. 0 = explore_frac
 %                               inert; 256 = saturated, so explore_frac is not binding either.
-%   7. block_scale              near 0 = the rep >= 1 floor ate the budget, fan-out is inert.
-%   8. First-solution time and cost, final cost (figures 11/12)   THE ACTUAL QUESTION: does a ramp
-%                               beat the best bufferSlope=0 point on time-to-first-solution AND
-%                               close the final-cost gap against CleanCost.
+%   8. block_scale              near 0 = the rep >= 1 floor ate the budget, fan-out is inert.
+%   9. First-solution time and cost, final cost   THE ACTUAL QUESTION: does budgeting OPTIMAL move
+%                               final cost or time-to-first-solution, and does that answer change
+%                               between the coarse and the fine delta.
 %
-% (bufferSlope, bufferFloor) = (0, 0) IS THE DEEPEST CONTROL and is drawn thicker at every
-% bufferFloor row: a constant B = 0 (floored to 1), so the three budgeted doors admit nothing every
-% iteration and the frontier is optimal + guarantee + a trickle draw. If nothing beats it, none of
-% the three budgeted doors is earning its share.
+% WHERE B BINDS. OPTIMAL is the only uncapped door now (the region-best reactivation GUARANTEE that
+% used to also be uncapped is gone permanently, folded into the reactivation budget -- see
+% CS_DOORBIT_GUAR in CountingStars.cuh; v3.4's own toggle can fold OPTIMAL in too, in which case
+% NOTHING on this grid is uncapped). While OPTIMAL is uncapped, it is bounded by NUM_R1_REGIONS
+% rather than by B (at most one region best per region per iteration), so B stops binding once
+% nActive passes it.
 %
-% WHERE B BINDS -- AND EVERY B ON THIS GRID IS BELOW THE THRESHOLD. Two doors are uncapped and BOTH
-% are bounded by NUM_R1_REGIONS rather than by B: OPTIMAL (at most one region best per region per
-% iteration) and GUARANTEE (at most one node per uncovered region). So B stops binding once nActive
-% passes it, and every point on this ramp's range stays under the coarse delta's 27,000.
-%
-% THAT IS THE POINT, NOT A PROBLEM. B binds EARLY in a run and then stops, at an iteration that now
+% THAT IS THE POINT, NOT A PROBLEM. B binds EARLY in a run and then stops, at an iteration that
 % moves with the WHOLE RAMP SHAPE (bufferSlope and bufferFloor together) rather than a single
 % fill_frac, and early is exactly where time-to-first-solution is decided. Read
 % budget_used/goal_frontier_size as a CURVE rather than a single number: the iteration where it
-% crosses 1 is the measurement, and a late-run overshoot is expected at every point -- more so now,
-% since B itself is climbing over the run. This is also what "tree growth is less controlled once
-% min cost is always accepted" amounts to.
+% crosses 1 is the measurement, and a late-run overshoot is expected at every point where OPTIMAL
+% stays uncapped -- more so since B itself is climbing over the run.
 %
-% If the bufferSlope=0 curves are indistinguishable from the ramped ones even early, that is direct
-% evidence that capping the guarantee (KinoPaxPlus's hysteresis is the precedent -- un-prune a
-% region best only after ~5 idle iterations) is the next lever, not a different ramp.
+% RNG NOTE: a candidate whose admission outcome changes between the two toggle settings has its OWN
+% curandState advance differently between them -- compare AGGREGATE columns across the repeated
+% runs, not per-iteration CSVs node-for-node.
 %
 % SCORE FLOOR. Graph's Syclop floor is 1/N_active (the mean share) rather than a fixed
 % EPSILON = 1e-2, which exceeded the score it floored by ~270x and capped the number of
@@ -102,13 +101,12 @@
 % SCORE AT ALL -- it never reads vertexScores, h_scoreFloor_, h_nActive_ or regionCoverage in any
 % decision -- so it writes NaN there and simply does not draw on that panel.
 %
-% ENCODING: colour = bufferFloor (near-black smallest -> pale largest); line style = bufferSlope
-% (solid = bufferSlope 0, v3's constant-B control); scatter marker = 'o' (fixed -- explore_frac and
-% cost_frac no longer vary, so there is no third axis to give its own marker); line width = delta.
-% v3.3: maxBlocks is gone -- fan-out is door-count, not a swept boost size, so there is no fourth
-% axis it used to hold fixed. CleanCost is crimson, KPAXCap grey-green,
-% KPAX near-black, KinoPaxPlus blue -- all four drawn thicker as reference anchors. Every legend
-% here is CLICKABLE - click an entry to hide/show that series.
+% ENCODING THIS PASS: colour = bufferFloor x optimalAcceptBudgeted combined (4 entries -- the
+% toggle is the headline axis and must be visible on every time-series figure, where marker is not
+% available; see fillColors below); line style = bufferSlope (4 linestyles, one per swept value);
+% scatter marker (tradeoff figures only) = cost_frac (2 shapes); line width = delta. CleanCost is
+% crimson, KPAXCap grey-green, KPAX near-black, KinoPaxPlus blue -- all four drawn thicker as
+% reference anchors. Every legend here is CLICKABLE - click an entry to hide/show that series.
 %
 % FAIR-COMPARISON NOTE: an "iteration" is a different unit of work per planner, so
 % cost-vs-TIME is the fair cross-planner axis. Error bands and error bars are
@@ -136,80 +134,89 @@ envTitles    = {'Zigzag Corridor'};
 % environments = {'house'};   envTitles = {'House'};
 % environments = {'narrowPassage'};   envTitles = {'Narrow Passage'};
 
-% Cost metric axis — one build each, so one set of figures each.
-metrics      = {'length', 'effort'};
-metricTitles = {'Workspace Path Length', 'Control Effort'};
-metricYLabels = {'Path Cost (workspace path length)', 'Path Cost (control effort)'};
+% Cost metric axis — effort ONLY this pass (length dropped; see the header block above).
+metrics      = {'effort'};
+metricTitles = {'Control Effort'};
+metricYLabels = {'Path Cost (control effort)'};
 
 % Delta axis — OVERLAID inside each figure, encoded as line WIDTH. The filename token is
-% sprintf('%s_%s', delta, metric), e.g. 'fine_control_length'.
-deltas      = {'large', 'fine', 'tiny'};
-deltaTitles = {'27k', '216k W-refined', '593k V-refined'};
-deltaWidths = [1.0, 1.8, 2.6];
+% sprintf('%s_%s', delta, metric), e.g. 'tiny_effort'. v3.4: `fine` dropped -- BOTH remaining
+% deltas run the full comparison (see deltaPlusOnly below), so there is no reason to keep a third,
+% KinoPaxPlus-only delta around.
+deltas      = {'large', 'tiny'};
+deltaTitles = {'27k', '593k V-refined'};
+deltaWidths = [1.0, 2.6];
 
-% WHICH ARMS EXIST AT EACH DELTA. Index 0 runs the full sweep; the two finer deltas run
-% KINOPAXPLUS ONLY, because KinoPaxPlus is the planner whose whole advantage is a tiny frontier at
-% a fine discretisation, so it is the one baseline that has to be measured at all three. Re-running
-% the CountingStars grid there would triple the sweep to answer a question the coarse delta already
-% answers.
+% WHICH ARMS EXIST AT EACH DELTA. v3.4: BOTH deltas run the full comparison now -- the concern the
+% optimal-accept-budget toggle exists to measure (CountingStars over-admitting "optimal"
+% candidates for free) needs CountingStars, and every baseline, measured at the fine delta too, not
+% KinoPaxPlus alone. `--only-kinopaxplus` is lifted off every delta in run_countingstars_sweep.sh
+% to match.
 %
 % MUST MATCH DELTA_EXTRA_ARGS in run_countingstars_sweep.sh: "--only-kinopaxplus" there is a true
 % here. When these drift, loadRuns() silently finds no files and reports "0 runs" for the orphaned
 % series rather than erroring -- the failure mode that wastes a whole sweep.
 % cross_check_countingstars_grid.py asserts it.
-deltaPlusOnly = [false, true, true];
+deltaPlusOnly = [false, false];
 
 capDerived     = 3;       % label token for cap = 0.03 (CAP_DERIVED in the benchmark)
 % --single-point is not used by this sweep, so any delta that runs an arm runs its full axis.
-deltaSingleCap = [false, false, false];
+deltaSingleCap = [false, false];
 
-deltaLabel = '3 deltas overlaid';
+deltaLabel = '2 deltas overlaid';
 
-% CountingStars v3.2 grid - must match BUFFER_SLOPES / BUFFER_FLOORS / EXPLORE_FRACS / COST_FRACS
-% in countingstars_sweep.cu. Values are the label tokens exactly as they appear in the filenames:
-% bufferSlope/bufferFloor as round(100 x float), the two shares as round(1000 x float).
+% CountingStars v3.4 grid - must match BUFFER_SLOPES / BUFFER_FLOORS / EXPLORE_FRACS / COST_FRACS /
+% OPTIMAL_ACCEPT_BUDGETED in countingstars_sweep.cu. Values are the label tokens exactly as they
+% appear in the filenames: bufferSlope/bufferFloor as round(100 x float), the two shares as
+% round(1000 x float), optimalAcceptBudgeted as a real logical (the filename token is "on"/"off").
 % cross_check_countingstars_grid.py asserts these stay in step with the .cu and the .sh; when they
 % drift, MATLAB reports "0 runs" for the orphaned series rather than erroring, which is the failure
 % mode that silently wastes a whole sweep.
 %
 % B IS A RAMP, RECOMPUTED EVERY ITERATION, and it is a CSV COLUMN. The planner computes
 %
-%     x = itr/MAX_ITER,   B(x) = floor((bufferSlope*x + bufferFloor) * MAX_TREE_SIZE / MAX_ITER)
+%     x = itr/fill_iters,   B(x) = floor((bufferSlope*x + bufferFloor) * MAX_TREE_SIZE / fill_iters)
 %
-% -- v3's single fill_frac is gone; bufferSlope/bufferFloor together replace it, with
-% bufferSlope = 0 reproducing v3's constant B exactly (B(x) = bufferFloor for every x). B travels
-% in the data as goal_frontier_size, which NOW GENUINELY VARIES ROW TO ROW within a run instead of
-% being constant -- see the new "goal_frontier_size vs iteration" figure below, which did not exist
-% under v3 because that column was always a flat line not worth its own panel.
+% B travels in the data as goal_frontier_size, which VARIES ROW TO ROW within a run -- see the
+% "goal_frontier_size vs iteration" figure below.
 %
 % KinoPaxPlus divides the whole budget over a frontier its pruning keeps tiny
 % (bf = MAX_TREE_SIZE/(F*32), 40,000 propagations per node at F = 10), which is the number
 % prop_attempted/frontier_size is read against.
 %
 % csExploreFracs / csCostFracs ARE round(1000 x frac) TOKENS, not 100x -- see countingStarsLabel()
-% in the benchmark. FIXED AT 0.3 EACH THIS PASS (single-element arrays, not swept) -- isolates the
-% slope/floor grid's own effect, kept as single-element arrays rather than bare scalars so
-% re-expanding either axis later needs no shape change to the loop below.
+% in the benchmark. csExploreFracs is FIXED at 0.2 this pass (single-element array, not swept) --
+% kept as a single-element array rather than a bare scalar so re-expanding it later needs no shape
+% change to the loop below. csCostFracs is swept, 2 values.
 %
 % csBufferSlopes / csBufferFloors STAY AT 100x, matching v3's csFillFracs convention -- both are
-% coarse axes (slope up to 1.6, floor up to 0.2) where `bs160`/`bf20` read directly as 1.6/0.2.
+% coarse axes where `bs200`/`bf30` read directly as 2.0/0.3.
 %
-% (bufferSlope, bufferFloor) = (0, 0) IS THE DEEPEST ABLATION ARM: it makes B a constant 0
-% (floored to 1), so the cutoff solve returns cutoff 0 / pBoundary 0 for all three budgeted doors.
-% OPTIMAL and the region-best GUARANTEE remain UNCAPPED regardless of B, so the frontier is still
-% optimal + guarantee + a trickle draw, not empty.
+% csOptimalAcceptBudgeted IS THE HEADLINE AXIS THIS PASS -- see h_optimalAcceptBudgeted_ in
+% CountingStars.cuh. false (default) reproduces the old unconditional-OPTIMAL behavior exactly;
+% true folds OPTIMAL into the SAME cost_frac * B histogram/cutoff CHEAPEST already spends against.
+% Real logicals, not 0/1 tokens -- countingStarsLabel()'s filename token is "on"/"off" (_ob%s), so
+% cross_check_countingstars_grid.py's .m-side parser reads these as booleans directly.
 %
-csBufferSlopes = [100 130 160];
-csBufferFloors = [5 20];
-csExploreFracs = [300];
-csCostFracs    = [300];
+% OPTIMAL remains the only uncapped door when the toggle is false; when true, NOTHING on this grid
+% is uncapped (the region-best reactivation GUARANTEE was folded permanently into the reactivation
+% budget in an earlier pass -- see CS_DOORBIT_GUAR in CountingStars.cuh -- so it was never a second
+% uncapped door here).
+%
+csBufferSlopes = [50 100 150 200];
+csBufferFloors = [10 30];
+csExploreFracs = [200];
+csCostFracs    = [300 600];
+csOptimalAcceptBudgeted = [false true];
+obToks = {'off', 'on'};   % csOptimalAcceptBudgeted(k) -> obToks{k}; MUST stay in the same order
 
 % The derived operating point that --single-point selects. EVERY component must be a member of its
 % list, because the flag selects BY VALUE -- a derived point outside the grid would run nothing.
-csDerivedBufferSlope = 130;        % bufferSlope 1.3 -> round(100 * 1.3); middle of csBufferSlopes
-csDerivedBufferFloor = 5;          % bufferFloor 0.05 -> round(100 * 0.05); a member of csBufferFloors
-csDerivedExploreFrac = 300;        % explore_frac 0.3 -> round(1000 * 0.3); the only grid value now
-csDerivedCostFrac    = 300;        % cost_frac 0.3 -> round(1000 * 0.3); the only grid value now
+csDerivedBufferSlope = 100;        % bufferSlope 1.0 -> round(100 * 1.0); a member of csBufferSlopes
+csDerivedBufferFloor = 10;         % bufferFloor 0.1 -> round(100 * 0.1); a member of csBufferFloors
+csDerivedExploreFrac = 200;        % explore_frac 0.2 -> round(1000 * 0.2); the only grid value now
+csDerivedCostFrac    = 300;        % cost_frac 0.3 -> round(1000 * 0.3); a member of csCostFracs
+csDerivedOptimalAcceptBudgeted = false;   % the default, off, operating point
 
 % CleanCost baseline point - one series, the well-tuned operating point. Same label format as the
 % cost sweep, so its historical CSVs load here unchanged.
@@ -222,39 +229,39 @@ cleanBaseCap = 3;
 % (100 x the float), exactly as they appear in the filenames.
 kpaxCapCaps = [3];
 
-% TWO REAL AXES NOW, TWO STYLE CHANNELS. v3 had three swept fractions and three channels
-% (colour/style/marker); v3.2 fixes explore_frac and cost_frac, leaving only bufferSlope and
-% bufferFloor to encode, so the marker channel is retired -- inventing a third visual channel for
-% an axis that no longer varies would be noise, not information.
+% FOUR CountingStars AXES NOW (slope x floor x cost_frac x toggle), THREE VISUAL CHANNELS. The
+% toggle (csOptimalAcceptBudgeted) is this pass's headline axis and must be visible on every
+% time-series figure, where plotMeanTime/plotMeanIter take only (color, style, width, name) -- no
+% marker parameter, since marker is read only by the two tradeoff-scatter figures (confirmed
+% against their actual signatures below). So the toggle rides on COLOR, combined with bufferFloor:
 %
-% colour = bufferFloor, because it is the ramp's starting value -- what fill_frac WAS, and the
-% closest analogue to v3's own colour channel; DARKER IS A SMALLER STARTING BUDGET. Every B on this
-% grid stays below NUM_R1_REGIONS for at least part of a run, so the ramp does not cleanly separate
-% "soft" from "binding" -- it separates HOW LONG each series binds for before nActive overtakes it,
-% and that window now itself grows over the run wherever bufferSlope > 0.
-%
-% ONE ROW PER csBufferFloors ENTRY -- MUST STAY IN SYNC WITH IT, since fillColors(fi, :) below is
-% indexed straight off numel(csBufferFloors). csBufferFloors is currently [5 20] (bufferFloor
-% 0.05, 0.2), so two rows.
-%   rows: floor 0.05 (B0 ~ 150, smallest starting B), floor 0.2 (B0 ~ 600, largest starting B)
-fillColors   = [0.08 0.08 0.08;    % floor 0.05   smallest starting B
-                0.55 0.68 0.84];   % floor 0.2    largest starting B
+% colour = bufferFloor x optimalAcceptBudgeted, ONE ROW PER (floor, toggle) COMBINATION -- MUST
+% STAY IN SYNC WITH numel(csBufferFloors)*numel(csOptimalAcceptBudgeted), since fillColors(idx, :)
+% below is indexed off (fi-1)*numel(csOptimalAcceptBudgeted) + oi. Hue shifts by toggle (cool
+% blue-grey = off, the old unconditional-OPTIMAL behavior; warm orange = on, budgeted); shade
+% within each hue family by floor (darker = smaller starting B). csBufferFloors is currently
+% [10 30] and csOptimalAcceptBudgeted is [false true], so four rows.
+%   rows: floor 0.1/off, floor 0.3/off, floor 0.1/on, floor 0.3/on
+fillColors   = [0.20 0.30 0.55;    % floor 0.1  off  (cool, darker)
+                0.55 0.65 0.85;    % floor 0.3  off  (cool, lighter)
+                0.75 0.30 0.05;    % floor 0.1  on   (warm, darker)
+                0.95 0.60 0.30];   % floor 0.3  on   (warm, lighter)
 % style = bufferSlope. ONE ENTRY PER csBufferSlopes ENTRY -- MUST STAY IN SYNC WITH IT, since
 % fracStyles{bi} below is indexed straight off numel(csBufferSlopes). csBufferSlopes is currently
-% [100 130 160] (bufferSlope 1.0, 1.3, 1.6), so three styles -- no dedicated "structural control"
-% (bufferSlope = 0) any more -- see the `sSlope == min(csBufferSlopes)` comment below.
-fracStyles   = {'-', '--', ':'};   % bufferSlope = 1.0, 1.3, 1.6 (in csBufferSlopes order)
+% [50 100 150 200] (bufferSlope 0.5, 1.0, 1.5, 2.0), so four styles.
+fracStyles   = {'-', '--', ':', '-.'};   % bufferSlope = 0.5, 1.0, 1.5, 2.0 (in csBufferSlopes order)
 
-% marker = (explore_frac, cost_frac) PAIR, combined into one channel. Both are single-element
-% arrays this pass (fixed at 0.3 each), so this channel is inert right now -- every CountingStars
-% point draws 'o' -- but it is kept indexed off numel(csExploreFracs)*numel(csCostFracs) rather
-% than hardcoded, so re-expanding either axis needs no shape change here, only more marker shapes.
-% plannerDisplay below carries the exact ef/cf values in the legend text regardless.
+% marker (SCATTER FIGURES ONLY) = cost_frac. explore_frac is fixed this pass (single-element
+% array), so cost_frac is the only remaining axis with real values to give this channel -- ONE
+% ENTRY PER csCostFracs ENTRY, MUST STAY IN SYNC WITH IT, since cfMarkers{ci} below is indexed
+% straight off numel(csCostFracs). plannerDisplay below carries the exact numeric value of every
+% axis in the legend text regardless, so nothing is ever ambiguous even where two series share a
+% color+style+marker combination.
 %
 % CHOSEN TO AVOID THE BASELINES' MARKERS ('p' CleanCost, 'v' KPAX, 's' KPAXCap, 'd' KinoPaxPlus,
 % defined further down) so a CountingStars point is never marker-identical to a baseline point --
 % colour alone already separates the families, but there is no reason to throw that redundancy away.
-efCfMarkers = {'o', '^', '>', '<'};   % one per (explore_frac, cost_frac) combination
+cfMarkers = {'o', '^'};   % one per csCostFracs entry (0.3, 0.6)
 
 % CleanCost baseline: crimson, distinct from every budget colour, drawn as a reference anchor.
 cleanColor = [0.70 0.15 0.20];
@@ -264,7 +271,7 @@ cleanColor = [0.70 0.15 0.20];
 mossRamp  = [0.58 0.73 0.53;     % cap 0.03 (lighter)
              0.24 0.44 0.26];    % cap 0.10 (darker)
 
-% --- Build the series arrays: (planner, delta) pairs, 27 in total ---
+% --- Build the series arrays: (planner, delta) pairs ---
 % plannerDeltaIdx carries each series' delta so loadRuns can build its own filename token; the
 % style channel is delta, so every series of one delta shares a line style.
 plannerNames    = {};
@@ -276,7 +283,9 @@ plannerWidths   = [];
 plannerBaseline = [];   % logical: drawn as a thick reference anchor / large scatter marker
 plannerDeltaIdx = [];   % index into `deltas`
 % Each series' bufferFloor token, NaN for anything that is not a CountingStars arm. Used as the
-% colour lookup and as the "is this CountingStars" NaN guard at several panels below.
+% "is this CountingStars" NaN guard at several panels below. (The colour lookup itself is keyed off
+% bufferFloor combined with optimalAcceptBudgeted -- see colorIdx in the loop below -- but this
+% array only ever needs to distinguish "CountingStars or not", so it stays bufferFloor alone.)
 %
 % B ITSELF IS NOT CARRIED HERE ANY MORE. v2 had to, because B was a per-run setting and not in the
 % data; v3 derives it inside the planner and logs it as the goal_frontier_size COLUMN, so the budget
@@ -292,56 +301,60 @@ for di = 1:numel(deltas)
 
     if ~dPlus
 
-    % --- CountingStars: bufferSlope x bufferFloor, a full factorial. explore_frac/cost_frac are
-    % single-element arrays (fixed at 0.3 this pass), so the (ei, ci) inner loop and efCfMarkers
-    % lookup are trivial right now -- kept general so re-expanding either axis needs no shape
-    % change here, only more marker shapes in efCfMarkers. ---
-    numEfCf = numel(csExploreFracs) * numel(csCostFracs);
-    assert(numEfCf <= numel(efCfMarkers), ...
-        sprintf(['efCfMarkers has %d entries but csExploreFracs x csCostFracs needs %d -- add more ' ...
-                 'marker shapes to efCfMarkers before growing either axis.'], numel(efCfMarkers), numEfCf));
+    % --- CountingStars: bufferSlope x bufferFloor x cost_frac x optimalAcceptBudgeted, a full
+    % factorial (explore_frac is a single-element array this pass, fixed at 0.2 -- the (ei) inner
+    % loop is trivial right now but kept general so re-expanding it needs no shape change here). ---
+    assert(numel(csCostFracs) <= numel(cfMarkers), ...
+        sprintf(['cfMarkers has %d entries but csCostFracs needs %d -- add more marker shapes to ' ...
+                 'cfMarkers before growing that axis.'], numel(cfMarkers), numel(csCostFracs)));
+    assert(numel(csBufferFloors) * numel(csOptimalAcceptBudgeted) <= size(fillColors, 1), ...
+        sprintf(['fillColors has %d rows but csBufferFloors x csOptimalAcceptBudgeted needs %d -- ' ...
+                 'add more rows to fillColors before growing either axis.'], ...
+                size(fillColors, 1), numel(csBufferFloors) * numel(csOptimalAcceptBudgeted)));
     for bi = 1:numel(csBufferSlopes)
         for fi = 1:numel(csBufferFloors)
             for ei = 1:numel(csExploreFracs)
                 for ci = 1:numel(csCostFracs)
-                    sSlope = csBufferSlopes(bi);
-                    sFloor = csBufferFloors(fi);
-                    eFrac  = csExploreFracs(ei);
-                    cFrac  = csCostFracs(ci);
-                    efCfIdx = (ei - 1) * numel(csCostFracs) + ci;   % combined (ei, ci) -> one marker
+                    for oi = 1:numel(csOptimalAcceptBudgeted)
+                        sSlope = csBufferSlopes(bi);
+                        sFloor = csBufferFloors(fi);
+                        eFrac  = csExploreFracs(ei);
+                        cFrac  = csCostFracs(ci);
+                        obOn   = csOptimalAcceptBudgeted(oi);
+                        obTok  = obToks{oi};
+                        colorIdx = (fi - 1) * numel(csOptimalAcceptBudgeted) + oi;
 
-                    % Mirror countingStarsSkip(): --single-point is the only skip.
-                    if dOne && ~(sSlope == csDerivedBufferSlope && sFloor == csDerivedBufferFloor ...
-                                 && eFrac == csDerivedExploreFrac && cFrac == csDerivedCostFrac)
-                        continue;
-                    end
+                        % Mirror countingStarsSkip(): --single-point is the only skip.
+                        if dOne && ~(sSlope == csDerivedBufferSlope && sFloor == csDerivedBufferFloor ...
+                                     && eFrac == csDerivedExploreFrac && cFrac == csDerivedCostFrac ...
+                                     && obOn == csDerivedOptimalAcceptBudgeted)
+                            continue;
+                        end
 
-                    plannerNames{end + 1}   = sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d', ...
-                                                      sSlope, sFloor, eFrac, cFrac); %#ok<SAGROW>
-                    % ef/cf ARE IN THE LEGEND TEXT NOW -- with both axes swept, "slope1.4 floor0.1"
-                    % alone would print four times over in one legend with no way to tell which
-                    % marker is which; the exact fractions make every entry unique on their own.
-                    plannerDisplay{end + 1} = sprintf('CS slope%g floor%g ef%g cf%g [%s]', ...
-                                                      sSlope / 100, sFloor / 100, ...
-                                                      eFrac / 1000, cFrac / 1000, dTag); %#ok<SAGROW>
-                    plannerColors(end + 1, :) = fillColors(fi, :);     %#ok<SAGROW>
-                    plannerStyles{end + 1}    = fracStyles{bi};        %#ok<SAGROW>
-                    plannerMarkers{end + 1}   = efCfMarkers{efCfIdx};  %#ok<SAGROW>
-                    % The SMALLEST bufferSlope in the grid is drawn thicker at every bufferFloor, as
-                    % the closest-to-flat reference every steeper-ramped series is read against.
-                    % v3's literal bufferSlope = 0 (the exact constant-B control) is NOT on this
-                    % grid -- csBufferSlopes has been through more than one revision already and
-                    % has never contained 0 -- so a hardcoded `sSlope == 0` would silently thicken
-                    % NOTHING and every series would draw at the same width. min() reads whatever
-                    % csBufferSlopes currently is, so this stays correct across future revisions.
-                    if sSlope == min(csBufferSlopes)
-                        plannerWidths(end + 1) = dWidth + 0.8;         %#ok<SAGROW>
-                    else
-                        plannerWidths(end + 1) = dWidth;               %#ok<SAGROW>
+                        plannerNames{end + 1}   = sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d_ob%s', ...
+                                                          sSlope, sFloor, eFrac, cFrac, obTok); %#ok<SAGROW>
+                        % Every swept value is in the legend text -- with four axes varying, a
+                        % color+style combination alone can repeat, and the exact numbers make every
+                        % entry unique on their own regardless.
+                        plannerDisplay{end + 1} = sprintf('CS slope%g floor%g ef%g cf%g ob-%s [%s]', ...
+                                                          sSlope / 100, sFloor / 100, ...
+                                                          eFrac / 1000, cFrac / 1000, obTok, dTag); %#ok<SAGROW>
+                        plannerColors(end + 1, :) = fillColors(colorIdx, :);   %#ok<SAGROW>
+                        plannerStyles{end + 1}    = fracStyles{bi};            %#ok<SAGROW>
+                        plannerMarkers{end + 1}   = cfMarkers{ci};             %#ok<SAGROW>
+                        % The SMALLEST bufferSlope in the grid is drawn thicker at every bufferFloor,
+                        % as the closest-to-flat reference every steeper-ramped series is read
+                        % against. min() reads whatever csBufferSlopes currently is, so this stays
+                        % correct across future revisions.
+                        if sSlope == min(csBufferSlopes)
+                            plannerWidths(end + 1) = dWidth + 0.8;         %#ok<SAGROW>
+                        else
+                            plannerWidths(end + 1) = dWidth;               %#ok<SAGROW>
+                        end
+                        plannerBaseline(end + 1) = false;                  %#ok<SAGROW>
+                        plannerDeltaIdx(end + 1) = di;                     %#ok<SAGROW>
+                        plannerBufferFloor(end + 1) = sFloor;              %#ok<SAGROW>
                     end
-                    plannerBaseline(end + 1) = false;                  %#ok<SAGROW>
-                    plannerDeltaIdx(end + 1) = di;                     %#ok<SAGROW>
-                    plannerBufferFloor(end + 1) = sFloor;              %#ok<SAGROW>
                 end
             end
         end
@@ -387,9 +400,9 @@ for di = 1:numel(deltas)
 
     end   % ~dPlus
 
-    % --- KinoPaxPlus. THE ONLY ARM THAT RUNS AT EVERY DELTA, which is the entire reason the two
-    % finer deltas exist in this sweep: its advantage is a tiny frontier at a fine discretisation,
-    % and a small F is exactly what CountingStars' goal_frontier_size is trying to buy directly. ---
+    % --- KinoPaxPlus. Runs at every delta, same as every other arm this pass -- its advantage is a
+    % tiny frontier at a fine discretisation, and a small F is exactly what CountingStars'
+    % goal_frontier_size is trying to buy directly, so it is the natural reference at `tiny` too. ---
     plannerNames    = [plannerNames,   {'KinoPaxPlus'}];                                  %#ok<AGROW>
     plannerDisplay  = [plannerDisplay, {sprintf('KinoPaxPlus [%s]', dTag)}];              %#ok<AGROW>
     plannerColors   = [plannerColors;  0.20 0.40 0.80];                                   %#ok<AGROW>
@@ -485,17 +498,17 @@ for ei = 1:numel(environments)
         title('cost\_scale: CleanCost''s costProbExpGlobal denominator, CountingStars'' distance denominator');
         clickableLegend();
 
-        %% ---------- FIGURE: THE REALIZED BUDGET RAMP (v3.2, NEW) ----------
-        % READ THIS ONE FIRST, before anything else that depends on B. goal_frontier_size was
-        % always a per-iteration column, but under v3 it was constant across a run and not worth
-        % its own panel; v3.2 makes it a genuine ramp, so this is the direct visual check that the
-        % realized B(itr) actually matches the intended slope*x + bufferFloor before reading any
-        % panel that divides by it.
+        %% ---------- FIGURE: THE REALIZED BUDGET RAMP ----------
+        % READ THIS ONE FIRST, before anything else that depends on B. This is the direct visual
+        % check that the realized B(itr) actually matches the intended slope*x + bufferFloor before
+        % reading any panel that divides by it.
         %
-        % A FLAT LINE at every bufferSlope = 0 series (solid style) is the sanity check that the
-        % mechanism is wired correctly -- v3's constant B, reproduced exactly. A ramped series
-        % (dashed/dotted) should rise roughly linearly from its bufferFloor's starting value toward
-        % (bufferSlope + bufferFloor) * MAX_TREE_SIZE / MAX_ITER at the last iteration.
+        % Every series here should rise roughly linearly from its bufferFloor's starting value
+        % toward (bufferSlope + bufferFloor) * MAX_TREE_SIZE / fill_iters at the last iteration --
+        % the smallest-bufferSlope series (solid style, drawn thicker) rises the least steeply, the
+        % closest-to-flat reference the steeper-ramped series are read against. There is no literal
+        % bufferSlope = 0 on this grid (csBufferSlopes starts at 0.5), so no series is expected to
+        % be perfectly flat.
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Budget Ramp (%s)', envTitle, costTitle), ...
                'Position', [100 100 900 560]);
@@ -507,7 +520,7 @@ for ei = 1:numel(environments)
         end
         grid on;
         xlabel('Iteration'); ylabel('goal\_frontier\_size (B)');
-        title({'The realized budget ramp', 'flat = bufferSlope 0 (v3''s constant B); rising = the ramp in effect'});
+        title({'The realized budget ramp', 'rising = the ramp in effect; the thickest (smallest bufferSlope) series rises the least steeply'});
         clickableLegend();
 
         %% ---------- FIGURE: IS THE BUDGET MET ----------
@@ -519,22 +532,21 @@ for ei = 1:numel(environments)
         %   budget_used / B == 1   the budget is met.
         %   budget_used / B  < 1   SHORTFALL -- a door is not filling its share. Read the door panel
         %                          on the right to see which one ran dry.
-        %   budget_used / B  > 1   OVERSHOOT -- the two uncapped doors (optimal, guarantee) already
-        %                          exceeded B on their own. EXPECTED at every point on this grid,
-        %                          because both are bounded by the region count and not by B: one
-        %                          node per region can be a region best, one per uncovered region
-        %                          can be guaranteed. B(x) = floor((slope*x+floor) *
-        %                          MAX_TREE_SIZE/MAX_ITER) ranges roughly 0-8500 here (bufferFloor
-        %                          0-0.2 at x=0, bufferSlope+bufferFloor up to 1.7 at x=1) against
-        %                          27,000 regions -- B NOW MOVES WITHIN A RUN, not just across
-        %                          series, so this ratio has two moving parts.
+        %   budget_used / B  > 1   OVERSHOOT. With the toggle OFF, OPTIMAL is still uncapped and can
+        %                          exceed B on its own -- EXPECTED at every off-toggle point on this
+        %                          grid, since OPTIMAL is bounded by the region count (one region
+        %                          best per region per iteration), not by B, and B stays below the
+        %                          region count for at least part of every run (27k regions at the
+        %                          `large` delta, 593k at `tiny`). With the toggle ON, nothing is
+        %                          uncapped any more -- an overshoot there would mean the cutoff
+        %                          solve itself is admitting more than intended and is worth
+        %                          checking directly against the cost-cutoff figure below.
         %
-        % SO READ THIS AS A CURVE, NOT A NUMBER. B binds EARLY in a run and then stops, at an
-        % iteration that moves with the WHOLE RAMP SHAPE, not a single fill_frac any more. The
-        % iteration where the curve crosses 1 IS the measurement -- early is exactly where
-        % time-to-first-solution is decided. If the bufferSlope=0 curves are indistinguishable from
-        % the ramped ones even early, capping the guarantee (KinoPaxPlus's hysteresis is the
-        % precedent) is the next lever, not another ramp.
+        % SO READ THIS AS A CURVE, NOT A NUMBER, at every off-toggle point. B binds EARLY in a run
+        % and then stops, at an iteration that moves with the WHOLE RAMP SHAPE. The iteration where
+        % the curve crosses 1 IS the measurement -- early is exactly where time-to-first-solution is
+        % decided. Comparing the on- and off-toggle curves at otherwise-matched (slope, floor,
+        % cost_frac) is the direct read of how much of that overshoot the toggle actually removes.
         %
         % B COMES OUT OF THE DATA. It is the goal_frontier_size column, written by the planner that
         % derived it, so this divides by what the run actually used rather than by what the label
@@ -552,48 +564,61 @@ for ei = 1:numel(environments)
         set(gca, 'YScale', 'log'); grid on;
         yline(1, 'k--', 'budget met', 'LineWidth', 1.4, 'HandleVisibility', 'off');
         xlabel('Iteration'); ylabel('budget\_used / goal\_frontier\_size');
-        title({'Is the budget met?', 'below 1 = a door ran dry; above 1 = the optimal door alone overran B'});
+        title({'Is the budget met?', ...
+               'below 1 = a door ran dry; above 1 = the optimal door overran B (toggle off only)'});
         clickableLegend();
 
         % --- Which door filled it. Every node came through a named door and the counts are exact,
         % so a shortfall on the left has an address here.
         %
-        %   optimal_count      the top door, uncapped, first claim every iteration. It must equal
-        %                      admitted_cost exactly -- pass 1 counts it, pass 2 admits it, and every
-        %                      optimal candidate is admitted -- so the CSV carries a free identity
-        %                      check between the two accept passes.
+        %   optimal_count      pass 1's MEASURED population at distance 0 -- toggle-INVARIANT, so
+        %                      this is "how many optimal candidates existed", not "how many were
+        %                      let in".
+        %   admitted_cost      v3.4: pass 2's ADMITTED count via CS_DOORBIT_OPTIMAL. Equals
+        %                      optimal_count exactly when optimalAcceptBudgeted is false (today's
+        %                      unconditional admission); can be STRICTLY LESS when true -- the gap
+        %                      between the two curves is the optimal-door starvation this whole
+        %                      toggle exists to measure. Drawn as a dotted line right next to
+        %                      optimal_count's solid one, same color, so the gap reads directly.
         %   admitted_explore   the freshness door, spending explore_frac * B.
-        %   admitted_costdist  THE NEW DOOR, spending cost_frac * B on the smallest cost distances.
-        %                      Pinned at 0 while cost_frac > 0 means the cutoff solve is degenerate;
-        %                      sitting at cost_frac * B every iteration means it works as designed.
-        %   reactivated_best   the guarantee, REALISED and counted on the device. (v2's PLANNED
-        %                      count, guaranteed_react, is gone with the remainder it used to size.)
-        %   reactivated_cost   v3.1's CHEAPEST reactivation arm, spending the WHOLE react_frac * B
-        %                      budget on the cheapest dormant nodes. This is the arm CleanCost has
-        %                      and v3 did not; it should carry essentially all of Part B's
-        %                      non-guarantee volume.
+        %   admitted_costdist  spending cost_frac * B on the smallest cost distances (also where a
+        %                      budgeted optimal candidate competes when the toggle is on -- see
+        %                      CS_DOORBIT_OPTIMAL). Pinned at 0 while cost_frac > 0 means the cutoff
+        %                      solve is degenerate; sitting at cost_frac * B every iteration means
+        %                      it works as designed.
+        %   reactivated_best   ALWAYS 0 now -- the region-best reactivation GUARANTEE was folded
+        %                      permanently into the budgeted reactivation histogram in an earlier
+        %                      pass (see CS_DOORBIT_GUAR in CountingStars.cuh). Column kept for CSV
+        %                      schema stability, not because the arm still fires.
+        %   reactivated_cost   the CHEAPEST reactivation arm, spending the WHOLE react_frac * B
+        %                      budget on the cheapest dormant nodes (including former-GUARANTEE
+        %                      candidates, now folded in here) -- this should carry essentially all
+        %                      of Part B's volume.
         %   reactivated_count  the COMPLETENESS FLOOR alone -- ~ react_floor * dormant_count, so
-        %                      ~30 nodes. It was the uniform draw through v3. LARGE HERE MEANS the
-        %                      floor is doing reach work it was not sized for.
-        %   admitted_floor     v3.3: the ADMISSION completeness floor's yield -- fires only for a
+        %                      ~30 nodes. LARGE HERE MEANS the floor is doing reach work it was not
+        %                      sized for.
+        %   admitted_floor     the ADMISSION completeness floor's yield -- fires only for a
         %                      candidate that cleared none of OPTIMAL/FRESHEST/CHEAPEST. Should
         %                      track ~accept_floor * candidates_this_iteration; large here means the
         %                      floor is doing reach work rather than plugging the gap.
         %
         % The `reactivated` column is all THREE Part B arms, so it should equal
-        % reactivated_best + reactivated_cost + reactivated_count.
+        % reactivated_best + reactivated_cost + reactivated_count -- trivially true now that
+        % reactivated_best is always 0, but the identity is unchanged in form.
         %
-        % v3.3: OPTIMAL, EXPLORE AND COSTDIST ALL OVERLAP now. admitted_explore and admitted_costdist
-        % are a union over one candidate pool as before; OPTIMAL now also competes for FRESHEST, so
-        % it overlaps admitted_explore too (never admitted_costdist -- see CS_DOORBIT_OPTIMAL). The
-        % full identity is
-        % admitted == optimal_count + admitted_explore + admitted_costdist + admitted_floor
+        % OPTIMAL, EXPLORE AND COSTDIST ALL OVERLAP: admitted_explore and admitted_costdist are a
+        % union over one candidate pool; OPTIMAL also competes for FRESHEST (never CHEAPEST -- see
+        % CS_DOORBIT_OPTIMAL). The full identity, using what pass 2 actually ADMITTED
+        % (admitted_cost, not optimal_count -- see above):
+        % admitted == admitted_cost + admitted_explore + admitted_costdist + admitted_floor
         %           - admitted_opt_fresh_both - admitted_both, and both overlaps have their own
         % panel below.
         subplot(1, 2, 2); hold on;
         for pi = 1:nPlanner
             plotMeanIter(R{pi}, @(t) getCol(t, 'optimal_count'), ...
                          plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
+            plotMeanIter(R{pi}, @(t) getCol(t, 'admitted_cost'), ...
+                         plannerColors(pi, :), ':', plannerWidths(pi), '');
             plotMeanIter(R{pi}, @(t) getCol(t, 'admitted_explore'), ...
                          plannerColors(pi, :), '--', max(0.5, plannerWidths(pi) - 0.6), '');
             plotMeanIter(R{pi}, @(t) getCol(t, 'admitted_costdist'), ...
@@ -609,8 +634,8 @@ for ei = 1:numel(environments)
         end
         set(gca, 'YScale', 'log'); grid on;
         xlabel('Iteration'); ylabel('nodes');
-        title({'optimal (thick solid), explore (dashed), cheapest (thin solid), guarantee (dash-dot),', ...
-               'cheap-reactivation (thin dashed), reactivation floor (dotted), admission floor (thin dotted)'});
+        title({'optimal measured (thick solid) vs admitted (thick dotted), explore (dashed), cheapest (thin solid),', ...
+               'guarantee -- always 0 now (dash-dot), cheap-reactivation (thin dashed), reactivation floor (dotted), admission floor (thin dotted)'});
 
         %% ---------- FIGURE: is freshness still scarce ----------
         % ord_cutoff is the freshness threshold the remaining budget bought this iteration: a
@@ -792,12 +817,15 @@ for ei = 1:numel(environments)
         % `reactivated` counts frontier bits among the PRE-EXISTING tree, i.e. exactly Part B's
         % output, so this is the share of the frontier that is re-expansion rather than new nodes.
         %
-        % READ THIS PANEL FIRST WHEN KERNEL1 FAILS EARLY. Part B's guarantee is unconditional for
-        % an UNCOVERED region, so F has a floor at the number of regions the optimal door missed.
-        % Since rep >= 1, frontierRepeatSize >= F, and kernel2 is forced once 32*F > remaining
-        % whatever the budget says. A curve pinned near 100% means F is reactivation-dominated: the
-        % admissions are a rounding error next to the guarantee and the draw, and B is being met by
-        % re-expansion rather than by new ground.
+        % READ THIS PANEL FIRST WHEN KERNEL1 FAILS EARLY. Part B's reactivation is entirely budgeted
+        % now (the region-best GUARANTEE that used to be unconditional was folded permanently into
+        % the cheapest-reactivation share of react_frac * B -- see CS_DOORBIT_GUAR), so F has no
+        % structural floor from an uncovered-region guarantee any more; a floor here comes only from
+        % the reactivation completeness floor (reactivated_count) plus whatever reactivated_cost
+        % actually admits. Since rep >= 1, frontierRepeatSize >= F, and kernel2 is forced once
+        % 32*F > remaining whatever the budget says. A curve pinned near 100% means F is
+        % reactivation-dominated: the admissions (optimal + explore + costdist) are a rounding error
+        % next to Part B, and B is being met by re-expansion rather than by new ground.
         subplot(1, 3, 3); hold on;
         for pi = 1:nPlanner
             plotMeanIter(R{pi}, @(t) 100 * safeRatio(getCol(t, 'reactivated'), ...
@@ -806,7 +834,7 @@ for ei = 1:numel(environments)
         end
         ylim([0 105]);
         xlabel('Iteration'); ylabel('% of frontier from Part B'); grid on;
-        title({'Frontier composition: reactivated / frontier\_size', 'near 100% = the region-best guarantee dominates F'});
+        title({'Frontier composition: reactivated / frontier\_size', 'near 100% = Part B (now entirely budgeted) dominates F'});
         clickableLegend();
 
         %% ---------- FIGURE: is the frontier small ----------
@@ -977,16 +1005,17 @@ for ei = 1:numel(environments)
         end
 
         % The marker legend, written once and used by both titles so they cannot drift apart.
-        % \x25cb (circle) is CountingStars this pass -- explore_frac/cost_frac are single-element
-        % (fixed at 0.3 each), so efCfMarkers only ever emits its first entry, 'o'. If either axis
-        % is re-expanded, list the extra glyphs here too (efCfMarkers has three more: \x25b3, \x25b7,
-        % \x25c1) alongside their (explore_frac, cost_frac) pairs.
+        % v3.4: marker = cost_frac for CountingStars (\x25cb = 0.3, \x25b3 = 0.6, in cfMarkers
+        % order) -- explore_frac is fixed this pass, so it is no longer part of this channel. Color
+        % (bufferFloor x optimalAcceptBudgeted) is the OTHER swept CountingStars axis this key does
+        % not cover; plannerDisplay's legend text always carries every axis's exact numeric value
+        % regardless, so nothing is ever ambiguous.
         % sprintf, NOT a bare concatenation: the \x.... marker glyphs and the \\_ TeX underscore
         % escapes are only resolved by a formatting call, and this string is substituted into the
         % titles below via %s -- which inserts it verbatim rather than re-interpreting it. Built as
         % a plain [...] it would print the escape sequences literally.
-        markerKey = sprintf(['lower-left is better (fast and cheap); darker = smaller bufferFloor; ' ...
-                             '\x25cb CountingStars, ' ...
+        markerKey = sprintf(['lower-left is better (fast and cheap); cool/blue = optimal-accept off, ' ...
+                             'warm/orange = on; \x25cb cost\\_frac 0.3, \x25b3 cost\\_frac 0.6; ' ...
                              '\x2606 CleanCost, \x25bd KPAXCap, \x25a1 KPAX, \x25c7 KinoPaxPlus']);
 
         figNum = figNum + 1;

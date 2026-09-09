@@ -261,10 +261,14 @@ def gen(kind, n, seed):
             out.append(1e-12 * u)         #   is meant to avoid, where the door becomes a uniform draw
         elif kind == 'twovalues':         # maximal ties: only two distinct buckets exist
             out.append(0.5 if u < 0.5 else 1.0)
-    return out
+        elif kind == 'mixed_optimal':     # v3.4: a chunk of LITERAL zeros (candDistance == 0.0f) mixed
+            out.append(0.0 if u < 0.3 else -math.log(u) * 0.05)   #   into a real distribution -- this
+    return out                                                    #   is exactly what optimalAcceptBudgeted
+                                                                   #   feeds the cost histogram: OPTIMAL
+                                                                   #   candidates (bucket 0 always) voting
+                                                                   #   alongside genuine CHEAPEST ones.
 
-
-for kind in ('uniform', 'exponential', 'lognormal', 'onebucket', 'twovalues'):
+for kind in ('uniform', 'exponential', 'lognormal', 'onebucket', 'twovalues', 'mixed_optimal'):
     for n in (1, 2, 37, 1000, 5000):
         vals = gen(kind, n, 7919 + n)
         dist_max = max(vals)

@@ -61,11 +61,13 @@
 // is gone: folded permanently into CHEAPEST's reactivation histogram, so a region's best now has to
 // win a react_frac * B slot like any other dormant node. See CS_DOORBIT_GUAR and Part B below.)
 //
-//   1. OPTIMAL    distance 0, i.e. cost <= minCostsR1[r]. UNCAPPED, and it has first claim every
-//                 iteration -- a stronger optimality guarantee than v1's region-best reactivation,
-//                 which only put a region's best back AFTER the fact. Safe uncapped while
-//                 B > NUM_R1_REGIONS, since NUM_R1_REGIONS is the ceiling on how many nodes can be
-//                 a region best in one iteration. v3.3: no longer exclusive of door 2 -- see below.
+//   1. OPTIMAL    distance 0, i.e. cost <= minCostsR1[r]. UNCAPPED BY DEFAULT, and it has first
+//                 claim every iteration -- a stronger optimality guarantee than v1's region-best
+//                 reactivation, which only put a region's best back AFTER the fact. Safe uncapped
+//                 while B > NUM_R1_REGIONS, since NUM_R1_REGIONS is the ceiling on how many nodes
+//                 can be a region best in one iteration. v3.3: no longer exclusive of door 2 -- see
+//                 below. v3.4 (h_optimalAcceptBudgeted_): when opted in, folded into door 3's own
+//                 budget instead -- see below and the header.
 //   2. FRESHEST   explore_frac * B, taken from the least-populated regions.
 //   3. CHEAPEST   cost_frac * B, taken from the smallest cost distances.               (v3, NEW)
 //   4. DRAW       uniform over the rest of the tree at p = react_frac * B / treeSize.
@@ -261,6 +263,10 @@ CountingStars::CountingStars()
     // differs from h_reactFloor_'s and why it defaults an order of magnitude higher.
     h_acceptFloor_ = 1e-4f;
 
+    // v3.4: OFF reproduces today's unconditional OPTIMAL admission exactly. See
+    // h_optimalAcceptBudgeted_ in the header.
+    h_optimalAcceptBudgeted_ = false;
+
     // ---- Fan-out. Blocks a node gets are popcount(door), decided at admission; see the header. ----
     // rep is a plain COUNT OF BLOCKS with no alignment constraint -- repeatInd writes rep integer
     // entries and kernel1 launches one 32-thread block per entry, so a node at 2 gets
@@ -279,6 +285,7 @@ CountingStars::CountingStars()
     h_admittedExplore_     = 0;
     h_admittedCostDist_    = 0;
     h_admittedBoth_        = 0;
+    h_admittedCost_        = 0;
     h_reactivated_         = 0;
     h_reactivatedBest_     = 0;
     h_reactivatedCost_     = 0;
@@ -400,6 +407,7 @@ void CountingStars::resetPlanner(float* h_initial, float* h_goal)
     h_admittedExplore_      = 0;
     h_admittedCostDist_     = 0;
     h_admittedBoth_         = 0;
+    h_admittedCost_         = 0;
     h_admittedOptFreshBoth_ = 0;
     h_admittedFloor_        = 0;
     h_reactivated_          = 0;
@@ -923,6 +931,7 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
 __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                  float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
                                                  int* regionNodeCount, float costScale, float distMax,
+                                                 bool optimalAcceptBudgeted,
                                                  float* candDistance, int* acceptHistogram)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -937,17 +946,24 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
 
     if(cost <= m)
         {
-            // OPTIMAL. Uncapped.
+            // OPTIMAL. Uncapped unless optimalAcceptBudgeted.
             candDistance[idx] = 0.0f;
             // Slot CS_HIST_OPT_SLOT is NOT a bucket -- it is the optimal count, riding in the same
             // buffer so the host reads everything back in one synchronising memcpy. Neither cutoff
-            // scan touches it.
+            // scan touches it. Toggle-INVARIANT: this is the population MEASURED at distance 0,
+            // not what gets admitted -- see h_optimalCount_ in the header.
             atomicAdd(&acceptHistogram[CS_HIST_OPT_SLOT], 1);
             // v3.3: OPTIMAL now also competes for FRESHEST, so it has to vote in the SAME ordinality
             // histogram non-optimal candidates vote in -- otherwise pass 2's cutoff would be solved
-            // against a population this candidate was never measured in. It still never votes in the
-            // COST histogram: distance 0 is not in CHEAPEST's domain (see CS_DOORBIT_OPTIMAL).
+            // against a population this candidate was never measured in.
             atomicAdd(&acceptHistogram[CS_HIST_ORD_BASE + csOrdBucket(regionNodeCount[xR1])], 1);
+            // v3.4: when budgeted, ALSO vote into cost bucket 0 -- csCostBucket(0.0f, distMax) == 0
+            // for any distMax (see the header), so no distance computation is needed here. This is
+            // an ADDITIONAL vote, not a replacement of the two above: it makes this candidate
+            // compete for the SAME cost_frac * B cutoff CHEAPEST already spends against, rather than
+            // being admitted for free. See h_optimalAcceptBudgeted_ in the header.
+            if(optimalAcceptBudgeted)
+                atomicAdd(&acceptHistogram[CS_HIST_COST_BASE + 0], 1);
             return;
         }
 
@@ -1067,7 +1083,7 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
                                                  bool* regionCovered, curandState* randomSeeds,
                                                  int ordCutoff, float pBoundary,
                                                  int costCutoff, float pCostBoundary, float distMax,
-                                                 float acceptFloor,
+                                                 float acceptFloor, bool optimalAcceptBudgeted,
                                                  unsigned long long* doorCounts)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1078,25 +1094,29 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
 
     int  mask      = CS_DOOR_NONE;
     bool isOptimal = (candDistance[idx] == 0.0f);
-    if(isOptimal)
-        {
-            mask |= CS_DOORBIT_OPTIMAL;
-            // Part B's guarantee is deduplicated against this: a region whose best came back in
-            // through the top door does not also spend a guarantee slot on the node it superseded.
-            regionCovered[xR1] = true;
-            atomicAdd(&doorCounts[CountingStars::CS_SLOT_COST], 1ULL);
-        }
 
-    // --- FRESHEST: from the least-populated regions. CHEAPEST: from the smallest cost distances,
-    // skipped structurally for an optimal candidate (see above). ---
+    // --- FRESHEST: from the least-populated regions, exactly as before. ---
     int  ob        = csOrdBucket(regionNodeCount[xR1]);
     bool takeOrd   = (ob < ordCutoff);
-    int  cb        = isOptimal ? -1 : csCostBucket(candDistance[idx], distMax);
-    bool takeCost  = (!isOptimal) && (cb < costCutoff);
+
+    // --- CHEAPEST: cb == 0 == csCostBucket(0.0f, distMax) for an optimal candidate when budgeted
+    // (see the header) -- it competes for the SAME cutoff CHEAPEST uses. cb == -1 when NOT budgeted
+    // is a sentinel that can never equal costCutoff (always in [0, CS_COST_BUCKETS], see
+    // csSolveCutoff), so takeCost stays false without a separate isOptimal guard on the comparison
+    // itself. The `optimalAcceptBudgeted &&` guard IS load-bearing though: without it, cb == -1 <
+    // costCutoff is ALWAYS true and every optimal candidate would wrongly clear CHEAPEST even with
+    // the toggle off. ---
+    int  cb        = isOptimal ? (optimalAcceptBudgeted ? 0 : -1) : csCostBucket(candDistance[idx], distMax);
+    bool takeCost  = isOptimal ? (optimalAcceptBudgeted && cb < costCutoff) : (cb < costCutoff);
 
     // One state, at most two draws, one store -- even for a candidate sitting on both boundaries.
+    // costBoundary intentionally has NO explicit (!isOptimal) guard: when the toggle is off, cb ==
+    // -1 can never equal costCutoff (>= 0), so the roll is naturally excluded already; when the
+    // toggle is on and cb == 0 == costCutoff, an optimal candidate gets exactly the same
+    // fractional-remainder roll any other bucket-0 candidate gets -- that IS competing for the same
+    // budget, not a case to special-case away.
     bool ordBoundary  = (!takeOrd  && ob == ordCutoff  && pBoundary     > 0.0f);
-    bool costBoundary = ((!isOptimal) && !takeCost && cb == costCutoff && pCostBoundary > 0.0f);
+    bool costBoundary = (!takeCost && cb == costCutoff && pCostBoundary > 0.0f);
     if(ordBoundary || costBoundary)
         {
             curandState seed = randomSeeds[idx];
@@ -1105,14 +1125,39 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
             randomSeeds[idx] = seed;
         }
 
-    if(takeOrd)  { mask |= CS_DOORBIT_FRESH; atomicAdd(&doorCounts[CountingStars::CS_SLOT_EXPLORE],  1ULL); }
-    if(takeCost) { mask |= CS_DOORBIT_CHEAP; atomicAdd(&doorCounts[CountingStars::CS_SLOT_COSTDIST], 1ULL); }
-    // THE COUNTERS OVERLAP DELIBERATELY. Two overlap terms now, not one: OPT_FRESH_BOTH for an
-    // optimal candidate that also cleared FRESHEST, BOTH for a candidate that cleared both
-    // FRESHEST and CHEAPEST (never an optimal one -- CHEAPEST is structurally closed to it). The
-    // exact identity is spelled out where the doors are declared in the header.
-    if(isOptimal && takeOrd) atomicAdd(&doorCounts[CountingStars::CS_SLOT_OPT_FRESH_BOTH], 1ULL);
-    if(takeOrd && takeCost)  atomicAdd(&doorCounts[CountingStars::CS_SLOT_BOTH], 1ULL);
+    // --- OPTIMAL fires unconditionally when !optimalAcceptBudgeted (today's exact behavior), or --
+    // when budgeted -- only for a candidate that just won the SAME cutoff/roll CHEAPEST resolved
+    // above. NEVER also sets CS_DOORBIT_CHEAP (see the !isOptimal guard below): structural
+    // exclusivity between OPTIMAL and CHEAP is preserved by construction either way. ---
+    bool optimalAdmitted = isOptimal && (!optimalAcceptBudgeted || takeCost);
+    if(optimalAdmitted)
+        {
+            mask |= CS_DOORBIT_OPTIMAL;
+            // Historical note: this used to also dedup Part B's region-best guarantee, which is
+            // gone (see d_regionCovered_/CS_DOORBIT_GUAR in the header). Still marks the fact.
+            regionCovered[xR1] = true;
+            // CS_SLOT_COST now counts ADMITTED optimal candidates (h_admittedCost_), not MEASURED
+            // ones (h_optimalCount_) -- identical when the toggle is off, strictly less when a
+            // budgeted candidate loses the roll. (optimal_count - admitted_cost) is the
+            // starvation signal this whole toggle exists to produce.
+            atomicAdd(&doorCounts[CountingStars::CS_SLOT_COST], 1ULL);
+        }
+
+    if(takeOrd) { mask |= CS_DOORBIT_FRESH; atomicAdd(&doorCounts[CountingStars::CS_SLOT_EXPLORE], 1ULL); }
+    // CS_DOORBIT_CHEAP / CS_SLOT_COSTDIST are for NON-optimal winners only: takeCost can now be
+    // true for a budgeted-and-won optimal candidate without that meaning it went through CHEAPEST.
+    if(!isOptimal && takeCost) { mask |= CS_DOORBIT_CHEAP; atomicAdd(&doorCounts[CountingStars::CS_SLOT_COSTDIST], 1ULL); }
+
+    // THE COUNTERS OVERLAP DELIBERATELY. Two overlap terms: OPT_FRESH_BOTH for an ADMITTED optimal
+    // candidate that also cleared FRESHEST, BOTH for a NON-optimal candidate that cleared both
+    // FRESHEST and CHEAPEST. Both are gated on what actually ADMITTED (mask), not on the raw
+    // isOptimal/takeCost results alone -- a budgeted-and-REJECTED optimal candidate that still wins
+    // FRESHEST must not count as an OPTIMAL/FRESHEST overlap, and a budgeted-and-WON optimal
+    // candidate that is also fresh must not double-count into BOTH (defined as the FRESHEST/
+    // CHEAPEST overlap, not OPTIMAL/FRESHEST). The exact identity is spelled out where the doors
+    // are declared in the header.
+    if(optimalAdmitted && takeOrd)        atomicAdd(&doorCounts[CountingStars::CS_SLOT_OPT_FRESH_BOTH], 1ULL);
+    if(!isOptimal && takeOrd && takeCost) atomicAdd(&doorCounts[CountingStars::CS_SLOT_BOTH], 1ULL);
 
     if(mask == CS_DOOR_NONE && acceptFloor > 0.0f)
         {
@@ -1401,7 +1446,7 @@ void CountingStars::updateFrontier()
             CountingStars_acceptPass1_kernel<<<iDivUp(h_frontierNextSize_, h_blockSize_), h_blockSize_>>>(
               d_activeFrontierIdxs_ptr_, h_frontierNextSize_,
               d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_unexploredSampleCosts_ptr_,
-              d_regionNodeCount_ptr_, h_costScale_, h_distMax_,
+              d_regionNodeCount_ptr_, h_costScale_, h_distMax_, h_optimalAcceptBudgeted_,
               d_candDistance_ptr_, d_acceptHistogram_ptr_);
 
             // STILL ONE SYNCHRONISING COPY, and that is what the shared buffer buys: both
@@ -1414,12 +1459,13 @@ void CountingStars::updateFrontier()
 
             // --- SOLVE BOTH CUTOFFS. See csSolveCutoff for the scan and why no rank is needed.
             //
-            // THE SHARES ARE OF B ITSELF, NOT OF (B - optimalCount). v2 handed freshness a share of
+            // THE SHARES ARE OF B ITSELF, NOT OF (B - admittedCost). v2 handed freshness a share of
             // what the optimal door had left, which made the freshness door's size depend on a count
-            // it has nothing to do with. v3's three fractions are fixed and the uncapped optimal
-            // door spends on top of them -- so the frontier is optimalCount + B*(explore + cost) +
-            // guarantee + B*react, and the overshoot is deliberate and measurable rather than
-            // absorbed silently.
+            // it has nothing to do with. v3's three fractions are fixed, and (when
+            // !h_optimalAcceptBudgeted_) the uncapped optimal door spends on top of them -- so the
+            // frontier is admittedCost + B*(explore + cost) + B*react, and the overshoot is
+            // deliberate and measurable rather than absorbed silently. When h_optimalAcceptBudgeted_
+            // is true, admittedCost is folded into the cost_frac*B share instead of spent on top.
             //
             // At frac = 0 the solve returns cutoff 0 / pBoundary 0 and the door admits nothing,
             // which is what makes the sweep's 0 points real ablation arms. ---
@@ -1445,7 +1491,7 @@ void CountingStars::updateFrontier()
               d_regionCovered_ptr_, d_randomSeeds_ptr_,
               h_ordCutoff_, h_pBoundary_,
               h_costCutoff_, h_pCostBoundary_, h_distMax_,
-              h_acceptFloor_,
+              h_acceptFloor_, h_optimalAcceptBudgeted_,
               d_doorCounts_ptr_);
         }
 
@@ -1530,6 +1576,7 @@ void CountingStars::updateFrontier()
     h_admittedExplore_       = (uint)h_doorCounts_[CS_SLOT_EXPLORE];
     h_admittedCostDist_      = (uint)h_doorCounts_[CS_SLOT_COSTDIST];
     h_admittedBoth_          = (uint)h_doorCounts_[CS_SLOT_BOTH];
+    h_admittedCost_          = (uint)h_doorCounts_[CS_SLOT_COST];
     h_admittedOptFreshBoth_  = (uint)h_doorCounts_[CS_SLOT_OPT_FRESH_BOTH];
     h_admittedFloor_         = (uint)h_doorCounts_[CS_SLOT_ACCEPT_FLOOR];
     h_reactivated_           = (uint)h_doorCounts_[CS_SLOT_REACT];

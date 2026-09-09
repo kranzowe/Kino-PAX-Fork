@@ -21,35 +21,34 @@
 static bool        g_dumpViz = false;
 static std::string g_vizDir;
 
-// ---- CountingStars grid: RAMP SLOPE x RAMP FLOOR, explore/cost FIXED ----
+// ---- CountingStars grid: RAMP SLOPE x RAMP FLOOR x COST_FRAC x THE OPTIMAL-ACCEPT-BUDGET TOGGLE ----
 //
-// B IS NOW A RAMP, NOT A SINGLE DERIVED POINT. v3 computed B once, at reset:
+// THIS PASS'S HEADLINE AXIS IS h_optimalAcceptBudgeted_ (OPTIMAL_ACCEPT_BUDGETED below). OPTIMAL
+// admission (a candidate at distance 0 from its region's minimum) is UNCAPPED by default -- every
+// such candidate is admitted, however many show up in one iteration, completely outside the budget.
+// This toggle folds it into the SAME cost_frac * B histogram/cutoff CHEAPEST already spends against
+// instead: an optimal candidate votes into cost bucket 0 (guaranteed -- csCostBucket(0.0f, ...) is
+// always 0) and has to clear that cutoff/boundary-roll like anything else. false (default)
+// reproduces today's unconditional admission byte-for-byte; true is "the cheapest of the cheap"
+// rather than free. This is the CANDIDATE-side mirror of an earlier pass's fold of the dormant-node
+// reactivation GUARANTEE into the reactivation-cost histogram (CS_DOORBIT_GUAR, now permanent, no
+// toggle) -- see h_optimalAcceptBudgeted_ in CountingStars.cuh.
 //
-//     B = floor(fill_frac * MAX_TREE_SIZE / MAX_ITER)
+// Because this "drastically changes everything" about candidate admission, bufferSlope/bufferFloor
+// (the B ramp) and cost_frac are swept ALONGSIDE the toggle this pass, not fixed at one point --
+// unlike earlier passes through this file, which isolated one axis at a time:
 //
-// which traded off against itself in the sweep results: a small constant B found a first solution
-// fast but converged worse; a large one was the reverse. v3.2 makes B a function of how far into the
-// run this iteration is, so the search can behave like the small buffer early and the large buffer
-// late instead of picking one point on that tradeoff for the whole run:
-//
-//     x         = itr / MAX_ITER                             (fraction of the run elapsed)
+//     x         = itr / fill_iters                             (fraction of the run elapsed)
 //     B_frac(x) = bufferSlope * x + bufferFloor
-//     B(x)      = floor(B_frac(x) * MAX_TREE_SIZE / MAX_ITER)
-//
-// bufferSlope = 0 REPRODUCES v3 EXACTLY -- B_frac(x) = bufferFloor for every x -- so that subgrid is
-// a free, structural comparison against the old fixed-buffer design, not a separate baseline that
-// has to be swept again. (bufferSlope, bufferFloor) = (0, 0) reproduces v3's OPTIMAL + GUARANTEE
-// only control arm: both doors are UNCAPPED regardless of B, so B = 0 (floored to 1 by the planner)
-// just switches the FRESHEST / CHEAPEST / reactivation-CHEAPEST doors off, on purpose.
+//     B(x)      = floor(B_frac(x) * MAX_TREE_SIZE / fill_iters)
 //
 // READ goal_frontier_size OUT OF THE CSV rather than deriving it here. It is a PER-ITERATION column
-// now (it always was, but was constant across a run under v3 and so never worth plotting on its own
-// -- see process_countingstars_and_plot.m's new goal_frontier_size-vs-iteration panel), precisely so
-// a second copy of this arithmetic does not have to live in the plot script.
-static const float BUFFER_SLOPES[] = {1.0f, 1.3f, 1.6f};
+// (see process_countingstars_and_plot.m's goal_frontier_size-vs-iteration panel), precisely so a
+// second copy of this arithmetic does not have to live in the plot script.
+static const float BUFFER_SLOPES[] = {0.5f, 1.0f, 1.5f, 2.0f};
 static const int NUM_BUFFER_SLOPES = sizeof(BUFFER_SLOPES) / sizeof(BUFFER_SLOPES[0]);
 
-static const float BUFFER_FLOORS[] = {0.05f, 0.2f};
+static const float BUFFER_FLOORS[] = {0.1f, 0.3f};
 static const int NUM_BUFFER_FLOORS = sizeof(BUFFER_FLOORS) / sizeof(BUFFER_FLOORS[0]);
 
 // How many iterations a run actually completes inside the 10s wall-clock cap at
@@ -63,16 +62,27 @@ static const int NUM_BUFFER_FLOORS = sizeof(BUFFER_FLOORS) / sizeof(BUFFER_FLOOR
 // mismatched fill_iters would make the same (slope, floor) mean a different ramp in each binary.
 static const int CS_RAMP_FILL_ITERS = 700;
 
-// Share of B given to the FRESHEST door (lowest region ordinality), and to CHEAPEST (smallest cost
-// distance). FIXED AT 0.3 EACH THIS PASS, not swept -- isolates the slope/floor grid's own effect.
-// react_frac = 1 - 0.3 - 0.3 = 0.4, comfortably nonnegative.
+// Share of B given to the FRESHEST door (lowest region ordinality). FIXED THIS PASS -- the toggle
+// and cost_frac are the axes under test, and explore_frac isolates their effect from FRESHEST's own.
 //
 // The label tokens are round(1000 x frac), matching v2's `_f` convention -- see countingStarsLabel().
-static const float EXPLORE_FRACS[] = {0.3f};
+static const float EXPLORE_FRACS[] = {0.2f};
 static const int NUM_EXPLORE_FRACS = sizeof(EXPLORE_FRACS) / sizeof(EXPLORE_FRACS[0]);
 
-static const float COST_FRACS[] = {0.3f};
+// Share of B given to the CHEAPEST door (smallest cost distance) -- SWEPT this pass, since it is
+// directly what an optimal candidate now competes for when OPTIMAL_ACCEPT_BUDGETED is true: a
+// bigger cost_frac gives the (now potentially optimal-inclusive) CHEAPEST door more room before it
+// starves anyone.
+static const float COST_FRACS[] = {0.3f, 0.6f};
 static const int NUM_COST_FRACS = sizeof(COST_FRACS) / sizeof(COST_FRACS[0]);
+
+// ---- OPTIMAL-ACCEPT-BUDGET toggle: THE HEADLINE AXIS THIS PASS ----
+//
+// false is the exact off-default (see h_optimalAcceptBudgeted_ in CountingStars.cuh) -- kept first
+// so it reads as the free structural control every earlier point already ran under, same
+// convention this file uses for its other axes' own "off" point.
+static const bool OPTIMAL_ACCEPT_BUDGETED[] = {false, true};
+static const int NUM_OPTIMAL_ACCEPT_BUDGETED = sizeof(OPTIMAL_ACCEPT_BUDGETED) / sizeof(OPTIMAL_ACCEPT_BUDGETED[0]);
 
 // CS_MAX_BLOCKS IS GONE (v3.3). Fan-out is no longer region-keyed with a swept boost size -- a node
 // now gets one propagation block per door that admitted it (nodeBlocks = popcount(door)), which is
@@ -99,13 +109,15 @@ static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0
 // member of its list -- the flag selects BY VALUE, so a derived point outside the grid would run
 // nothing at all. cross_check_countingstars_grid.py asserts exactly that.
 //
-// CS_DERIVED_EXPLORE_FRAC / CS_DERIVED_COST_FRAC MUST equal EXPLORE_FRACS[0] / COST_FRACS[0] now
-// that those are single-element arrays (0.3f) again.
-static const float CS_DERIVED_BUFFER_SLOPE = 1.3f;   // middle of {1.0, 1.3, 1.6}; no tuning data yet
-static const float CS_DERIVED_BUFFER_FLOOR = 0.05f;  // a member of {0.05, 0.2}; no tuning data yet
-static const float CS_DERIVED_EXPLORE_FRAC = 0.3f;
-static const float CS_DERIVED_COST_FRAC    = 0.3f;
-static const float CAP_DERIVED             = 0.03f;
+// CS_DERIVED_EXPLORE_FRAC MUST equal EXPLORE_FRACS[0] now that it is a single-element array again.
+// CS_DERIVED_OPTIMAL_ACCEPT_BUDGETED is new, and must be a member of OPTIMAL_ACCEPT_BUDGETED for
+// the same reason the other CS_DERIVED_* constants must be members of their own arrays.
+static const float CS_DERIVED_BUFFER_SLOPE  = 1.0f;    // a member of {0.5, 1.0, 1.5, 2.0}; no tuning data yet
+static const float CS_DERIVED_BUFFER_FLOOR  = 0.1f;    // a member of {0.1, 0.3}; no tuning data yet
+static const float CS_DERIVED_EXPLORE_FRAC  = 0.2f;
+static const float CS_DERIVED_COST_FRAC     = 0.3f;    // a member of {0.3, 0.6}; no tuning data yet
+static const bool  CS_DERIVED_OPTIMAL_ACCEPT_BUDGETED = false;   // today's control arm
+static const float CAP_DERIVED              = 0.03f;
 
 static bool g_singlePoint = false;
 
@@ -116,17 +128,19 @@ static bool capSkip(float cap)
 
 // Single source of truth for the CountingStars grid's shape: the runner and the banner both call
 // it, so the printed point count can never drift from the grid actually executed.
-static bool countingStarsSkip(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac)
+static bool countingStarsSkip(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac,
+                              bool optimalAcceptBudgeted)
 {
-    // FULL FACTORIAL: 3 slope x 2 floor x 1 explore x 1 cost = 6 points. --single-point is the only
-    // skip. The two fraction axes cannot sum above 0.6 on this grid (both fixed at 0.3), so nothing
-    // is skipped for a negative react_frac -- but cross_check_countingstars_grid.py asserts it
-    // rather than trusting the values.
+    // FULL FACTORIAL: 4 slope x 2 floor x 1 explore x 2 cost x 2 toggle = 32 points. --single-point
+    // is the only skip. The two fraction axes cannot sum above 0.8 on this grid, so nothing is
+    // skipped for a negative react_frac -- but cross_check_countingstars_grid.py asserts it rather
+    // than trusting the values.
     if(!g_singlePoint) return false;
     return fabsf(bufferSlope - CS_DERIVED_BUFFER_SLOPE) > 1e-6f
         || fabsf(bufferFloor - CS_DERIVED_BUFFER_FLOOR) > 1e-6f
         || fabsf(exploreFrac - CS_DERIVED_EXPLORE_FRAC) > 1e-6f
-        || fabsf(costFrac - CS_DERIVED_COST_FRAC) > 1e-6f;
+        || fabsf(costFrac - CS_DERIVED_COST_FRAC) > 1e-6f
+        || optimalAcceptBudgeted != CS_DERIVED_OPTIMAL_ACCEPT_BUDGETED;
 }
 
 static int countingStarsPointCount()
@@ -136,7 +150,9 @@ static int countingStarsPointCount()
     for(int fi = 0; fi < NUM_BUFFER_FLOORS; fi++)
     for(int ei = 0; ei < NUM_EXPLORE_FRACS; ei++)
     for(int ci = 0; ci < NUM_COST_FRACS; ci++)
-        if(!countingStarsSkip(BUFFER_SLOPES[si], BUFFER_FLOORS[fi], EXPLORE_FRACS[ei], COST_FRACS[ci])) n++;
+    for(int oi = 0; oi < NUM_OPTIMAL_ACCEPT_BUDGETED; oi++)
+        if(!countingStarsSkip(BUFFER_SLOPES[si], BUFFER_FLOORS[fi], EXPLORE_FRACS[ei], COST_FRACS[ci],
+                              OPTIMAL_ACCEPT_BUDGETED[oi])) n++;
     return n;
 }
 
@@ -149,33 +165,36 @@ static int capAxisPointCount(const float* caps, int nCaps)
     return n;
 }
 
-// "CountingStars_bs180_bf5_ef300_cf300". MUST start with a name loadRuns() dispatches on.
+// "CountingStars_bs100_bf10_ef200_cf300_oboff". MUST start with a name loadRuns() dispatches on.
 //
 //   bs   bufferSlope, round(100 x float)
 //   bf   bufferFloor, round(100 x float)   -- B(x) is DERIVED from these, and goal_frontier_size is
 //                                             a per-ITERATION CSV column, not a per-run constant
-//   ef   explore_frac, round(1000 x float)  -- fixed at 0.3 this pass, still tokened (see below)
-//   cf   cost_frac,    round(1000 x float)  -- fixed at 0.3 this pass, still tokened (see below)
+//   ef   explore_frac, round(1000 x float)  -- fixed at 0.2 this pass, still tokened (see below)
+//   cf   cost_frac,    round(1000 x float)  -- SWEPT this pass
+//   ob   h_optimalAcceptBudgeted_, "on"/"off" -- NEW, this pass's headline axis. "on"/"off" rather
+//        than a numeric token because it is a bool, not a scaled float -- matching this file's own
+//        cleanLabel() precedent (r2on/r2off).
 //
-// THE `_mb` TOKEN IS GONE (v3.3) with maxBlocks itself -- fan-out is door-count now, not a swept
-// boost size, so there is nothing left for that token to carry. v3.2's CSVs are
-// `_bs..._bf..._ef..._cf..._mb...` and cannot collide with this 4-token shape, so they simply stop
-// loading -- intended for a planner whose fan-out mechanism changed, not a loss.
+// bs/bf STAY AT 100x, matching v3's `ff` -- both are coarse axes where `bs200`/`bf30` read directly
+// as 2.0/0.3. ef/cf STAY AT 1000x, matching v3's `_f` convention, unchanged by this pass.
 //
-// bs/bf STAY AT 100x, matching v3's `ff` -- both are coarse axes (bufferSlope up to 2.2, bufferFloor
-// up to 0.2) where `bs220`/`bf20` read directly as 2.2/0.2. ef/cf STAY AT 1000x, matching v3's `_f`
-// convention, unchanged by this pass.
+// ef's TOKEN STAYS IN THE LABEL EVEN THOUGH FIXED THIS PASS: a later rerun at a different fixed
+// value does not collide with these CSVs under the same name.
 //
-// ef/cf TOKENS STAY IN THE LABEL EVEN THOUGH FIXED THIS PASS: a later rerun at different fixed
-// values does not collide with these CSVs under the same name.
-static std::string countingStarsLabel(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac)
+// Earlier passes through this file used and fully retired `_rg` (guarantee-budget toggle) and `_ab`
+// (ancestor-biasing toggle) tokens here -- both features were reverted; `_ob` is new and unused by
+// either, confirmed via git history.
+static std::string countingStarsLabel(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac,
+                                      bool optimalAcceptBudgeted)
 {
-    char buf[160];
-    snprintf(buf, sizeof(buf), "CountingStars_bs%d_bf%d_ef%d_cf%d",
+    char buf[176];
+    snprintf(buf, sizeof(buf), "CountingStars_bs%d_bf%d_ef%d_cf%d_ob%s",
              (int)lroundf(100.0f * bufferSlope),
              (int)lroundf(100.0f * bufferFloor),
              (int)lroundf(1000.0f * exploreFrac),
-             (int)lroundf(1000.0f * costFrac));
+             (int)lroundf(1000.0f * costFrac),
+             optimalAcceptBudgeted ? "on" : "off");
     return std::string(buf);
 }
 
@@ -226,16 +245,19 @@ struct IterationData
     //   2. IS THE FRONTIER DOING MORE WORK. prop_per_node = prop_attempted / frontier_size, against
     //      KinoPaxPlus's bf, which reaches 40,000 at F = 10. THE POINT OF CONTROLLING F IS
     //      CONTROLLING THIS. If it does not move with B, B is not the lever.
-    //   3. WHICH DOOR BUILT THE TREE. optimal_count / admitted_explore / admitted_costdist /
+    //   3. WHICH DOOR BUILT THE TREE. admitted_cost / admitted_explore / admitted_costdist /
     //      reactivated_best / reactivated_count, plus ord_cutoff and cost_cutoff_dist. A cutoff
     //      RISING over a run is expected -- regions fill, so both signals get scarce. Pinned at 0
     //      means no candidate is ever good enough on that signal and the fraction is doing nothing.
     //
-    //      admitted_explore, optimal_count AND admitted_costdist OVERLAP (v3.3: OPTIMAL now also
+    //      admitted_explore, admitted_cost AND admitted_costdist OVERLAP (v3.3: OPTIMAL now also
     //      competes for FRESHEST). admitted_opt_fresh_both and admitted_both are what make them add
     //      back up:
-    //      admitted == optimal_count + admitted_explore + admitted_costdist + admitted_floor
+    //      admitted == admitted_cost + admitted_explore + admitted_costdist + admitted_floor
     //                - admitted_opt_fresh_both - admitted_both.
+    //      READ admitted_cost HERE, NOT optimal_count (v3.4): they coincide only when
+    //      optimalAcceptBudgeted is off. (optimal_count - admitted_cost) is the optimal-door
+    //      starvation count when the toggle is on.
     //   4. BLOCK IDENTITY. frontier_repeat_size must equal the sum of the frontier's admission-time
     //      block counts after scaling, and prop_attempted / frontier_repeat_size must be EXACTLY 32
     //      on every iteration. Kernel1 is retained by construction, so below 32 is a defect. v3.3:
@@ -251,6 +273,11 @@ struct IterationData
     // nothing consumes the plan and reactivated_best is the guarantee's realised size, counted
     // exactly on the device.
     int   optimal_count;
+    // v3.4: what pass 2 actually ADMITTED via CS_DOORBIT_OPTIMAL, as opposed to optimal_count
+    // (what pass 1 MEASURED at distance 0). Identical to optimal_count when
+    // h_optimalAcceptBudgeted_ is off; strictly less when on and the budget starves some of them --
+    // (optimal_count - admitted_cost) is that starvation count, the whole point of the toggle.
+    int   admitted_cost;
     int   ord_cutoff;
     int   budget_used;
     // ---- v3 / v3.2 ----
@@ -316,6 +343,7 @@ static void clearCountingStarsCols(IterationData& d)
     d.prop_attempted = -1;
     d.frontier_repeat_size = -1;
     d.optimal_count = -1;
+    d.admitted_cost = -1;
     d.ord_cutoff = -1;
     d.budget_used = -1;
     d.goal_frontier_size = -1;
@@ -480,8 +508,8 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
                  << "_run" << result.run_number << ".csv";
 
     std::ofstream file(filename.str());
-    // score_floor / cost_scale are appended, not inserted -- the plot script reads columns by name
-    // via getCol(), which returns [] for a missing one, so older CSVs still load.
+    // score_floor / cost_scale / admitted_cost are appended, not inserted -- the plot script reads
+    // columns by name via getCol(), which returns [] for a missing one, so older CSVs still load.
     file << "iteration,frontier_size,tree_size,elapsed_time_ms,best_cost,"
          << "reactivated,"
          << "score_floor,cost_scale,"
@@ -493,7 +521,8 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
          << "admitted_explore,admitted_costdist,admitted_both,"
          << "admitted_opt_fresh_both,admitted_floor,"
          << "reactivated_cost,reactivated_count,reactivated_best,"
-         << "block_ceiling,block_scale\n";
+         << "block_ceiling,block_scale,"
+         << "admitted_cost\n";
 
     for(const auto& d : result.per_iteration)
     {
@@ -524,7 +553,8 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
              << d.reactivated_count << ","
              << d.reactivated_best << ","
              << std::fixed << std::setprecision(1) << d.block_ceiling << ","
-             << std::fixed << std::setprecision(4) << d.block_scale << "\n";
+             << std::fixed << std::setprecision(4) << d.block_scale << ","
+             << d.admitted_cost << "\n";
     }
     file.close();
 }
@@ -1023,8 +1053,10 @@ void runKPAXCapBenchmark(
 // ========================================================================
 // CountingStars v3 benchmark + runner.
 // A DERIVED NODE BUDGET split by three fixed shares: explore_frac to the freshest regions,
-// cost_frac to the smallest cost distances, and the rest to a uniform draw -- with the optimal door
-// and the region-best guarantee uncapped on top.
+// cost_frac to the smallest cost distances, and the rest to a uniform draw -- with only the
+// optimal door uncapped on top by default (the region-best reactivation guarantee that used to
+// also be uncapped is gone permanently; see CS_DOORBIT_GUAR). v3.4: optimalAcceptBudgeted, this
+// pass's headline axis, can fold that remaining uncapped door into cost_frac's own budget too.
 // ========================================================================
 RunResult benchmarkCountingStars(
     CountingStars& planner,
@@ -1041,6 +1073,7 @@ RunResult benchmarkCountingStars(
     float bufferFloor,
     float exploreFrac,
     float costFrac,
+    bool optimalAcceptBudgeted,
     const std::string& label)
 {
     // Override the planner's defaults for this run. resetPlanner (called below) does not touch the
@@ -1065,6 +1098,7 @@ RunResult benchmarkCountingStars(
     planner.h_bufferFloor_ = bufferFloor;
     planner.h_exploreFrac_ = exploreFrac;
     planner.h_costFrac_    = costFrac;
+    planner.h_optimalAcceptBudgeted_ = optimalAcceptBudgeted;
 
     RunResult result;
     result.delta_label = label;
@@ -1115,13 +1149,15 @@ RunResult benchmarkCountingStars(
 
         // --- Frontier diagnostics (outside the timed window) ---
         // reactivated counts frontier bits among the PRE-EXISTING tree, i.e. exactly Part B's
-        // output -- and v3.1 gave Part B a THIRD arm, so the identity is
+        // output. Part B has TWO live arms (cheapest, then the completeness floor; the region-best
+        // guarantee that made it three is gone permanently), so the identity is
         //
         //     reactivated  ==  reactivated_best + reactivated_cost + reactivated_count
         //
-        // NOT reactivated_count alone, which is now only the completeness floor. The two sides are
-        // computed independently (a thrust::count here, atomicAdds in the kernel), so the sum is a
-        // free check on all three arms of Part B.
+        // with reactivated_best a free runtime invariant that must read exactly 0 every iteration
+        // (its arm cannot fire any more). NOT reactivated_count alone, which is the completeness
+        // floor. The two sides are computed independently (a thrust::count here, atomicAdds in the
+        // kernel), so the sum is a free check on both live arms.
         int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
                                              planner.d_frontier_.begin() + oldTreeSize, true);
 
@@ -1142,6 +1178,7 @@ RunResult benchmarkCountingStars(
         d.prop_attempted       = (int)planner.h_propAttempted_;
         d.frontier_repeat_size = (int)planner.h_frontierRepeatSize_;
         d.optimal_count        = (int)planner.h_optimalCount_;
+        d.admitted_cost        = (int)planner.h_admittedCost_;
         d.ord_cutoff           = planner.h_ordCutoff_;
         d.budget_used          = (int)planner.h_budgetUsed_;
         // B is DERIVED by the planner EVERY ITERATION now, so it is read back out of it rather than
@@ -1200,32 +1237,39 @@ void runCountingStarsBenchmark(
     for(int fi = 0; fi < NUM_BUFFER_FLOORS; fi++)
     for(int ei = 0; ei < NUM_EXPLORE_FRACS; ei++)
     for(int ci = 0; ci < NUM_COST_FRACS; ci++)
+    for(int oi = 0; oi < NUM_OPTIMAL_ACCEPT_BUDGETED; oi++)
     {
-        const float bufferSlope = BUFFER_SLOPES[si];
-        const float bufferFloor = BUFFER_FLOORS[fi];
-        const float exploreFrac = EXPLORE_FRACS[ei];
-        const float costFrac    = COST_FRACS[ci];
+        const float bufferSlope           = BUFFER_SLOPES[si];
+        const float bufferFloor           = BUFFER_FLOORS[fi];
+        const float exploreFrac           = EXPLORE_FRACS[ei];
+        const float costFrac              = COST_FRACS[ci];
+        const bool  optimalAcceptBudgeted = OPTIMAL_ACCEPT_BUDGETED[oi];
 
-        if(countingStarsSkip(bufferSlope, bufferFloor, exploreFrac, costFrac)) continue;
+        if(countingStarsSkip(bufferSlope, bufferFloor, exploreFrac, costFrac, optimalAcceptBudgeted)) continue;
 
-        const std::string label = countingStarsLabel(bufferSlope, bufferFloor, exploreFrac, costFrac);
+        const std::string label = countingStarsLabel(bufferSlope, bufferFloor, exploreFrac, costFrac,
+                                                      optimalAcceptBudgeted);
 
-        // B's RANGE over the run, not a single value: B(x=0) = floor, B(x=1) = slope + floor.
-        int bStart = (int)floorf(bufferFloor * float(MAX_TREE_SIZE) / float(MAX_ITER));
-        int bEnd   = (int)floorf((bufferSlope + bufferFloor) * float(MAX_TREE_SIZE) / float(MAX_ITER));
+        // B's RANGE over the run, not a single value: B(x=0) = floor, B(x=1) = slope + floor. Uses
+        // CS_RAMP_FILL_ITERS, matching what planner.h_fillIters_ is actually set to below -- not
+        // MAX_ITER, which is not the ramp's real denominator (see CS_RAMP_FILL_ITERS above).
+        int bStart = (int)floorf(bufferFloor * float(MAX_TREE_SIZE) / float(CS_RAMP_FILL_ITERS));
+        int bEnd   = (int)floorf((bufferSlope + bufferFloor) * float(MAX_TREE_SIZE) / float(CS_RAMP_FILL_ITERS));
         printf("  --- bufferSlope = %.2f, bufferFloor = %.2f (B: %d -> %d), explore_frac = %.3f, "
-               "cost_frac = %.3f, react_frac = %.3f (%s) ---\n",
+               "cost_frac = %.3f, react_frac = %.3f, optimalAcceptBudgeted = %s (%s) ---\n",
                bufferSlope, bufferFloor, bStart, bEnd,
-               exploreFrac, costFrac, 1.0f - exploreFrac - costFrac, label.c_str());
+               exploreFrac, costFrac, 1.0f - exploreFrac - costFrac,
+               optimalAcceptBudgeted ? "true" : "false", label.c_str());
         CountingStars planner;
         for(int run = 0; run < numRuns; run++)
         {
             RunResult result = benchmarkCountingStars(planner, deltaLabel, environment_name, run,
                                                  h_initial, h_goal, d_obstacles,
                                                  numObstacles, maxIterations, maxTimeMs,
-                                                 bufferSlope, bufferFloor, exploreFrac, costFrac, label);
-            printf("  bs=%.2f bf=%.2f ef=%.3f cf=%.3f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-                   bufferSlope, bufferFloor, exploreFrac, costFrac,
+                                                 bufferSlope, bufferFloor, exploreFrac, costFrac,
+                                                 optimalAcceptBudgeted, label);
+            printf("  bs=%.2f bf=%.2f ef=%.3f cf=%.3f ob=%s Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                   bufferSlope, bufferFloor, exploreFrac, costFrac, optimalAcceptBudgeted ? "on" : "off",
                    run + 1, numRuns, result.total_time_seconds,
                    result.total_iterations, result.final_tree_size, result.first_solution_iteration,
                    result.first_solution_cost, result.final_best_cost);
@@ -1409,9 +1453,9 @@ int main(int argc, char* argv[])
     // tree-growth visualization (Data/Benchmarks/KinoPaxStarCostTuning/viz/).
     //
     // --single-point restricts every axis to its derived operating point (CountingStars at
-    // bufferSlope 1.8, bufferFloor 0.05, explore_frac 0.3, cost_frac 0.3). The finer discretizations
-    // use it: the grid proper happens at the coarse delta, and the finer ones only need the
-    // operating point so the deltas can be overlaid like with like.
+    // bufferSlope 1.0, bufferFloor 0.1, explore_frac 0.2, cost_frac 0.3, optimalAcceptBudgeted
+    // false). The finer discretizations use it: the grid proper happens at the coarse delta, and
+    // the finer ones only need the operating point so the deltas can be overlaid like with like.
     //
     // --only-kinopaxplus runs the KinoPaxPlus series and nothing else. The discretization is a
     // compile-time property (NUM_R1_REGIONS via config.h), so the only way to get KinoPaxPlus at a
@@ -1479,20 +1523,32 @@ int main(int argc, char* argv[])
         printf("} x cost_frac {");
         for(int i = 0; i < NUM_COST_FRACS; i++)
             printf("%s%.2f", i ? ", " : "", COST_FRACS[i]);
+        printf("}\n                x optimalAcceptBudgeted {");
+        for(int i = 0; i < NUM_OPTIMAL_ACCEPT_BUDGETED; i++)
+            printf("%s%s", i ? ", " : "", OPTIMAL_ACCEPT_BUDGETED[i] ? "true" : "false");
         printf("}\n");
         printf("                B IS A RAMP, RECOMPUTED EVERY ITERATION:\n"
-               "                  x = itr/MAX_ITER, B(x) = floor((slope*x + floor) * MAX_TREE_SIZE / MAX_ITER)\n"
+               "                  x = itr/fill_iters, B(x) = floor((slope*x + floor) * MAX_TREE_SIZE / fill_iters)\n"
                "                  B(x=0) = floor(bufferFloor * ...) = ");
         for(int i = 0; i < NUM_BUFFER_FLOORS; i++)
-            printf("%s%d", i ? " / " : "", (int)floorf(BUFFER_FLOORS[i] * float(MAX_TREE_SIZE) / float(MAX_ITER)));
+            printf("%s%d", i ? " / " : "", (int)floorf(BUFFER_FLOORS[i] * float(MAX_TREE_SIZE) / float(CS_RAMP_FILL_ITERS)));
         printf("\n                  B(x=1) = floor((slope+floor) * ...), at bufferSlope=%.2f = ", BUFFER_SLOPES[NUM_BUFFER_SLOPES - 1]);
         for(int i = 0; i < NUM_BUFFER_FLOORS; i++)
             printf("%s%d", i ? " / " : "", (int)floorf((BUFFER_SLOPES[NUM_BUFFER_SLOPES - 1] + BUFFER_FLOORS[i])
-                                                        * float(MAX_TREE_SIZE) / float(MAX_ITER)));
+                                                        * float(MAX_TREE_SIZE) / float(CS_RAMP_FILL_ITERS)));
         printf("\n");
-        printf("                bufferSlope = 0 REPRODUCES v3's CONSTANT B EXACTLY -- that subgrid\n"
-               "                is a free, structural comparison against the old fixed-buffer\n"
-               "                design, not a separate baseline to sweep again.\n"
+        printf("                THIS PASS'S HEADLINE AXIS IS optimalAcceptBudgeted: OPTIMAL\n"
+               "                admission (distance 0 from the region minimum) is UNCAPPED by\n"
+               "                default -- false reproduces that byte-for-byte. true folds it into\n"
+               "                the SAME cost-distance histogram/cutoff CHEAPEST already spends\n"
+               "                against (it always lands in bucket 0), so it has to win a\n"
+               "                cost_frac * B slot like anything else -- \"the cheapest of the\n"
+               "                cheap\" rather than free. Read optimal_count (measured) against\n"
+               "                admitted_cost (actually admitted) -- they coincide when false,\n"
+               "                and their gap is the starvation this toggle exists to measure.\n"
+               "                bufferSlope/bufferFloor/cost_frac are SWEPT ALONGSIDE the toggle\n"
+               "                this pass, not fixed at one point, since folding OPTIMAL into the\n"
+               "                budget changes how much room the other doors need.\n"
                "                THREE FIXED SHARES OF B: explore_frac to the FRESHEST door,\n"
                "                cost_frac to the CHEAPEST door (smallest cost distance, chosen\n"
                "                by a log-bucketed histogram rather than the sort that kept\n"
@@ -1500,24 +1556,25 @@ int main(int argc, char* argv[])
                "                selection doors are a UNION over one candidate pool, so\n"
                "                admitted_explore and admitted_costdist overlap and admitted_both is\n"
                "                what makes them add back up.\n"
-               "                THE OPTIMAL DOOR AND THE PART B GUARANTEE ARE UNCAPPED and spend on\n"
-               "                top of those shares. Both are bounded by NUM_R1_REGIONS (%d) rather\n"
-               "                than by B, so B binds only ABOVE that count; below it budget_used\n"
-               "                runs over B and the two fractions steer a minority of the frontier.\n"
+               "                ONLY THE OPTIMAL DOOR CAN BE UNCAPPED (when !optimalAcceptBudgeted)\n"
+               "                and spends on top of those shares -- the region-best reactivation\n"
+               "                guarantee that used to also be uncapped is gone permanently (see\n"
+               "                CS_DOORBIT_GUAR). OPTIMAL is bounded by NUM_R1_REGIONS (%d) rather\n"
+               "                than by B, so B binds only ABOVE that count when uncapped; below it\n"
+               "                budget_used runs over B and the two fractions steer a minority of\n"
+               "                the frontier.\n"
                "                v3.3: OPTIMAL ALSO COMPETES FOR FRESHEST now (only CHEAPEST stays\n"
                "                closed to it). FAN-OUT IS DOOR-COUNT: a node gets one propagation\n"
                "                block per door that admitted it (popcount of the door mask), full\n"
                "                stop -- no region-thinness signal, no swept boost size.\n"
                "                READ FIRST: the goal_frontier_size-vs-iteration panel (does the\n"
-               "                realized ramp match slope*x+floor), then\n"
-               "                budget_used/goal_frontier_size as a CURVE against a now-MOVING\n"
-               "                target, then admitted_costdist against admitted_explore, then\n"
-               "                cost_cutoff_dist against dist_max -- a collapse toward dist_max/2^21\n"
-               "                means every candidate is in bucket 0 and the cost door has degraded\n"
-               "                to a uniform draw.\n"
-               "                (bufferSlope, bufferFloor) = (0, 0) IS THE DEEPEST CONTROL: a\n"
-               "                constant B = 0 (floored to 1), so the frontier is optimal +\n"
-               "                guarantee + a trickle draw and nothing else.\n"
+               "                realized ramp match slope*x+floor), then the tradeoff scatter\n"
+               "                across optimalAcceptBudgeted at each delta, then optimal_count\n"
+               "                against admitted_cost, then budget_used/goal_frontier_size as a\n"
+               "                CURVE against a now-MOVING target, then admitted_costdist against\n"
+               "                admitted_explore, then cost_cutoff_dist against dist_max -- a\n"
+               "                collapse toward dist_max/2^21 means every candidate is in bucket 0\n"
+               "                and the cost door has degraded to a uniform draw.\n"
                "                -> %d points x %d runs = %d runs\n",
                NUM_R1_REGIONS, csPoints, NUM_CS_RUNS, csPoints * NUM_CS_RUNS);
         printf("CleanCost:      r2 OFF, w %.2f, k %.2f, cap %.2f = 1 point x %d runs = %d runs\n",
