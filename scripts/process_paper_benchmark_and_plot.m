@@ -1,16 +1,19 @@
-%% Paper Benchmark Plots - fixed 7-planner comparison, 3 panels + summary table per (env, metric)
+%% Paper Benchmark Plots - fixed 5-planner comparison, 3 panels + summary table per (env, metric)
 % Reads per-iteration CSVs produced by examples/gpu/paper_benchmark.cu (run via
 % scripts/run_paper_benchmark.sh).
 %
 % A FIXED COMPARISON, not a sweep -- there is no grid here, so the series list below is NOT built
 % from nested loops over swept parameters the way process_countingstars_and_plot.m's is. It is
-% seven already-chosen operating points (KPAX, KinoPaxPlus, KinoPaxSTARTrue at ancestorPrune 0 and
-% 1, CountingStars at bufferSlope 1.0, 0.5 and 1.5), each run at all three deltas -- 21 series
-% total, overlaid inside each figure. KinoPaxSTARTrue (both points hold h_syclopCap_ at its 1.0
-% no-op default, varying only h_ancestorPrune_) replaces KinoPaxSTARCleanCost as the non-
-% CountingStars "STAR" reference this pass -- the naive OR-fusion of KPAX and KinoPaxPlus (anc0 ==
-% stock KinoPaxSTARNoGoalBias exactly) tells a "beats the naive fusion of its two parents" story,
-% rather than CleanCost's "beats one already cost-tuned competitor." Same three panels as
+% five already-chosen operating points (KPAX, KinoPaxPlus, KinoPaxSTARTrue at ancestorPrune 0 and
+% 1, and ONE CountingStars point), each run at all three deltas -- 15 series total, overlaid
+% inside each figure. CountingStars runs the single operating point
+% (bufferSlope 1.2, bufferFloor 0.3, explore_frac 0.1, cost_frac 0.8) countingstars_sweep.cu's
+% tuning pass picked -- earlier passes here ran a small bufferSlope grid instead. KinoPaxSTARTrue
+% (both points hold h_syclopCap_ at its 1.0 no-op default, varying only h_ancestorPrune_) replaces
+% KinoPaxSTARCleanCost as the non-CountingStars "STAR" reference this pass -- the naive OR-fusion
+% of KPAX and KinoPaxPlus (anc0 == stock KinoPaxSTARNoGoalBias exactly) tells a "beats the naive
+% fusion of its two parents" story, rather than CleanCost's "beats one already cost-tuned
+% competitor." Same three panels as
 % process_countingstars_summary_plots.m (this script's direct ancestor -- loadRuns and every plot
 % helper below are copies of its versions), plus a results table this one adds:
 %
@@ -64,54 +67,50 @@ metricYLabels = {'Path Cost (workspace path length)'};
 
 % Delta axis -- OVERLAID inside each figure, encoded as line WIDTH. The filename token is
 % sprintf('%s_%s', delta, metric), e.g. 'fine_effort'. "fine" and "tiny" refine different axes
-% (workspace vs. velocity) -- see run_paper_benchmark.sh -- but are NO LONGER an identical-region-
-% count pair this pass (216,000 vs 373,248).
+% (workspace vs. velocity) -- see run_paper_benchmark.sh -- and are NOT an identical-region-count
+% pair (262,144 vs 729,000); each moved independently to the values countingstars_sweep.cu's
+% tuning pass used.
 deltas      = {'large', 'fine', 'tiny'};
-deltaTitles = {'9k', '216k W-refined', '373k V-refined'};
+deltaTitles = {'9k', '262k W-refined', '729k V-refined'};
 deltaWidths = [1.0, 1.8, 2.6];
 
 maxTreeSize = 3000000;   % MAX_TREE_SIZE in config.h -- denominator for the table's Final Tree (%)
 
-% --- The seven FIXED series (not swept). Label tokens must match examples/gpu/paper_benchmark.cu's
+% --- The five FIXED series (not swept). Label tokens must match examples/gpu/paper_benchmark.cu's
 % trueLabel() / countingStarsLabel() exactly: round(100 x float) for cap/bs/bf, round(1000 x
 % float) for ef/cf. ---
 trueCap = 100;   % syclopCap 1.0 (no cap) at both KinoPaxSTARTrue points below
-csFloor = 5; csExplore = 200; csCost = 200;                              % bufferFloor 0.05, ef/cf 0.2
-csSlopeA = 100;   % bufferSlope 1.0
-csSlopeB = 50;    % bufferSlope 0.5
-csSlopeC = 150;   % bufferSlope 1.5
+
+% CountingStars' single operating point -- the one countingstars_sweep.cu's tuning pass picked,
+% now that OPTIMAL admission is permanently budgeted (see CountingStars.cuh): bufferSlope 1.2,
+% bufferFloor 0.3, explore_frac 0.1, cost_frac 0.8. Earlier passes here ran a small bufferSlope
+% grid instead; this is now one fixed point, like every other series in this file.
+csSlope = 120; csFloor = 30; csExplore = 100; csCost = 800;
 
 baseNames = { ...
     'KPAX', ...
     'KinoPaxPlus', ...
     sprintf('KinoPaxSTARTrue_cap%d_anc%d', trueCap, 0), ...
     sprintf('KinoPaxSTARTrue_cap%d_anc%d', trueCap, 1), ...
-    sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d', csSlopeA, csFloor, csExplore, csCost), ...
-    sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d', csSlopeB, csFloor, csExplore, csCost), ...
-    sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d', csSlopeC, csFloor, csExplore, csCost) ...
+    sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d', csSlope, csFloor, csExplore, csCost) ...
 };
 baseDisplay = { ...
     'KPAX', ...
     'KinoPaxPlus', ...
     'KinoPaxSTARTrue (naive, no prune)', ...
     'KinoPaxSTARTrue (naive, stale-best prune)', ...
-    'CountingStars (slope 1.0)', ...
-    'CountingStars (slope 0.5)', ...
-    'CountingStars (slope 1.5)' ...
+    'CountingStars (slope 1.2, floor 0.3, ef 0.1, cf 0.8)' ...
 };
 % color = planner identity: KPAX near-black, KinoPaxPlus blue, the two KinoPaxSTARTrue naive
-% points as two shades of crimson, the three CountingStars points as three shades of a separate
-% (amber) color -- each "family" (naive STAR, CountingStars) reads as shades of one hue, visually
-% distinct from the two single-color baselines and from each other.
+% points as two shades of crimson, CountingStars amber -- each "family" (naive STAR,
+% CountingStars) reads as its own hue, visually distinct from the two single-color baselines.
 baseColors = [ ...
     0.10 0.10 0.10;    % KPAX
     0.20 0.40 0.80;    % KinoPaxPlus
     0.70 0.15 0.20;    % KinoPaxSTARTrue anc0 (lighter crimson)
     0.45 0.05 0.10;    % KinoPaxSTARTrue anc1 (darker crimson)
-    0.95 0.70 0.20;    % CountingStars slope 1.0 (lightest amber)
-    0.75 0.48 0.10;    % CountingStars slope 0.5 (mid amber)
-    0.45 0.28 0.03 ];  % CountingStars slope 1.5 (darkest amber)
-baseMarkers = {'s', 'd', 'p', 'h', 'o', '^', 'v'};
+    0.85 0.55 0.10 ];  % CountingStars (amber)
+baseMarkers = {'s', 'd', 'p', 'h', 'o'};
 
 % --- Build the series arrays: (planner, delta) pairs, planner-major so the legend and table group
 % all three deltas together per planner. ---
@@ -250,9 +249,7 @@ for ei = 1:numel(environments)
 
         markerKey = sprintf(['lower-left is better (fast and cheap); width = delta (thin->thick = ' ...
                              'large->fine->tiny); \x25a1 KPAX, \x25c7 KinoPaxPlus, ' ...
-                             '\x2606 True(anc0), \x2605 True(anc1), ' ...
-                             '\x25cb CountingStars(1.0), \x25b3 CountingStars(0.5), ' ...
-                             '\x25bd CountingStars(1.5)']);
+                             '\x2606 True(anc0), \x2605 True(anc1), \x25cb CountingStars']);
 
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Tradeoff Scatter (%s)', envTitle, costTitle), ...

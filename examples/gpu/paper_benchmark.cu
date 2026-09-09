@@ -1,13 +1,13 @@
-// PAPER BENCHMARK -- a fixed, seven-way comparison, not a sweep.
+// PAPER BENCHMARK -- a fixed, five-way comparison, not a sweep.
 //
 // countingstars_sweep.cu exists to TUNE CountingStars: it sweeps a grid of its internal knobs and
 // logs two dozen door/cutoff/budget diagnostic columns to explain WHY a point on that grid behaves
-// the way it does. This tool has a different job: seven ALREADY-CHOSEN operating points, run
+// the way it does. This tool has a different job: five ALREADY-CHOSEN operating points, run
 // identically across every environment and every discretization, to produce the headline figures
 // and results table for the paper. There is nothing to tune here, so there is nothing to diagnose --
 // the per-iteration CSV carries only what the outcome-comparison plots actually read.
 //
-// THE SEVEN SERIES, fixed for the whole file:
+// THE FIVE SERIES, fixed for the whole file:
 //   KPAX                    defaults
 //   KinoPaxPlus              defaults
 //   KinoPaxSTARTrue (anc0)   h_syclopCap_ 1.0 (no cap), h_ancestorPrune_ 0 -- the pure OR-fusion
@@ -15,9 +15,9 @@
 //                            no cost shaping at all (== stock KinoPaxSTARNoGoalBias)
 //   KinoPaxSTARTrue (anc1)   same, h_ancestorPrune_ 1 -- adds only the cost-guarded stale-best
 //                            prune on top; isolates what that prune buys over the pure fusion
-//   CountingStars (bs 1.0)   explore_frac 0.2, cost_frac 0.2, bufferFloor 0.05, bufferSlope 1.0
-//   CountingStars (bs 0.5)   same, bufferSlope 0.5
-//   CountingStars (bs 1.5)   same, bufferSlope 1.5
+//   CountingStars            bufferSlope 1.2, bufferFloor 0.3, explore_frac 0.1, cost_frac 0.8 --
+//                            the operating point countingstars_sweep.cu's tuning pass picked, one
+//                            fixed point rather than the small grid earlier passes ran here.
 //
 // KinoPaxSTARTrue REPLACES KinoPaxSTARCleanCost AS THE NON-COUNTINGSTARS "STAR" REFERENCE (this
 // pass): CleanCost is a well-tuned, cost-shaped operating point, which told a "beats one already-
@@ -29,13 +29,15 @@
 // (CLEAN_BASE_*) for a different purpose (tuning CountingStars' own grid) -- unaffected by this.
 //
 // CountingStars HERE IS THE PERMANENTLY-BUDGETED VARIANT (merged in from
-// TogglingOptimalReactivation): the region-best reactivation guarantee that used to run
+// TogglingOptimalReactivation): OPTIMAL nodes are limited by budget in BOTH acceptance and
+// reactivation, neither uncapped any more. The region-best reactivation guarantee that used to run
 // unconditionally, outside any budget, is folded into the same cost-distance histogram/cutoff the
 // CHEAPEST reactivation arm already uses -- a region's best dormant node has to win a
-// react_frac * B slot like anything else now, rather than getting a free pass every iteration. Not
-// a toggle any more (an earlier pass tried making it one, then an ancestor-lineage bias on top of
-// that; neither is here) -- just how this planner behaves. See CS_DOORBIT_GUAR in
-// CountingStars.cuh.
+// react_frac * B slot like anything else now, rather than getting a free pass every iteration. The
+// candidate-side OPTIMAL door (distance 0 from its region's minimum) went through the same fold,
+// on the CANDIDATE side, one branch cut ago -- it ran as an on/off toggle there, a sweep confirmed
+// budgeting it helps, and it is now equally permanent, with no toggle left for either side. See
+// CS_DOORBIT_GUAR and CS_DOORBIT_OPTIMAL in CountingStars.cuh.
 //
 // EVERY SERIES RUNS AT EVERY DELTA -- unlike countingstars_sweep.cu, where only KinoPaxPlus runs
 // past the coarse discretization. There is no --only-kinopaxplus concept here because there is no
@@ -633,36 +635,36 @@ void runCountingStarsBenchmark(
     std::vector<RunResult>& all_results, const std::string& outputDir, const std::string& deltaLabel,
     int numRuns, int maxIterations, float maxTimeMs)
 {
-    static const float BUFFER_SLOPES[] = {1.0f, 0.5f, 1.5f};
-    static const float BUFFER_FLOOR    = 0.05f;
-    static const float EXPLORE_FRAC    = 0.2f;
-    static const float COST_FRAC       = 0.2f;
+    // ONE fixed point, not a grid: the operating point countingstars_sweep.cu's tuning pass picked
+    // (bufferSlope 1.2 x bufferFloor 0.3 x explore_frac 0.1 x cost_frac 0.8), now that OPTIMAL
+    // admission is permanently budgeted and there was room to tune the remaining axes around it.
+    static const float BUFFER_SLOPE = 1.2f;
+    static const float BUFFER_FLOOR = 0.3f;
+    static const float EXPLORE_FRAC = 0.1f;
+    static const float COST_FRAC    = 0.8f;
 
     printf("\n========================================\n");
     printf("COUNTINGSTARS: %s | Delta: %s | Regions: %d\n", environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
     printf("========================================\n");
 
-    for(float bufferSlope : BUFFER_SLOPES)
+    const std::string label = countingStarsLabel(BUFFER_SLOPE, BUFFER_FLOOR, EXPLORE_FRAC, COST_FRAC);
+    printf("  --- bufferSlope = %.2f, bufferFloor = %.2f, explore_frac = %.2f, cost_frac = %.2f (%s) ---\n",
+           BUFFER_SLOPE, BUFFER_FLOOR, EXPLORE_FRAC, COST_FRAC, label.c_str());
+    CountingStars planner;
+    for(int run = 0; run < numRuns; run++)
     {
-        const std::string label = countingStarsLabel(bufferSlope, BUFFER_FLOOR, EXPLORE_FRAC, COST_FRAC);
-        printf("  --- bufferSlope = %.2f, bufferFloor = %.2f, explore_frac = %.2f, cost_frac = %.2f (%s) ---\n",
-               bufferSlope, BUFFER_FLOOR, EXPLORE_FRAC, COST_FRAC, label.c_str());
-        CountingStars planner;
-        for(int run = 0; run < numRuns; run++)
-        {
-            RunResult result = benchmarkCountingStars(planner, deltaLabel, environment_name, run,
-                                                 h_initial, h_goal, d_obstacles, numObstacles, maxIterations, maxTimeMs,
-                                                 bufferSlope, BUFFER_FLOOR, EXPLORE_FRAC, COST_FRAC, label);
-            printf("  bs=%.2f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-                   bufferSlope, run + 1, numRuns, result.total_time_seconds,
-                   result.total_iterations, result.final_tree_size, result.first_solution_iteration,
-                   result.first_solution_cost, result.final_best_cost);
-            writePerIterationCSV(result, outputDir);
-            all_results.push_back(result);
+        RunResult result = benchmarkCountingStars(planner, deltaLabel, environment_name, run,
+                                             h_initial, h_goal, d_obstacles, numObstacles, maxIterations, maxTimeMs,
+                                             BUFFER_SLOPE, BUFFER_FLOOR, EXPLORE_FRAC, COST_FRAC, label);
+        printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+               run + 1, numRuns, result.total_time_seconds,
+               result.total_iterations, result.final_tree_size, result.first_solution_iteration,
+               result.first_solution_cost, result.final_best_cost);
+        writePerIterationCSV(result, outputDir);
+        all_results.push_back(result);
 
-            if(run < numRuns - 1)
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        }
+        if(run < numRuns - 1)
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
 }
 
@@ -696,8 +698,7 @@ int main(int argc, char* argv[])
     printf("Max iterations: %d (non-binding; MAX_TREE_SIZE / MAX_TIME_MS are the real limiters)\n", MAX_ITERATIONS);
     printf("Max time:       %.1f s\n", MAX_TIME_MS / 1000.0f);
     printf("Series:         KPAX, KinoPaxPlus, KinoPaxSTARTrue (cap1.0 anc0, cap1.0 anc1),\n");
-    printf("                CountingStars (bufferSlope 1.0, 0.5, 1.5)\n");
-    printf("                explore_frac 0.2, cost_frac 0.2, bufferFloor 0.05 for all three CountingStars points\n");
+    printf("                CountingStars (bufferSlope 1.2, bufferFloor 0.3, explore_frac 0.1, cost_frac 0.8)\n");
     printf("=======================================================\n");
 
     // Start/goal states -- identical to countingstars_sweep.cu's, validated across every
