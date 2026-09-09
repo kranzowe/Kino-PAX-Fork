@@ -74,7 +74,7 @@ BUILD_DIR="$PROJECT_DIR/build"
 # Deltas: parallel arrays of label / W_R1 / C_R1 / V_R1. Every series in paper_benchmark.cu runs at
 # every delta -- there is no arm partition to configure here.
 DELTA_LABELS=("large" "fine" "tiny")
-DELTA_W_R1S=(10 20 18)
+DELTA_W_R1S=(7 20 18)
 DELTA_C_R1S=(1  1  1)   # inert for Model 1 (C_DIM 0); control refinement rides on V_R1
 DELTA_V_R1S=(3  3  4)
 

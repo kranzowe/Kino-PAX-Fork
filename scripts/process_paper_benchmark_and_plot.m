@@ -63,7 +63,7 @@ metricYLabels = {'Path Cost (workspace path length)'};
 % (workspace vs. velocity) -- see run_paper_benchmark.sh -- but are NO LONGER an identical-region-
 % count pair this pass (216,000 vs 373,248).
 deltas      = {'large', 'fine', 'tiny'};
-deltaTitles = {'27k', '216k W-refined', '373k V-refined'};
+deltaTitles = {'9k', '216k W-refined', '373k V-refined'};
 deltaWidths = [1.0, 1.8, 2.6];
 
 maxTreeSize = 3000000;   % MAX_TREE_SIZE in config.h -- denominator for the table's Final Tree (%)
