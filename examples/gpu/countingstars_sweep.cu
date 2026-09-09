@@ -11,9 +11,7 @@
 #include <cstdio>
 #include "planners/KinoPaxPlus.cuh"
 #include "planners/KPAX.cuh"
-#include "planners/KinoPaxSTARCleanCost.cuh"
 #include "planners/CountingStars.cuh"
-#include "planners/KPAXCap.cuh"
 #include <thrust/count.h>
 #include <thrust/reduce.h>
 
@@ -21,22 +19,18 @@
 static bool        g_dumpViz = false;
 static std::string g_vizDir;
 
-// ---- CountingStars grid: RAMP SLOPE x RAMP FLOOR x COST_FRAC x THE OPTIMAL-ACCEPT-BUDGET TOGGLE ----
+// ---- CountingStars grid: RAMP SLOPE x RAMP FLOOR x EXPLORE_FRAC x COST_FRAC ----
 //
-// THIS PASS'S HEADLINE AXIS IS h_optimalAcceptBudgeted_ (OPTIMAL_ACCEPT_BUDGETED below). OPTIMAL
-// admission (a candidate at distance 0 from its region's minimum) is UNCAPPED by default -- every
-// such candidate is admitted, however many show up in one iteration, completely outside the budget.
-// This toggle folds it into the SAME cost_frac * B histogram/cutoff CHEAPEST already spends against
-// instead: an optimal candidate votes into cost bucket 0 (guaranteed -- csCostBucket(0.0f, ...) is
-// always 0) and has to clear that cutoff/boundary-roll like anything else. false (default)
-// reproduces today's unconditional admission byte-for-byte; true is "the cheapest of the cheap"
-// rather than free. This is the CANDIDATE-side mirror of an earlier pass's fold of the dormant-node
-// reactivation GUARANTEE into the reactivation-cost histogram (CS_DOORBIT_GUAR, now permanent, no
-// toggle) -- see h_optimalAcceptBudgeted_ in CountingStars.cuh.
+// v3.4's optimalAcceptBudgeted TOGGLE IS GONE. It ran here as an on/off axis (OPTIMAL_ACCEPT_BUDGETED
+// used to be one of the swept arrays below); that sweep confirmed folding OPTIMAL admission into the
+// SAME cost_frac * B histogram/cutoff CHEAPEST spends against (rather than admitting it
+// unconditionally, outside any budget) improves final cost / time-to-first-solution. It is now the
+// planner's ONLY behavior -- there is no h_optimalAcceptBudgeted_ field any more, no `_ob` label
+// token, and nothing left to sweep on that axis. See CS_DOORBIT_OPTIMAL in CountingStars.cuh.
 //
-// Because this "drastically changes everything" about candidate admission, bufferSlope/bufferFloor
-// (the B ramp) and cost_frac are swept ALONGSIDE the toggle this pass, not fixed at one point --
-// unlike earlier passes through this file, which isolated one axis at a time:
+// THIS PASS TUNES THE FOUR REMAINING AXES around that permanent behavior: bufferSlope/bufferFloor
+// (the B ramp), explore_frac (now genuinely swept, not fixed), and cost_frac (which OPTIMAL
+// candidates now always compete inside):
 //
 //     x         = itr / fill_iters                             (fraction of the run elapsed)
 //     B_frac(x) = bufferSlope * x + bufferFloor
@@ -45,10 +39,16 @@ static std::string g_vizDir;
 // READ goal_frontier_size OUT OF THE CSV rather than deriving it here. It is a PER-ITERATION column
 // (see process_countingstars_and_plot.m's goal_frontier_size-vs-iteration panel), precisely so a
 // second copy of this arithmetic does not have to live in the plot script.
-static const float BUFFER_SLOPES[] = {0.5f, 1.0f, 1.5f, 2.0f};
+//
+// BASELINES ARE DOWN TO KPAX AND KINOPAXPLUS THIS PASS -- KinoPaxSTARCleanCost and KPAXCap are
+// removed from this sweep entirely (not merely fixed at one point): now that budgeting OPTIMAL is
+// the planner's permanent behavior, this tool's job is tuning CountingStars' own remaining axes,
+// not re-running comparisons against tuned STAR variants on every pass. Both baselines are still
+// runnable on their own via kinopaxstar_cost_tuning_sweep.cu / kinopaxstar_combo_tuning_sweep.cu.
+static const float BUFFER_SLOPES[] = {1.0f, 1.5f};
 static const int NUM_BUFFER_SLOPES = sizeof(BUFFER_SLOPES) / sizeof(BUFFER_SLOPES[0]);
 
-static const float BUFFER_FLOORS[] = {0.1f, 0.3f};
+static const float BUFFER_FLOORS[] = {0.3f, 0.5f};
 static const int NUM_BUFFER_FLOORS = sizeof(BUFFER_FLOORS) / sizeof(BUFFER_FLOORS[0]);
 
 // How many iterations a run actually completes inside the 10s wall-clock cap at
@@ -62,85 +62,48 @@ static const int NUM_BUFFER_FLOORS = sizeof(BUFFER_FLOORS) / sizeof(BUFFER_FLOOR
 // mismatched fill_iters would make the same (slope, floor) mean a different ramp in each binary.
 static const int CS_RAMP_FILL_ITERS = 700;
 
-// Share of B given to the FRESHEST door (lowest region ordinality). FIXED THIS PASS -- the toggle
-// and cost_frac are the axes under test, and explore_frac isolates their effect from FRESHEST's own.
+// Share of B given to the FRESHEST door (lowest region ordinality) -- SWEPT this pass, alongside
+// cost_frac, now that the toggle is gone and there is room to actually tune both shares.
 //
 // The label tokens are round(1000 x frac), matching v2's `_f` convention -- see countingStarsLabel().
-static const float EXPLORE_FRACS[] = {0.2f};
+static const float EXPLORE_FRACS[] = {0.1f, 0.2f};
 static const int NUM_EXPLORE_FRACS = sizeof(EXPLORE_FRACS) / sizeof(EXPLORE_FRACS[0]);
 
-// Share of B given to the CHEAPEST door (smallest cost distance) -- SWEPT this pass, since it is
-// directly what an optimal candidate now competes for when OPTIMAL_ACCEPT_BUDGETED is true: a
-// bigger cost_frac gives the (now potentially optimal-inclusive) CHEAPEST door more room before it
-// starves anyone.
-static const float COST_FRACS[] = {0.3f, 0.6f};
+// Share of B given to the CHEAPEST door (smallest cost distance) -- SWEPT this pass. OPTIMAL
+// candidates now always compete inside this same share (see CS_DOORBIT_OPTIMAL), so a bigger
+// cost_frac gives the optimal-inclusive CHEAPEST door more room before it starves anyone.
+static const float COST_FRACS[] = {0.4f, 0.6f, 0.8f};
 static const int NUM_COST_FRACS = sizeof(COST_FRACS) / sizeof(COST_FRACS[0]);
-
-// ---- OPTIMAL-ACCEPT-BUDGET toggle: THE HEADLINE AXIS THIS PASS ----
-//
-// false is the exact off-default (see h_optimalAcceptBudgeted_ in CountingStars.cuh) -- kept first
-// so it reads as the free structural control every earlier point already ran under, same
-// convention this file uses for its other axes' own "off" point.
-static const bool OPTIMAL_ACCEPT_BUDGETED[] = {false, true};
-static const int NUM_OPTIMAL_ACCEPT_BUDGETED = sizeof(OPTIMAL_ACCEPT_BUDGETED) / sizeof(OPTIMAL_ACCEPT_BUDGETED[0]);
 
 // CS_MAX_BLOCKS IS GONE (v3.3). Fan-out is no longer region-keyed with a swept boost size -- a node
 // now gets one propagation block per door that admitted it (nodeBlocks = popcount(door)), which is
 // not a tunable and has nothing left here to sweep.
-
-// ---- KinoPaxSTARCleanCost baseline point ----
-// Demoted from a 21-point grid to the single well-tuned operating point, as the reference the
-// CountingStars grid is read against. Same cleanLabel() format as the cost sweep, so its CSVs
-// remain loadable by this plot script.
-static const bool  CLEAN_BASE_R2  = false;
-static const float CLEAN_BASE_W   = 0.9f;
-static const float CLEAN_BASE_K   = 1.0f;
-static const float CLEAN_BASE_CAP = 0.03f;
-
-// ---- KPAXCap cap sweep ----
-// Stock KPAX with a cap multiplier, which makes it the control arm for the cap itself -- the thing
-// CountingStars replaces -- a swept cap is exactly the thing a count replaces.
-static const float KPAXCAP_CAPS[] = {0.03f};
-static const int NUM_KPAXCAP_CAPS = sizeof(KPAXCAP_CAPS) / sizeof(KPAXCAP_CAPS[0]);
 
 // ---- The derived operating points ----
 // --single-point restricts every axis to one point, for a finer-discretization pass that only needs
 // the operating point so the deltas can be overlaid like with like. Each of these MUST remain a
 // member of its list -- the flag selects BY VALUE, so a derived point outside the grid would run
 // nothing at all. cross_check_countingstars_grid.py asserts exactly that.
-//
-// CS_DERIVED_EXPLORE_FRAC MUST equal EXPLORE_FRACS[0] now that it is a single-element array again.
-// CS_DERIVED_OPTIMAL_ACCEPT_BUDGETED is new, and must be a member of OPTIMAL_ACCEPT_BUDGETED for
-// the same reason the other CS_DERIVED_* constants must be members of their own arrays.
-static const float CS_DERIVED_BUFFER_SLOPE  = 1.0f;    // a member of {0.5, 1.0, 1.5, 2.0}; no tuning data yet
-static const float CS_DERIVED_BUFFER_FLOOR  = 0.1f;    // a member of {0.1, 0.3}; no tuning data yet
-static const float CS_DERIVED_EXPLORE_FRAC  = 0.2f;
-static const float CS_DERIVED_COST_FRAC     = 0.3f;    // a member of {0.3, 0.6}; no tuning data yet
-static const bool  CS_DERIVED_OPTIMAL_ACCEPT_BUDGETED = false;   // today's control arm
-static const float CAP_DERIVED              = 0.03f;
+static const float CS_DERIVED_BUFFER_SLOPE  = 1.0f;    // a member of {1.0, 1.5}; no tuning data yet
+static const float CS_DERIVED_BUFFER_FLOOR  = 0.3f;    // a member of {0.3, 0.5}; no tuning data yet
+static const float CS_DERIVED_EXPLORE_FRAC  = 0.2f;    // a member of {0.1, 0.2}; no tuning data yet
+static const float CS_DERIVED_COST_FRAC     = 0.6f;    // a member of {0.4, 0.6, 0.8}; no tuning data yet
 
 static bool g_singlePoint = false;
 
-static bool capSkip(float cap)
-{
-    return g_singlePoint && fabsf(cap - CAP_DERIVED) > 1e-6f;
-}
-
 // Single source of truth for the CountingStars grid's shape: the runner and the banner both call
 // it, so the printed point count can never drift from the grid actually executed.
-static bool countingStarsSkip(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac,
-                              bool optimalAcceptBudgeted)
+static bool countingStarsSkip(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac)
 {
-    // FULL FACTORIAL: 4 slope x 2 floor x 1 explore x 2 cost x 2 toggle = 32 points. --single-point
-    // is the only skip. The two fraction axes cannot sum above 0.8 on this grid, so nothing is
-    // skipped for a negative react_frac -- but cross_check_countingstars_grid.py asserts it rather
-    // than trusting the values.
+    // FULL FACTORIAL: 2 slope x 2 floor x 2 explore x 3 cost = 24 points. --single-point is the
+    // only skip. The two fraction axes cannot sum above 1.0 on this grid, so nothing is skipped for
+    // a negative react_frac -- but cross_check_countingstars_grid.py asserts it rather than trusting
+    // the values.
     if(!g_singlePoint) return false;
     return fabsf(bufferSlope - CS_DERIVED_BUFFER_SLOPE) > 1e-6f
         || fabsf(bufferFloor - CS_DERIVED_BUFFER_FLOOR) > 1e-6f
         || fabsf(exploreFrac - CS_DERIVED_EXPLORE_FRAC) > 1e-6f
-        || fabsf(costFrac - CS_DERIVED_COST_FRAC) > 1e-6f
-        || optimalAcceptBudgeted != CS_DERIVED_OPTIMAL_ACCEPT_BUDGETED;
+        || fabsf(costFrac - CS_DERIVED_COST_FRAC) > 1e-6f;
 }
 
 static int countingStarsPointCount()
@@ -150,67 +113,33 @@ static int countingStarsPointCount()
     for(int fi = 0; fi < NUM_BUFFER_FLOORS; fi++)
     for(int ei = 0; ei < NUM_EXPLORE_FRACS; ei++)
     for(int ci = 0; ci < NUM_COST_FRACS; ci++)
-    for(int oi = 0; oi < NUM_OPTIMAL_ACCEPT_BUDGETED; oi++)
-        if(!countingStarsSkip(BUFFER_SLOPES[si], BUFFER_FLOORS[fi], EXPLORE_FRACS[ei], COST_FRACS[ci],
-                              OPTIMAL_ACCEPT_BUDGETED[oi])) n++;
+        if(!countingStarsSkip(BUFFER_SLOPES[si], BUFFER_FLOORS[fi], EXPLORE_FRACS[ei], COST_FRACS[ci])) n++;
     return n;
 }
 
-// Points on a bare cap axis (KPAXCap) under the current --single-point setting.
-static int capAxisPointCount(const float* caps, int nCaps)
-{
-    int n = 0;
-    for(int ci = 0; ci < nCaps; ci++)
-        if(!capSkip(caps[ci])) n++;
-    return n;
-}
-
-// "CountingStars_bs100_bf10_ef200_cf300_oboff". MUST start with a name loadRuns() dispatches on.
+// "CountingStars_bs100_bf30_ef200_cf600". MUST start with a name loadRuns() dispatches on.
 //
 //   bs   bufferSlope, round(100 x float)
 //   bf   bufferFloor, round(100 x float)   -- B(x) is DERIVED from these, and goal_frontier_size is
 //                                             a per-ITERATION CSV column, not a per-run constant
-//   ef   explore_frac, round(1000 x float)  -- fixed at 0.2 this pass, still tokened (see below)
-//   cf   cost_frac,    round(1000 x float)  -- SWEPT this pass
-//   ob   h_optimalAcceptBudgeted_, "on"/"off" -- NEW, this pass's headline axis. "on"/"off" rather
-//        than a numeric token because it is a bool, not a scaled float -- matching this file's own
-//        cleanLabel() precedent (r2on/r2off).
+//   ef   explore_frac, round(1000 x float)
+//   cf   cost_frac,    round(1000 x float)
 //
-// bs/bf STAY AT 100x, matching v3's `ff` -- both are coarse axes where `bs200`/`bf30` read directly
-// as 2.0/0.3. ef/cf STAY AT 1000x, matching v3's `_f` convention, unchanged by this pass.
+// bs/bf STAY AT 100x, matching v3's `ff` -- both are coarse axes where `bs150`/`bf50` read directly
+// as 1.5/0.5. ef/cf STAY AT 1000x, matching v3's `_f` convention.
 //
-// ef's TOKEN STAYS IN THE LABEL EVEN THOUGH FIXED THIS PASS: a later rerun at a different fixed
-// value does not collide with these CSVs under the same name.
-//
-// Earlier passes through this file used and fully retired `_rg` (guarantee-budget toggle) and `_ab`
-// (ancestor-biasing toggle) tokens here -- both features were reverted; `_ob` is new and unused by
-// either, confirmed via git history.
-static std::string countingStarsLabel(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac,
-                                      bool optimalAcceptBudgeted)
+// v3.4's `_ob` token (the optimalAcceptBudgeted toggle) is GONE along with the field it named --
+// budgeting OPTIMAL is now the planner's only behavior, so there is no longer a second value to
+// distinguish in the label. Earlier passes through this file used and fully retired `_rg`
+// (guarantee-budget toggle) and `_ab` (ancestor-biasing toggle) the same way.
+static std::string countingStarsLabel(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac)
 {
-    char buf[176];
-    snprintf(buf, sizeof(buf), "CountingStars_bs%d_bf%d_ef%d_cf%d_ob%s",
+    char buf[160];
+    snprintf(buf, sizeof(buf), "CountingStars_bs%d_bf%d_ef%d_cf%d",
              (int)lroundf(100.0f * bufferSlope),
              (int)lroundf(100.0f * bufferFloor),
              (int)lroundf(1000.0f * exploreFrac),
-             (int)lroundf(1000.0f * costFrac),
-             optimalAcceptBudgeted ? "on" : "off");
-    return std::string(buf);
-}
-
-static std::string cleanLabel(bool r2Accept, float w, float k, float cap)
-{
-    char buf[128];
-    snprintf(buf, sizeof(buf), "KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d",
-             r2Accept ? "on" : "off",
-             (int)lroundf(100.0f * w), (int)lroundf(100.0f * k), (int)lroundf(100.0f * cap));
-    return std::string(buf);
-}
-
-static std::string kpaxCapLabel(float cap)
-{
-    char buf[96];
-    snprintf(buf, sizeof(buf), "KPAXCap_cap%d", (int)lroundf(100.0f * cap));
+             (int)lroundf(1000.0f * costFrac));
     return std::string(buf);
 }
 
@@ -238,10 +167,11 @@ struct IterationData
     // how you find out which door broke it.
     //
     //   1. IS THE BUDGET MET. budget_used against the series' goal_frontier_size, every iteration.
-    //      A persistent SHORTFALL means a door is not filling its share; an OVERSHOOT means the
-    //      optimal count exceeded B, which is expected wherever B <= NUM_R1_REGIONS and is exactly
-    //      why the low-B points are on the grid. frontier_size says the same thing one iteration
-    //      later (it is measured at the top of the next propagateFrontier).
+    //      A persistent SHORTFALL means a door is not filling its share. Nothing on the candidate
+    //      side is uncapped any more (v3.4 folded OPTIMAL into CHEAPEST's own budget permanently),
+    //      so a genuine OVERSHOOT here is unexpected and worth investigating directly, not a known
+    //      regime the low-B points are on the grid to exercise. frontier_size says the same thing
+    //      one iteration later (it is measured at the top of the next propagateFrontier).
     //   2. IS THE FRONTIER DOING MORE WORK. prop_per_node = prop_attempted / frontier_size, against
     //      KinoPaxPlus's bf, which reaches 40,000 at F = 10. THE POINT OF CONTROLLING F IS
     //      CONTROLLING THIS. If it does not move with B, B is not the lever.
@@ -255,28 +185,29 @@ struct IterationData
     //      back up:
     //      admitted == admitted_cost + admitted_explore + admitted_costdist + admitted_floor
     //                - admitted_opt_fresh_both - admitted_both.
-    //      READ admitted_cost HERE, NOT optimal_count (v3.4): they coincide only when
-    //      optimalAcceptBudgeted is off. (optimal_count - admitted_cost) is the optimal-door
-    //      starvation count when the toggle is on.
+    //      READ admitted_cost HERE, NOT optimal_count: admitted_cost is what pass 2 actually let
+    //      through the CHEAPEST cutoff (v3.4, permanent); optimal_count is pass 1's measured
+    //      population at distance 0. (optimal_count - admitted_cost) is the optimal-door
+    //      starvation count -- how many optimal candidates the budget did not have room for.
     //   4. BLOCK IDENTITY. frontier_repeat_size must equal the sum of the frontier's admission-time
     //      block counts after scaling, and prop_attempted / frontier_repeat_size must be EXACTLY 32
     //      on every iteration. Kernel1 is retained by construction, so below 32 is a defect. v3.3:
     //      an admission-time block count is now popcount(door), 1 or 2 -- not a swept boost size.
     int   prop_attempted;         // propagations launched this iteration, collisions included
     int   frontier_repeat_size;   // sum of the per-node block counts; x32 is the kernel1 attempt count
-    // The budget's own arithmetic, as applied THIS iteration. optimal_count is what the uncapped
-    // top door took before anything else was offered any of the budget; ord_cutoff and cost_cutoff
-    // are the two thresholds the fixed shares bought.
+    // The budget's own arithmetic, as applied THIS iteration. optimal_count is pass 1's MEASURED
+    // population at distance 0 -- how many candidates WANTED first claim, not how many got it
+    // (that is admitted_cost, below); ord_cutoff and cost_cutoff are the two thresholds the fixed
+    // shares bought.
     //
     // guaranteed_react IS GONE. It was the guarantee's PLANNED size, and it existed only because
     // v2's draw probability was a remainder that had to know it. v3's draw is a fixed share, so
     // nothing consumes the plan and reactivated_best is the guarantee's realised size, counted
     // exactly on the device.
     int   optimal_count;
-    // v3.4: what pass 2 actually ADMITTED via CS_DOORBIT_OPTIMAL, as opposed to optimal_count
-    // (what pass 1 MEASURED at distance 0). Identical to optimal_count when
-    // h_optimalAcceptBudgeted_ is off; strictly less when on and the budget starves some of them --
-    // (optimal_count - admitted_cost) is that starvation count, the whole point of the toggle.
+    // v3.4: what pass 2 actually ADMITTED via CS_DOORBIT_OPTIMAL, through the SAME cutoff CHEAPEST
+    // uses (permanent, not a toggle). Strictly less than optimal_count whenever the budget starves
+    // some of them -- (optimal_count - admitted_cost) is that starvation count.
     int   admitted_cost;
     int   ord_cutoff;
     int   budget_used;
@@ -483,12 +414,9 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
     std::ostringstream filename;
     // Baselines include the build's delta label so runs at different discretizations
     // don't overwrite each other:
-    //   KPAX baseline: {env}_KPAX_delta{build}_run{n}.csv
-    //   STAR variants: {env}_{planner label}_delta{build}_run{n}.csv
-    //                  e.g. KinoPaxSTARCleanCost_w90_k400_cap5, CountingStars_ff75_ef200_cf400_mb4
-    //   KPAXCap:       same planner-label form (KPAXCap_cap5). The "KPAX" arm above is an EXACT
-    //                  match, so it cannot swallow these.
-    //   KinoPaxPlus:   {env}_delta{label}_run{n}.csv
+    //   KPAX baseline:  {env}_KPAX_delta{build}_run{n}.csv
+    //   CountingStars:  {env}_{planner label}_delta{build}_run{n}.csv, e.g. CountingStars_bs100_bf30_ef200_cf600
+    //   KinoPaxPlus:    {env}_delta{label}_run{n}.csv
     // KinoPaxPlus deliberately keys on the DELTA rather than a planner name: that is what keeps
     // the two discretizations (large_* and fine_*) in separate files.
     // The build label carries the cost metric (large_effort / large_length), which is a
@@ -499,8 +427,7 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
     // COUNTINGSTARS MUST BE IN THIS ARM. Falling through to the KinoPaxPlus branch below is not a
     // cosmetic naming problem: that branch keys on the DELTA and omits build_delta entirely, so the
     // length and effort builds write the SAME path and the second silently overwrites the first.
-    else if(result.delta_label.rfind("CountingStars", 0) == 0 ||
-            result.delta_label.rfind("KinoPaxSTAR", 0) == 0 || result.delta_label.rfind("KPAXCap", 0) == 0)
+    else if(result.delta_label.rfind("CountingStars", 0) == 0)
         filename << outputDir << "/" << result.environment << "_" << result.delta_label << "_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
     else
@@ -889,174 +816,12 @@ void runKinoPaxPlusBenchmark(
 }
 
 // ========================================================================
-// KPAXCap benchmark + runner (stock KPAX with the Syclop score scaled by h_syclopCap_).
-//
-// Modelled on benchmarkKPAX, NOT on the CleanCost runner: KPAX-family planners carry no
-// h_minCost_, so a goal is detected by zeroing d_pathToGoal_ before each iteration and walking the
-// parent chain with devicePathCost() afterwards, outside the timed window.
-// ========================================================================
-RunResult benchmarkKPAXCap(
-    KPAXCap& planner,
-    const std::string& deltaLabel,
-    const std::string& environment,
-    int runNumber,
-    float* h_initial,
-    float* h_goal,
-    float* d_obstacles,
-    uint numObstacles,
-    int maxIterations,
-    float maxTimeMs,
-    float syclopCap,
-    const std::string& label)
-{
-    // resetPlanner does not touch h_syclopCap_, so setting it at entry holds for the run.
-    planner.h_syclopCap_ = syclopCap;
-    RunResult result;
-    result.delta_label = label;
-    result.build_delta = deltaLabel;
-    result.environment = environment;
-    result.run_number = runNumber;
-    result.first_solution_iteration = -1;
-    result.first_solution_cost = INFINITY;
-    result.first_solution_tree_size = -1;
-    result.final_best_cost = INFINITY;
-
-    // Per-iteration planner-only timing (diagnostics + path-cost walks excluded).
-    cudaEvent_t iterStart, iterStop;
-    cudaEventCreate(&iterStart);
-    cudaEventCreate(&iterStop);
-    float plannerMs = 0.0f;
-    float iterMs    = 0.0f;
-
-    planner.resetPlanner(h_initial, h_goal);
-
-    int zero = 0;
-    int itr = 0;
-    while(itr < maxIterations)
-    {
-        itr++;
-        planner.h_itr_++;
-
-        // Reset pathToGoal before each iteration so we can detect new goals
-        cudaMemcpy(planner.d_pathToGoal_ptr_, &zero, sizeof(int), cudaMemcpyHostToDevice);
-        planner.h_pathToGoal_ = 0;
-
-        cudaEventRecord(iterStart);
-        planner.propagateFrontier(d_obstacles, numObstacles);
-        planner.graph_.updateVertices();
-        int oldTreeSize = planner.h_treeSize_;   // nodes before this iter's additions
-        planner.updateFrontier();
-        cudaEventRecord(iterStop);
-        cudaEventSynchronize(iterStop);
-        cudaEventElapsedTime(&iterMs, iterStart, iterStop);
-        plannerMs += iterMs;
-
-        // Check if a new path to goal was found THIS iteration
-        if(planner.h_pathToGoal_ != 0)
-        {
-            float pathCost = devicePathCost(
-                planner.d_treeSamples_ptr_,
-                planner.d_treeSamplesParentIdxs_ptr_,
-                planner.h_treeSize_,
-                planner.h_pathToGoal_);
-
-            if(result.first_solution_iteration == -1)
-            {
-                result.first_solution_iteration = itr;
-                result.first_solution_cost      = pathCost;
-                result.first_solution_tree_size = planner.h_treeSize_;
-            }
-            if(pathCost < result.final_best_cost)
-                result.final_best_cost = pathCost;
-        }
-
-        // --- Frontier diagnostics (outside the timed window; KPAXCap uses the KPAX Graph) ---
-        int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
-                                             planner.d_frontier_.begin() + oldTreeSize, true);
-
-        IterationData d;
-        clearCountingStarsCols(d);
-        d.iteration     = itr;
-        d.frontier_size = planner.h_frontierSize_;
-        d.tree_size     = planner.h_treeSize_;
-        d.elapsed_time_ms = plannerMs;
-        d.best_cost     = result.final_best_cost;
-        d.reactivated       = reactivated;
-        d.score_floor       = planner.graph_.h_scoreFloor_;
-        d.cost_scale        = NAN;
-        result.per_iteration.push_back(d);
-
-        if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
-
-        // Timeout check (planner-only time)
-        if(plannerMs >= maxTimeMs) break;
-    }
-
-    result.total_time_seconds = plannerMs / 1000.0;
-    result.final_tree_size    = planner.h_treeSize_;
-    result.total_iterations   = itr;
-
-    cudaEventDestroy(iterStart);
-    cudaEventDestroy(iterStop);
-    return result;
-}
-
-void runKPAXCapBenchmark(
-    const std::string& environment_name,
-    float* h_initial,
-    float* h_goal,
-    float* d_obstacles,
-    uint numObstacles,
-    std::vector<RunResult>& all_results,
-    const std::string& outputDir,
-    const std::string& deltaLabel,
-    int numRuns,
-    int maxIterations,
-    float maxTimeMs)
-{
-    printf("\n========================================\n");
-    printf("KPAXCAP CAP SWEEP: %s | Delta: %s | Regions: %d\n",
-           environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
-    printf("========================================\n");
-
-    for(int ci = 0; ci < NUM_KPAXCAP_CAPS; ci++)
-    {
-        const float       cap   = KPAXCAP_CAPS[ci];
-        if(capSkip(cap)) continue;
-        const std::string label = kpaxCapLabel(cap);
-
-        printf("  --- cap = %.2f (%s) ---\n", cap, label.c_str());
-        KPAXCap planner;
-        for(int run = 0; run < numRuns; run++)
-        {
-            RunResult result = benchmarkKPAXCap(planner, deltaLabel, environment_name, run,
-                                                h_initial, h_goal, d_obstacles,
-                                                numObstacles, maxIterations, maxTimeMs,
-                                                cap, label);
-            printf("  cap=%.2f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-                   cap, run + 1, numRuns, result.total_time_seconds, result.total_iterations,
-                   result.final_tree_size, result.first_solution_iteration,
-                   result.first_solution_cost, result.final_best_cost);
-            writePerIterationCSV(result, outputDir);
-            if(g_dumpViz && run == 0)
-                dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
-                            planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
-                            vizTreePath(g_vizDir, environment_name, label));
-            all_results.push_back(result);
-
-            if(run < numRuns - 1)
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        }
-    }
-}
-
-// ========================================================================
 // CountingStars v3 benchmark + runner.
 // A DERIVED NODE BUDGET split by three fixed shares: explore_frac to the freshest regions,
-// cost_frac to the smallest cost distances, and the rest to a uniform draw -- with only the
-// optimal door uncapped on top by default (the region-best reactivation guarantee that used to
-// also be uncapped is gone permanently; see CS_DOORBIT_GUAR). v3.4: optimalAcceptBudgeted, this
-// pass's headline axis, can fold that remaining uncapped door into cost_frac's own budget too.
+// cost_frac to the smallest cost distances (which OPTIMAL candidates now always compete inside
+// too, permanently -- v3.4), and the rest to a uniform draw. Nothing on the candidate side is
+// uncapped any more; the region-best reactivation guarantee that used to be uncapped on the
+// dormant-node side is also gone permanently (see CS_DOORBIT_GUAR).
 // ========================================================================
 RunResult benchmarkCountingStars(
     CountingStars& planner,
@@ -1073,7 +838,6 @@ RunResult benchmarkCountingStars(
     float bufferFloor,
     float exploreFrac,
     float costFrac,
-    bool optimalAcceptBudgeted,
     const std::string& label)
 {
     // Override the planner's defaults for this run. resetPlanner (called below) does not touch the
@@ -1098,7 +862,6 @@ RunResult benchmarkCountingStars(
     planner.h_bufferFloor_ = bufferFloor;
     planner.h_exploreFrac_ = exploreFrac;
     planner.h_costFrac_    = costFrac;
-    planner.h_optimalAcceptBudgeted_ = optimalAcceptBudgeted;
 
     RunResult result;
     result.delta_label = label;
@@ -1237,18 +1000,15 @@ void runCountingStarsBenchmark(
     for(int fi = 0; fi < NUM_BUFFER_FLOORS; fi++)
     for(int ei = 0; ei < NUM_EXPLORE_FRACS; ei++)
     for(int ci = 0; ci < NUM_COST_FRACS; ci++)
-    for(int oi = 0; oi < NUM_OPTIMAL_ACCEPT_BUDGETED; oi++)
     {
-        const float bufferSlope           = BUFFER_SLOPES[si];
-        const float bufferFloor           = BUFFER_FLOORS[fi];
-        const float exploreFrac           = EXPLORE_FRACS[ei];
-        const float costFrac              = COST_FRACS[ci];
-        const bool  optimalAcceptBudgeted = OPTIMAL_ACCEPT_BUDGETED[oi];
+        const float bufferSlope = BUFFER_SLOPES[si];
+        const float bufferFloor = BUFFER_FLOORS[fi];
+        const float exploreFrac = EXPLORE_FRACS[ei];
+        const float costFrac    = COST_FRACS[ci];
 
-        if(countingStarsSkip(bufferSlope, bufferFloor, exploreFrac, costFrac, optimalAcceptBudgeted)) continue;
+        if(countingStarsSkip(bufferSlope, bufferFloor, exploreFrac, costFrac)) continue;
 
-        const std::string label = countingStarsLabel(bufferSlope, bufferFloor, exploreFrac, costFrac,
-                                                      optimalAcceptBudgeted);
+        const std::string label = countingStarsLabel(bufferSlope, bufferFloor, exploreFrac, costFrac);
 
         // B's RANGE over the run, not a single value: B(x=0) = floor, B(x=1) = slope + floor. Uses
         // CS_RAMP_FILL_ITERS, matching what planner.h_fillIters_ is actually set to below -- not
@@ -1256,178 +1016,20 @@ void runCountingStarsBenchmark(
         int bStart = (int)floorf(bufferFloor * float(MAX_TREE_SIZE) / float(CS_RAMP_FILL_ITERS));
         int bEnd   = (int)floorf((bufferSlope + bufferFloor) * float(MAX_TREE_SIZE) / float(CS_RAMP_FILL_ITERS));
         printf("  --- bufferSlope = %.2f, bufferFloor = %.2f (B: %d -> %d), explore_frac = %.3f, "
-               "cost_frac = %.3f, react_frac = %.3f, optimalAcceptBudgeted = %s (%s) ---\n",
+               "cost_frac = %.3f, react_frac = %.3f (%s) ---\n",
                bufferSlope, bufferFloor, bStart, bEnd,
-               exploreFrac, costFrac, 1.0f - exploreFrac - costFrac,
-               optimalAcceptBudgeted ? "true" : "false", label.c_str());
+               exploreFrac, costFrac, 1.0f - exploreFrac - costFrac, label.c_str());
         CountingStars planner;
         for(int run = 0; run < numRuns; run++)
         {
             RunResult result = benchmarkCountingStars(planner, deltaLabel, environment_name, run,
                                                  h_initial, h_goal, d_obstacles,
                                                  numObstacles, maxIterations, maxTimeMs,
-                                                 bufferSlope, bufferFloor, exploreFrac, costFrac,
-                                                 optimalAcceptBudgeted, label);
-            printf("  bs=%.2f bf=%.2f ef=%.3f cf=%.3f ob=%s Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-                   bufferSlope, bufferFloor, exploreFrac, costFrac, optimalAcceptBudgeted ? "on" : "off",
+                                                 bufferSlope, bufferFloor, exploreFrac, costFrac, label);
+            printf("  bs=%.2f bf=%.2f ef=%.3f cf=%.3f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                   bufferSlope, bufferFloor, exploreFrac, costFrac,
                    run + 1, numRuns, result.total_time_seconds,
                    result.total_iterations, result.final_tree_size, result.first_solution_iteration,
-                   result.first_solution_cost, result.final_best_cost);
-            writePerIterationCSV(result, outputDir);
-            if(g_dumpViz && run == 0)
-                dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
-                            planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
-                            vizTreePath(g_vizDir, environment_name, label));
-            all_results.push_back(result);
-
-            if(run < numRuns - 1)
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        }
-    }
-}
-
-RunResult benchmarkKinoPaxSTARCleanCost(
-    KinoPaxSTARCleanCost& planner,
-    const std::string& deltaLabel,
-    const std::string& environment,
-    int runNumber,
-    float* h_initial,
-    float* h_goal,
-    float* d_obstacles,
-    uint numObstacles,
-    int maxIterations,
-    float maxTimeMs,
-    float costWeight,
-    float costPruneExp,
-    float acceptCapMul,
-    bool r2SeedAccept,
-    const std::string& label)
-{
-    // Override the planner's defaults for this run. resetPlanner (called below) does not
-    // touch these, so setting them at entry holds for the run. h_probFloor_ stays at its ctor
-    // default (EPSILON).
-    planner.h_costWeight_    = costWeight;
-    planner.h_costPruneExp_  = costPruneExp;
-    planner.h_acceptCapMul_  = acceptCapMul;
-    planner.h_r2SeedAccept_  = r2SeedAccept;
-    RunResult result;
-    result.delta_label = label;
-    result.build_delta = deltaLabel;
-    result.environment = environment;
-    result.run_number = runNumber;
-    result.first_solution_iteration = -1;
-    result.first_solution_cost = INFINITY;
-    result.first_solution_tree_size = -1;
-    result.final_best_cost = INFINITY;
-
-    cudaEvent_t iterStart, iterStop;
-    cudaEventCreate(&iterStart);
-    cudaEventCreate(&iterStop);
-    float plannerMs = 0.0f;
-    float iterMs    = 0.0f;
-
-    planner.resetPlanner(h_initial, h_goal);
-
-    int itr = 0;
-    while(itr < maxIterations)
-    {
-        itr++;
-        planner.h_itr_++;
-
-        cudaEventRecord(iterStart);
-        planner.propagateFrontier(d_obstacles, numObstacles);
-        planner.graph_.updateVertices();
-        int oldTreeSize = planner.h_treeSize_;   // nodes before this iter's additions
-        planner.updateFrontier();
-        cudaEventRecord(iterStop);
-        cudaEventSynchronize(iterStop);
-        cudaEventElapsedTime(&iterMs, iterStart, iterStop);
-        plannerMs += iterMs;
-
-        // h_minCost_ is the cumulative root-to-goal path length (KinoPaxPlus-style).
-        cudaMemcpy(&planner.h_minCost_, planner.d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
-        if(planner.h_minCost_ < MAX_FLOAT && result.first_solution_iteration == -1)
-        {
-            result.first_solution_iteration = itr;
-            result.first_solution_cost      = planner.h_minCost_;
-            result.first_solution_tree_size = planner.h_treeSize_;
-        }
-        if(planner.h_minCost_ < result.final_best_cost)
-            result.final_best_cost = planner.h_minCost_;
-
-        // --- Frontier diagnostics (outside the timed window; CleanCost uses the KPAX Graph) ---
-        int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
-                                             planner.d_frontier_.begin() + oldTreeSize, true);
-
-        IterationData d;
-        clearCountingStarsCols(d);
-        d.iteration     = itr;
-        d.frontier_size = planner.h_frontierSize_;
-        d.tree_size     = planner.h_treeSize_;
-        d.elapsed_time_ms = plannerMs;
-        d.best_cost     = result.final_best_cost;
-        d.reactivated       = reactivated;
-        d.score_floor       = planner.graph_.h_scoreFloor_;
-        d.cost_scale        = planner.h_costScale_;
-        result.per_iteration.push_back(d);
-
-        if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
-        if(planner.h_propIterations_ == 0) break;
-
-        // Timeout check (planner-only time)
-        if(plannerMs >= maxTimeMs) break;
-    }
-
-    result.total_time_seconds = plannerMs / 1000.0;
-    result.final_tree_size    = planner.h_treeSize_;
-    result.total_iterations   = itr;
-
-    cudaEventDestroy(iterStart);
-    cudaEventDestroy(iterStop);
-    return result;
-}
-
-void runKinoPaxSTARCleanCostBenchmark(
-    const std::string& environment_name,
-    float* h_initial,
-    float* h_goal,
-    float* d_obstacles,
-    uint numObstacles,
-    std::vector<RunResult>& all_results,
-    const std::string& outputDir,
-    const std::string& deltaLabel,
-    int numRuns,
-    int maxIterations,
-    float maxTimeMs)
-{
-    printf("\n========================================\n");
-    printf("KINOPAXSTARCLEANCOST BASELINE: %s | Delta: %s | Regions: %d\n",
-           environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
-    printf("========================================\n");
-
-    // ONE fixed point, not a grid: the well-tuned CleanCost operating point, present as the
-    // reference the CountingStars grid is read against. The w x k x cap sweep lives in
-    // kinopaxstar_cost_tuning_sweep.cu, which is unchanged and still runnable.
-    {
-        const bool        r2    = CLEAN_BASE_R2;
-        const float       w     = CLEAN_BASE_W;
-        const float       k     = CLEAN_BASE_K;
-        const float       cap   = CLEAN_BASE_CAP;
-
-        const std::string label = cleanLabel(r2, w, k, cap);
-
-        printf("  --- r2 = %s, w = %.2f, k = %.2f, cap = %.2f (%s) ---\n",
-               r2 ? "on" : "off", w, k, cap, label.c_str());
-        KinoPaxSTARCleanCost planner;
-        for(int run = 0; run < numRuns; run++)
-        {
-            RunResult result = benchmarkKinoPaxSTARCleanCost(planner, deltaLabel, environment_name, run,
-                                                 h_initial, h_goal, d_obstacles,
-                                                 numObstacles, maxIterations, maxTimeMs,
-                                                 w, k, cap, r2, label);
-            printf("  r2=%s w=%.2f k=%.2f cap=%.2f Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-                   r2 ? "on" : "off", w, k, cap, run + 1, numRuns, result.total_time_seconds, result.total_iterations,
-                   result.final_tree_size, result.first_solution_iteration,
                    result.first_solution_cost, result.final_best_cost);
             writePerIterationCSV(result, outputDir);
             if(g_dumpViz && run == 0)
@@ -1453,9 +1055,9 @@ int main(int argc, char* argv[])
     // tree-growth visualization (Data/Benchmarks/KinoPaxStarCostTuning/viz/).
     //
     // --single-point restricts every axis to its derived operating point (CountingStars at
-    // bufferSlope 1.0, bufferFloor 0.1, explore_frac 0.2, cost_frac 0.3, optimalAcceptBudgeted
-    // false). The finer discretizations use it: the grid proper happens at the coarse delta, and
-    // the finer ones only need the operating point so the deltas can be overlaid like with like.
+    // bufferSlope 1.0, bufferFloor 0.3, explore_frac 0.2, cost_frac 0.6). The finer discretizations
+    // use it: the grid proper happens at the coarse delta, and the finer ones only need the
+    // operating point so the deltas can be overlaid like with like.
     //
     // --only-kinopaxplus runs the KinoPaxPlus series and nothing else. The discretization is a
     // compile-time property (NUM_R1_REGIONS via config.h), so the only way to get KinoPaxPlus at a
@@ -1478,10 +1080,6 @@ int main(int argc, char* argv[])
     const int NUM_KPAX_RUNS        = 5;
     const int NUM_KINOPAXPLUS_RUNS = 5;   // drives the KinoPaxPlus runner
     const int NUM_CS_RUNS          = 5;    // drives the CountingStars grid
-    const int NUM_CLEANCOST_RUNS   = 5;    // drives the single CleanCost baseline point
-    // KPAXCap runs at the KPAX count, not the grid count: it is the control arm for the cap and is
-    // read directly against the KPAX baseline, so the two want a matched noise level.
-    const int NUM_KPAXCAP_RUNS     = NUM_KPAX_RUNS;
     const int MAX_ITERATIONS       = 1000;
     const float MAX_TIME_MS      = 10000.0f;  // 10 second per-run timeout
 
@@ -1523,9 +1121,6 @@ int main(int argc, char* argv[])
         printf("} x cost_frac {");
         for(int i = 0; i < NUM_COST_FRACS; i++)
             printf("%s%.2f", i ? ", " : "", COST_FRACS[i]);
-        printf("}\n                x optimalAcceptBudgeted {");
-        for(int i = 0; i < NUM_OPTIMAL_ACCEPT_BUDGETED; i++)
-            printf("%s%s", i ? ", " : "", OPTIMAL_ACCEPT_BUDGETED[i] ? "true" : "false");
         printf("}\n");
         printf("                B IS A RAMP, RECOMPUTED EVERY ITERATION:\n"
                "                  x = itr/fill_iters, B(x) = floor((slope*x + floor) * MAX_TREE_SIZE / fill_iters)\n"
@@ -1537,51 +1132,47 @@ int main(int argc, char* argv[])
             printf("%s%d", i ? " / " : "", (int)floorf((BUFFER_SLOPES[NUM_BUFFER_SLOPES - 1] + BUFFER_FLOORS[i])
                                                         * float(MAX_TREE_SIZE) / float(CS_RAMP_FILL_ITERS)));
         printf("\n");
-        printf("                THIS PASS'S HEADLINE AXIS IS optimalAcceptBudgeted: OPTIMAL\n"
-               "                admission (distance 0 from the region minimum) is UNCAPPED by\n"
-               "                default -- false reproduces that byte-for-byte. true folds it into\n"
-               "                the SAME cost-distance histogram/cutoff CHEAPEST already spends\n"
-               "                against (it always lands in bucket 0), so it has to win a\n"
-               "                cost_frac * B slot like anything else -- \"the cheapest of the\n"
-               "                cheap\" rather than free. Read optimal_count (measured) against\n"
-               "                admitted_cost (actually admitted) -- they coincide when false,\n"
-               "                and their gap is the starvation this toggle exists to measure.\n"
-               "                bufferSlope/bufferFloor/cost_frac are SWEPT ALONGSIDE the toggle\n"
-               "                this pass, not fixed at one point, since folding OPTIMAL into the\n"
-               "                budget changes how much room the other doors need.\n"
-               "                THREE FIXED SHARES OF B: explore_frac to the FRESHEST door,\n"
+        printf("                OPTIMAL ADMISSION (distance 0 from the region minimum) IS\n"
+               "                PERMANENTLY BUDGETED (v3.4): it votes into the SAME cost-distance\n"
+               "                histogram/cutoff CHEAPEST spends against (it always lands in\n"
+               "                bucket 0), so it has to win a cost_frac * B slot like anything\n"
+               "                else -- \"the cheapest of the cheap\" rather than free. This ran as\n"
+               "                an on/off toggle first; a sweep confirmed budgeting it helps, so\n"
+               "                the toggle is gone and there is no unconditional admission left to\n"
+               "                compare against. Read optimal_count (pass 1's measured population\n"
+               "                at distance 0) against admitted_cost (what pass 2 actually let\n"
+               "                through) -- their gap is how many optimal candidates the budget\n"
+               "                did not have room for.\n"
+               "                THIS PASS TUNES THE FOUR REMAINING AXES around that permanent\n"
+               "                behavior: bufferSlope/bufferFloor (the B ramp) and explore_frac/\n"
+               "                cost_frac (the two shares of B), all swept, with 1 - explore - cost\n"
+               "                left to the uniform DRAW.\n"
+               "                THREE DOORS, ALL BUDGETED: explore_frac to the FRESHEST door,\n"
                "                cost_frac to the CHEAPEST door (smallest cost distance, chosen\n"
                "                by a log-bucketed histogram rather than the sort that kept\n"
-               "                breaking), and 1 - explore - cost to the uniform DRAW. The two\n"
-               "                selection doors are a UNION over one candidate pool, so\n"
-               "                admitted_explore and admitted_costdist overlap and admitted_both is\n"
-               "                what makes them add back up.\n"
-               "                ONLY THE OPTIMAL DOOR CAN BE UNCAPPED (when !optimalAcceptBudgeted)\n"
-               "                and spends on top of those shares -- the region-best reactivation\n"
-               "                guarantee that used to also be uncapped is gone permanently (see\n"
-               "                CS_DOORBIT_GUAR). OPTIMAL is bounded by NUM_R1_REGIONS (%d) rather\n"
-               "                than by B, so B binds only ABOVE that count when uncapped; below it\n"
-               "                budget_used runs over B and the two fractions steer a minority of\n"
-               "                the frontier.\n"
+               "                breaking, and now OPTIMAL's own door too), and 1 - explore - cost\n"
+               "                to the uniform DRAW. FRESHEST and CHEAPEST are a UNION over one\n"
+               "                candidate pool, so admitted_explore and admitted_costdist overlap\n"
+               "                and admitted_both is what makes them add back up.\n"
+               "                NOTHING ON THE CANDIDATE SIDE IS UNCAPPED ANY MORE -- the\n"
+               "                region-best reactivation guarantee that used to be uncapped on the\n"
+               "                dormant-node side is also gone permanently (see CS_DOORBIT_GUAR).\n"
+               "                B binds whenever the candidate pool for an iteration exceeds it,\n"
+               "                and is a soft target otherwise.\n"
                "                v3.3: OPTIMAL ALSO COMPETES FOR FRESHEST now (only CHEAPEST stays\n"
-               "                closed to it). FAN-OUT IS DOOR-COUNT: a node gets one propagation\n"
-               "                block per door that admitted it (popcount of the door mask), full\n"
-               "                stop -- no region-thinness signal, no swept boost size.\n"
+               "                closed to it, by construction). FAN-OUT IS DOOR-COUNT: a node gets\n"
+               "                one propagation block per door that admitted it (popcount of the\n"
+               "                door mask), full stop -- no region-thinness signal, no swept boost\n"
+               "                size.\n"
                "                READ FIRST: the goal_frontier_size-vs-iteration panel (does the\n"
-               "                realized ramp match slope*x+floor), then the tradeoff scatter\n"
-               "                across optimalAcceptBudgeted at each delta, then optimal_count\n"
-               "                against admitted_cost, then budget_used/goal_frontier_size as a\n"
-               "                CURVE against a now-MOVING target, then admitted_costdist against\n"
+               "                realized ramp match slope*x+floor), then optimal_count against\n"
+               "                admitted_cost, then budget_used/goal_frontier_size as a CURVE\n"
+               "                against a MOVING target, then admitted_costdist against\n"
                "                admitted_explore, then cost_cutoff_dist against dist_max -- a\n"
                "                collapse toward dist_max/2^21 means every candidate is in bucket 0\n"
                "                and the cost door has degraded to a uniform draw.\n"
                "                -> %d points x %d runs = %d runs\n",
-               NUM_R1_REGIONS, csPoints, NUM_CS_RUNS, csPoints * NUM_CS_RUNS);
-        printf("CleanCost:      r2 OFF, w %.2f, k %.2f, cap %.2f = 1 point x %d runs = %d runs\n",
-               CLEAN_BASE_W, CLEAN_BASE_K, CLEAN_BASE_CAP, NUM_CLEANCOST_RUNS, NUM_CLEANCOST_RUNS);
-        int kcapPoints = capAxisPointCount(KPAXCAP_CAPS, NUM_KPAXCAP_CAPS);
-        printf("KPAXCap:        cap = %d points x %d runs = %d runs\n",
-               kcapPoints, NUM_KPAXCAP_RUNS, kcapPoints * NUM_KPAXCAP_RUNS);
+               csPoints, NUM_CS_RUNS, csPoints * NUM_CS_RUNS);
     }
     printf("Max iterations: %d\n", MAX_ITERATIONS);
     printf("=======================================================\n");
@@ -1629,17 +1220,11 @@ int main(int argc, char* argv[])
 
     if(!onlyKinoPaxPlus)
     {
-        // --- CountingStars: goal_frontier_size x explore_frac grid (the point of this sweep) ---
+        // --- CountingStars: bufferSlope x bufferFloor x explore_frac x cost_frac grid (the point
+        // of this sweep). KinoPaxSTARCleanCost and KPAXCap are gone from this file -- see the grid
+        // comment near BUFFER_SLOPES above. ---
         runCountingStarsBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
                                 all_results, outputDir, deltaLabel, NUM_CS_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
-
-        // --- KinoPaxSTARCleanCost: single baseline point ---
-        runKinoPaxSTARCleanCostBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
-                                all_results, outputDir, deltaLabel, NUM_CLEANCOST_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
-
-        // --- KPAXCap: cap sweep (control arm for the cap, against the KPAX baseline above) ---
-        runKPAXCapBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
-                                all_results, outputDir, deltaLabel, NUM_KPAXCAP_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
     }
 
     cudaFree(d_obstacles);

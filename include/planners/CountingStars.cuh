@@ -20,21 +20,22 @@
 // prefixes, different mechanism: kernels collide at LINK time under CUDA_SEPARABLE_COMPILATION,
 // header constants collide at COMPILE time.
 static const int CS_DOOR_NONE = 0;
-// OPTIMAL: distance 0, i.e. cost <= minCostsR1[r]. Mutually exclusive with CS_DOORBIT_CHEAP BY
-// CONSTRUCTION, not by an assertion, but the construction differs by h_optimalAcceptBudgeted_
-// (v3.4): OFF (default), CHEAPEST's histogram only ever buckets pass 1's non-zero distances, so an
-// optimal candidate (distance exactly 0) never enters its domain at all. ON, an optimal candidate
-// DOES vote into the same histogram (bucket 0), and DOES compete for the same cutoff -- but accept
-// pass 2 still never sets CS_DOORBIT_CHEAP for it, only ever CS_DOORBIT_OPTIMAL, so the two bits
-// stay mutually exclusive either way. See h_optimalAcceptBudgeted_ and CountingStars_acceptPass2_kernel.
+// OPTIMAL: distance 0, i.e. cost <= minCostsR1[r]. v3.4 folded it permanently into the SAME
+// cost-distance histogram/cutoff CHEAPEST spends against -- it votes into bucket 0
+// (csCostBucket(0.0f, distMax) == 0 for any distMax) and has to clear the same cutoff/boundary-
+// roll any other bucket-0 candidate does, rather than being admitted unconditionally. Mutually
+// exclusive with CS_DOORBIT_CHEAP BY CONSTRUCTION: accept pass 2 never sets CS_DOORBIT_CHEAP for
+// an optimal candidate, only ever CS_DOORBIT_OPTIMAL, even though both now clear the same cutoff.
+// See CountingStars_acceptPass2_kernel.
 static const int CS_DOORBIT_OPTIMAL = 1 << 0;
 static const int CS_DOORBIT_FRESH   = 1 << 1;   // ordinality cutoff -- a candidate OR a reactivated node
 static const int CS_DOORBIT_CHEAP   = 1 << 2;   // cost-distance cutoff -- a candidate OR a reactivated node
 // Part B's old region-best guarantee. UNUSED (never set): the arm was folded permanently into the
 // budgeted CHEAPEST reactivation histogram -- see CountingStars_reactScan_kernel/Part B. Kept, not
 // renumbered, so CSV door-mask values from earlier runs stay decodable against this same bit layout.
-// The CANDIDATE-side analog of this same fold is h_optimalAcceptBudgeted_ (v3.4) below -- that one
-// stayed a genuine on/off toggle rather than going permanent.
+// The CANDIDATE-side analog of this same fold is OPTIMAL's own fold into CHEAPEST's budget above --
+// that one went through a v3.4 on/off toggle first (a sweep confirmed it helps), then went
+// permanent the same way this one did; there is no h_optimalAcceptBudgeted_ field any more.
 static const int CS_DOORBIT_GUAR    = 1 << 3;
 static const int CS_DOORBIT_FLOOR   = 1 << 4;   // the completeness floor -- a candidate OR a reactivation
 
@@ -219,25 +220,28 @@ public:
     // no new synchronisation -- it is one floating-point formula recomputed once per iteration.
     // ==================================================================================
 
-    // The node budget for ONE iteration's frontier. Five doors fill it in priority order:
+    // The node budget for ONE iteration's frontier. Candidates fill it through THREE doors, all
+    // budgeted, in priority order:
     //
-    //   1. OPTIMAL      every candidate at distance 0 from its region's best. UNCAPPED.
-    //   2. FRESHEST     explore_frac * B, taken from the least-populated regions.
-    //   3. CHEAPEST     cost_frac * B, taken from the smallest cost distances.        (v3, NEW)
-    //   4. GUARANTEE    each active region's best node, if no optimal admission covered it.
-    //   5. DRAW         uniform over the rest of the tree at p = react_frac * B / treeSize.
+    //   1. OPTIMAL/CHEAPEST  cost_frac * B, taken from the smallest cost distances -- OPTIMAL
+    //                        candidates (distance 0 from their region's best) vote into this SAME
+    //                        histogram/cutoff (bucket 0, always) rather than being admitted
+    //                        unconditionally; see CS_DOORBIT_OPTIMAL. v3.4 made this permanent
+    //                        after a sweep confirmed budgeting OPTIMAL improves final cost /
+    //                        time-to-first-solution over letting it spend unconditionally.
+    //   2. FRESHEST          explore_frac * B, taken from the least-populated regions.
+    //   3. FLOOR             a flat completeness roll for anything the above two missed.
     //
-    // v3 SPLITS THE BUDGET BY THREE FIXED FRACTIONS OF B rather than "one share plus a remainder".
-    // The fractions are of B ITSELF, not of (B - optimalCount): the optimal door is uncapped and
-    // spends on top of them, which is the acknowledged overshoot.
+    // Reactivation (dormant tree nodes, not candidates) is a separate, equally budgeted process --
+    // see Part B / CS_DOORBIT_GUAR below -- with its own cheapest-first door plus a completeness
+    // floor of its own.
     //
-    // DOORS 1 AND 3 ARE BOTH UNCAPPED, AND BOTH ARE BOUNDED BY NUM_R1_REGIONS -- one node per region
-    // can be a region best in an iteration, and one node per uncovered region can be guaranteed. So
-    // B ONLY BINDS WHILE B > NUM_R1_REGIONS. Below that the budget is a SOFT TARGET -- still no cap,
-    // deliberately -- and budget_used runs over B, held near the active-region count by the
-    // guarantee. That is a legitimate operating point and the sweep visits it on purpose: the gap
-    // between budget_used and B is the direct measurement of how much of the frontier the priority
-    // doors account for before the draw is offered anything at all.
+    // NOTHING ON THE CANDIDATE SIDE IS UNCAPPED ANY MORE. B ONLY BINDS WHILE B > candidate pool
+    // size for the iteration -- below that every door's cutoff solves to "admit everything it was
+    // offered" and budget_used tracks the pool rather than B. That is a legitimate operating point
+    // and the sweep visits it on purpose: the gap between budget_used and B is the direct
+    // measurement of how much of the frontier the priority doors account for before the floor is
+    // offered anything at all.
     // Recomputed as the FIRST statement of every updateFrontier() call, from h_bufferSlope_ /
     // h_bufferFloor_ / h_itr_ / h_fillIters_ -- see the v3.2 block above. Never written by a caller.
     int h_goalFrontierSize_;
@@ -267,31 +271,6 @@ public:
     // at 0. This is the door that did not exist in v2 -- see CS_COST_BUCKETS for why it is a
     // histogram and not the sort that kept breaking.
     float h_costFrac_;
-
-    // ==================================================================================
-    // v3.4: TOGGLES WHETHER THE OPTIMAL DOOR SPENDS AGAINST THE SAME BUDGET CHEAPEST DOES.
-    //
-    // OPTIMAL is otherwise UNCAPPED: every candidate at distance 0 from its region's minimum is
-    // admitted, however many show up in one iteration, completely outside h_costFrac_ * B.
-    //
-    // false (DEFAULT) reproduces that exactly, byte-for-byte: CS_DOORBIT_OPTIMAL fires
-    // unconditionally for every distance-0 candidate, exactly as before this toggle existed.
-    //
-    // true folds an optimal candidate into the SAME cost-distance histogram/cutoff CHEAPEST already
-    // spends against -- it votes into bucket 0 (csCostBucket(0.0f, distMax) == 0 for any distMax,
-    // see above), and has to clear the same cutoff/boundary-roll any other bucket-0 candidate does.
-    // "The cheapest of the cheap" rather than uncapped -- the CANDIDATE-side mirror of
-    // CS_DOORBIT_GUAR's fold into the reactivation budget on the dormant-node side (see there).
-    //
-    // h_optimalCount_ (pass 1, MEASURED population at distance 0) stays toggle-invariant.
-    // h_admittedCost_ (pass 2, ADMITTED via CS_DOORBIT_OPTIMAL) is identical to h_optimalCount_ when
-    // this is false, and can be strictly less when true -- that gap is the toggle's whole point:
-    // how many optimal candidates the budget starved.
-    //
-    // NOT reset by resetPlanner() -- same discipline as h_bufferSlope_/h_exploreFrac_/h_costFrac_: a
-    // caller sets it once before resetPlanner() and it holds for the whole run.
-    // ==================================================================================
-    bool h_optimalAcceptBudgeted_;
 
     // ==================================================================================
     // v3.3: FAN-OUT IS DOOR-COUNT, FULL STOP. Blocks are decided AT ADMISSION and stored per node;
@@ -433,10 +412,10 @@ public:
     //     admitted == admittedCost + admittedExplore + admittedCostDist + admittedFloor
     //                - admittedOptFreshBoth - admittedBoth
     //
-    // READ admittedCost HERE, NOT h_optimalCount_/optimalCount (v3.4). The two coincide only when
-    // h_optimalAcceptBudgeted_ is false -- CS_SLOT_COST now counts what pass 2 actually ADMITTED via
-    // CS_DOORBIT_OPTIMAL, which can be strictly less than what pass 1 MEASURED at distance 0 once
-    // OPTIMAL is budgeted. See h_optimalAcceptBudgeted_ above.
+    // READ admittedCost HERE, NOT h_optimalCount_/optimalCount. CS_SLOT_COST counts what pass 2
+    // actually ADMITTED via CS_DOORBIT_OPTIMAL, which can be strictly less than h_optimalCount_
+    // (pass 1's MEASURED population at distance 0) now that OPTIMAL is permanently budgeted -- the
+    // gap between the two is the optimal-door starvation the v3.4 sweep was run to measure.
     //
     // NEW SLOTS ARE APPENDED, never inserted: the enum's values are what the kernels index by.
     enum DoorSlot { CS_SLOT_EXPLORE = 0, CS_SLOT_COST, CS_SLOT_REACT, CS_SLOT_BEST,
@@ -447,8 +426,9 @@ public:
     unsigned long long  h_doorCounts_[CS_NUM_DOOR_SLOTS];
     uint h_admittedExplore_, h_reactivated_, h_reactivatedBest_;
     uint h_admittedCostDist_, h_admittedBoth_;
-    // v3.4: CS_SLOT_COST's readback -- ADMITTED optimal candidates. Equals h_optimalCount_ when
-    // h_optimalAcceptBudgeted_ is false; can be strictly less when true. See that field.
+    // v3.4: CS_SLOT_COST's readback -- ADMITTED optimal candidates, via the SAME cutoff CHEAPEST
+    // uses. Can be strictly less than h_optimalCount_ (pass 1's measured population at distance 0)
+    // -- that gap is how many optimal candidates the budget starved this iteration.
     uint h_admittedCost_;
     // v3.3: the new door's overlap counter and the admission floor's yield -- see the identity above.
     uint h_admittedOptFreshBoth_, h_admittedFloor_;
@@ -645,15 +625,12 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
 // A NON-OPTIMAL CANDIDATE VOTES IN BOTH selection histograms: it is eligible for both the freshness
 // door and the cost door, which are independent selections over the same pool.
 //
-// v3.3: AN OPTIMAL CANDIDATE NOW ALSO VOTES IN THE ORDINALITY HISTOGRAM (only), because it now also
-// competes for FRESHEST -- pass 2 falls through to the freshness check instead of returning early
-// for it. By default it still never votes in the COST histogram: it is at distance 0, which is not
-// in CHEAPEST's domain (see CS_DOORBIT_OPTIMAL), so counting it there would double-admit against a
-// cutoff it structurally cannot be judged by.
+// v3.3: AN OPTIMAL CANDIDATE ALSO VOTES IN THE ORDINALITY HISTOGRAM, because it now also competes
+// for FRESHEST -- pass 2 falls through to the freshness check instead of returning early for it.
 //
-// v3.4: WHEN optimalAcceptBudgeted IS TRUE, it ALSO votes into cost bucket 0 (csCostBucket(0.0f,
-// distMax) == 0 for any distMax) -- it now DOES need to be judged by that cutoff, on purpose. See
-// h_optimalAcceptBudgeted_ in the header.
+// v3.4: IT ALSO VOTES INTO COST BUCKET 0 (csCostBucket(0.0f, distMax) == 0 for any distMax) --
+// permanently, since a sweep confirmed budgeting OPTIMAL against CHEAPEST's cutoff helps. It needs
+// to be judged by that cutoff exactly like any other bucket-0 candidate, on purpose.
 //
 // IT STAMPS NO DOOR. Neither cutoff is known until this launch has finished and the host has scanned
 // the histograms, so a door written here would be a decision taken without the numbers that decide
@@ -661,7 +638,6 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
 __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                  float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
                                                  int* regionNodeCount, float costScale, float distMax,
-                                                 bool optimalAcceptBudgeted,
                                                  float* candDistance, int* acceptHistogram);
 
 /***************************/
@@ -670,7 +646,8 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
 // Admits against the two cutoffs the host solved from pass 1's histograms, ORing every door that
 // fires into a bitmask (see CS_DOORBIT_* in the header):
 //
-//   OPTIMAL   distance == 0 (UNCAPPED unless optimalAcceptBudgeted -- see below)  bit = CS_DOORBIT_OPTIMAL
+//   OPTIMAL   distance == 0, routed through the SAME cost cutoff CHEAPEST uses (always bucket 0,
+//             per csCostBucket(0.0f, distMax) == 0) -- NOT unconditional     bit = CS_DOORBIT_OPTIMAL
 //   FRESHEST  ordBucket  <  ordCutoff,  or == it at pBoundary      bit = CS_DOORBIT_FRESH
 //   CHEAPEST  costBucket <  costCutoff, or == it at pCostBoundary  bit = CS_DOORBIT_CHEAP
 //   FLOOR     none of the above fired, and the flat acceptFloor roll succeeds   bit = CS_DOORBIT_FLOOR
@@ -678,13 +655,10 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
 // v3.3: OPTIMAL NO LONGER RETURNS EARLY. It sets its bit and falls through to the freshness check
 // like any other candidate, so it can also clear FRESHEST.
 //
-// v3.4: optimalAcceptBudgeted GATES OPTIMAL ITSELF. false (default) reproduces the byte-for-byte
-// original: CS_DOORBIT_OPTIMAL fires unconditionally, and CHEAPEST is skipped for it structurally
-// (see CS_DOORBIT_OPTIMAL). true routes it through the SAME cost cutoff/boundary-roll CHEAPEST
-// uses (it always lands in bucket 0, per csCostBucket(0.0f, distMax) == 0) -- CS_DOORBIT_OPTIMAL
-// then fires only if that roll is won, but STILL never sets CS_DOORBIT_CHEAP even when it wins via
-// the same cutoff: the two bits stay mutually exclusive by an explicit `!isOptimal` guard in the
-// body, not by construction of the histogram any more. See h_optimalAcceptBudgeted_ in the header.
+// v3.4: OPTIMAL IS PERMANENTLY BUDGETED (this was a toggle; a sweep confirmed budgeting it helps,
+// so the toggle is gone). CS_DOORBIT_OPTIMAL now fires only if the SAME roll CHEAPEST resolved is
+// won, but STILL never also sets CS_DOORBIT_CHEAP: the two bits stay mutually exclusive by an
+// explicit `!isOptimal` guard in the body, not by construction of the histogram any more.
 //
 // FRESHEST AND CHEAPEST ARE A UNION, NOT A PRIORITY CHAIN. They select over the same candidate pool
 // on independent signals, so a candidate can clear both -- and OPTIMAL besides. It is still ONE tree
@@ -714,7 +688,7 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
                                                  bool* regionCovered, curandState* randomSeeds,
                                                  int ordCutoff, float pBoundary,
                                                  int costCutoff, float pCostBoundary, float distMax,
-                                                 float acceptFloor, bool optimalAcceptBudgeted,
+                                                 float acceptFloor,
                                                  unsigned long long* doorCounts);
 
 /***************************/

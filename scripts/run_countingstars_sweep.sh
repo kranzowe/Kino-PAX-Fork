@@ -1,34 +1,36 @@
 #!/bin/bash
 # =============================================================================
-# CountingStars v3.4 Sweep Runner -- the OPTIMAL-accept budgeting toggle
+# CountingStars v3.4 Sweep Runner -- tuning around permanently-budgeted OPTIMAL admission
 #
-# CountingStars v3.4, against the baselines it has to beat: KPAX, KPAXCap, KinoPaxPlus, and one
-# tuned KinoPaxSTARCleanCost point. COMBO and TrueStar are deliberately NOT in this sweep -- COMBO
-# is the thing being replaced and its own sweep still exists; TrueStar answers a cap question this
+# CountingStars v3.4, against KPAX and KinoPaxPlus. KPAXCap and KinoPaxSTARCleanCost are gone from
+# this sweep entirely: with the optimal-accept-budget question settled (see below), this tool's
+# job is tuning CountingStars' own remaining axes, not re-running comparisons against tuned STAR
+# variants on every pass. Both are still runnable on their own via kinopaxstar_cost_tuning_sweep.cu
+# / kinopaxstar_combo_tuning_sweep.cu. COMBO and TrueStar are, as before, deliberately NOT in this
+# sweep -- COMBO is the thing CountingStars replaced, and TrueStar answers a cap question this
 # planner does not ask.
 #
-# THIS PASS'S HEADLINE AXIS IS h_optimalAcceptBudgeted_ (OPTIMAL_ACCEPT_BUDGETED in the .cu). The
-# OPTIMAL door (a candidate at distance 0 from its region's minimum) is UNCAPPED by default -- every
-# such candidate is admitted, however many show up, completely outside the budget. This toggle folds
-# it into the SAME cost_frac * B histogram/cutoff CHEAPEST already spends against instead: it votes
-# into cost bucket 0 (guaranteed) and has to clear that cutoff/roll like anything else -- "the
-# cheapest of the cheap" rather than free. false (default) reproduces today's unconditional
-# admission byte-for-byte. Because this changes candidate admission fundamentally, bufferSlope/
-# bufferFloor and cost_frac are SWEPT ALONGSIDE the toggle this pass, not fixed at one point.
+# THE OPTIMAL-ACCEPT-BUDGET TOGGLE IS GONE. It ran as an on/off axis (h_optimalAcceptBudgeted_) in
+# the previous pass through this file: the OPTIMAL door (a candidate at distance 0 from its
+# region's minimum) used to be UNCAPPED, admitted unconditionally outside any budget. That sweep
+# confirmed folding it into the SAME cost_frac * B histogram/cutoff CHEAPEST already spends against
+# -- it always votes into bucket 0 and has to clear that cutoff/roll like anything else, "the
+# cheapest of the cheap" rather than free -- improves final cost / time-to-first-solution. It is
+# now the planner's ONLY behavior; there is no toggle, no h_optimalAcceptBudgeted_ field, and no
+# `_ob` label token left to sweep.
 #
+# THIS PASS TUNES THE FOUR REMAINING AXES around that permanent behavior:
 # Per (environment, cost metric), AT EACH OF TWO DISCRETIZATIONS (coarse `large` and `tiny` -- see
 # DELTA_LABELS below; BOTH run the full comparison, not KinoPaxPlus-only at either one):
-#   CountingStars   bufferSlope {0.5, 1.0, 1.5, 2.0} x bufferFloor {0.1, 0.3}
-#                   explore_frac FIXED at 0.2 (not swept), cost_frac {0.3, 0.6}
-#                   optimalAcceptBudgeted {false, true}
-#                   = 32 points (FULL FACTORIAL) x 5 runs = 160 runs, per delta
-#   CleanCost       r2 OFF, w 0.9, k 1, cap 0.03            = 1 point  x 5 runs
-#   KPAXCap         cap {0.03}                              = 1 point  x 5 runs
+#   CountingStars   bufferSlope {1.0, 1.5} x bufferFloor {0.3, 0.5}
+#                   explore_frac {0.1, 0.2}, cost_frac {0.4, 0.6, 0.8}
+#                   optimalAcceptBudgeted PERMANENTLY ON (not an axis any more)
+#                   = 24 points (FULL FACTORIAL) x 5 runs = 120 runs, per delta
 #   KPAX                                                    = 1 point  x 5 runs
 #   KinoPaxPlus                                             = 1 point  x 5 runs
 #
 # ONE COST METRIC THIS PASS (effort/COST_MODE=1 only -- length is dropped), one environment
-# (zigzag), one full build per delta: 320 CountingStars runs total across the two deltas.
+# (zigzag), one full build per delta: 240 CountingStars runs total across the two deltas.
 #
 # ============================================================================================
 # WHAT CHANGED FROM v2, AND WHY THIS SWEEP EXISTS
@@ -38,11 +40,10 @@
 #
 #        B = floor(fill_frac * MAX_TREE_SIZE / MAX_ITER)      -- v3, ONE VALUE PER RUN
 #
-#    -- "the frontier size that fills the tree exactly at MAX_ITER", scaled by fill_frac, so the
-#    remaining (1 - fill_frac) of the buffer is what the uncapped OPTIMAL door is left to spend.
-#    B rides into every CSV as the goal_frontier_size column rather than being re-derived by the
-#    plot script. SEE ITEM 5 BELOW: v3.2 replaces the single fill_frac with a per-iteration ramp,
-#    so this formula is no longer what the planner actually runs -- kept here as the ancestor the
+#    -- "the frontier size that fills the tree exactly at MAX_ITER", scaled by fill_frac. B rides
+#    into every CSV as the goal_frontier_size column rather than being re-derived by the plot
+#    script. SEE ITEM 5 BELOW: v3.2 replaces the single fill_frac with a per-iteration ramp, so
+#    this formula is no longer what the planner actually runs -- kept here as the ancestor the
 #    ramp's bufferSlope = 0 case reproduces exactly.
 #
 # 2. THERE IS A NEW DOOR: CHEAPEST. v2 could admit a node for being THE cheapest in its region
@@ -58,11 +59,11 @@
 #    degrades the door to a uniform draw.
 #
 # 3. THE BUDGET SPLITS THREE WAYS BY FIXED FRACTION, not "one share plus a remainder":
-#    explore_frac to freshness, cost_frac to cheapness, and react_frac = 1 - explore - cost to
-#    reactivation. All three are fractions of B ITSELF; OPTIMAL stays uncapped and spends on top by
-#    default (the region-best GUARANTEE that used to also be uncapped is gone permanently, folded
-#    into the reactivation budget -- see CS_DOORBIT_GUAR). v3.4 (THIS PASS): OPTIMAL itself can now
-#    be folded into cost_frac's own budget too -- see optimalAcceptBudgeted above.
+#    explore_frac to freshness, cost_frac to cheapness (which OPTIMAL candidates now always compete
+#    inside too, permanently -- v3.4), and react_frac = 1 - explore - cost to reactivation. Nothing
+#    on the candidate side is uncapped any more; the region-best GUARANTEE that used to be uncapped
+#    on the dormant-node side is gone permanently too, folded into the reactivation budget -- see
+#    CS_DOORBIT_GUAR.
 #
 # 4. v3.1: REACTIVATION IS COST-SELECTIVE, and that is the change this pass is really testing.
 #    v2 and v3 spent react_frac * B on a UNIFORM draw over the tree. CleanCost weights the same arm
@@ -93,44 +94,36 @@
 #
 #    bufferSlope = 0 REPRODUCES v3's CONSTANT B EXACTLY (B_frac(x) = bufferFloor for every x), so
 #    that subgrid is a free, structural comparison against the old fixed-buffer design rather than
-#    a separate baseline that has to be swept again.
+#    a separate baseline that has to be swept again. (Not on this pass's grid -- see below.)
 #
-#    explore_frac IS FIXED at 0.2 this pass (not swept); cost_frac and bufferSlope/bufferFloor ARE
-#    swept THIS pass, alongside the new toggle -- see the header above for why (folding OPTIMAL
-#    into the budget changes how much room the other doors need).
+#    explore_frac AND cost_frac ARE BOTH SWEPT THIS PASS, now that the toggle axis is gone and there
+#    is room to actually tune both shares alongside bufferSlope/bufferFloor.
 #
 #    B IS A PURE HOST SCALAR (read only inside updateFrontier(), never by propagateFrontier() or
 #    any device kernel directly), so making it dynamic cost no device array, no new kernel, and no
 #    new synchronisation -- it is one floating-point formula recomputed once per iteration.
 #
-# (bufferSlope, bufferFloor) = (0, 0) is NOT on this pass's grid (minimums are 0.5 and 0.1) -- it
+# (bufferSlope, bufferFloor) = (0, 0) is NOT on this pass's grid (minimums are 1.0 and 0.3) -- it
 # used to be the deepest ablation arm back when OPTIMAL and the region-best GUARANTEE were both
-# uncapped regardless of B. The GUARANTEE is gone permanently now, and OPTIMAL itself can be folded
-# into the budget by this pass's own toggle, so a B=0 point would mean something different (and less
-# useful) than it used to; not worth re-deriving for this grid.
+# uncapped regardless of B. Both are gone permanently now, so a B=0 point would mean something
+# different (and less useful) than it used to; not worth re-deriving for this grid.
 # ============================================================================================
 #
-# THE GRID SITS ENTIRELY BELOW NUM_R1_REGIONS (27,000 at the coarse delta), and that is the honest
-# limit on what it can measure while optimalAcceptBudgeted is false. OPTIMAL is the only door that
-# can still be uncapped, bounded by the region count rather than by B (at most one region best per
-# region per iteration) -- the region-best GUARANTEE that used to also be uncapped and bounded the
-# same way is gone. So B binds EARLY in a run and then stops, at an iteration that moves with the
-# WHOLE RAMP shape (bufferSlope and bufferFloor together) rather than a single fill_frac -- and
-# early is exactly where time-to-first-solution is decided.
+# NOTHING ON THE CANDIDATE SIDE IS UNCAPPED ANY MORE (v3.4, permanent) -- the region-best GUARANTEE
+# that used to also be uncapped on the dormant-node side is gone too. So B binds whenever the
+# candidate pool for an iteration exceeds it, and is a soft target otherwise; the iteration where
+# budget_used/goal_frontier_size crosses 1 is where time-to-first-solution gets decided.
 #
-# That is what "tree growth is less controlled once min cost is always accepted" amounts to, and it
-# is a measurement rather than a defect. Read budget_used/goal_frontier_size as a CURVE over
-# iterations: the iteration where it crosses 1 IS the measurement, and a late-run overshoot is
-# expected at every point -- MORE SO NOW, since B itself is climbing over the run rather than
-# holding still, so the ratio has two moving parts instead of one.
+# Read budget_used/goal_frontier_size as a CURVE over iterations rather than a single number: the
+# iteration where it crosses 1 IS the measurement, and it should track a MOVING target now that B
+# itself climbs over the run.
 #
 # READ IN THIS ORDER:
 #   1. goal_frontier_size vs iteration, FIRST. Confirms the realized ramp actually matches
-#      slope*x + floor before reading anything else that depends on B. A flat line at every
-#      bufferSlope = 0 series is the direct sanity check that the mechanism is wired correctly.
+#      slope*x + floor before reading anything else that depends on B.
 #   2. frontier_repeat_size / frontier_size. The realised mean rep, which should sit near 1 with a
 #      small excess from thin regions and the both-doors boost, not near 4.
-#   3. budget_used / goal_frontier_size, as a curve. See above -- now a moving target on both sides.
+#   3. budget_used / goal_frontier_size, as a curve. See above -- a moving target on both sides.
 #   4. reactivated_cost against reactivated_count. The cost arm should carry essentially ALL of
 #      Part B's volume (~ react_frac * B; reactivated_best should read exactly 0 -- its arm is gone
 #      permanently); reactivated_count is the completeness FLOOR alone, ~ react_floor *
@@ -138,31 +131,31 @@
 #      reach work it was not sized for. And react_cutoff_dist against dist_max says whether the arm
 #      is actually selecting: pinned at 1 means the budget exceeds the population below the anchor
 #      and it is partly picking at random within the clamped tail.
-#   5. admitted_costdist against admitted_explore and admitted_cost. THE CHEAPEST DOOR'S ACTUAL
+#   5. optimal_count against admitted_cost. THE OPTIMAL-DOOR STARVATION SIGNAL: optimal_count is
+#      pass 1's measured population at distance 0; admitted_cost is what pass 2 actually let
+#      through the SAME cutoff CHEAPEST uses. Their gap is how many optimal candidates the budget
+#      did not have room for at this (bufferSlope, bufferFloor, explore_frac, cost_frac) point.
+#   6. admitted_costdist against admitted_explore and admitted_cost. THE CHEAPEST DOOR'S ACTUAL
 #      SHARE. Pinned at 0 means the cutoff solve is degenerate; equal to cost_frac * B every
 #      iteration means it is working exactly as designed. The two selection doors OVERLAP, so
 #      admitted_both/admitted_opt_fresh_both are what make the counts add back up:
 #      admitted == admitted_cost + admitted_explore + admitted_costdist + admitted_floor
 #                - admitted_opt_fresh_both - admitted_both.
-#      READ admitted_cost HERE, NOT optimal_count -- they coincide only when
-#      optimalAcceptBudgeted is false; the gap between them (optimal_count - admitted_cost) is
-#      the optimal-door starvation count THIS PASS exists to measure.
-#   6. cost_cutoff_dist against dist_max. The direct read on whether the log bucket map has the right
+#   7. cost_cutoff_dist against dist_max. The direct read on whether the log bucket map has the right
 #      shape. A collapse toward dist_max / 2^21 means everything is landing in bucket 0 and the door
 #      has degraded to a uniform draw among near-optimal candidates -- the signal to switch
 #      csCostBucket to a linear map, which is a one-line change in the header.
-#   7. ord_cutoff over the run. Rising means regions are filling and freshness is getting scarce,
+#   8. ord_cutoff over the run. Rising means regions are filling and freshness is getting scarce,
 #      which is expected. Pinned at 0 means explore_frac is doing nothing; pinned at 256 means the
 #      whole candidate pool is fresh enough and explore_frac is not binding either.
-#   8. First-solution time and cost, final cost (figures 11/12). THE ACTUAL QUESTION: does a ramp
-#      beat the best bufferSlope = 0 point on time-to-first-solution AND close the final-cost gap
-#      against CleanCost. bufferSlope = 0 points are the direct, structural control.
+#   9. First-solution time and cost, final cost. THE ACTUAL QUESTION THIS PASS ASKS: which
+#      (bufferSlope, bufferFloor, explore_frac, cost_frac) point wins on time-to-first-solution AND
+#      final cost, now that budgeting OPTIMAL is a settled, permanent part of the design.
 #
-# BOTH DELTAS RUN THE FULL COMPARISON THIS PASS -- NOT --only-kinopaxplus at either one, unlike
-# earlier passes through this file. The whole point of sweeping optimalAcceptBudgeted is the
-# concern that OPTIMAL admits too many candidates for free; answering that needs CountingStars
-# (both toggle settings, across the whole slope/floor/cost grid) AND every baseline measured at
-# both the coarse and the fine ("tiny") delta, not KinoPaxPlus alone at the fine one.
+# BOTH DELTAS RUN THE FULL COMPARISON THIS PASS -- NOT --only-kinopaxplus at either one, unchanged
+# from the pass that settled the toggle question. Tuning conclusions at the coarse delta do not
+# automatically hold at the fine one, so both need the full grid, not KinoPaxPlus alone at the
+# fine one.
 #
 # Runs on zigzag only this pass, written to its own subfolder under
 # Data/Benchmarks/CountingStars/zigzag/.
@@ -213,8 +206,8 @@ CONFIG_BACKUP="$CONFIG_FILE.bak"
 BUILD_DIR="$PROJECT_DIR/build"
 
 # Deltas: parallel arrays of label / W_R1 / C_R1 / V_R1. BOTH run the FULL comparison this pass
-# (see DELTA_EXTRA_ARGS) -- the optimal-accept-budget question is expected to matter more as the
-# region count grows, so there is no "--only-kinopaxplus" arm to skip it with here. One build per
+# (see DELTA_EXTRA_ARGS) -- a tuning conclusion at the coarse delta is not assumed to hold at the
+# fine one, so there is no "--only-kinopaxplus" arm to skip it with here. One build per
 # (delta, cost metric), cached, so restoring or trimming the list changes only the loop bounds.
 DELTA_LABELS=("large" "tiny")
 DELTA_W_R1S=(10 14)
@@ -411,37 +404,37 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  CountingStars:  bufferSlope {0.5,1.0,1.5,2.0} x bufferFloor {0.1,0.3}"
-echo "                  explore_frac=0.2 (FIXED), cost_frac {0.3,0.6}"
-echo "                  optimalAcceptBudgeted {false,true} -- THIS PASS'S HEADLINE AXIS"
-echo "                  = 32 points (full factorial) x BOTH deltas"
-echo "                  Filenames: _bs<round(100*slope)>_bf<round(100*floor)>_ef200_cf<..>_ob<on|off>,"
-echo "                  e.g. CountingStars_bs100_bf10_ef200_cf300_oboff."
-echo "                  Earlier CSVs (_rgon/_rgoff, _abon/_aboff tokens, no ob token) cannot collide"
-echo "                  with this shape, so they simply stop loading -- intended for two retired"
+echo "  CountingStars:  bufferSlope {1.0,1.5} x bufferFloor {0.3,0.5}"
+echo "                  explore_frac {0.1,0.2}, cost_frac {0.4,0.6,0.8}"
+echo "                  optimalAcceptBudgeted PERMANENTLY ON -- not an axis any more"
+echo "                  = 24 points (full factorial) x BOTH deltas"
+echo "                  Filenames: _bs<round(100*slope)>_bf<round(100*floor)>_ef<..>_cf<..>,"
+echo "                  e.g. CountingStars_bs100_bf30_ef200_cf600."
+echo "                  Earlier CSVs (_rgon/_rgoff, _abon/_aboff, _obon/_oboff tokens) cannot collide"
+echo "                  with this shape, so they simply stop loading -- intended for three retired"
 echo "                  axes, not a loss."
 echo "                  B IS STILL A RAMP, RECOMPUTED EVERY ITERATION:"
 echo "                    x = itr/fill_iters, B(x) = floor((slope*x + floor) * MAX_TREE_SIZE/fill_iters)"
-echo "                  FOUR DOORS PLUS A FLAT ADMISSION FLOOR, two of the four on a fixed share of B."
-echo "                  THE REGION-BEST GUARANTEE DOOR IS GONE PERMANENTLY -- folded into CHEAPEST's"
+echo "                  THREE DOORS PLUS A FLAT ADMISSION FLOOR, ALL BUDGETED. THE REGION-BEST"
+echo "                  GUARANTEE DOOR IS GONE PERMANENTLY -- folded into CHEAPEST's reactivation"
 echo "                  budget, no toggle left for it (see CS_DOORBIT_GUAR in CountingStars.cuh):"
-echo "                    OPTIMAL    distance 0, i.e. cost <= minCostsR1[r]. UNCAPPED unless"
-echo "                               optimalAcceptBudgeted -- see below. v3.3: also competes for"
-echo "                               FRESHEST rather than returning early."
 echo "                    FRESHEST   explore_frac * B, from the least-populated regions"
 echo "                    CHEAPEST   cost_frac * B, from the smallest cost distances -- OPTIMAL"
-echo "                               candidates included, at bucket 0, when optimalAcceptBudgeted"
+echo "                               candidates (distance 0, i.e. cost <= minCostsR1[r]) compete here"
+echo "                               too, permanently (v3.4, see below), always at bucket 0. v3.3:"
+echo "                               also competes for FRESHEST rather than returning early."
 echo "                    ADMIT FLOOR (v3.3) every candidate at accept_floor = 1e-4, only when nothing"
 echo "                               else admitted it -- a completeness guarantee, not a reach tool"
 echo "                    REACT FLOOR every dormant node at react_floor = 1e-5, ON TOP of the budget"
-echo "                  OPTIMAL-ACCEPT BUDGETING (THIS PASS'S AXIS): false (default) leaves OPTIMAL"
-echo "                  admission unconditional, exactly as before. true folds it into the SAME"
-echo "                  cost-distance histogram/cutoff CHEAPEST already spends against -- an optimal"
-echo "                  candidate always lands in bucket 0 (csCostBucket(0.0f,...) == 0 for any"
-echo "                  distMax), so it has to clear that cutoff/boundary-roll like anything else."
-echo "                  Read optimal_count (measured at distance 0) against admitted_cost (actually"
-echo "                  admitted via CS_DOORBIT_OPTIMAL) -- they coincide when false, and their gap"
-echo "                  is the starvation this toggle exists to measure."
+echo "                  OPTIMAL-ACCEPT BUDGETING IS PERMANENT (v3.4). It ran as an on/off toggle in"
+echo "                  the previous pass; that sweep confirmed folding OPTIMAL into the SAME"
+echo "                  cost-distance histogram/cutoff CHEAPEST already spends against -- it always"
+echo "                  lands in bucket 0 (csCostBucket(0.0f,...) == 0 for any distMax), so it has to"
+echo "                  clear that cutoff/boundary-roll like anything else -- improves final cost /"
+echo "                  time-to-first-solution. There is no unconditional admission left to compare"
+echo "                  against. Read optimal_count (measured at distance 0) against admitted_cost"
+echo "                  (actually admitted via CS_DOORBIT_OPTIMAL) -- their gap is how many optimal"
+echo "                  candidates the budget did not have room for at a given grid point."
 echo "                  REACTIVATION IS COST-SELECTIVE (v3.1, unchanged this pass): CleanCost weights"
 echo "                  its own reactivation arm by cost, and that was the one cost mechanism this"
 echo "                  line lacked -- the volumes already matched, so it was selectivity not"
@@ -462,30 +455,19 @@ echo "                  FRESHEST, CHEAPEST AND (v3.3) OPTIMAL select over the SA
 echo "                  independent signals -- a candidate can clear more than one, and it is still"
 echo "                  ONE tree node: every door that admits it buys ONE propagation block"
 echo "                  (nodeBlocks = popcount(door) in Part A), not a duplicate node."
-echo "                  optimalAcceptBudgeted=true IS THIS PASS'S ABLATION ARM: OPTIMAL loses its"
-echo "                  unconditional pass and can now be starved if the budget is smaller than the"
-echo "                  number of optimal-or-near-optimal candidates across all regions. Expected to"
-echo "                  bite harder at the tiny delta (far more regions)."
-echo "                  RNG NOTE: a candidate whose admission outcome changes between the two toggle"
-echo "                  settings has its OWN curandState advance differently between them -- compare"
-echo "                  AGGREGATE columns across the NUM_CS_RUNS repeats, not per-iteration CSVs"
-echo "                  node-for-node."
 echo "                  FAN-OUT IS DOOR-COUNT (v3.3), FULL STOP: nodeBlocks = popcount(door), no"
 echo "                  region-thinness signal and no swept boost size left -- the region-keyed rule"
-echo "                  KPAXCap and CleanCost use is gone from this planner."
+echo "                  KPAXCap and CleanCost used is gone from this planner (and both baselines are"
+echo "                  gone from this sweep -- see the file header)."
 echo "                  READ FIRST: goal_frontier_size vs iteration (does the realized ramp match"
-echo "                  the intended shape), then the tradeoff scatter across optimalAcceptBudgeted"
-echo "                  at each delta, then optimal_count against admitted_cost, then"
-echo "                  budget_used/goal_frontier_size as a CURVE against a now-moving target, then"
+echo "                  the intended shape), then optimal_count against admitted_cost, then"
+echo "                  budget_used/goal_frontier_size as a CURVE against a MOVING target, then"
 echo "                  admitted_costdist against admitted_explore, then cost_cutoff_dist against"
 echo "                  dist_max."
-echo "  CleanCost:      r2 OFF, w 0.9, k 1, cap 0.03 = 1 point (baseline)"
-echo "  KPAXCap:        cap {0.03} = 1 point"
-echo "  Score floor:    dynamic 1/N_active for KPAXCap/CleanCost; legacy EPSILON for KPAX."
-echo "                  COUNTINGSTARS HAS NO SCORE FLOOR AND USES NO EPSILON: it never reads"
+echo "  Score floor:    COUNTINGSTARS HAS NO SCORE FLOOR AND USES NO EPSILON: it never reads"
 echo "                  vertexScores, h_scoreFloor_, h_nActive_ or regionCoverage in any decision."
-echo "  Baselines: KPAX, CleanCost, KPAXCap, KinoPaxPlus -- ALL FOUR AT BOTH DELTAS this pass, not"
-echo "             KinoPaxPlus-only at the finer one (see the header for why)."
+echo "  Baselines: KPAX, KinoPaxPlus -- BOTH AT BOTH DELTAS this pass, not KinoPaxPlus-only at the"
+echo "             finer one (see the header for why)."
 echo "======================================================="
 
 # =============================================================================

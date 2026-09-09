@@ -11,9 +11,9 @@ mode has cost whole sweeps. Everything below is PARSED from the three real files
 restated by hand, because a hand-restated grid is just a fourth thing to drift.
 
 This sweep has a second drift axis the COMBO one did not: the two finer deltas run
---only-kinopaxplus, so at those deltas the CountingStars / CleanCost / KPAXCap / KPAX series do not
-exist at all. The .sh says so with DELTA_EXTRA_ARGS, the .m says so with deltaPlusOnly, and they have
-to agree or the plot expects series the sweep never wrote.
+--only-kinopaxplus, so at those deltas the CountingStars / KPAX series do not exist at all. The .sh
+says so with DELTA_EXTRA_ARGS, the .m says so with deltaPlusOnly, and they have to agree or the plot
+expects series the sweep never wrote.
 
 v3 ADDED A CHECK THAT COULD NOT EXIST IN v2. The budget splits by fixed fractions rather than one
 share plus a remainder, so explore_frac + cost_frac can be oversubscribed -- and the planner floors
@@ -26,15 +26,13 @@ longer inherently a bug; what still matters is that neither axis goes NEGATIVE, 
 floor-at-1 clamp would silently mask into a positive B that looks fine. That is asserted below in
 place of the old strict-positivity check.
 
-v3.4 ADDS A FIFTH GRID AXIS, OPTIMAL_ACCEPT_BUDGETED (a bool, not a float) -- whether the OPTIMAL
-door is folded into the same cost_frac * B budget CHEAPEST already spends against, instead of
-being admitted unconditionally. Its label token is "_ob" + "on"/"off", not a numeric token, so it
-gets its own bool-aware parsers (cu_bool_array/cu_bool_scalar/m_bool_scalar below) rather than
-reusing tok()/ftok(). It is also why (bufferSlope, bufferFloor) = (0, 0) is no longer treated as a
-distinguished "OPTIMAL stays uncapped regardless of B" ablation point in this script: the region-
-best reactivation GUARANTEE that used to also be uncapped there is gone (folded permanently into
-the reactivation budget in an earlier pass), and OPTIMAL's own uncapped-ness is now toggle-
-dependent rather than structural.
+v3.4's OPTIMAL-ACCEPT-BUDGET TOGGLE IS GONE. It ran as a fifth grid axis (OPTIMAL_ACCEPT_BUDGETED,
+a bool) in the previous pass through this script, with its own bool-aware parsers
+(cu_bool_array/cu_bool_scalar/m_bool_scalar) and an `_ob` label token. That sweep confirmed folding
+OPTIMAL admission into cost_frac * B's own budget helps, so it is now the planner's ONLY behavior --
+there is no toggle, no axis, and no `_ob` token left to parse. This script is back to four grid axes
+and the plain tok()/ftok() parsers. KinoPaxSTARCleanCost and KPAXCap are ALSO GONE from this sweep
+(removed, not merely fixed at one point) -- see the .cu file's own header for why.
 
 Run from anywhere:  python scripts/cross_check_countingstars_grid.py
 Exit 0 = GRIDS MATCH, 1 = GRIDS DIVERGE.
@@ -73,20 +71,6 @@ def cu_scalar(name, ctype='float'):
     return float(mo.group(1))
 
 
-def cu_bool_array(name):
-    mo = re.search(r'static const bool\s+%s\[\]\s*=\s*\{([^}]*)\}' % name, cu)
-    if not mo:
-        sys.exit('FATAL: %s[] not found in %s' % (name, CU))
-    return [w == 'true' for w in re.findall(r'true|false', mo.group(1))]
-
-
-def cu_bool_scalar(name):
-    mo = re.search(r'static const bool\s+%s\s*=\s*(true|false)' % name, cu)
-    if not mo:
-        sys.exit('FATAL: %s not found in %s' % (name, CU))
-    return mo.group(1) == 'true'
-
-
 def sh_array(name):
     """Anchored at ^ so the commented-out alternate blocks in the .sh are correctly ignored."""
     mo = re.search(r'^%s=\(([^)]*)\)' % name, sh, re.M)
@@ -116,25 +100,11 @@ def m_cellstr(name):
     return re.findall(r"'([^']*)'", mo.group(1))
 
 
-def m_str(name):
-    mo = re.search(r"^%s\s*=\s*'([^']*)'" % name, m, re.M)
-    if not mo:
-        sys.exit("FATAL: %s = '...' not found in %s" % (name, M))
-    return mo.group(1)
-
-
 def m_bools(name):
     mo = re.search(r'^%s\s*=\s*\[([^\]]*)\]' % name, m, re.M)
     if not mo:
         sys.exit('FATAL: %s = [...] not found in %s' % (name, M))
     return [w == 'true' for w in re.findall(r'true|false', mo.group(1))]
-
-
-def m_bool_scalar(name):
-    mo = re.search(r'^%s\s*=\s*(true|false)' % name, m, re.M)
-    if not mo:
-        sys.exit('FATAL: %s = ... not found in %s' % (name, M))
-    return mo.group(1) == 'true'
 
 
 def sh_config_int(name):
@@ -176,20 +146,10 @@ cu_slope  = cu_array('BUFFER_SLOPES')
 cu_floor  = cu_array('BUFFER_FLOORS')
 cu_efrac  = cu_array('EXPLORE_FRACS')
 cu_cfrac  = cu_array('COST_FRACS')
-cu_kcap   = cu_array('KPAXCAP_CAPS')
-cu_ob     = cu_bool_array('OPTIMAL_ACCEPT_BUDGETED')
-cu_cap_derived = cu_scalar('CAP_DERIVED')
 cu_dslope = cu_scalar('CS_DERIVED_BUFFER_SLOPE')
 cu_dfloor = cu_scalar('CS_DERIVED_BUFFER_FLOOR')
 cu_def = cu_scalar('CS_DERIVED_EXPLORE_FRAC')
 cu_dcf = cu_scalar('CS_DERIVED_COST_FRAC')
-cu_dob = cu_bool_scalar('CS_DERIVED_OPTIMAL_ACCEPT_BUDGETED')
-
-cu_clean = {}
-for fld, key in (('CLEAN_BASE_W', 'w'), ('CLEAN_BASE_K', 'k'), ('CLEAN_BASE_CAP', 'cap')):
-    cu_clean[key] = tok(cu_scalar(fld))
-rmo = re.search(r'static const bool\s+CLEAN_BASE_R2\s*=\s*(true|false)', cu)
-cu_clean['r2'] = 'on' if (rmo and rmo.group(1) == 'true') else 'off'
 
 sh_deltas = sh_array('DELTA_LABELS')
 sh_extra = sh_array('DELTA_EXTRA_ARGS')
@@ -207,23 +167,19 @@ problems = []
 for val, lst, a, b in ((cu_dslope, cu_slope, 'CS_DERIVED_BUFFER_SLOPE', 'BUFFER_SLOPES'),
                        (cu_dfloor, cu_floor, 'CS_DERIVED_BUFFER_FLOOR', 'BUFFER_FLOORS'),
                        (cu_def, cu_efrac, 'CS_DERIVED_EXPLORE_FRAC', 'EXPLORE_FRACS'),
-                       (cu_dcf, cu_cfrac, 'CS_DERIVED_COST_FRAC', 'COST_FRACS'),
-                       (cu_cap_derived, cu_kcap, 'CAP_DERIVED', 'KPAXCAP_CAPS')):
+                       (cu_dcf, cu_cfrac, 'CS_DERIVED_COST_FRAC', 'COST_FRACS')):
     if not any(abs(v - val) < 1e-6 for v in lst):
         problems.append('%s (%g) is not in %s %s' % (a, val, b, lst))
-if cu_dob not in cu_ob:
-    problems.append('CS_DERIVED_OPTIMAL_ACCEPT_BUDGETED (%s) is not in OPTIMAL_ACCEPT_BUDGETED %s'
-                    % (cu_dob, cu_ob))
 
 # --- Assertion 2: the axes must stay in their meaningful ranges.
 #
 # v3.2: BUFFER_SLOPES / BUFFER_FLOORS replace the old fill_frac, which was required strictly > 0
-# because 0 meant a permanently empty budget-driven frontier. That no longer holds -- (slope,
-# floor) = (0, 0) is now an INTENTIONAL grid point (see the module docstring), and B_frac can
-# legitimately exceed 1 (slope + floor up to 1.7 on this grid). The invariant that actually matters
-# now is just non-negativity: a negative slope or floor would let B go negative, which the code's
-# floor-at-1 clamp would silently turn into a positive B that looks fine. explore_frac and cost_frac
-# are SHARES OF B, so each must still be in [0, 1] on its own.
+# because 0 meant a permanently empty budget-driven frontier. That no longer holds -- 0 is not on
+# the current grid for either axis, but B_frac can legitimately exceed 1 (slope + floor up to 2.0
+# on this grid) and the invariant that actually matters is just non-negativity: a negative slope or
+# floor would let B go negative, which the code's floor-at-1 clamp would silently turn into a
+# positive B that looks fine. explore_frac and cost_frac are SHARES OF B, so each must still be in
+# [0, 1] on its own.
 for name, vals in (('BUFFER_SLOPES', cu_slope), ('BUFFER_FLOORS', cu_floor)):
     if any(v < 0.0 for v in vals):
         problems.append('%s %s has a negative entry -- B_frac = slope*x + floor could go negative, '
@@ -262,10 +218,9 @@ ramp_min_info = ['floor(%g * %d / %d) = %d' % (fl, cfg_tree, cfg_fill_iters, int
                  for fl in cu_floor]
 
 
-def cs_label(slope, floor, efrac, cfrac, ob):
+def cs_label(slope, floor, efrac, cfrac):
     """Mirrors countingStarsLabel() in the benchmark."""
-    return 'CountingStars_bs%d_bf%d_ef%d_cf%d_ob%s' % (tok(slope), tok(floor), ftok(efrac), ftok(cfrac),
-                                                        'on' if ob else 'off')
+    return 'CountingStars_bs%d_bf%d_ef%d_cf%d' % (tok(slope), tok(floor), ftok(efrac), ftok(cfrac))
 
 
 cu_pairs = set()
@@ -276,12 +231,7 @@ for d, plus_only in zip(sh_deltas, sh_plus_only):
             for floor in cu_floor:
                 for efrac in cu_efrac:
                     for cfrac in cu_cfrac:
-                        for ob in cu_ob:
-                            cu_pairs.add((cs_label(slope, floor, efrac, cfrac, ob), d))
-        cu_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
-                      % (cu_clean['r2'], cu_clean['w'], cu_clean['k'], cu_clean['cap']), d))
-        for c in cu_kcap:
-            cu_pairs.add(('KPAXCap_cap%d' % tok(c), d))
+                        cu_pairs.add((cs_label(slope, floor, efrac, cfrac), d))
         cu_pairs.add(('KPAX', d))
     cu_pairs.add(('KinoPaxPlus', d))
 
@@ -290,21 +240,12 @@ m_slope   = m_ints('csBufferSlopes')
 m_floor   = m_ints('csBufferFloors')
 m_efrac   = m_ints('csExploreFracs')
 m_cfrac   = m_ints('csCostFracs')
-m_kcap    = m_ints('kpaxCapCaps')
-m_ob      = m_bools('csOptimalAcceptBudgeted')
 m_deltas  = m_cellstr('deltas')
 m_plus_only = m_bools('deltaPlusOnly')
 m_dslope = m_scalar_int('csDerivedBufferSlope')
 m_dfloor = m_scalar_int('csDerivedBufferFloor')
 m_def = m_scalar_int('csDerivedExploreFrac')
 m_dcf = m_scalar_int('csDerivedCostFrac')
-m_dob = m_bool_scalar('csDerivedOptimalAcceptBudgeted')
-m_clean = {
-    'r2': m_str('cleanBaseR2'),
-    'w': m_scalar_int('cleanBaseW'),
-    'k': m_scalar_int('cleanBaseK'),
-    'cap': m_scalar_int('cleanBaseCap'),
-}
 
 m_pairs = set()
 for d, plus_only in zip(m_deltas, m_plus_only):
@@ -313,13 +254,8 @@ for d, plus_only in zip(m_deltas, m_plus_only):
             for floor in m_floor:
                 for efrac in m_efrac:
                     for cfrac in m_cfrac:
-                        for ob in m_ob:
-                            m_pairs.add(('CountingStars_bs%d_bf%d_ef%d_cf%d_ob%s'
-                                         % (slope, floor, efrac, cfrac, 'on' if ob else 'off'), d))
-        m_pairs.add(('KinoPaxSTARCleanCost_r2%s_w%d_k%d_cap%d'
-                     % (m_clean['r2'], m_clean['w'], m_clean['k'], m_clean['cap']), d))
-        for c in m_kcap:
-            m_pairs.add(('KPAXCap_cap%d' % c, d))
+                        m_pairs.add(('CountingStars_bs%d_bf%d_ef%d_cf%d'
+                                     % (slope, floor, efrac, cfrac), d))
         m_pairs.add(('KPAX', d))
     m_pairs.add(('KinoPaxPlus', d))
 
@@ -327,12 +263,12 @@ for d, plus_only in zip(m_deltas, m_plus_only):
 only_cu = sorted(cu_pairs - m_pairs)
 only_m = sorted(m_pairs - cu_pairs)
 
-if (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf), cu_dob) \
-        != (m_dslope, m_dfloor, m_def, m_dcf, m_dob):
-    problems.append('DERIVED POINT DRIFT: .cu (bs%d, bf%d, ef%d, cf%d, ob%s) != '
-                    '.m (bs%d, bf%d, ef%d, cf%d, ob%s)'
-                    % (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf), cu_dob,
-                       m_dslope, m_dfloor, m_def, m_dcf, m_dob))
+if (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf)) \
+        != (m_dslope, m_dfloor, m_def, m_dcf):
+    problems.append('DERIVED POINT DRIFT: .cu (bs%d, bf%d, ef%d, cf%d) != '
+                    '.m (bs%d, bf%d, ef%d, cf%d)'
+                    % (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf),
+                       m_dslope, m_dfloor, m_def, m_dcf))
 
 if sh_deltas != m_deltas:
     problems.append('DELTA_LABELS %s (%s) != deltas %s (%s)' % (sh_deltas, SH, m_deltas, M))
@@ -431,8 +367,7 @@ if cu_writer_prefixes and (m_loader_prefixes or m_loader_exact):
 for name, vals, f in (('BUFFER_SLOPES', cu_slope, tok),
                       ('BUFFER_FLOORS', cu_floor, tok),
                       ('EXPLORE_FRACS', cu_efrac, ftok),
-                      ('COST_FRACS', cu_cfrac, ftok),
-                      ('KPAXCAP_CAPS', cu_kcap, tok)):
+                      ('COST_FRACS', cu_cfrac, ftok)):
     toks = [f(v) for v in vals]
     if len(set(toks)) != len(set(vals)):
         problems.append('TOKEN COLLISION in %s: %s -> %s' % (name, vals, toks))
