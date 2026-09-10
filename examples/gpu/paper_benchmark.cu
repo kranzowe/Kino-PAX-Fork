@@ -1,22 +1,23 @@
-// PAPER BENCHMARK -- a fixed, five-way comparison, not a sweep.
+// PAPER BENCHMARK -- a fixed, four-way comparison, not a sweep.
 //
 // countingstars_sweep.cu exists to TUNE CountingStars: it sweeps a grid of its internal knobs and
 // logs two dozen door/cutoff/budget diagnostic columns to explain WHY a point on that grid behaves
-// the way it does. This tool has a different job: five ALREADY-CHOSEN operating points, run
+// the way it does. This tool has a different job: four ALREADY-CHOSEN operating points, run
 // identically across every environment and every discretization, to produce the headline figures
 // and results table for the paper. There is nothing to tune here, so there is nothing to diagnose --
 // the per-iteration CSV carries only what the outcome-comparison plots actually read.
 //
-// THE FIVE SERIES, fixed for the whole file:
+// THE FOUR SERIES, fixed for the whole file:
 //   KPAX                    defaults
 //   KinoPaxPlus              defaults
 //   KinoPaxSTARTrue          h_syclopCap_ 1.0 (no cap), h_ancestorPrune_ 1 -- KPAX's exploration
 //                            accept OR-fused with KinoPaxPlus's region-best accept, no cost
 //                            shaping, plus the cost-guarded stale-best prune on top
-//   CountingStars (bf0.3)    bufferSlope 1.2, bufferFloor 0.3, explore_frac 0.1, cost_frac 0.8 --
-//                            the operating point countingstars_sweep.cu's tuning pass picked.
-//   CountingStars (bf0.6)    same, bufferFloor 0.6 -- added to see how the ramp's starting height
-//                            alone moves the result, everything else held fixed.
+//   CountingStars            bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,
+//                            h_hopelessGuard_ PERMANENTLY ON (v3.5) -- countingstars_sweep.cu's
+//                            own on/off sweep confirmed the guard helps, and this is the
+//                            re-tuned bufferSlope/bufferFloor/explore_frac/cost_frac point that
+//                            followed. Replaces the earlier two-point (bf0.3/bf0.6), unguarded arm.
 //
 // KinoPaxSTARTrue REPLACES KinoPaxSTARCleanCost AS THE NON-COUNTINGSTARS "STAR" REFERENCE (this
 // pass): CleanCost is a well-tuned, cost-shaped operating point, which told a "beats one already-
@@ -137,12 +138,13 @@ float devicePathCost(float* d_treeSamples_ptr, int* d_treeSamplesParentIdxs_ptr,
 // countingstars_sweep.cu (round(100 x float) for bs/bf/w/k/cap, round(1000 x float) for ef/cf) so
 // the plot script's startsWith('CountingStars')/startsWith('KinoPaxSTAR') dispatch needs no changes.
 // ========================================================================
-std::string countingStarsLabel(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac)
+std::string countingStarsLabel(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac,
+                               int hopelessGuard)
 {
-    char buf[128];
-    snprintf(buf, sizeof(buf), "CountingStars_bs%d_bf%d_ef%d_cf%d",
+    char buf[144];
+    snprintf(buf, sizeof(buf), "CountingStars_bs%d_bf%d_ef%d_cf%d_hg%d",
              (int)lroundf(100.0f * bufferSlope), (int)lroundf(100.0f * bufferFloor),
-             (int)lroundf(1000.0f * exploreFrac), (int)lroundf(1000.0f * costFrac));
+             (int)lroundf(1000.0f * exploreFrac), (int)lroundf(1000.0f * costFrac), hopelessGuard);
     return std::string(buf);
 }
 
@@ -543,13 +545,17 @@ void runKinoPaxSTARTrueBenchmark(
 static const int CS_RAMP_FILL_ITERS = 700;
 
 // ========================================================================
-// CountingStars -- TWO fixed points, bufferSlope 1.2 / explore_frac 0.1 / cost_frac 0.8 (the
-// operating point countingstars_sweep.cu's tuning pass picked) at bufferFloor 0.3 and 0.6 -- see
-// runCountingStarsBenchmark() below for where they're set. h_fillIters_ is set explicitly to
-// CS_RAMP_FILL_ITERS, not left at its class default (MAX_ITER): the ramp's x = itr/h_fillIters_
-// must track the REAL run length, and at MAX_TREE_SIZE=3,000,000 with a 10s timeout that's ~700
-// iterations, well short of MAX_ITER (1000) -- left at the default, x would never reach 1 and B
-// would never reach its ramp maximum for a run's entire duration.
+// CountingStars -- ONE fixed point: bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15,
+// cost_frac 0.75, with THE HOPELESS GUARD PERMANENTLY ON (v3.5, h_hopelessGuard_) -- see
+// runCountingStarsBenchmark() below for where it's set. Confirmed to help via
+// countingstars_sweep.cu's own on/off sweep at an earlier operating point; slope/floor/ef/cf were
+// then re-tuned with the guard on, since a ramp/budget tuned against the old, unguarded rule is
+// not guaranteed to still be best once hopeless nodes stop competing for it.
+// h_fillIters_ is set explicitly to CS_RAMP_FILL_ITERS, not left at its class default (MAX_ITER):
+// the ramp's x = itr/h_fillIters_ must track the REAL run length, and at
+// MAX_TREE_SIZE=3,000,000 with a 10s timeout that's ~700 iterations, well short of MAX_ITER (1000)
+// -- left at the default, x would never reach 1 and B would never reach its ramp maximum for a
+// run's entire duration.
 //
 // The permanently-budgeted region-best guarantee (see the file header) needs no setup here -- it
 // is the planner's only behavior now, not a field this benchmark sets.
@@ -557,13 +563,15 @@ static const int CS_RAMP_FILL_ITERS = 700;
 RunResult benchmarkCountingStars(
     CountingStars& planner, const std::string& deltaLabel, const std::string& environment, int runNumber,
     float* h_initial, float* h_goal, float* d_obstacles, uint numObstacles, int maxIterations, float maxTimeMs,
-    float bufferSlope, float bufferFloor, float exploreFrac, float costFrac, const std::string& label)
+    float bufferSlope, float bufferFloor, float exploreFrac, float costFrac, int hopelessGuard,
+    const std::string& label)
 {
-    planner.h_fillIters_   = CS_RAMP_FILL_ITERS;
-    planner.h_bufferSlope_ = bufferSlope;
-    planner.h_bufferFloor_ = bufferFloor;
-    planner.h_exploreFrac_ = exploreFrac;
-    planner.h_costFrac_    = costFrac;
+    planner.h_fillIters_    = CS_RAMP_FILL_ITERS;
+    planner.h_bufferSlope_  = bufferSlope;
+    planner.h_bufferFloor_  = bufferFloor;
+    planner.h_exploreFrac_  = exploreFrac;
+    planner.h_costFrac_     = costFrac;
+    planner.h_hopelessGuard_ = (hopelessGuard != 0);
 
     RunResult result;
     result.delta_label = label;
@@ -636,40 +644,39 @@ void runCountingStarsBenchmark(
     std::vector<RunResult>& all_results, const std::string& outputDir, const std::string& deltaLabel,
     int numRuns, int maxIterations, float maxTimeMs)
 {
-    // TWO fixed bufferFloor points, not a grid: bufferSlope/explore_frac/cost_frac stay at the
-    // operating point countingstars_sweep.cu's tuning pass picked (1.2 / 0.1 / 0.8); bufferFloor
-    // 0.6 was added alongside the original 0.3 to see how the ramp's starting height alone moves
-    // the result, now that OPTIMAL admission is permanently budgeted.
+    // ONE fixed point, hopeless guard permanently ON: bufferSlope 1.2, bufferFloor 0.4,
+    // explore_frac 0.15, cost_frac 0.75 -- re-tuned against countingstars_sweep.cu's own
+    // bufferSlope/bufferFloor grid now that the guard is confirmed to help. Replaces the earlier
+    // two-bufferFloor (0.3/0.6), unguarded arm.
     static const float BUFFER_SLOPE   = 1.2f;
-    static const float BUFFER_FLOORS[] = {0.3f, 0.6f};
-    static const float EXPLORE_FRAC   = 0.1f;
-    static const float COST_FRAC      = 0.8f;
+    static const float BUFFER_FLOOR   = 0.4f;
+    static const float EXPLORE_FRAC   = 0.15f;
+    static const float COST_FRAC      = 0.75f;
+    static const int   HOPELESS_GUARD = 1;
 
     printf("\n========================================\n");
     printf("COUNTINGSTARS: %s | Delta: %s | Regions: %d\n", environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
     printf("========================================\n");
 
-    for(float bufferFloor : BUFFER_FLOORS)
+    const std::string label = countingStarsLabel(BUFFER_SLOPE, BUFFER_FLOOR, EXPLORE_FRAC, COST_FRAC, HOPELESS_GUARD);
+    printf("  --- bufferSlope = %.2f, bufferFloor = %.2f, explore_frac = %.2f, cost_frac = %.2f, "
+           "hopelessGuard = %d (%s) ---\n",
+           BUFFER_SLOPE, BUFFER_FLOOR, EXPLORE_FRAC, COST_FRAC, HOPELESS_GUARD, label.c_str());
+    CountingStars planner;
+    for(int run = 0; run < numRuns; run++)
     {
-        const std::string label = countingStarsLabel(BUFFER_SLOPE, bufferFloor, EXPLORE_FRAC, COST_FRAC);
-        printf("  --- bufferSlope = %.2f, bufferFloor = %.2f, explore_frac = %.2f, cost_frac = %.2f (%s) ---\n",
-               BUFFER_SLOPE, bufferFloor, EXPLORE_FRAC, COST_FRAC, label.c_str());
-        CountingStars planner;
-        for(int run = 0; run < numRuns; run++)
-        {
-            RunResult result = benchmarkCountingStars(planner, deltaLabel, environment_name, run,
-                                                 h_initial, h_goal, d_obstacles, numObstacles, maxIterations, maxTimeMs,
-                                                 BUFFER_SLOPE, bufferFloor, EXPLORE_FRAC, COST_FRAC, label);
-            printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-                   run + 1, numRuns, result.total_time_seconds,
-                   result.total_iterations, result.final_tree_size, result.first_solution_iteration,
-                   result.first_solution_cost, result.final_best_cost);
-            writePerIterationCSV(result, outputDir);
-            all_results.push_back(result);
+        RunResult result = benchmarkCountingStars(planner, deltaLabel, environment_name, run,
+                                             h_initial, h_goal, d_obstacles, numObstacles, maxIterations, maxTimeMs,
+                                             BUFFER_SLOPE, BUFFER_FLOOR, EXPLORE_FRAC, COST_FRAC, HOPELESS_GUARD, label);
+        printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+               run + 1, numRuns, result.total_time_seconds,
+               result.total_iterations, result.final_tree_size, result.first_solution_iteration,
+               result.first_solution_cost, result.final_best_cost);
+        writePerIterationCSV(result, outputDir);
+        all_results.push_back(result);
 
-            if(run < numRuns - 1)
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        }
+        if(run < numRuns - 1)
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
 }
 
@@ -703,8 +710,8 @@ int main(int argc, char* argv[])
     printf("Max iterations: %d (non-binding; MAX_TREE_SIZE / MAX_TIME_MS are the real limiters)\n", MAX_ITERATIONS);
     printf("Max time:       %.1f s\n", MAX_TIME_MS / 1000.0f);
     printf("Series:         KPAX, KinoPaxPlus, KinoPaxSTARTrue (cap1.0 anc1),\n");
-    printf("                CountingStars (bufferSlope 1.2, bufferFloor 0.3, explore_frac 0.1, cost_frac 0.8),\n");
-    printf("                CountingStars (bufferSlope 1.2, bufferFloor 0.6, explore_frac 0.1, cost_frac 0.8)\n");
+    printf("                CountingStars (bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,\n");
+    printf("                               hopelessGuard ON)\n");
     printf("=======================================================\n");
 
     // Start/goal states -- identical to countingstars_sweep.cu's, validated across every

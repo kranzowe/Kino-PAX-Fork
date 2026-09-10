@@ -389,9 +389,17 @@ __device__ __forceinline__ float distance(float* a, float* b)
 // Per-edge path cost from parent state x0 to child state x1, selected by COST_MODE (config.h).
 // Used at every cumulative-cost accumulation site (planner kernels + benchmark computePathCost),
 // so it is both host- and device-callable.
-//   COST_MODE 1 (default): pure control effort. The double-integrator child stores its control
-//     accel at x1[6..8] and the edge duration at x1[9], so edge cost = (ax^2+ay^2+az^2)*dt.
-//   COST_MODE 0: baseline workspace Euclidean distance (self-contained; host-callable).
+//   COST_MODE 1 (default): pure control effort, one branch per model whose child state stamps its
+//     controls into the SAMPLE_DIM tail:
+//       MODEL 1 (double integrator): x1[6..8] = ax,ay,az, x1[9] = dt -> (ax^2+ay^2+az^2)*dt.
+//       MODEL 2 (Dubins airplane):   x1[6..8] = yawRate,pitchRate,a, x1[9] = dt (see
+//         propagateAndCheckDubinsAirplaneRungeKutta in statePropagator.cu for the stamp) ->
+//         (yawRate^2+pitchRate^2+a^2)*dt -- same shape, different physical controls, since both
+//         models share the SAME SAMPLE_DIM = STATE_DIM(6) + CONTROL_DIM(3) + 1 layout.
+//   COST_MODE 0: baseline workspace Euclidean distance (self-contained; host-callable). Also the
+//     fallback for any model without its own COST_MODE==1 branch above, so a model added without
+//     one here degrades to workspace distance rather than being caught at compile time -- adding a
+//     new model's effort branch means adding it explicitly, not something this file can enforce.
 // An undefined MODEL evaluates to 0 in the #if, so the distance fallback is always safe.
 // --------------------------------------------------------------------------------------
 #ifndef COST_MODE
@@ -405,8 +413,15 @@ __host__ __device__ __forceinline__ float edgeCost(const float* x0, const float*
     float ax = x1[6], ay = x1[7], az = x1[8], dt = x1[9];
     (void)x0;
     return (ax * ax + ay * ay + az * az) * dt;
+#elif (COST_MODE == 1) && (MODEL == 2)
+    // Pure control effort, Dubins airplane: integral of (yawRate^2 + pitchRate^2 + a^2) over the
+    // edge -- the same sum-of-squared-controls-times-dt shape as MODEL 1, over this model's own
+    // three controls instead of acceleration components.
+    float yawRate = x1[6], pitchRate = x1[7], a = x1[8], dt = x1[9];
+    (void)x0;
+    return (yawRate * yawRate + pitchRate * pitchRate + a * a) * dt;
 #else
-    // Baseline / non-Model-1 fallback: workspace Euclidean distance.
+    // Baseline / no-model-specific-branch fallback: workspace Euclidean distance.
     float s = 0.0f;
     for(int d = 0; d < W_DIM; ++d)
         {

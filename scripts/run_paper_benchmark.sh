@@ -2,13 +2,31 @@
 # =============================================================================
 # Paper Benchmark Runner
 #
-# A FIXED, FIVE-WAY COMPARISON, not a sweep. Every series below is an already-chosen operating
+# A FIXED, FOUR-WAY COMPARISON, not a sweep. Every series below is an already-chosen operating
 # point; the only things varying across runs are discretization, environment, and cost metric.
 # Modeled on run_countingstars_sweep.sh's two-phase build-then-run structure, but simpler: there is
 # no per-delta arm partition (--only-kinopaxplus has no equivalent here) because every series runs
 # at every delta -- that is the comparison this suite exists to make.
 #
-# THE FIVE SERIES (fixed inside examples/gpu/paper_benchmark.cu, not swept here):
+# MODEL 2 THIS PASS -- 6D DUBINS AIRPLANE, not the 6D Double Integrator earlier passes ran. See
+# write_config() below: STATE_DIM/CONTROL_DIM/SAMPLE_DIM/W_DIM/C_DIM/V_DIM are UNCHANGED from
+# Model 1 (Dubins Airplane's state [x,y,z,yaw,pitch,v] and control-like [yawRate,pitchRate,a,dt]
+# occupy the exact same SAMPLE_DIM slots the double integrator's [x,y,z,vx,vy,vz]/[ax,ay,az,dt]
+# did, confirmed against propagateAndCheckDubinsAirplaneRungeKutta() in statePropagator.cu), so
+# the delta/region machinery below needs no dimensional changes to switch models.
+#
+# CAVEAT, NOT FIXED HERE: getRegion()/getSubRegion() (Graph.cu) bin coord[3], coord[4], coord[5]
+# (the V_DIM=3 slots) uniformly against ONE shared V_MIN/V_MAX = [-0.3, 0.3]. For Model 1 that is
+# vx/vy/vz, all genuinely in that range. For Model 2 those same three slots are yaw ([-pi,pi]),
+# pitch ([-pi/3,pi/3]) and v ([-0.3,0.3]) -- only v is actually calibrated to V_MIN/V_MAX; yaw and
+# pitch values outside [-0.3,0.3] (i.e. almost all of them) clamp into the nearest end bucket, so
+# the SYCLOP-style region signal is degenerate along those two axes specifically. This does NOT
+# affect correctness (collision checking and the goal test are workspace-only, see distance() in
+# helper.cuh), only how well regions distinguish states by orientation. Fixing it properly means
+# giving yaw/pitch their own calibrated axes (e.g. C_DIM=1 at yaw using the existing C_MIN/C_MAX =
+# -pi/pi, which fits exactly) -- a bigger change, not attempted in this pass.
+#
+# THE FOUR SERIES (fixed inside examples/gpu/paper_benchmark.cu, not swept here):
 #   KPAX                     defaults
 #   KinoPaxPlus               defaults
 #   KinoPaxSTARTrue           h_syclopCap_ 1.0 (no cap), h_ancestorPrune_ 1 -- KPAX's exploration
@@ -22,15 +40,16 @@
 #                             earlier pass to isolate what the guarded prune buys on top of the
 #                             naive fusion; it was dropped from this comparison (recoverable from
 #                             git history as KinoPaxSTARTrue_cap100_anc0).
-#   CountingStars (bf0.3)     bufferSlope 1.2, bufferFloor 0.3, explore_frac 0.1, cost_frac 0.8 --
-#                             the operating point countingstars_sweep.cu's tuning pass picked.
-#   CountingStars (bf0.6)     same, bufferFloor 0.6 -- added to see how the ramp's starting height
-#                             alone moves the result, everything else held fixed. Both points run
-#                             on the permanently-budgeted CountingStars (OPTIMAL nodes are limited
-#                             by budget in BOTH acceptance and reactivation, neither uncapped) --
-#                             see CS_DOORBIT_GUAR / CS_DOORBIT_OPTIMAL in CountingStars.cuh.
+#   CountingStars             bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,
+#                             h_hopelessGuard_ PERMANENTLY ON (v3.5) -- countingstars_sweep.cu's
+#                             own on/off sweep confirmed the guard helps, and this is the re-tuned
+#                             bufferSlope/bufferFloor/explore_frac/cost_frac point that followed.
+#                             Replaces the earlier two-point (bf0.3/bf0.6), unguarded arm. Runs on
+#                             the permanently-budgeted CountingStars (OPTIMAL nodes are limited by
+#                             budget in BOTH acceptance and reactivation, neither uncapped) -- see
+#                             CS_DOORBIT_GUAR / CS_DOORBIT_OPTIMAL in CountingStars.cuh.
 #
-# THREE DELTAS, ALL FIVE SERIES AT EACH:
+# THREE DELTAS, ALL FOUR SERIES AT EACH:
 #   large  W_R1=7   C_R1=1  V_R1=3  ->   7^3 * 3^3 =   9,261 regions
 #   fine   W_R1=16  C_R1=1  V_R1=4  ->  16^3 * 4^3 = 262,144 regions
 #   tiny   W_R1=14  C_R1=1  V_R1=6  ->  14^3 * 6^3 = 592,704 regions
@@ -55,8 +74,13 @@
 # from 0.10 to 0.02 wide (include/config/obstacles/zigzag/obstacles.csv) to match narrowPassage's
 # clearance exactly -- expect both to show materially lower success rates than empty/house.
 #
-# TWO COST METRICS (length, effort) exist as an axis, but THIS RUN ONLY DOES LENGTH -- effort is
-# disabled for now (see COST_LABELS/COST_MODES below), not removed.
+# BOTH COST METRICS THIS PASS (length AND effort -- see COST_LABELS/COST_MODES below). EFFORT
+# NEEDED A REAL MODEL-2 BRANCH FIRST: edgeCost() (include/helper/helper.cuh) used to gate its
+# control-effort formula on `MODEL == 1` specifically, so COST_MODE=1 would have silently fallen
+# through to the SAME workspace-distance formula COST_MODE=0 uses for any other model -- running
+# "both" would have measured the same thing twice under different labels. A `MODEL == 2` branch
+# was added (yawRate/pitchRate/a occupy the exact SAME x1[6..8] slots ax/ay/az did for Model 1, so
+# the formula is the identical shape: (yawRate^2 + pitchRate^2 + a^2) * dt) before this pass ran.
 #
 # MAX_TREE_SIZE (3,000,000) and the per-run wall-clock cap (10s, compiled into
 # examples/gpu/paper_benchmark.cu as MAX_TIME_MS) are meant to be the actual stop conditions. The
@@ -71,13 +95,13 @@
 # limiters) has x pinned at 1 and B plateaued at its ramp maximum for the rest of the run --
 # already-supported, intended behavior, not a new edge case.
 #
-# SCALE: 5 series x 3 deltas x 4 environments x 1 cost metrics x 5 runs = 300 runs, each capped
-# at 10s. Worst case a few hours; most runs stop earlier (tree-full or an early success).
+# SCALE: 4 series x 3 deltas x 4 environments x 2 cost metrics x 5 runs = 480 runs, each capped
+# at 10s. Worst case several hours; most runs stop earlier (tree-full or an early success).
 #
 # NUM_R1_REGIONS and COST_MODE are both COMPILE-TIME, so neither can vary within one binary. Same
 # build-cache pattern as run_countingstars_sweep.sh: write config.h and build once per (delta, cost
-# metric) = 3 binaries this pass (length only), cached under a suffixed name, then run each once
-# per environment.
+# metric) = 6 binaries this pass (3 deltas x 2 metrics), cached under a suffixed name, then run
+# each once per environment.
 #
 # Original config.h is backed up and restored on exit/error.
 #
@@ -97,17 +121,19 @@ BUILD_DIR="$PROJECT_DIR/build"
 # every delta -- there is no arm partition to configure here.
 DELTA_LABELS=("large" "fine" "tiny")
 DELTA_W_R1S=(7 16 14)
-DELTA_C_R1S=(1  1  1)   # inert for Model 1 (C_DIM 0); control refinement rides on V_R1
+DELTA_C_R1S=(1  1  1)   # inert for Model 2 (C_DIM 0, unchanged from Model 1); control refinement rides on V_R1
 DELTA_V_R1S=(3  4  6)
 
 # Cost metric axis: label + COST_MODE (0 = workspace distance, 1 = control effort). LENGTH ONLY
 # this pass -- effort disabled for now, not removed; uncomment the line below to restore it.
-COST_LABELS=("length")
-COST_MODES=(0)
-# COST_LABELS=("length" "effort")
-# COST_MODES=(0 1)
+COST_LABELS=("length" "effort")
+COST_MODES=(0 1)
+# COST_LABELS=("length")
+# COST_MODES=(0)
 
-# Environments (obstacles already in [0,1]^3 for Model 1). Each gets its own output subfolder.
+# Environments (obstacles already in [0,1]^3 workspace boxes -- model-agnostic, since collision
+# checking and the goal test only read x,y,z; reused as-is for Model 2). Each gets its own output
+# subfolder.
 ENV_NAMES=("empty" "house" "narrowPassage" "zigzag")
 ENV_OBSTACLES=(
     "../include/config/obstacles/empty/obstacles.csv"
@@ -152,7 +178,7 @@ cp "$CONFIG_FILE" "$CONFIG_BACKUP"
 # --- Ensure build directory exists ---
 mkdir -p "$BUILD_DIR"
 
-# Function to write complete Model 1 config.h. Identical to run_countingstars_sweep.cu's --
+# Function to write complete Model 2 config.h. Identical structure to run_countingstars_sweep.cu's --
 # MAX_ITER stays at 1000 regardless of delta/metric; see the header comment above for why.
 write_config() {
     local W_R1=$1
@@ -162,10 +188,10 @@ write_config() {
     cat > "$CONFIG_FILE" << CONFIGEOF
 #pragma once
 /***************************/
-/* 6D DOUBLE INTEGRATOR    */
+/* 6D DUBINS AIRPLANE      */
 /***************************/
-#define MODEL 1
-#define COST_MODE ${COST_MODE}  // path cost: 1 = control effort ((ax^2+ay^2+az^2)*dt), 0 = workspace distance
+#define MODEL 2
+#define COST_MODE ${COST_MODE}  // path cost: 1 = control effort ((yawRate^2+pitchRate^2+a^2)*dt), 0 = workspace distance
 #define MAX_TREE_SIZE 3000000
 #define MAX_FLOAT 1e38f
 #define MAX_SOL_SET_SIZE 500
@@ -260,26 +286,26 @@ CONFIGEOF
 echo ""
 echo "======================================================="
 echo "  Paper Benchmark"
-echo "  Model: 1 (6D Double Integrator)"
+echo "  Model: 2 (6D Dubins Airplane)"
 echo "  Environments: ${ENV_NAMES[*]}  (separate output subfolders)"
 for i in "${!DELTA_LABELS[@]}"; do
     R=$(( DELTA_W_R1S[i]**3 * DELTA_V_R1S[i]**3 ))
-    echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | all 5 series"
+    echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | all 4 series"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  Series (fixed, all 3 deltas x all 4 environments):"
+echo "  Series (fixed, all 3 deltas x all 4 environments x both cost metrics):"
 echo "    KPAX                      defaults"
 echo "    KinoPaxPlus                defaults"
 echo "    KinoPaxSTARTrue            h_syclopCap_ 1.0 (no cap), h_ancestorPrune_ 1 -- naive OR-fusion"
 echo "                               + cost-guarded stale-best prune"
-echo "    CountingStars (bf0.3)      bufferSlope 1.2, bufferFloor 0.3, explore_frac 0.1, cost_frac 0.8"
-echo "    CountingStars (bf0.6)      same, bufferFloor 0.6"
+echo "    CountingStars              bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,"
+echo "                               hopelessGuard ON (v3.5, permanent)"
 echo "  5 runs per (series, delta, environment, metric)."
 echo "  Limits: MAX_TREE_SIZE 3,000,000 | 10s per-run timeout | 20,000 outer-loop iteration cap"
 echo "          (non-binding by design -- tree size and wall-clock are meant to stop every run)"
 echo "  config.h MAX_ITER stays at 1000 (unchanged) -- see the header comment in this script and"
 echo "  in examples/gpu/paper_benchmark.cu for why raising it would corrupt CountingStars' buffer ramp."
-echo "  Total: 5 x 3 x 4 x 1 x 5 = 300 runs"
+echo "  Total: 4 x 3 x 4 x 2 x 5 = 480 runs"
 echo "======================================================="
 
 # =============================================================================
@@ -326,7 +352,7 @@ fi
 
 # =============================================================================
 # RUN — one pass per cost metric x environment x delta, using the cached binaries. Each invocation
-# internally runs all 5 series x 5 runs.
+# internally runs all 4 series x 5 runs.
 # =============================================================================
 cd "$BUILD_DIR"
 for CL in "${COST_LABELS[@]}"; do

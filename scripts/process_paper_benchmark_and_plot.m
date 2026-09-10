@@ -1,15 +1,16 @@
-%% Paper Benchmark Plots - fixed 5-planner comparison, 3 panels + summary table per (env, metric)
+%% Paper Benchmark Plots - fixed 4-planner comparison, 3 panels + summary table per (env, metric)
 % Reads per-iteration CSVs produced by examples/gpu/paper_benchmark.cu (run via
 % scripts/run_paper_benchmark.sh).
 %
 % A FIXED COMPARISON, not a sweep -- there is no grid here, so the series list below is NOT built
 % from nested loops over swept parameters the way process_countingstars_and_plot.m's is. It is
-% five already-chosen operating points (KPAX, KinoPaxPlus, KinoPaxSTARTrue at ancestorPrune 1, and
-% TWO CountingStars points at bufferFloor 0.3 and 0.6), each run at all three deltas -- 15 series
-% total, overlaid inside each figure. CountingStars runs at bufferSlope 1.2, explore_frac 0.1,
-% cost_frac 0.8 -- the operating point countingstars_sweep.cu's tuning pass picked -- at TWO
-% bufferFloor values (0.3, the original point, and 0.6, added to see how the ramp's starting
-% height alone moves the result). KinoPaxSTARTrue (h_syclopCap_ at its 1.0 no-op default,
+% four already-chosen operating points (KPAX, KinoPaxPlus, KinoPaxSTARTrue at ancestorPrune 1, and
+% ONE CountingStars point), each run at all three deltas -- 12 series total, overlaid inside each
+% figure. CountingStars runs bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,
+% WITH THE HOPELESS GUARD PERMANENTLY ON (v3.5, h_hopelessGuard_ in CountingStars.cuh) --
+% countingstars_sweep.cu's own on/off sweep confirmed the guard helps at an earlier operating
+% point, and slope/floor/ef/cf were re-tuned with it on (replacing the earlier two-point,
+% unguarded bufferFloor 0.3/0.6 arm). KinoPaxSTARTrue (h_syclopCap_ at its 1.0 no-op default,
 % h_ancestorPrune_ = 1) replaces KinoPaxSTARCleanCost as the non-CountingStars "STAR" reference
 % this pass -- the naive OR-fusion of KPAX and KinoPaxPlus plus the guarded stale-best prune tells
 % a "beats the naive fusion of its two parents" story, rather than CleanCost's "beats one already
@@ -31,7 +32,7 @@
 %                                cost-of-last, success rate, final tree size %. Printed to the
 %                                console AND written to a CSV alongside the figures.
 %
-% COLOR = PLANNER IDENTITY (5 fixed colors), WIDTH = DELTA (thin -> thick for large -> fine ->
+% COLOR = PLANNER IDENTITY (4 fixed colors), WIDTH = DELTA (thin -> thick for large -> fine ->
 % tiny). This replaces the swept-grid encoding (color=bufferFloor, style=bufferSlope,
 % marker=(ef,cf)) that process_countingstars_summary_plots.m uses -- there is nothing left to sweep
 % here, so color is free to carry the identity that actually varies across this comparison.
@@ -58,15 +59,16 @@ envTitles    = {'Empty'};
 % environments = {'narrowPassage'};  envTitles = {'Narrow Passage'};
 % environments = {'zigzag'};         envTitles = {'Zigzag Corridor (tightened)'};
 
-% Cost metric axis -- one build each, so one set of figures each. LENGTH ONLY this pass -- effort
-% is disabled for now (see run_paper_benchmark.sh), not removed; restore the commented-out line
-% below once effort CSVs exist again.
-metrics       = {'length'};
-metricTitles  = {'Workspace Path Length'};
-metricYLabels = {'Path Cost (workspace path length)'};
-% metrics       = {'length', 'effort'};
-% metricTitles  = {'Workspace Path Length', 'Control Effort'};
-% metricYLabels = {'Path Cost (workspace path length)', 'Path Cost (control effort)'};
+% Cost metric axis -- one build each, so one set of figures each. BOTH THIS PASS (see
+% run_paper_benchmark.sh; Model 2's own COST_MODE==1 effort branch in edgeCost() (helper.cuh) is
+% what makes "effort" a genuinely different metric from "length" for Dubins Airplane rather than
+% a silent duplicate).
+metrics       = {'length', 'effort'};
+metricTitles  = {'Workspace Path Length', 'Control Effort'};
+metricYLabels = {'Path Cost (workspace path length)', 'Path Cost (control effort)'};
+% metrics       = {'length'};
+% metricTitles  = {'Workspace Path Length'};
+% metricYLabels = {'Path Cost (workspace path length)'};
 
 % Delta axis -- OVERLAID inside each figure, encoded as line WIDTH. The filename token is
 % sprintf('%s_%s', delta, metric), e.g. 'fine_effort'. "fine" and "tiny" refine different axes
@@ -84,41 +86,38 @@ deltaWidths = [1.0, 1.8, 2.6];
 
 maxTreeSize = 3000000;   % MAX_TREE_SIZE in config.h -- denominator for the table's Final Tree (%)
 
-% --- The five FIXED series (not swept). Label tokens must match examples/gpu/paper_benchmark.cu's
+% --- The four FIXED series (not swept). Label tokens must match examples/gpu/paper_benchmark.cu's
 % trueLabel() / countingStarsLabel() exactly: round(100 x float) for cap/bs/bf, round(1000 x
-% float) for ef/cf. ---
+% float) for ef/cf, plain int for hopelessGuard. ---
 trueCap          = 100;   % syclopCap 1.0 (no cap)
 trueAncestorPrune = 1;    % the guarded-prune point; anc0 (pure fusion) was dropped from this pass
 
-% CountingStars' two operating points -- bufferSlope 1.2, explore_frac 0.1, cost_frac 0.8 fixed
-% (the point countingstars_sweep.cu's tuning pass picked), at bufferFloor 0.3 (the original) and
-% 0.6 (added to see how the ramp's starting height alone moves the result), now that OPTIMAL
-% admission is permanently budgeted (see CountingStars.cuh).
-csSlope = 120; csFloors = [30 60]; csExplore = 100; csCost = 800;
+% CountingStars' ONE operating point -- bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15,
+% cost_frac 0.75, hopelessGuard PERMANENTLY ON (v3.5, see h_hopelessGuard_ in CountingStars.cuh).
+% Replaces the earlier two-point (bufferFloor 0.3/0.6), unguarded arm now that the guard is
+% confirmed to help and the ramp/budget have been re-tuned around it.
+csSlope = 120; csFloor = 40; csExplore = 150; csCost = 750; csHopelessGuard = 1;
 
 baseNames = { ...
     'KPAX', ...
     'KinoPaxPlus', ...
     sprintf('KinoPaxSTARTrue_cap%d_anc%d', trueCap, trueAncestorPrune), ...
-    sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d', csSlope, csFloors(1), csExplore, csCost), ...
-    sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d', csSlope, csFloors(2), csExplore, csCost) ...
+    sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d_hg%d', csSlope, csFloor, csExplore, csCost, csHopelessGuard) ...
 };
 baseDisplay = { ...
     'KPAX', ...
     'KinoPaxPlus', ...
     'KinoPaxSTARTrue (naive, stale-best prune)', ...
-    'CountingStars (slope 1.2, floor 0.3, ef 0.1, cf 0.8)', ...
-    'CountingStars (slope 1.2, floor 0.6, ef 0.1, cf 0.8)' ...
+    'CountingStars (slope 1.2, floor 0.4, ef 0.15, cf 0.75, hopeless guard ON)' ...
 };
-% color = planner identity: KPAX near-black, KinoPaxPlus blue, KinoPaxSTARTrue crimson, the two
-% CountingStars bufferFloor points as two shades of amber -- each "family" reads as its own hue.
+% color = planner identity: KPAX near-black, KinoPaxPlus blue, KinoPaxSTARTrue crimson,
+% CountingStars amber -- each "family" reads as its own hue.
 baseColors = [ ...
     0.10 0.10 0.10;    % KPAX
     0.20 0.40 0.80;    % KinoPaxPlus
     0.45 0.05 0.10;    % KinoPaxSTARTrue (crimson)
-    0.85 0.55 0.10;    % CountingStars floor 0.3 (amber)
-    0.55 0.35 0.05 ];  % CountingStars floor 0.6 (darker amber)
-baseMarkers = {'s', 'd', 'h', 'o', 'v'};
+    0.85 0.55 0.10 ];  % CountingStars (amber)
+baseMarkers = {'s', 'd', 'h', 'o'};
 
 % --- Build the series arrays: (planner, delta) pairs, planner-major so the legend and table group
 % all three deltas together per planner. ---
@@ -257,7 +256,7 @@ for ei = 1:numel(environments)
 
         markerKey = sprintf(['lower-left is better (fast and cheap); width = delta (thin->thick = ' ...
                              'large->fine->tiny); \x25a1 KPAX, \x25c7 KinoPaxPlus, ' ...
-                             '\x2605 KinoPaxSTARTrue, \x25cb CS floor0.3, \x25bd CS floor0.6']);
+                             '\x2605 KinoPaxSTARTrue, \x25cb CountingStars']);
 
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Tradeoff Scatter (%s)', envTitle, costTitle), ...
