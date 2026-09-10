@@ -342,6 +342,7 @@ RunResult benchmarkKPAX(
     float iterMs    = 0.0f;
 
     planner.resetPlanner(h_initial, h_goal);
+    printf("    [KPAX diag] resetPlanner() returned\n"); fflush(stdout);
 
     int zero = 0;
     int itr = 0;
@@ -354,13 +355,22 @@ RunResult benchmarkKPAX(
         planner.h_pathToGoal_ = 0;
 
         cudaEventRecord(iterStart);
+        if(itr <= 3) { printf("    [KPAX diag] itr=%d: propagateFrontier...\n", itr); fflush(stdout); }
         planner.propagateFrontier(d_obstacles, numObstacles);
+        if(itr <= 3) { printf("    [KPAX diag] itr=%d: updateVertices...\n", itr); fflush(stdout); }
         planner.graph_.updateVertices();
+        if(itr <= 3) { printf("    [KPAX diag] itr=%d: updateFrontier...\n", itr); fflush(stdout); }
         planner.updateFrontier();
         cudaEventRecord(iterStop);
         cudaEventSynchronize(iterStop);
         cudaEventElapsedTime(&iterMs, iterStart, iterStop);
         plannerMs += iterMs;
+
+        if(itr <= 5 || itr % 50 == 0)
+            {
+                printf("    [KPAX diag] itr=%d done, tree=%d, plannerMs=%.1f\n", itr, planner.h_treeSize_, plannerMs);
+                fflush(stdout);
+            }
 
         if(planner.h_pathToGoal_ != 0)
         {
