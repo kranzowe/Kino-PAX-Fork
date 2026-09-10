@@ -63,16 +63,19 @@
 # dedicated bug-isolation harness at (W_R1=14, V_R1=6) instead and confirmed it clean across all
 # five series (KPAX, KinoPaxPlus, KinoPaxSTARTrue anc0/anc1, CountingStars) on zigzag/effort. This
 # pass reuses that same, confirmed-safe discretization here rather than the one that hangs -- see
-# scripts/run_countingstars_sweep.sh's header for the fuller debugging history. NOTE this has only
-# been confirmed clean on zigzag with COST_MODE=effort, not yet on `empty`/length where the
-# original crash occurred -- watch this run's `empty` series closely.
+# scripts/run_countingstars_sweep.sh's header for the fuller debugging history. THAT "CONFIRMED
+# CLEAN" CLAIM NEVER ACTUALLY COVERED `empty` (only zigzag) OR MODEL 2 (only Model 1) -- and a run
+# at tiny/empty on Model 2 has since frozen with the same symptoms. `empty` is pulled out of
+# ENV_NAMES below (see the note there) to isolate whether it's specifically responsible.
 #
 # C_R1 stays at 1 everywhere: this config sets C_DIM 0, so control refinement has nowhere to act
 # except V_R1.
 #
-# FOUR ENVIRONMENTS: empty, house, narrowPassage, zigzag. zigzag's five doorway gaps were tightened
-# from 0.10 to 0.02 wide (include/config/obstacles/zigzag/obstacles.csv) to match narrowPassage's
-# clearance exactly -- expect both to show materially lower success rates than empty/house.
+# THREE ENVIRONMENTS THIS PASS: house, narrowPassage, zigzag -- `empty` pulled out as a diagnostic
+# (see ENV_NAMES below); normally FOUR (empty, house, narrowPassage, zigzag). zigzag's five doorway
+# gaps were tightened from 0.10 to 0.02 wide (include/config/obstacles/zigzag/obstacles.csv) to
+# match narrowPassage's clearance exactly -- expect both to show materially lower success rates
+# than house (and empty, once it's back).
 #
 # BOTH COST METRICS THIS PASS (length AND effort -- see COST_LABELS/COST_MODES below). EFFORT
 # NEEDED A REAL MODEL-2 BRANCH FIRST: edgeCost() (include/helper/helper.cuh) used to gate its
@@ -95,8 +98,9 @@
 # limiters) has x pinned at 1 and B plateaued at its ramp maximum for the rest of the run --
 # already-supported, intended behavior, not a new edge case.
 #
-# SCALE: 4 series x 3 deltas x 4 environments x 2 cost metrics x 5 runs = 480 runs, each capped
-# at 10s. Worst case several hours; most runs stop earlier (tree-full or an early success).
+# SCALE: 4 series x 3 deltas x 3 environments x 2 cost metrics x 5 runs = 360 runs this pass
+# (480 with all four environments), each capped at 10s. Worst case several hours; most runs stop
+# earlier (tree-full or an early success).
 #
 # NUM_R1_REGIONS and COST_MODE are both COMPILE-TIME, so neither can vary within one binary. Same
 # build-cache pattern as run_countingstars_sweep.sh: write config.h and build once per (delta, cost
@@ -134,13 +138,27 @@ COST_MODES=(0 1)
 # Environments (obstacles already in [0,1]^3 workspace boxes -- model-agnostic, since collision
 # checking and the goal test only read x,y,z; reused as-is for Model 2). Each gets its own output
 # subfolder.
-ENV_NAMES=("empty" "house" "narrowPassage" "zigzag")
+ENV_NAMES=("house" "narrowPassage" "zigzag")
 ENV_OBSTACLES=(
-    "../include/config/obstacles/empty/obstacles.csv"
     "../include/config/obstacles/house/obstacles.csv"
     "../include/config/obstacles/narrowPassage/obstacles.csv"
     "../include/config/obstacles/zigzag/obstacles.csv"
 )
+# `empty` REMOVED THIS PASS -- DIAGNOSTIC, NOT PERMANENT. A run at tiny/empty froze (no progress,
+# GPU idle, host CPU spinning -- the same signature as the still-unresolved hang this suite has
+# hit before). `empty` was the one environment tiny's (W_R1=14, V_R1=6) "confirmed clean" claim
+# never actually covered -- countingstars_sweep.cu's isolation harness only ever ran zigzag (see
+# the NOTE a few lines up) -- and this is also the very first pass on Model 2 (Dubins Airplane), a
+# combination genuinely never tested before. Pulling `empty` out isolates whether it (or the
+# empty/tiny pairing specifically) is what's triggering it, before spending more time chasing it
+# blind. Restore the line below once that's answered.
+# ENV_NAMES=("empty" "house" "narrowPassage" "zigzag")
+# ENV_OBSTACLES=(
+#     "../include/config/obstacles/empty/obstacles.csv"
+#     "../include/config/obstacles/house/obstacles.csv"
+#     "../include/config/obstacles/narrowPassage/obstacles.csv"
+#     "../include/config/obstacles/zigzag/obstacles.csv"
+# )
 
 # --- Parse arguments ---
 SKIP_BUILD=false
@@ -305,7 +323,7 @@ echo "  Limits: MAX_TREE_SIZE 3,000,000 | 10s per-run timeout | 20,000 outer-loo
 echo "          (non-binding by design -- tree size and wall-clock are meant to stop every run)"
 echo "  config.h MAX_ITER stays at 1000 (unchanged) -- see the header comment in this script and"
 echo "  in examples/gpu/paper_benchmark.cu for why raising it would corrupt CountingStars' buffer ramp."
-echo "  Total: 4 x 3 x 4 x 2 x 5 = 480 runs"
+echo "  Total: 4 x 3 x 3 x 2 x 5 = 360 runs"
 echo "======================================================="
 
 # =============================================================================

@@ -52,12 +52,16 @@ dataDir = '';   % '' = current directory (run this from Data/Benchmarks/Paper/<e
 
 % One environment per run -- must match the subfolder you cd'd into. Change this each time you
 % move to a different Data/Benchmarks/Paper/<env> folder.
-environments = {'empty'};
-envTitles    = {'Empty'};
+%
+% `empty` IS NOT PART OF THIS PASS -- see run_paper_benchmark.sh's ENV_NAMES: a run at tiny/empty
+% froze, and empty was pulled out to isolate whether it's specifically responsible. There will be
+% no empty/ subfolder to load until it's restored there.
+environments = {'house'};
+envTitles    = {'House'};
 % Other environments this suite produces (uncomment the one you cd'd into):
-% environments = {'house'};          envTitles = {'House'};
 % environments = {'narrowPassage'};  envTitles = {'Narrow Passage'};
 % environments = {'zigzag'};         envTitles = {'Zigzag Corridor (tightened)'};
+% environments = {'empty'};          envTitles = {'Empty'};   % not run this pass, see above
 
 % Cost metric axis -- one build each, so one set of figures each. BOTH THIS PASS (see
 % run_paper_benchmark.sh; Model 2's own COST_MODE==1 effort branch in edgeCost() (helper.cuh) is
