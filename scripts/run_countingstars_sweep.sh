@@ -20,8 +20,9 @@
 # `_ob` label token left to sweep.
 #
 # THIS PASS TUNES THE FOUR REMAINING AXES around that permanent behavior:
-# Per (environment, cost metric), AT EACH OF TWO DISCRETIZATIONS (coarse `large` and `tiny` -- see
-# DELTA_LABELS below; BOTH run the full comparison, not KinoPaxPlus-only at either one):
+# Per (environment, cost metric), AT EACH OF THREE DISCRETIZATIONS (`large`/`fine` copied from
+# paper_benchmark.cu's own current coarse/fine deltas, plus this sweep's own pre-existing `tiny` --
+# see DELTA_LABELS below; ALL THREE run the full comparison, not KinoPaxPlus-only at any of them):
 #   CountingStars   bufferSlope {1.0, 1.5} x bufferFloor {0.3, 0.5}
 #                   explore_frac {0.1, 0.2}, cost_frac {0.4, 0.6, 0.8}
 #                   optimalAcceptBudgeted PERMANENTLY ON (not an axis any more)
@@ -30,7 +31,7 @@
 #   KinoPaxPlus                                             = 1 point  x 5 runs
 #
 # ONE COST METRIC THIS PASS (effort/COST_MODE=1 only -- length is dropped), one environment
-# (zigzag), one full build per delta: 240 CountingStars runs total across the two deltas.
+# (zigzag), one full build per delta: 360 CountingStars runs total across the three deltas.
 #
 # ============================================================================================
 # WHAT CHANGED FROM v2, AND WHY THIS SWEEP EXISTS
@@ -152,10 +153,10 @@
 #      (bufferSlope, bufferFloor, explore_frac, cost_frac) point wins on time-to-first-solution AND
 #      final cost, now that budgeting OPTIMAL is a settled, permanent part of the design.
 #
-# BOTH DELTAS RUN THE FULL COMPARISON THIS PASS -- NOT --only-kinopaxplus at either one, unchanged
-# from the pass that settled the toggle question. Tuning conclusions at the coarse delta do not
-# automatically hold at the fine one, so both need the full grid, not KinoPaxPlus alone at the
-# fine one.
+# ALL THREE DELTAS RUN THE FULL COMPARISON THIS PASS -- NOT --only-kinopaxplus at any of them,
+# unchanged from the pass that settled the toggle question. Tuning conclusions at one delta do not
+# automatically hold at the others, so all three need the full grid, not KinoPaxPlus alone at the
+# finer ones.
 #
 # Runs on zigzag only this pass, written to its own subfolder under
 # Data/Benchmarks/CountingStars/zigzag/.
@@ -171,15 +172,18 @@
 # (ReKino and friends) scroll past on every build. They are pre-existing and unavoidable without
 # splitting the library.
 #
-# "fine" (W_R1=20, V_R1=3, 216,000 regions) is DROPPED this pass -- only two deltas run,
-# "large" (coarse) and "tiny" (finest), both full comparison, per the header above.
+# THREE DELTAS RUN THIS PASS -- "large" and "fine" are paper_benchmark.cu's own current large/fine
+# (copied by hand from run_paper_benchmark.sh; there is no cross-check enforcing they stay equal,
+# so re-check both files if either one's deltas change again), plus this sweep's own "tiny",
+# unchanged from earlier passes, all full comparison, per the header above.
 #
 # C_R1 STAYS AT 1 EVERYWHERE. NUM_R1_REGIONS = W_R1^3 * V_R1^3 has no C term, and this config sets
 # C_DIM 0, so getRegion / getSubRegion skip the C dimension entirely -- raising C_R1 would change
 # nothing at all. The control-side refinement rides on V_R1.
 #
 # Deltas (Model 1: W_DIM=3, C_DIM=0, V_DIM=3):
-#   large   W_R1=10  C_R1=1  V_R1=3  ->  10^3 * 3^3 =  27,000   (full comparison)
+#   large   W_R1=7   C_R1=1  V_R1=3  ->   7^3 * 3^3 =   9,261   (full comparison)
+#   fine    W_R1=16  C_R1=1  V_R1=4  ->  16^3 * 4^3 = 262,144   (full comparison)
 #   tiny    W_R1=14  C_R1=1  V_R1=6  ->  14^3 * 6^3 = 592,704   (full comparison)
 #
 # "tiny" names the CELL, not the count: it is the finest delta this pass runs, at 592,704 regions.
@@ -205,19 +209,28 @@ CONFIG_FILE="$PROJECT_DIR/include/config/config.h"
 CONFIG_BACKUP="$CONFIG_FILE.bak"
 BUILD_DIR="$PROJECT_DIR/build"
 
-# Deltas: parallel arrays of label / W_R1 / C_R1 / V_R1. BOTH run the FULL comparison this pass
-# (see DELTA_EXTRA_ARGS) -- a tuning conclusion at the coarse delta is not assumed to hold at the
-# fine one, so there is no "--only-kinopaxplus" arm to skip it with here. One build per
+# Deltas: parallel arrays of label / W_R1 / C_R1 / V_R1. ALL THREE run the FULL comparison this
+# pass (see DELTA_EXTRA_ARGS) -- a tuning conclusion at one delta is not assumed to hold at the
+# others, so there is no "--only-kinopaxplus" arm to skip it with here. One build per
 # (delta, cost metric), cached, so restoring or trimming the list changes only the loop bounds.
-DELTA_LABELS=("large" "tiny")
-DELTA_W_R1S=(10 14)
-DELTA_C_R1S=(1  1)   # inert for Model 1 (C_DIM 0); control refinement rides on V_R1
-DELTA_V_R1S=(3  6)
-DELTA_EXTRA_ARGS=("" "")
+#
+# "large" and "fine" are copied verbatim from run_paper_benchmark.sh's own current large/fine
+# deltas (kept in step by hand -- there is no cross-check between the two sweep tools) -- this
+# sweep's tuning conclusions are only useful for the paper comparison if they're measured at the
+# same discretizations paper_benchmark.cu actually runs. "tiny" is NOT paper's own tiny -- it is
+# this sweep's own, pre-existing tiny delta, confirmed to run cleanly for CountingStars/KPAX/
+# KinoPaxPlus; paper_benchmark.cu's own tiny (W_R1=17, V_R1=5) currently hangs on KPAX in an
+# open environment (a buffer-overflow bug in KPAX.cu/KinoPaxPlus.cu's goal-path reconstruction,
+# only partially fixed so far), so it is deliberately NOT reused here.
+DELTA_LABELS=("large" "fine" "tiny")
+DELTA_W_R1S=(7 16 14)
+DELTA_C_R1S=(1  1  1)   # inert for Model 1 (C_DIM 0); control refinement rides on V_R1
+DELTA_V_R1S=(3  4  6)
+DELTA_EXTRA_ARGS=("" "" "")
 
 # --- Coarse delta only (uncomment to restore; comment out the four lines above) ---
 # DELTA_LABELS=("large")
-# DELTA_W_R1S=(10)
+# DELTA_W_R1S=(7)
 # DELTA_C_R1S=(1)
 # DELTA_V_R1S=(3)
 # DELTA_EXTRA_ARGS=("")
@@ -407,7 +420,7 @@ echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
 echo "  CountingStars:  bufferSlope {1.0,1.5} x bufferFloor {0.3,0.5}"
 echo "                  explore_frac {0.1,0.2}, cost_frac {0.4,0.6,0.8}"
 echo "                  optimalAcceptBudgeted PERMANENTLY ON -- not an axis any more"
-echo "                  = 24 points (full factorial) x BOTH deltas"
+echo "                  = 24 points (full factorial) x ALL THREE deltas"
 echo "                  Filenames: _bs<round(100*slope)>_bf<round(100*floor)>_ef<..>_cf<..>,"
 echo "                  e.g. CountingStars_bs100_bf30_ef200_cf600."
 echo "                  Earlier CSVs (_rgon/_rgoff, _abon/_aboff, _obon/_oboff tokens) cannot collide"
@@ -466,8 +479,8 @@ echo "                  admitted_costdist against admitted_explore, then cost_cu
 echo "                  dist_max."
 echo "  Score floor:    COUNTINGSTARS HAS NO SCORE FLOOR AND USES NO EPSILON: it never reads"
 echo "                  vertexScores, h_scoreFloor_, h_nActive_ or regionCoverage in any decision."
-echo "  Baselines: KPAX, KinoPaxPlus -- BOTH AT BOTH DELTAS this pass, not KinoPaxPlus-only at the"
-echo "             finer one (see the header for why)."
+echo "  Baselines: KPAX, KinoPaxPlus -- BOTH AT ALL THREE DELTAS this pass, not KinoPaxPlus-only at"
+echo "             the finer ones (see the header for why)."
 echo "======================================================="
 
 # =============================================================================
@@ -532,9 +545,9 @@ for CL in "${COST_LABELS[@]}"; do
         for d in "${!DELTA_LABELS[@]}"; do
             DL="${DELTA_LABELS[$d]}"
             EXTRA="${DELTA_EXTRA_ARGS[$d]}"
-            # Both deltas are full-sweep this pass (DELTA_EXTRA_ARGS both empty), so both dump viz
-            # when enabled; the branch below still matters if DELTA_EXTRA_ARGS is ever restored to
-            # a KinoPaxPlus-only entry, which has nothing extra to show.
+            # All three deltas are full-sweep this pass (DELTA_EXTRA_ARGS all empty), so all three
+            # dump viz when enabled; the branch below still matters if DELTA_EXTRA_ARGS is ever
+            # restored to a KinoPaxPlus-only entry, which has nothing extra to show.
             if [ -z "$EXTRA" ]; then
                 PASS_FLAGS="$VIZ_FLAG"
             else

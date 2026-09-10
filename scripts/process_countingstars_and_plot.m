@@ -2,30 +2,33 @@
 % Reads per-iteration CSVs produced by examples/gpu/countingstars_sweep.cu
 % (run via scripts/run_countingstars_sweep.sh).
 %
-% Series are (planner, delta) pairs. BOTH deltas (coarse `large`, finest `tiny`) run the FULL
-% comparison -- neither delta is restricted to KinoPaxPlus alone (see deltaPlusOnly below and
-% DELTA_EXTRA_ARGS in run_countingstars_sweep.sh, both all-false this pass):
+% Series are (planner, delta) pairs. ALL THREE deltas (`large`/`fine` copied from
+% paper_benchmark.cu's own current coarse/fine deltas, plus this sweep's own pre-existing `tiny`)
+% run the FULL comparison -- none is restricted to KinoPaxPlus alone (see deltaPlusOnly below and
+% DELTA_EXTRA_ARGS in run_countingstars_sweep.sh, all-false this pass):
 %
 %   CountingStars   bufferSlope {1.0,1.5} x bufferFloor {0.3,0.5},
 %                   explore_frac {0.1,0.2}, cost_frac {0.4,0.6,0.8}                     =  24
 %   KPAX, KinoPaxPlus                                                                   =   2
 %                                                                                      -----
 %                                                                        per delta         26
-%                                                                       x 2 deltas    x    2
+%                                                                      x 3 deltas     x    3
 %                                                                                      -----
-%                                                                                            52
+%                                                                                            78
 %
-% KinoPaxSTARCleanCost and KPAXCap ARE GONE FROM THIS SWEEP -- see the header of
-% countingstars_sweep.cu. With the optimal-accept-budget question settled (see below), this
-% sweep's job is tuning CountingStars' own remaining axes against the two simplest baselines, not
-% re-running comparisons against tuned STAR variants on every pass.
+% KinoPaxSTARCleanCost, KPAXCap AND KinoPaxSTARTrue ARE ALL KEPT OUT OF THIS SWEEP -- see the
+% header of countingstars_sweep.cu. With the optimal-accept-budget question settled (see below),
+% this sweep's job is tuning CountingStars' own remaining axes against the two simplest baselines,
+% not re-running comparisons against tuned STAR variants on every pass. (KinoPaxSTARTrue is the
+% "naive OR-fusion" reference added to paper_benchmark.cu, not this sweep -- deliberately left out
+% here for now.)
 %
 % RUN ONCE PER COST METRIC TOO -- effort ONLY this pass (length dropped, see metrics below): the
 % series count above applies to this one build.
 %
-% CountingStars/KPAX/KinoPaxPlus ALL RUN AT BOTH DELTAS THIS PASS -- a tuning conclusion at the
-% coarse delta is not assumed to hold at the fine one, so both need the full grid measured, not
-% KinoPaxPlus alone at the fine delta.
+% CountingStars/KPAX/KinoPaxPlus ALL RUN AT ALL THREE DELTAS THIS PASS -- a tuning conclusion at
+% one delta is not assumed to hold at the others, so all three need the full grid measured, not
+% KinoPaxPlus alone at the finer ones.
 %
 % THE OPTIMAL-ACCEPT-BUDGET TOGGLE IS GONE. It ran as an on/off axis (optimalAcceptBudgeted) in the
 % previous pass through this file: the OPTIMAL door (a candidate at distance 0 from its region's
@@ -139,28 +142,31 @@ metricTitles = {'Control Effort'};
 metricYLabels = {'Path Cost (control effort)'};
 
 % Delta axis — OVERLAID inside each figure, encoded as line WIDTH. The filename token is
-% sprintf('%s_%s', delta, metric), e.g. 'tiny_effort'. v3.4: `fine` dropped -- BOTH remaining
-% deltas run the full comparison (see deltaPlusOnly below), so there is no reason to keep a third,
-% KinoPaxPlus-only delta around.
-deltas      = {'large', 'tiny'};
-deltaTitles = {'27k', '593k V-refined'};
-deltaWidths = [1.0, 2.6];
+% sprintf('%s_%s', delta, metric), e.g. 'tiny_effort'. THREE deltas this pass -- `large`/`fine`
+% copied from paper_benchmark.cu's own current coarse/fine deltas (kept in step by hand; there is
+% no cross-check between the two sweep tools), plus this sweep's own pre-existing `tiny` (NOT
+% paper's own tiny, which currently hangs on KPAX in an open environment -- see
+% run_countingstars_sweep.sh's header). ALL THREE run the full comparison (see deltaPlusOnly
+% below), so there is no KinoPaxPlus-only delta here.
+deltas      = {'large', 'fine', 'tiny'};
+deltaTitles = {'9k', '262k W-refined', '593k V-refined'};
+deltaWidths = [1.0, 1.8, 2.6];
 
-% WHICH ARMS EXIST AT EACH DELTA. BOTH deltas run the full comparison -- a tuning conclusion at
-% the coarse delta is not assumed to hold at the fine one, so CountingStars and every baseline are
-% measured at both. `--only-kinopaxplus` is lifted off every delta in run_countingstars_sweep.sh
+% WHICH ARMS EXIST AT EACH DELTA. ALL THREE deltas run the full comparison -- a tuning conclusion
+% at one delta is not assumed to hold at the others, so CountingStars and every baseline are
+% measured at all three. `--only-kinopaxplus` is lifted off every delta in run_countingstars_sweep.sh
 % to match.
 %
 % MUST MATCH DELTA_EXTRA_ARGS in run_countingstars_sweep.sh: "--only-kinopaxplus" there is a true
 % here. When these drift, loadRuns() silently finds no files and reports "0 runs" for the orphaned
 % series rather than erroring -- the failure mode that wastes a whole sweep.
 % cross_check_countingstars_grid.py asserts it.
-deltaPlusOnly = [false, false];
+deltaPlusOnly = [false, false, false];
 
 % --single-point is not used by this sweep, so any delta that runs an arm runs its full axis.
-deltaSingleCap = [false, false];
+deltaSingleCap = [false, false, false];
 
-deltaLabel = '2 deltas overlaid';
+deltaLabel = '3 deltas overlaid';
 
 % CountingStars v3.4 grid - must match BUFFER_SLOPES / BUFFER_FLOORS / EXPLORE_FRACS / COST_FRACS in
 % countingstars_sweep.cu. Values are the label tokens exactly as they appear in the filenames:

@@ -418,7 +418,7 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
     //   CountingStars:  {env}_{planner label}_delta{build}_run{n}.csv, e.g. CountingStars_bs100_bf30_ef200_cf600
     //   KinoPaxPlus:    {env}_delta{label}_run{n}.csv
     // KinoPaxPlus deliberately keys on the DELTA rather than a planner name: that is what keeps
-    // the two discretizations (large_* and fine_*) in separate files.
+    // every discretization (large_*, fine_*, tiny_*, ...) in separate files.
     // The build label carries the cost metric (large_effort / large_length), which is a
     // compile-time property of the binary -- see COST_MODE in helper.cuh.
     if(result.delta_label == "KPAX")
