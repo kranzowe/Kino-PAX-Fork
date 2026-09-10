@@ -77,7 +77,7 @@ void writeVectorToCSV(const thrust::host_vector<T>& vec, const std::string& file
                             file << ",";
                         }
                 }
-            file << std::endl;
+            file << "\n";
         }
 
     file.close();
