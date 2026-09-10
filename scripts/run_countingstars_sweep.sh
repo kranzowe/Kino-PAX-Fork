@@ -215,14 +215,15 @@ BUILD_DIR="$PROJECT_DIR/build"
 # others, so there is no "--only-kinopaxplus" arm to skip it with here. One build per
 # (delta, cost metric), cached, so restoring or trimming the list changes only the loop bounds.
 #
-# "large" and "fine" are copied verbatim from run_paper_benchmark.sh's own current large/fine
-# deltas (kept in step by hand -- there is no cross-check between the two sweep tools) -- this
-# sweep's tuning conclusions are only useful for the paper comparison if they're measured at the
-# same discretizations paper_benchmark.cu actually runs. "tiny" is NOT paper's own tiny -- it is
-# this sweep's own, pre-existing tiny delta, confirmed to run cleanly for CountingStars/KPAX/
-# KinoPaxPlus; paper_benchmark.cu's own tiny (W_R1=17, V_R1=5) currently hangs on KPAX in an
-# open environment (a buffer-overflow bug in KPAX.cu/KinoPaxPlus.cu's goal-path reconstruction,
-# only partially fixed so far), so it is deliberately NOT reused here.
+# ALL THREE DELTAS NOW MATCH run_paper_benchmark.sh's OWN DELTAS EXACTLY (kept in step by hand --
+# there is no cross-check between the two sweep tools). "tiny" here USED TO be this sweep's own,
+# independently-chosen delta while paper_benchmark.cu ran a different, riskier tiny (W_R1=17,
+# V_R1=5) that hit a cudaErrorIllegalAddress / hang in the `empty` environment (a buffer-overflow
+# bug in KPAX.cu/KinoPaxPlus.cu's goal-path reconstruction, fixed at three sites -- but the hang
+# persisted afterward, root cause still open). This sweep's own tiny (W_R1=14, V_R1=6) ran clean
+# for KPAX/KinoPaxPlus/CountingStars/KinoPaxSTARTrue at all three deltas here, so
+# run_paper_benchmark.sh was updated to reuse it -- see that script's own header for the same
+# history from its side.
 DELTA_LABELS=("large" "fine" "tiny")
 DELTA_W_R1S=(7 16 14)
 DELTA_C_R1S=(1  1  1)   # inert for Model 1 (C_DIM 0); control refinement rides on V_R1

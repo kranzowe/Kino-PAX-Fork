@@ -2,23 +2,26 @@
 # =============================================================================
 # Paper Benchmark Runner
 #
-# A FIXED, FIVE-WAY COMPARISON, not a sweep. Every series below is an already-chosen operating
+# A FIXED, FOUR-WAY COMPARISON, not a sweep. Every series below is an already-chosen operating
 # point; the only things varying across runs are discretization, environment, and cost metric.
 # Modeled on run_countingstars_sweep.sh's two-phase build-then-run structure, but simpler: there is
 # no per-delta arm partition (--only-kinopaxplus has no equivalent here) because every series runs
 # at every delta -- that is the comparison this suite exists to make.
 #
-# THE FIVE SERIES (fixed inside examples/gpu/paper_benchmark.cu, not swept here):
+# THE FOUR SERIES (fixed inside examples/gpu/paper_benchmark.cu, not swept here):
 #   KPAX                     defaults
 #   KinoPaxPlus               defaults
-#   KinoPaxSTARTrue (anc0)    h_syclopCap_ 1.0 (no cap), h_ancestorPrune_ 0 -- the pure OR-fusion
-#                             of KPAX's exploration accept and KinoPaxPlus's region-best accept,
-#                             no cost shaping at all (== stock KinoPaxSTARNoGoalBias). Replaces
-#                             KinoPaxSTARCleanCost as the non-CountingStars "STAR" reference this
-#                             pass -- CleanCost told a "beats one already-tuned competitor" story;
-#                             this tells "beats the naive fusion of its two parents" instead.
-#   KinoPaxSTARTrue (anc1)    same, h_ancestorPrune_ 1 -- adds only the cost-guarded stale-best
-#                             prune on top; isolates what that prune buys over the pure fusion.
+#   KinoPaxSTARTrue           h_syclopCap_ 1.0 (no cap), h_ancestorPrune_ 1 -- KPAX's exploration
+#                             accept OR-fused with KinoPaxPlus's region-best accept, no cost
+#                             shaping at all, plus the cost-guarded stale-best prune on top.
+#                             Replaces KinoPaxSTARCleanCost as the non-CountingStars "STAR"
+#                             reference this pass -- CleanCost told a "beats one already-tuned
+#                             competitor" story; this tells "beats the naive fusion of its two
+#                             parents" instead. A second point at h_ancestorPrune_ = 0 (the pure
+#                             fusion, == stock KinoPaxSTARNoGoalBias) ran alongside this one in an
+#                             earlier pass to isolate what the guarded prune buys on top of the
+#                             naive fusion; it was dropped from this comparison (recoverable from
+#                             git history as KinoPaxSTARTrue_cap100_anc0).
 #   CountingStars             bufferSlope 1.2, bufferFloor 0.3, explore_frac 0.1, cost_frac 0.8 --
 #                             the operating point countingstars_sweep.cu's tuning pass picked, one
 #                             fixed point rather than the small bufferSlope grid earlier passes ran
@@ -27,13 +30,24 @@
 #                             uncapped) -- see CS_DOORBIT_GUAR / CS_DOORBIT_OPTIMAL in
 #                             CountingStars.cuh.
 #
-# THREE DELTAS, ALL FIVE SERIES AT EACH:
+# THREE DELTAS, ALL FOUR SERIES AT EACH:
 #   large  W_R1=7   C_R1=1  V_R1=3  ->   7^3 * 3^3 =   9,261 regions
 #   fine   W_R1=16  C_R1=1  V_R1=4  ->  16^3 * 4^3 = 262,144 regions
-#   tiny   W_R1=17  C_R1=1  V_R1=5  ->  17^3 * 5^3 = 614,000 regions
+#   tiny   W_R1=14  C_R1=1  V_R1=6  ->  14^3 * 6^3 = 592,704 regions
 # "fine" and "tiny" refine different axes (workspace vs. velocity) -- same convention as
-# countingstars_sweep.cu's fine/fine_control pair -- but are NOT an identical-region-count pair;
-# each moved independently to the values countingstars_sweep.cu's tuning pass used.
+# countingstars_sweep.cu's fine/fine_control pair -- but are NOT an identical-region-count pair.
+#
+# TINY CHANGED FROM (W_R1=17, V_R1=5) THIS PASS. That discretization crashed with a
+# cudaErrorIllegalAddress in the `empty` environment (a confirmed buffer-overflow bug in
+# KPAX.cu/KinoPaxPlus.cu's goal-path reconstruction, fixed at three sites -- but a hang with the
+# same symptoms persisted afterward, root cause still open). countingstars_sweep.cu stood up a
+# dedicated bug-isolation harness at (W_R1=14, V_R1=6) instead and confirmed it clean across all
+# five series (KPAX, KinoPaxPlus, KinoPaxSTARTrue anc0/anc1, CountingStars) on zigzag/effort. This
+# pass reuses that same, confirmed-safe discretization here rather than the one that hangs -- see
+# scripts/run_countingstars_sweep.sh's header for the fuller debugging history. NOTE this has only
+# been confirmed clean on zigzag with COST_MODE=effort, not yet on `empty`/length where the
+# original crash occurred -- watch this run's `empty` series closely.
+#
 # C_R1 stays at 1 everywhere: this config sets C_DIM 0, so control refinement has nowhere to act
 # except V_R1.
 #
@@ -57,7 +71,7 @@
 # limiters) has x pinned at 1 and B plateaued at its ramp maximum for the rest of the run --
 # already-supported, intended behavior, not a new edge case.
 #
-# SCALE: 5 series x 3 deltas x 4 environments x 1 cost metrics x 5 runs = 300 runs, each capped
+# SCALE: 4 series x 3 deltas x 4 environments x 1 cost metrics x 5 runs = 240 runs, each capped
 # at 10s. Worst case a few hours; most runs stop earlier (tree-full or an early success).
 #
 # NUM_R1_REGIONS and COST_MODE are both COMPILE-TIME, so neither can vary within one binary. Same
@@ -82,9 +96,9 @@ BUILD_DIR="$PROJECT_DIR/build"
 # Deltas: parallel arrays of label / W_R1 / C_R1 / V_R1. Every series in paper_benchmark.cu runs at
 # every delta -- there is no arm partition to configure here.
 DELTA_LABELS=("large" "fine" "tiny")
-DELTA_W_R1S=(7 16 17)
+DELTA_W_R1S=(7 16 14)
 DELTA_C_R1S=(1  1  1)   # inert for Model 1 (C_DIM 0); control refinement rides on V_R1
-DELTA_V_R1S=(3  4  5)
+DELTA_V_R1S=(3  4  6)
 
 # Cost metric axis: label + COST_MODE (0 = workspace distance, 1 = control effort). LENGTH ONLY
 # this pass -- effort disabled for now, not removed; uncomment the line below to restore it.
@@ -250,21 +264,21 @@ echo "  Model: 1 (6D Double Integrator)"
 echo "  Environments: ${ENV_NAMES[*]}  (separate output subfolders)"
 for i in "${!DELTA_LABELS[@]}"; do
     R=$(( DELTA_W_R1S[i]**3 * DELTA_V_R1S[i]**3 ))
-    echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | all 5 series"
+    echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | all 4 series"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
 echo "  Series (fixed, all 3 deltas x all 4 environments):"
 echo "    KPAX                      defaults"
 echo "    KinoPaxPlus                defaults"
-echo "    KinoPaxSTARTrue (anc0)     h_syclopCap_ 1.0 (no cap), h_ancestorPrune_ 0 -- naive OR-fusion"
-echo "    KinoPaxSTARTrue (anc1)     same, h_ancestorPrune_ 1 -- + cost-guarded stale-best prune"
+echo "    KinoPaxSTARTrue            h_syclopCap_ 1.0 (no cap), h_ancestorPrune_ 1 -- naive OR-fusion"
+echo "                               + cost-guarded stale-best prune"
 echo "    CountingStars              bufferSlope 1.2, bufferFloor 0.3, explore_frac 0.1, cost_frac 0.8"
 echo "  5 runs per (series, delta, environment, metric)."
 echo "  Limits: MAX_TREE_SIZE 3,000,000 | 10s per-run timeout | 20,000 outer-loop iteration cap"
 echo "          (non-binding by design -- tree size and wall-clock are meant to stop every run)"
 echo "  config.h MAX_ITER stays at 1000 (unchanged) -- see the header comment in this script and"
 echo "  in examples/gpu/paper_benchmark.cu for why raising it would corrupt CountingStars' buffer ramp."
-echo "  Total: 5 x 3 x 4 x 1 x 5 = 300 runs"
+echo "  Total: 4 x 3 x 4 x 1 x 5 = 240 runs"
 echo "======================================================="
 
 # =============================================================================
