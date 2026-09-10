@@ -1,20 +1,16 @@
 #!/bin/bash
 # =============================================================================
-# CountingStars v3.4 Sweep Runner -- now a fixed-point BUG-ISOLATION harness, not a tuning sweep
+# CountingStars v3.5 Sweep Runner -- bufferSlope/bufferFloor GRID, hopelessGuard PERMANENTLY ON
 #
-# THIS FILE NO LONGER SWEEPS COUNTINGSTARS' TUNING GRID. The bufferSlope x bufferFloor x
-# explore_frac x cost_frac grid that used to run here already found a good operating point --
-# (1.2, 0.3, 0.1, 0.8) -- and paper_benchmark.cu already runs CountingStars at exactly that point.
-# This tool's current job is different: paper_benchmark.cu hit a cudaErrorIllegalAddress / hang at
-# its own `tiny` delta in the `empty` environment. A confirmed buffer-overflow fix landed in
-# KPAX.cu's updateFrontier_kernel (and two matching sites in KinoPaxPlus.cu), but the hang
-# persisted afterward -- so the bug is not fully understood yet. This sweep reproduces
-# paper_benchmark.cu's own comparison -- KPAX, KinoPaxPlus, KinoPaxSTARTrue (both anc0/anc1),
-# CountingStars at its one fixed point -- at discretizations already confirmed NOT to hang or
-# crash (see DELTA_LABELS below), to help isolate which planner and which discretization the
-# still-open bug actually lives in. KinoPaxSTARTrue is the newest addition: KPAX, KinoPaxPlus and
-# CountingStars have all now run clean at all three deltas here, leaving KinoPaxSTARTrue as the
-# one paper_benchmark.cu series this harness had not yet tested.
+# THE HOPELESS GUARD (v3.5) WAS SWEPT ON/OFF AT THIS FILE'S OLD SINGLE FIXED POINT AND CONFIRMED
+# TO HELP. It now runs ON, unconditionally, at every CountingStars point below -- see
+# h_hopelessGuard_ in include/planners/CountingStars.cuh: a candidate/dormant node whose own cost
+# already forecloses beating the best full-solution cost found so far is excluded from every door
+# (FRESHEST, CHEAPEST, OPTIMAL, both completeness floors), not just the cost-based ones. With the
+# guard settled, this pass re-sweeps bufferSlope/bufferFloor with it on, since a ramp tuned against
+# the old, unguarded acceptance rule is not guaranteed to still be the best pair once hopeless
+# nodes stop competing for the budget. explore_frac/cost_frac stay fixed at the point the earlier
+# tuning pass picked.
 #
 # Per (environment, cost metric), AT EACH OF THREE DISCRETIZATIONS (`large`/`fine` copied from
 # paper_benchmark.cu's own current coarse/fine deltas, plus this sweep's own pre-existing `tiny` --
@@ -23,22 +19,18 @@
 #   KinoPaxPlus                                             = 1 point  x 5 runs
 #   KinoPaxSTARTrue syclopCap 1.0 (no cap) x ancestorPrune {0, 1}
 #                                                            = 2 points x 5 runs
-#   CountingStars   bufferSlope 1.2, bufferFloor 0.3, explore_frac 0.1, cost_frac 0.8 (fixed)
-#                   x hopelessGuard {0, 1} (v3.5 -- see CountingStars.cuh's h_hopelessGuard_)
-#                                                            = 2 points x 5 runs
+#   CountingStars   bufferSlope {1.2, 1.8} , bufferFloor {0.3, 0.5}, explore_frac 0.1, cost_frac 0.8 (fixed)
+#                   x hopelessGuard {1 ON} (v3.5 -- see CountingStars.cuh's h_hopelessGuard_)
+#                                                            = 4 points x 5 runs
 #
-# ONE COST METRIC THIS PASS (effort/COST_MODE=1 only -- length is dropped), one environment
-# (zigzag), one full build per delta: 6 series x 5 runs x 3 deltas = 90 runs total.
+# ONE COST METRIC THIS PASS (length/COST_MODE=0 only -- effort is dropped this pass), one
+# environment (zigzag, unchanged), one full build per delta: 8 series x 5 runs x 3 deltas = 120
+# runs total.
 #
-# THE HOPELESS GUARD (v3.5) is the newest addition: a candidate/dormant node whose own cost
-# already forecloses beating the best full-solution cost found so far is excluded from every
-# door (FRESHEST, CHEAPEST, OPTIMAL, both completeness floors), not just the cost-based ones --
-# see h_hopelessGuard_ in include/planners/CountingStars.cuh for the full mechanism. hg0 (off)
-# reproduces the fixed point's prior behaviour exactly; hg1 (on) is the new arm being tested.
-#
-# If tuning CountingStars' own grid resumes later, that grid (and the old 4-axis banner/label
-# machinery it used) is recoverable from git history -- see countingstars_sweep.cu's own header
-# comment near CS_BUFFER_SLOPE for the exact commit-era description.
+# If tuning CountingStars' own grid resumes later at a different shape, this grid (and the
+# fixed-point/hopelessGuard-toggle passes it replaced) is recoverable from git history -- see
+# countingstars_sweep.cu's own header comment near CS_BUFFER_SLOPES for the exact commit-era
+# description.
 #
 # ============================================================================================
 # WHAT CHANGED FROM v2, AND WHY THIS SWEEP EXISTS
@@ -244,10 +236,10 @@ DELTA_EXTRA_ARGS=("" "" "")
 # DELTA_V_R1S=(3)
 # DELTA_EXTRA_ARGS=("")
 
-# Cost metric axis: label + COST_MODE (0 = workspace distance, 1 = control effort). EFFORT ONLY
-# this pass -- length disabled, not removed; uncomment the line below to restore it.
-COST_LABELS=("effort")
-COST_MODES=(1)
+# Cost metric axis: label + COST_MODE (0 = workspace distance, 1 = control effort). LENGTH ONLY
+# this pass -- effort disabled, not removed; uncomment the line below to restore it.
+COST_LABELS=("length")
+COST_MODES=(0)
 # COST_LABELS=("length" "effort")
 # COST_MODES=(0 1)
 
@@ -413,7 +405,7 @@ CONFIGEOF
 
 echo ""
 echo "======================================================="
-echo "  CountingStars v3.4 Sweep -- BUG-ISOLATION harness (fixed point, not a tuning grid)"
+echo "  CountingStars v3.5 Sweep -- bufferSlope/bufferFloor grid, hopelessGuard permanently ON"
 echo "  Model: 1 (6D Double Integrator)"
 echo "  Environments: ${ENV_NAMES[*]}  (separate output subfolders)"
 for i in "${!DELTA_LABELS[@]}"; do
@@ -432,15 +424,19 @@ echo "    KinoPaxPlus       "
 echo "    KinoPaxSTARTrue  syclopCap 1.0 (no cap) x ancestorPrune {0, 1} -- 2 points. Tests whether"
 echo "                     THIS planner, not KPAX, is where paper_benchmark.cu's still-open"
 echo "                     cudaErrorIllegalAddress/hang lives."
-echo "    CountingStars    FIXED POINT bufferSlope=1.2, bufferFloor=0.3, explore_frac=0.1,"
-echo "                     cost_frac=0.8 (the point paper_benchmark.cu itself runs at) x"
-echo "                     hopelessGuard {0, 1} (v3.5) -- 2 points. Newest addition: hg0 reproduces"
-echo "                     prior behaviour exactly; hg1 excludes any candidate/dormant node whose"
-echo "                     own cost already forecloses beating the best solution found so far from"
-echo "                     every door (FRESHEST/CHEAPEST/OPTIMAL/both floors), not just cost-based"
-echo "                     ones -- see h_hopelessGuard_ in CountingStars.cuh."
-echo "  = 6 series x 5 runs x 3 deltas = 90 runs total."
-echo "  Filenames: CountingStars_bs120_bf30_ef100_cf800_hg0/hg1, KinoPaxSTARTrue_cap100_anc0/anc1."
+echo "    CountingStars    bufferSlope {1.2, 1.8} x bufferFloor {0.3, 0.5}, explore_frac=0.1,"
+echo "                     cost_frac=0.8 (fixed) -- 4 points. hopelessGuard is PERMANENTLY ON (v3.5)"
+echo "                     at every point: excludes any candidate/dormant node whose own cost"
+echo "                     already forecloses beating the best solution found so far from every"
+echo "                     door (FRESHEST/CHEAPEST/OPTIMAL/both floors), not just cost-based ones --"
+echo "                     see h_hopelessGuard_ in CountingStars.cuh. Confirmed to help at the old"
+echo "                     single fixed point; this pass re-sweeps bufferSlope/bufferFloor with it"
+echo "                     on, since the best ramp may have changed now that hopeless nodes no"
+echo "                     longer compete for the budget."
+echo "  = 8 series x 5 runs x 3 deltas = 120 runs total."
+echo "  Filenames: CountingStars_bs120_bf30_ef100_cf800_hg1, CountingStars_bs120_bf50_ef100_cf800_hg1,"
+echo "             CountingStars_bs180_bf30_ef100_cf800_hg1, CountingStars_bs180_bf50_ef100_cf800_hg1,"
+echo "             KinoPaxSTARTrue_cap100_anc0/anc1."
 echo "  Earlier CSVs from the retired tuning grid (_bs100_bf30_ef200_cf600 and similar) do not"
 echo "  collide with these names, so they simply stop loading if left in the output folder."
 echo "  B IS STILL A RAMP, RECOMPUTED EVERY ITERATION:"

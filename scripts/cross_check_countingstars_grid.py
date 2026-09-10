@@ -17,14 +17,16 @@ deltaPlusOnly, and they have to agree or the plot expects series the sweep never
 runs all deltas with an empty flag string, so plus_only is False everywhere today -- but the
 mechanism is still checked.)
 
-THIS FILE IS NO LONGER A GRID CROSS-CHECK. CountingStars used to sweep bufferSlope x bufferFloor x
-explore_frac x cost_frac; that sweep found a good point -- (1.2, 0.3, 0.1, 0.8) -- and
-countingstars_sweep.cu now runs CountingStars at exactly that ONE fixed point (CS_BUFFER_SLOPE /
-CS_BUFFER_FLOOR / CS_EXPLORE_FRAC / CS_COST_FRAC, all scalars, not arrays any more). This script's
-job is now: (1) confirm the .cu's fixed point and the .m's copy of it (csBufferSlope etc.) agree,
-(2) confirm the two KinoPaxSTARTrue points (ANCESTOR_PRUNE_VALUES/SYCLOP_CAP in the .cu,
-trueAncestorPruneValues/trueCap in the .m) agree, and (3) run the same end-to-end filename check as
-before (assertion 3), which is label-agnostic and needs no changes to cover the new series.
+v3.5: BACK TO A GRID, ON ONE AXIS. CountingStars' hopeless guard (h_hopelessGuard_) was swept
+on/off at a single fixed (bufferSlope, bufferFloor, explore_frac, cost_frac) point and confirmed to
+help; countingstars_sweep.cu now runs it PERMANENTLY ON (CS_HOPELESS_GUARD, a scalar, not an axis
+any more) and re-sweeps bufferSlope x bufferFloor instead (CS_BUFFER_SLOPES / CS_BUFFER_FLOORS,
+arrays again), since a ramp tuned against the old, unguarded rule is not guaranteed to still be
+best. explore_frac/cost_frac (CS_EXPLORE_FRAC / CS_COST_FRAC) stay fixed scalars. This script's job
+is now: (1) confirm the .cu's bufferSlope/bufferFloor grid and hopelessGuard scalar match the .m's
+copies of them, (2) confirm the two KinoPaxSTARTrue points (ANCESTOR_PRUNE_VALUES/SYCLOP_CAP in the
+.cu, trueAncestorPruneValues/trueCap in the .m) agree, and (3) run the same end-to-end filename
+check as before (assertion 4), which is label-agnostic and needs no changes to cover the new series.
 
 Run from anywhere:  python scripts/cross_check_countingstars_grid.py
 Exit 0 = GRIDS MATCH, 1 = GRIDS DIVERGE.
@@ -131,9 +133,9 @@ def ftok(x):
 
 
 # ---------------------------------------------------------------- the C++ side
-# CountingStars: ONE FIXED POINT now, not a grid -- see the module docstring.
-cu_slope = cu_scalar('CS_BUFFER_SLOPE')
-cu_floor = cu_scalar('CS_BUFFER_FLOOR')
+# CountingStars: bufferSlope x bufferFloor GRID -- see the module docstring.
+cu_slopes = cu_array('CS_BUFFER_SLOPES')
+cu_floors = cu_array('CS_BUFFER_FLOORS')
 cu_efrac = cu_scalar('CS_EXPLORE_FRAC')
 cu_cfrac = cu_scalar('CS_COST_FRAC')
 
@@ -143,8 +145,9 @@ cu_cfrac = cu_scalar('CS_COST_FRAC')
 cu_true_cap = cu_scalar('SYCLOP_CAP')
 cu_true_anc = [int(v) for v in cu_array('ANCESTOR_PRUNE_VALUES', ctype='int')]
 
-# v3.5: THE HOPELESS GUARD axis -- off (0) vs on (1), at the SAME CountingStars fixed point above.
-cu_hopeless = [int(v) for v in cu_array('CS_HOPELESS_GUARD_VALUES', ctype='int')]
+# v3.5: THE HOPELESS GUARD -- PERMANENTLY ON (a scalar, not a swept axis any more) at every
+# CountingStars point above.
+cu_hopeless = int(cu_scalar('CS_HOPELESS_GUARD', ctype='int'))
 
 sh_deltas = sh_array('DELTA_LABELS')
 sh_extra = sh_array('DELTA_EXTRA_ARGS')
@@ -157,15 +160,15 @@ sh_metrics = sh_array('COST_LABELS')
 
 problems = []
 
-# --- Assertion 1: the fixed point's axes must stay in their meaningful ranges.
+# --- Assertion 1: the grid's axes must stay in their meaningful ranges.
 #
 # B_frac = slope*x + floor must stay non-negative (a negative slope or floor would let B go
 # negative, which the code's floor-at-1 clamp would silently turn into a positive B that looks
 # fine); explore_frac and cost_frac are SHARES OF B, so each must be in [0, 1] on its own.
-if cu_slope < 0.0 or cu_floor < 0.0:
-    problems.append('CS_BUFFER_SLOPE=%g / CS_BUFFER_FLOOR=%g has a negative entry -- B_frac = '
+if any(v < 0.0 for v in cu_slopes) or any(v < 0.0 for v in cu_floors):
+    problems.append('CS_BUFFER_SLOPES=%s / CS_BUFFER_FLOORS=%s has a negative entry -- B_frac = '
                     'slope*x + floor could go negative, and the planner\'s floor-at-1 clamp would '
-                    'silently mask it' % (cu_slope, cu_floor))
+                    'silently mask it' % (cu_slopes, cu_floors))
 if not (0.0 <= cu_efrac <= 1.0) or not (0.0 <= cu_cfrac <= 1.0):
     problems.append('CS_EXPLORE_FRAC=%g / CS_COST_FRAC=%g has an entry outside [0, 1] -- each is a '
                     'share of B, not a count' % (cu_efrac, cu_cfrac))
@@ -178,7 +181,7 @@ if cu_efrac + cu_cfrac > 1.0 + 1e-6:
                     'be negative and the draw silently switches off' % (cu_efrac + cu_cfrac))
 
 # --- Assertion 2b: informational only, not a "problems" check -- logs the ramp's minimum (at
-# x = 0, i.e. bufferFloor alone) so a reader can see it without re-deriving it.
+# x = 0, i.e. bufferFloor alone) for each bufferFloor so a reader can see it without re-deriving it.
 #
 # THE DENOMINATOR IS CS_RAMP_FILL_ITERS, NOT MAX_ITER. benchmarkCountingStars() sets
 # planner.h_fillIters_ = CS_RAMP_FILL_ITERS explicitly before every run (it no longer relies on
@@ -188,8 +191,8 @@ if cu_efrac + cu_cfrac > 1.0 + 1e-6:
 # the benchmark never actually runs.
 cfg_tree = sh_config_int('MAX_TREE_SIZE')
 cfg_fill_iters = int(cu_scalar('CS_RAMP_FILL_ITERS', ctype='int'))
-ramp_min_info = 'floor(%g * %d / %d) = %d' % (
-    cu_floor, cfg_tree, cfg_fill_iters, int(cu_floor * cfg_tree / cfg_fill_iters))
+ramp_min_info = ', '.join('floor(%g * %d / %d) = %d' % (fl, cfg_tree, cfg_fill_iters, int(fl * cfg_tree / cfg_fill_iters))
+                          for fl in cu_floors)
 
 
 def cs_label(slope, floor, efrac, cfrac, hg):
@@ -205,19 +208,20 @@ def true_label(cap, anc):
 cu_pairs = set()
 for d, plus_only in zip(sh_deltas, sh_plus_only):
     if not plus_only:
-        for hg in cu_hopeless:
-            cu_pairs.add((cs_label(cu_slope, cu_floor, cu_efrac, cu_cfrac, hg), d))
+        for slope in cu_slopes:
+            for floor in cu_floors:
+                cu_pairs.add((cs_label(slope, floor, cu_efrac, cu_cfrac, cu_hopeless), d))
         cu_pairs.add(('KPAX', d))
         for anc in cu_true_anc:
             cu_pairs.add((true_label(cu_true_cap, anc), d))
     cu_pairs.add(('KinoPaxPlus', d))
 
 # ---------------------------------------------------------------- the MATLAB side
-m_slope = m_scalar_int('csBufferSlope')
-m_floor = m_scalar_int('csBufferFloor')
+m_slopes = m_ints('csBufferSlopes')
+m_floors = m_ints('csBufferFloors')
 m_efrac = m_scalar_int('csExploreFrac')
 m_cfrac = m_scalar_int('csCostFrac')
-m_hopeless = m_ints('csHopelessGuardValues')
+m_hopeless = m_scalar_int('csHopelessGuard')
 m_true_cap = m_scalar_int('trueCap')
 m_true_anc = m_ints('trueAncestorPruneValues')
 m_deltas = m_cellstr('deltas')
@@ -226,8 +230,9 @@ m_plus_only = m_bools('deltaPlusOnly')
 m_pairs = set()
 for d, plus_only in zip(m_deltas, m_plus_only):
     if not plus_only:
-        for hg in m_hopeless:
-            m_pairs.add(('CountingStars_bs%d_bf%d_ef%d_cf%d_hg%d' % (m_slope, m_floor, m_efrac, m_cfrac, hg), d))
+        for slope in m_slopes:
+            for floor in m_floors:
+                m_pairs.add(('CountingStars_bs%d_bf%d_ef%d_cf%d_hg%d' % (slope, floor, m_efrac, m_cfrac, m_hopeless), d))
         m_pairs.add(('KPAX', d))
         for anc in m_true_anc:
             m_pairs.add(('KinoPaxSTARTrue_cap%d_anc%d' % (m_true_cap, anc), d))
@@ -237,23 +242,27 @@ for d, plus_only in zip(m_deltas, m_plus_only):
 only_cu = sorted(cu_pairs - m_pairs)
 only_m = sorted(m_pairs - cu_pairs)
 
-# --- Assertion 3: the fixed points themselves must agree between .cu and .m, not just their
+# --- Assertion 3: the grid axes themselves must agree between .cu and .m, not just their
 # resulting label sets (which the diff above already checks) -- this pins down WHICH axis drifted
 # when it does.
-if (tok(cu_slope), tok(cu_floor), ftok(cu_efrac), ftok(cu_cfrac)) != (m_slope, m_floor, m_efrac, m_cfrac):
-    problems.append('COUNTINGSTARS FIXED POINT DRIFT: .cu (bs%d, bf%d, ef%d, cf%d) != '
-                    '.m (bs%d, bf%d, ef%d, cf%d)'
-                    % (tok(cu_slope), tok(cu_floor), ftok(cu_efrac), ftok(cu_cfrac),
-                       m_slope, m_floor, m_efrac, m_cfrac))
+if sorted(tok(v) for v in cu_slopes) != sorted(m_slopes):
+    problems.append('BUFFERSLOPE GRID DRIFT: .cu CS_BUFFER_SLOPES -> %s != .m csBufferSlopes %s'
+                    % (sorted(tok(v) for v in cu_slopes), sorted(m_slopes)))
+if sorted(tok(v) for v in cu_floors) != sorted(m_floors):
+    problems.append('BUFFERFLOOR GRID DRIFT: .cu CS_BUFFER_FLOORS -> %s != .m csBufferFloors %s'
+                    % (sorted(tok(v) for v in cu_floors), sorted(m_floors)))
+if (ftok(cu_efrac), ftok(cu_cfrac)) != (m_efrac, m_cfrac):
+    problems.append('EXPLORE/COST FRAC DRIFT: .cu (ef%d, cf%d) != .m (ef%d, cf%d)'
+                    % (ftok(cu_efrac), ftok(cu_cfrac), m_efrac, m_cfrac))
+if cu_hopeless != m_hopeless:
+    problems.append('HOPELESS GUARD DRIFT: .cu CS_HOPELESS_GUARD=%d != .m csHopelessGuard=%d'
+                    % (cu_hopeless, m_hopeless))
 if tok(cu_true_cap) != m_true_cap:
     problems.append('KINOPAXSTARTRUE CAP DRIFT: .cu SYCLOP_CAP -> cap%d != .m trueCap=%d'
                     % (tok(cu_true_cap), m_true_cap))
 if sorted(cu_true_anc) != sorted(m_true_anc):
     problems.append('KINOPAXSTARTRUE ANCESTOR_PRUNE DRIFT: .cu ANCESTOR_PRUNE_VALUES %s != '
                     '.m trueAncestorPruneValues %s' % (cu_true_anc, m_true_anc))
-if sorted(cu_hopeless) != sorted(m_hopeless):
-    problems.append('HOPELESS GUARD DRIFT: .cu CS_HOPELESS_GUARD_VALUES %s != '
-                    '.m csHopelessGuardValues %s' % (cu_hopeless, m_hopeless))
 
 if sh_deltas != m_deltas:
     problems.append('DELTA_LABELS %s (%s) != deltas %s (%s)' % (sh_deltas, SH, m_deltas, M))
@@ -351,8 +360,8 @@ if cu_writer_prefixes and (m_loader_prefixes or m_loader_exact):
 print('cost metrics : %s' % ', '.join(sh_metrics))
 print('deltas       : %s  (--only-kinopaxplus: %s)'
       % (', '.join(sh_deltas), ', '.join(str(b) for b in sh_plus_only)))
-print('CountingStars fixed point : bufferSlope=%g bufferFloor=%g explore_frac=%g cost_frac=%g '
-      'x hopelessGuard %s' % (cu_slope, cu_floor, cu_efrac, cu_cfrac, cu_hopeless))
+print('CountingStars grid        : bufferSlope %s x bufferFloor %s, explore_frac=%g cost_frac=%g, '
+      'hopelessGuard=%d (permanent)' % (cu_slopes, cu_floors, cu_efrac, cu_cfrac, cu_hopeless))
 print('KinoPaxSTARTrue points    : syclopCap=%g x ancestorPrune %s' % (cu_true_cap, cu_true_anc))
 print('series (.cu) : %d' % len(cu_pairs))
 print('series (.m)  : %d' % len(m_pairs))

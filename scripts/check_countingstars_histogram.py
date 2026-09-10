@@ -334,12 +334,13 @@ for kind in ('uniform', 'exponential', 'onebucket'):
 # switches the uniform draw off, and two grid points that differ only in how far past 1 they went
 # would produce identical runs under different labels.
 #
-# CountingStars runs at ONE FIXED POINT now (bufferSlope/bufferFloor/explore_frac/cost_frac are all
-# scalars in the .cu, not arrays -- see countingstars_sweep.cu's header for why). Parsed here purely
-# for the grid summary line and the one oversubscription check; neither bufferSlope nor bufferFloor
-# ever entered the oversubscription math (only explore_frac + cost_frac do).
-slope = cu_scalar(sweep, 'CS_BUFFER_SLOPE', SWEEP)
-floor = cu_scalar(sweep, 'CS_BUFFER_FLOOR', SWEEP)
+# v3.5: bufferSlope/bufferFloor are ARRAYS again (CS_BUFFER_SLOPES/CS_BUFFER_FLOORS -- the
+# hopeless guard's own sweep confirmed it helps, so it now runs PERMANENTLY ON and this grid
+# re-sweeps the ramp against it), explore_frac/cost_frac stay fixed scalars. Parsed here purely
+# for the grid summary line and the one oversubscription check; neither bufferSlope nor
+# bufferFloor ever entered the oversubscription math (only explore_frac + cost_frac do).
+slopes = cu_array(sweep, 'CS_BUFFER_SLOPES', SWEEP)
+floors = cu_array(sweep, 'CS_BUFFER_FLOORS', SWEEP)
 efrac = cu_scalar(sweep, 'CS_EXPLORE_FRAC', SWEEP)
 cfrac = cu_scalar(sweep, 'CS_COST_FRAC', SWEEP)
 
@@ -434,7 +435,8 @@ print('histogram    : ord[%d,%d) opt[%d] cost[%d,%d) react[%d,%d) dormant[%d] ho
 print('reactFloor   : %g  (~%.0f nodes/iter at a 3e6-node tree)' % (REACT_FLOOR, REACT_FLOOR * 3e6))
 print('ordBuckets %d   costBuckets %d   logScale %g  (window %.1f octaves below distMax)'
       % (ORD_BUCKETS, COST_BUCKETS, LOG_SCALE, (COST_BUCKETS - 1) / LOG_SCALE))
-print('fixed point : slope %g  floor %g  explore %g  cost %g' % (slope, floor, efrac, cfrac))
+print('grid        : slope %s  floor %s  explore %g  cost %g (hopelessGuard permanently on)'
+      % (slopes, floors, efrac, cfrac))
 print('cases checked : %d' % cases)
 
 if problems:
