@@ -383,7 +383,11 @@ for CL in "${COST_LABELS[@]}"; do
             echo "=== RUNNING (delta=${DL}, cost=${CL}, Env=${EN}) ==="
             # argv[1] carries the discretization and cost metric, so it lands in every output
             # filename as _delta${DL}_${CL}; argv[3] selects the per-environment subfolder.
-            "./PaperBenchmark_${DL}_${CL}" "${DL}_${CL}" "$EO" "$EN"
+            # stdbuf: stdout/stderr are fully block-buffered once redirected to the .out/.err file
+            # (not a tty), so plain printf output can sit unflushed for a long time -- a real hang
+            # deep in one planner's run can look identical to "froze immediately after RUNNING" in
+            # the log. Force line-buffering so the log reflects true progress in real time.
+            stdbuf -oL -eL "./PaperBenchmark_${DL}_${CL}" "${DL}_${CL}" "$EO" "$EN"
         done
     done
 done
