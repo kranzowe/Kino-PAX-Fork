@@ -267,6 +267,10 @@ CountingStars::CountingStars()
     // differs from h_reactFloor_'s and why it defaults an order of magnitude higher.
     h_acceptFloor_ = 1e-4f;
 
+    // v3.5: the hopeless guard. A genuine on/off toggle (unlike the floors above) -- default OFF
+    // reproduces today's behaviour exactly. See h_hopelessGuard_ in the header.
+    h_hopelessGuard_ = false;
+
     // ---- Fan-out. Blocks a node gets are popcount(door), decided at admission; see the header. ----
     // rep is a plain COUNT OF BLOCKS with no alignment constraint -- repeatInd writes rep integer
     // entries and kernel1 launches one 32-thread block per entry, so a node at 2 gets
@@ -275,6 +279,8 @@ CountingStars::CountingStars()
     // ---- Derived per-iteration scalars. All recomputed before they are read; these are only the
     // values the CSV would show if a run somehow logged iteration 0. ----
     h_optimalCount_        = 0;
+    h_hopelessCount_       = 0;
+    h_hopelessDormantCount_ = 0;
     h_ordCutoff_           = 0;
     h_pBoundary_           = 0.0f;
     h_costCutoff_          = 0;
@@ -397,6 +403,8 @@ void CountingStars::resetPlanner(float* h_initial, float* h_goal)
     h_frontierRepeatSize_   = 0;
     h_costScale_            = 0.0f;
     h_optimalCount_         = 0;
+    h_hopelessCount_        = 0;
+    h_hopelessDormantCount_ = 0;
     h_ordCutoff_            = 0;
     h_pBoundary_            = 0.0f;
     h_costCutoff_           = 0;
@@ -932,6 +940,7 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
 __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                  float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
                                                  int* regionNodeCount, float costScale, float distMax,
+                                                 float* minCost, bool hopelessGuard,
                                                  float* candDistance, int* acceptHistogram)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -943,6 +952,17 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
     float cost = unexploredSampleCosts[idx];
     int   xR1  = frontierNextXR1s[idx];
     float m    = minCostsR1[xR1];
+
+    // v3.5: THE HOPELESS GUARD, checked FIRST -- before OPTIMAL, before either histogram vote. A
+    // candidate whose own cost already forecloses beating h_minCost_ cannot win FRESHEST, CHEAPEST,
+    // OPTIMAL or the completeness floor (see acceptPass2 and Part B), so it must never even enter
+    // the population either cutoff is solved against. See h_hopelessGuard_ in the header.
+    if(hopelessGuard && cost >= *minCost)
+        {
+            candDistance[idx] = CS_HOPELESS_DISTANCE;
+            atomicAdd(&acceptHistogram[CS_HIST_HOPELESS_SLOT], 1);
+            return;
+        }
 
     if(cost <= m)
         {
@@ -1011,6 +1031,7 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
 __global__ void CountingStars_reactScan_kernel(int treeSize, bool* frontier, bool* goalSet,
                                                int* treeXR1s, float* treeSampleCosts, float* minCostsR1,
                                                int* bestNodeIdxPerR1, float costScale, float distMax,
+                                               float* minCost, bool hopelessGuard,
                                                bool* reactEligible, int* acceptHistogram)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1025,6 +1046,17 @@ __global__ void CountingStars_reactScan_kernel(int treeSize, bool* frontier, boo
         }
 
     int xR1 = treeXR1s[tid];
+
+    // v3.5: THE HOPELESS GUARD -- same test as accept pass 1, over a DORMANT node's already-fixed
+    // cost. Setting reactEligible false here is what Part B's ARM 1 already checks, and (v3.5)
+    // what ARM 2's completeness floor now checks too -- one flag, no new state for Part B to read.
+    if(hopelessGuard && treeSampleCosts[tid] >= *minCost)
+        {
+            reactEligible[tid] = false;
+            atomicAdd(&acceptHistogram[CS_HIST_HOPELESS_DORMANT_SLOT], 1);
+            return;
+        }
+
     reactEligible[tid] = true;
     atomicAdd(&acceptHistogram[CS_HIST_DORMANT_SLOT], 1);
     atomicAdd(&acceptHistogram[CS_HIST_REACT_BASE
@@ -1092,6 +1124,17 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
     if(tid >= frontierNextSize) return;
 
     int idx = activeFrontierNextIdxs[tid];
+
+    // v3.5: THE HOPELESS GUARD's verdict, already decided by accept pass 1 this same iteration --
+    // the CS_HOPELESS_DISTANCE sentinel in candDistance[idx]. No new parameter needed here. Skips
+    // FRESHEST, CHEAPEST, OPTIMAL and the completeness floor entirely: "every door, full stop".
+    if(candDistance[idx] < 0.0f)
+        {
+            candDoor[idx]     = CS_DOOR_NONE;
+            frontierNext[idx] = false;
+            return;
+        }
+
     int xR1 = frontierNextXR1s[idx];
 
     int  mask      = CS_DOOR_NONE;
@@ -1314,16 +1357,25 @@ CountingStars_updateFrontier_kernel(bool* frontier, bool* frontierNext, uint* ac
                         }
                 }
 
-            // --- ARM 2: THE COMPLETENESS FLOOR. Deliberately OUTSIDE the eligibility test and
-            // outside any budget: every dormant node gets this roll, including the current region
-            // best. Eligibility is bookkeeping for the budgeted arm; completeness has to cover the
-            // whole tree.
+            // --- ARM 2: THE COMPLETENESS FLOOR. Deliberately OUTSIDE the BUDGETED eligibility test:
+            // every dormant node still gets this roll regardless of react_frac's cutoff, including
+            // the current region best. Eligibility there is bookkeeping for the budgeted arm;
+            // completeness has to cover the whole tree.
             //
-            // Without it the cost arm alone is NOT probabilistically complete, and the failure is
-            // permanent: a node's distance has a fixed numerator over a non-increasing
-            // minCostsR1[r], so it only ever grows, and a node once above the cutoff can never
-            // return. See h_reactFloor_. ---
-            if(reactFloor > 0.0f && curand_uniform(&seed) < reactFloor)
+            // v3.5: NOW ALSO GATED ON reactEligible, for exactly one additional reason -- the
+            // hopeless guard. A node the scan measured hopeless can never beat the solution already
+            // in hand from ANY door, so this floor must not be the one door that still lets it back
+            // in. reactEligible[treeIdx] is the SAME flag ARM 1 above already reads, so this costs
+            // no new state and no new kernel parameter. When h_hopelessGuard_ is false, reactEligible
+            // is unconditionally true for every node reaching this point (goalSet/frontier are
+            // already excluded above), so the AND is a no-op and today's "every dormant node, no
+            // exceptions" behaviour is reproduced exactly.
+            //
+            // Without floor coverage of the remaining population the cost arm alone is NOT
+            // probabilistically complete, and the failure is permanent: a node's distance has a
+            // fixed numerator over a non-increasing minCostsR1[r], so it only ever grows, and a node
+            // once above the cutoff can never return. See h_reactFloor_. ---
+            if(reactEligible[treeIdx] && reactFloor > 0.0f && curand_uniform(&seed) < reactFloor)
                 {
                     frontier[treeIdx]   = true;
                     nodeDoor[treeIdx]   = CS_DOORBIT_FLOOR;
@@ -1397,6 +1449,8 @@ void CountingStars::updateFrontier()
     h_distMax_ = (h_costScale_ > 0.0f) ? (spreadMax / h_costScale_) : spreadMax;
 
     h_optimalCount_    = 0;
+    h_hopelessCount_        = 0;
+    h_hopelessDormantCount_ = 0;
     h_ordCutoff_       = 0;
     h_pBoundary_       = 0.0f;
     h_costCutoff_      = 0;
@@ -1425,6 +1479,7 @@ void CountingStars::updateFrontier()
               h_treeSize_, d_frontier_ptr_, d_goalSet_ptr_,
               d_treeXR1s_ptr_, d_treeSampleCosts_ptr_, d_minCostsR1_ptr_,
               d_bestNodeIdxPerR1_ptr_, h_costScale_, h_distMax_,
+              d_minCost_ptr_, h_hopelessGuard_,
               d_reactEligible_ptr_, d_acceptHistogram_ptr_);
         }
 
@@ -1440,6 +1495,7 @@ void CountingStars::updateFrontier()
               d_activeFrontierIdxs_ptr_, h_frontierNextSize_,
               d_minCostsR1_ptr_, d_frontierNextXR1s_ptr_, d_unexploredSampleCosts_ptr_,
               d_regionNodeCount_ptr_, h_costScale_, h_distMax_,
+              d_minCost_ptr_, h_hopelessGuard_,
               d_candDistance_ptr_, d_acceptHistogram_ptr_);
 
             // STILL ONE SYNCHRONISING COPY, and that is what the shared buffer buys: both
@@ -1448,7 +1504,8 @@ void CountingStars::updateFrontier()
             // selection signal had to cost zero extra round trips.
             cudaMemcpy(h_acceptHistogram_, d_acceptHistogram_ptr_, CS_HIST_SIZE * sizeof(int),
                        cudaMemcpyDeviceToHost);
-            h_optimalCount_ = (uint)h_acceptHistogram_[CS_HIST_OPT_SLOT];
+            h_optimalCount_  = (uint)h_acceptHistogram_[CS_HIST_OPT_SLOT];
+            h_hopelessCount_ = (uint)h_acceptHistogram_[CS_HIST_HOPELESS_SLOT];
 
             // --- SOLVE BOTH CUTOFFS. See csSolveCutoff for the scan and why no rank is needed.
             //
@@ -1504,6 +1561,12 @@ void CountingStars::updateFrontier()
     if(h_frontierNextSize_ == 0 && h_treeSize_ > 0)
         cudaMemcpy(h_acceptHistogram_, d_acceptHistogram_ptr_, CS_HIST_SIZE * sizeof(int),
                    cudaMemcpyDeviceToHost);
+
+    // v3.5: h_acceptHistogram_ is guaranteed fresh from device by this point regardless of which
+    // branch above ran the memcpy (candidates > 0, or candidates == 0 but a dormant tree exists) --
+    // and is the reset-to-0 host copy from the top-of-iteration fill if neither ran (empty tree,
+    // no candidates), which is the correct value in that case too.
+    h_hopelessDormantCount_ = (uint)h_acceptHistogram_[CS_HIST_HOPELESS_DORMANT_SLOT];
 
     csSolveCutoff(h_acceptHistogram_ + CS_HIST_REACT_BASE, CS_COST_BUCKETS,
                   h_reactFrac_ * float(h_goalFrontierSize_), h_reactCutoff_, h_pReactBoundary_);

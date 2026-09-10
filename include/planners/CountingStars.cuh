@@ -78,6 +78,14 @@ static const float CS_COST_LOG_SCALE = 12.0f;   // buckets per octave below dist
 // as the costs it divides.
 static const float CS_MIN_DISTANCE = 1e-37f;
 
+// v3.5: THE HOPELESS GUARD's sentinel, written by accept pass 1 into candDistance[idx] for a
+// candidate whose own cost already forecloses beating h_minCost_ (see h_hopelessGuard_ below).
+// MUST be negative: candDistance is otherwise never negative -- 0.0f marks OPTIMAL, and every
+// non-optimal value is csNodeDistance()'s output, which is always > 0 (or CS_MIN_DISTANCE on
+// underflow). Accept pass 2 tests `candDistance[idx] < 0.0f`, which is therefore unambiguous and
+// needs no new kernel parameter of its own.
+static const float CS_HOPELESS_DISTANCE = -1.0f;
+
 // ONE histogram buffer, ONE synchronising copy. That mid-iteration stall sits between the two accept
 // passes and serialises everything behind it, so the second selection signal rides in the same
 // buffer rather than costing a second round trip.
@@ -87,17 +95,22 @@ static const float CS_MIN_DISTANCE = 1e-37f;
 //   [CS_HIST_COST_BASE, +CS_COST_BUCKETS)     cost-distance buckets
 //   [CS_HIST_REACT_BASE, +CS_COST_BUCKETS)    cost-distance buckets over DORMANT TREE NODES (v3.1)
 //   [CS_HIST_DORMANT_SLOT]                    the dormant-node count -- NOT a bucket
+//   [CS_HIST_HOPELESS_SLOT]                   v3.5: hopeless CANDIDATE count -- NOT a bucket
+//   [CS_HIST_HOPELESS_DORMANT_SLOT]           v3.5: hopeless DORMANT-node count -- NOT a bucket
 //
 // v3.1's reactivation histogram rides here for the same reason the cost one does: the scan that
 // fills it depends on nothing this iteration's candidates produce, so it launches beside accept
 // pass 1 and its result comes back in the SAME synchronising memcpy. A third selection costs zero
-// extra round trips.
-static const int CS_HIST_ORD_BASE     = 0;
-static const int CS_HIST_OPT_SLOT     = CS_ORD_BUCKETS;
-static const int CS_HIST_COST_BASE    = CS_ORD_BUCKETS + 1;
-static const int CS_HIST_REACT_BASE   = CS_ORD_BUCKETS + 1 + CS_COST_BUCKETS;
-static const int CS_HIST_DORMANT_SLOT = CS_ORD_BUCKETS + 1 + 2 * CS_COST_BUCKETS;
-static const int CS_HIST_SIZE         = CS_ORD_BUCKETS + 2 + 2 * CS_COST_BUCKETS;
+// extra round trips. v3.5's two hopeless counters are pure diagnostics (never read by any
+// csSolveCutoff() call) riding in the same buffer for the same reason.
+static const int CS_HIST_ORD_BASE              = 0;
+static const int CS_HIST_OPT_SLOT              = CS_ORD_BUCKETS;
+static const int CS_HIST_COST_BASE             = CS_ORD_BUCKETS + 1;
+static const int CS_HIST_REACT_BASE            = CS_ORD_BUCKETS + 1 + CS_COST_BUCKETS;
+static const int CS_HIST_DORMANT_SLOT          = CS_ORD_BUCKETS + 1 + 2 * CS_COST_BUCKETS;
+static const int CS_HIST_HOPELESS_SLOT         = CS_ORD_BUCKETS + 2 + 2 * CS_COST_BUCKETS;
+static const int CS_HIST_HOPELESS_DORMANT_SLOT = CS_ORD_BUCKETS + 3 + 2 * CS_COST_BUCKETS;
+static const int CS_HIST_SIZE                  = CS_ORD_BUCKETS + 4 + 2 * CS_COST_BUCKETS;
 
 // ==================================================================================
 // THE TWO BUCKET MAPS, in ONE definition each so both accept passes cannot disagree.
@@ -302,6 +315,12 @@ public:
     // is what the host divides the budget against, so it is on the critical path, not a diagnostic.
     uint h_optimalCount_;
 
+    // v3.5: how many candidates / dormant nodes were measured HOPELESS this iteration (own cost
+    // already >= h_minCost_) -- see h_hopelessGuard_ below. Pure diagnostics, read back from the
+    // two new scalar slots in the same acceptHistogram buffer h_optimalCount_ already rides in.
+    // Both stay 0 for every iteration h_hopelessGuard_ is false.
+    uint h_hopelessCount_, h_hopelessDormantCount_;
+
     // The freshness cutoff and its boundary probability, solved on the host from the ordinality
     // histogram. A candidate is admitted by the freshness door when its region's ordinality is
     // BELOW the cutoff, or EQUAL to it and it wins the boundary roll.
@@ -380,6 +399,36 @@ public:
     // so any run's value is auditable.
     // ==================================================================================
     float h_acceptFloor_;
+
+    // ==================================================================================
+    // v3.5: THE HOPELESS GUARD. Staged as a toggle, default OFF, the same way h_optimalAcceptBudgeted_
+    // was staged before its own sweep made OPTIMAL's budgeting permanent (see CS_DOORBIT_OPTIMAL) --
+    // prove it helps with the toggle on, then retire the toggle the same way.
+    //
+    // THE CLAIM: edgeCost() >= 0 always, and treeSampleCosts[child] is written exactly once at
+    // insertion, never rewired -- so a node's own cost lower-bounds every cost any of its
+    // descendants could ever reach. Once that lower bound is >= h_minCost_ (the best COMPLETE
+    // root-to-goal solution found so far, a GLOBAL scalar that only ever shrinks via
+    // atomicMinFloat), no descendant of it can ever beat the solution already in hand. Such a
+    // candidate/node is HOPELESS.
+    //
+    // EVERY DOOR, FULL STOP: a hopeless candidate/dormant node is excluded before it is even
+    // counted toward FRESHEST's or CHEAPEST's histograms, and both completeness floors
+    // (h_acceptFloor_ above, h_reactFloor_ above) are gated on the same exclusion too -- a node
+    // that can never improve on the best solution is not worth admitting via ANY door, including
+    // the ones that exist purely for completeness. See CountingStars_acceptPass1_kernel,
+    // CountingStars_acceptPass2_kernel, CountingStars_reactScan_kernel, and Part B of
+    // CountingStars_updateFrontier_kernel.
+    //
+    // NO STICKY BIT NEEDED, unlike KinoPaxSTARTrue's h_ancestorPrune_/pruned[]: that mechanism's
+    // anchor is a PER-REGION minimum, which needed dormancy/amnesty logic for a corner case this
+    // one does not have. h_minCost_ only ever shrinks, so "hopeless" is always safe to recompute
+    // fresh from the current h_minCost_ every iteration -- once true for a node, it stays true.
+    //
+    // DEFAULT FALSE reproduces today's behaviour bit-for-bit (see Part B of
+    // CountingStars_updateFrontier_kernel for exactly why).
+    // ==================================================================================
+    bool h_hopelessGuard_;
 
     // The reactivation cutoff and its boundary probability, solved from the react histogram by the
     // same csSolveCutoff the other two doors use. h_reactCutoffDist_ is the DISTANCE the bucket
@@ -635,9 +684,16 @@ __global__ void CountingStars_propagateFrontier_kernel2(bool* frontier, uint* ac
 // IT STAMPS NO DOOR. Neither cutoff is known until this launch has finished and the host has scanned
 // the histograms, so a door written here would be a decision taken without the numbers that decide
 // it. Two launches, both O(candidates), and the split is what makes the budget exact.
+//
+// v3.5: THE HOPELESS GUARD is checked FIRST, before OPTIMAL, and before any histogram vote at all --
+// see h_hopelessGuard_ in the header. A hopeless candidate writes CS_HOPELESS_DISTANCE into
+// candDistance[idx] (the sentinel accept pass 2 reads) and votes only the diagnostic
+// CS_HIST_HOPELESS_SLOT count, never the ordinality or cost histograms it would otherwise be
+// measured into.
 __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                  float* minCostsR1, int* frontierNextXR1s, float* unexploredSampleCosts,
                                                  int* regionNodeCount, float costScale, float distMax,
+                                                 float* minCost, bool hopelessGuard,
                                                  float* candDistance, int* acceptHistogram);
 
 /***************************/
@@ -682,6 +738,10 @@ __global__ void CountingStars_acceptPass1_kernel(uint* activeFrontierNextIdxs, u
 //
 // Also marks regionCovered for every optimal ADMISSION (not every optimal candidate measured), which
 // is what Part B's guarantee used to be deduplicated against (that arm is gone; see CS_DOORBIT_GUAR).
+//
+// v3.5: THE HOPELESS GUARD's verdict, already decided by accept pass 1 THIS SAME iteration (the
+// CS_HOPELESS_DISTANCE sentinel in candDistance[idx]) -- no new parameter needed here. Checked
+// FIRST, before OPTIMAL/FRESHEST/CHEAPEST/FLOOR are even computed: "every door, full stop".
 __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, uint frontierNextSize,
                                                  int* frontierNextXR1s, int* regionNodeCount,
                                                  float* candDistance, bool* frontierNext, int* candDoor,
@@ -697,14 +757,19 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
 // One thread per tree node. The Part B counterpart of accept pass 1: it MEASURES the dormant
 // population and decides nothing.
 //
-// ELIGIBLE == dormant (`!frontier`) and still expandable (`!goalSet`), full stop -- every dormant
-// node, including a region's current best, competes in the same cost-distance histogram Part B's
-// cost arm spends against; the region-best exclusion this used to apply is gone (folded
-// permanently into that same budget).
+// ELIGIBLE == dormant (`!frontier`), still expandable (`!goalSet`), and (v3.5) NOT HOPELESS --
+// three reasons now, full stop. Every eligible dormant node, including a region's current best,
+// competes in the same cost-distance histogram Part B's cost arm spends against; the region-best
+// exclusion this used to apply is gone (folded permanently into that same budget).
+//
+// v3.5: reactEligible IS ALSO WHAT PART B's COMPLETENESS FLOOR (ARM 2) NOW READS, not just ARM 1 --
+// see h_hopelessGuard_ in the header and Part B below for why that is exactly equivalent to "not
+// hopeless" and costs Part B no new parameter.
 //
 // It writes two things -- a per-node eligibility flag and a vote in the reactivation histogram --
 // and it is the SINGLE WRITER of the population Part B's cost arm then selects from, the same
-// discipline that makes accept pass 1 the single measurer of the candidate pool.
+// discipline that makes accept pass 1 the single measurer of the candidate pool. A hopeless node
+// votes only the diagnostic CS_HIST_HOPELESS_DORMANT_SLOT count, never the reactivation histogram.
 //
 // LAUNCHED BESIDE ACCEPT PASS 1, and the placement is what makes the third selection free. Every
 // input is settled the moment propagate returns: frontier[0, treeSize) is not written again until
@@ -714,6 +779,7 @@ __global__ void CountingStars_acceptPass2_kernel(uint* activeFrontierNextIdxs, u
 __global__ void CountingStars_reactScan_kernel(int treeSize, bool* frontier, bool* goalSet,
                                                int* treeXR1s, float* treeSampleCosts, float* minCostsR1,
                                                int* bestNodeIdxPerR1, float costScale, float distMax,
+                                               float* minCost, bool hopelessGuard,
                                                bool* reactEligible, int* acceptHistogram);
 
 /***************************/
@@ -721,9 +787,16 @@ __global__ void CountingStars_reactScan_kernel(int treeSize, bool* frontier, boo
 /***************************/
 // Part A inserts admitted candidates and stamps each with its block count -- v3.3:
 // nodeBlocks[i] = popcount(candDoor[i]), no other rule. Part B fills the rest, in TWO arms: the
-// whole reactivation budget spent on the CHEAPEST dormant nodes, then an unconditional
-// completeness floor. The region-best guarantee that used to run ahead of these as its own
-// unbudgeted arm is gone -- see CS_DOORBIT_GUAR.
+// whole reactivation budget spent on the CHEAPEST dormant nodes, then a completeness floor. The
+// region-best guarantee that used to run ahead of these as its own unbudgeted arm is gone -- see
+// CS_DOORBIT_GUAR.
+//
+// v3.5: ARM 2 (the completeness floor) IS NO LONGER UNCONDITIONAL -- it is now also gated on
+// reactEligible, the SAME flag ARM 1 already reads, no new parameter needed: by the time Part B's
+// body runs, goalSet/frontier nodes are already excluded by the returns just above, so
+// reactEligible[treeIdx] == false can only mean the reactScan kernel measured this node HOPELESS
+// (see h_hopelessGuard_). When the guard is off, reactEligible is unconditionally true for every
+// node reaching this point, so the gate is a no-op and today's behaviour is reproduced exactly.
 //
 // EVERY BRANCH THAT SETS frontier[i] = true MUST WRITE nodeBlocks[i]. A missed one leaves the node
 // carrying whatever block count the previous occupant of its tree slot had.

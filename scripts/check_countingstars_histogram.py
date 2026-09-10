@@ -107,6 +107,8 @@ HIST_OPT_SLOT = cuh_slot('CS_HIST_OPT_SLOT')
 HIST_COST_BASE = cuh_slot('CS_HIST_COST_BASE')
 HIST_REACT_BASE = cuh_slot('CS_HIST_REACT_BASE')
 HIST_DORMANT_SLOT = cuh_slot('CS_HIST_DORMANT_SLOT')
+HIST_HOPELESS_SLOT = cuh_slot('CS_HIST_HOPELESS_SLOT')
+HIST_HOPELESS_DORMANT_SLOT = cuh_slot('CS_HIST_HOPELESS_DORMANT_SLOT')
 HIST_SIZE = cuh_slot('CS_HIST_SIZE')
 
 
@@ -352,14 +354,17 @@ if efrac + cfrac > 1.0 + 1e-6:
 
 # ================================================================= 6. the shared histogram buffer
 #
-# Three 256-bucket ranges and two scalar slots in one buffer. Each range must start where the last
-# one ends, the scalars must not collide with any bucket, and CS_HIST_SIZE must cover all of it --
-# an off-by-one puts one histogram's votes in another's buckets, and every cutoff still solves.
+# Three 256-bucket ranges and four scalar slots in one buffer (v3.5 added the two hopeless-guard
+# diagnostic counts). Each range must start where the last one ends, the scalars must not collide
+# with any bucket, and CS_HIST_SIZE must cover all of it -- an off-by-one puts one histogram's
+# votes in another's buckets, and every cutoff still solves.
 layout = [('ord buckets', HIST_ORD_BASE, ORD_BUCKETS),
           ('optimal slot', HIST_OPT_SLOT, 1),
           ('cost buckets', HIST_COST_BASE, COST_BUCKETS),
           ('react buckets', HIST_REACT_BASE, COST_BUCKETS),
-          ('dormant slot', HIST_DORMANT_SLOT, 1)]
+          ('dormant slot', HIST_DORMANT_SLOT, 1),
+          ('hopeless slot', HIST_HOPELESS_SLOT, 1),
+          ('hopeless dormant slot', HIST_HOPELESS_DORMANT_SLOT, 1)]
 
 occupied = {}
 for name, base, width in layout:
@@ -406,10 +411,26 @@ if REACT_FLOOR >= 1.0:
     problems.append('COMPLETENESS FLOOR IS %g: at >= 1 every dormant node is reactivated every '
                     'iteration and the frontier is the whole tree.' % REACT_FLOOR)
 
-print('histogram    : ord[%d,%d) opt[%d] cost[%d,%d) react[%d,%d) dormant[%d]  size %d'
+# ================================================================= 8. the hopeless guard's sentinel
+#
+# CS_HOPELESS_DISTANCE is what accept pass 2 tests with `candDistance[idx] < 0.0f` to recognise a
+# hopeless candidate -- it must be negative, or it would collide with a real (always >= 0)
+# candDistance value (0.0f marks OPTIMAL; every non-optimal value is csNodeDistance()'s output,
+# always > 0).
+HOPELESS_DISTANCE = cuh_const('CS_HOPELESS_DISTANCE', 'float')
+cases += 1
+if not (HOPELESS_DISTANCE < 0.0):
+    problems.append('HOPELESS SENTINEL IS NOT NEGATIVE: CS_HOPELESS_DISTANCE = %g. Accept pass 2 '
+                    'tests candDistance[idx] < 0.0f to recognise a hopeless candidate -- a '
+                    'non-negative sentinel would collide with a real distance value.'
+                    % HOPELESS_DISTANCE)
+
+print('histogram    : ord[%d,%d) opt[%d] cost[%d,%d) react[%d,%d) dormant[%d] hopeless[%d] '
+      'hopelessDormant[%d]  size %d'
       % (HIST_ORD_BASE, HIST_ORD_BASE + ORD_BUCKETS, HIST_OPT_SLOT,
          HIST_COST_BASE, HIST_COST_BASE + COST_BUCKETS,
-         HIST_REACT_BASE, HIST_REACT_BASE + COST_BUCKETS, HIST_DORMANT_SLOT, HIST_SIZE))
+         HIST_REACT_BASE, HIST_REACT_BASE + COST_BUCKETS, HIST_DORMANT_SLOT,
+         HIST_HOPELESS_SLOT, HIST_HOPELESS_DORMANT_SLOT, HIST_SIZE))
 print('reactFloor   : %g  (~%.0f nodes/iter at a 3e6-node tree)' % (REACT_FLOOR, REACT_FLOOR * 3e6))
 print('ordBuckets %d   costBuckets %d   logScale %g  (window %.1f octaves below distMax)'
       % (ORD_BUCKETS, COST_BUCKETS, LOG_SCALE, (COST_BUCKETS - 1) / LOG_SCALE))

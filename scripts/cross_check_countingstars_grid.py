@@ -143,6 +143,9 @@ cu_cfrac = cu_scalar('CS_COST_FRAC')
 cu_true_cap = cu_scalar('SYCLOP_CAP')
 cu_true_anc = [int(v) for v in cu_array('ANCESTOR_PRUNE_VALUES', ctype='int')]
 
+# v3.5: THE HOPELESS GUARD axis -- off (0) vs on (1), at the SAME CountingStars fixed point above.
+cu_hopeless = [int(v) for v in cu_array('CS_HOPELESS_GUARD_VALUES', ctype='int')]
+
 sh_deltas = sh_array('DELTA_LABELS')
 sh_extra = sh_array('DELTA_EXTRA_ARGS')
 # The quoted-string regex drops empty entries, so pad from the FRONT: index 0 is the full sweep and
@@ -189,9 +192,9 @@ ramp_min_info = 'floor(%g * %d / %d) = %d' % (
     cu_floor, cfg_tree, cfg_fill_iters, int(cu_floor * cfg_tree / cfg_fill_iters))
 
 
-def cs_label(slope, floor, efrac, cfrac):
+def cs_label(slope, floor, efrac, cfrac, hg):
     """Mirrors countingStarsLabel() in the benchmark."""
-    return 'CountingStars_bs%d_bf%d_ef%d_cf%d' % (tok(slope), tok(floor), ftok(efrac), ftok(cfrac))
+    return 'CountingStars_bs%d_bf%d_ef%d_cf%d_hg%d' % (tok(slope), tok(floor), ftok(efrac), ftok(cfrac), hg)
 
 
 def true_label(cap, anc):
@@ -202,7 +205,8 @@ def true_label(cap, anc):
 cu_pairs = set()
 for d, plus_only in zip(sh_deltas, sh_plus_only):
     if not plus_only:
-        cu_pairs.add((cs_label(cu_slope, cu_floor, cu_efrac, cu_cfrac), d))
+        for hg in cu_hopeless:
+            cu_pairs.add((cs_label(cu_slope, cu_floor, cu_efrac, cu_cfrac, hg), d))
         cu_pairs.add(('KPAX', d))
         for anc in cu_true_anc:
             cu_pairs.add((true_label(cu_true_cap, anc), d))
@@ -213,6 +217,7 @@ m_slope = m_scalar_int('csBufferSlope')
 m_floor = m_scalar_int('csBufferFloor')
 m_efrac = m_scalar_int('csExploreFrac')
 m_cfrac = m_scalar_int('csCostFrac')
+m_hopeless = m_ints('csHopelessGuardValues')
 m_true_cap = m_scalar_int('trueCap')
 m_true_anc = m_ints('trueAncestorPruneValues')
 m_deltas = m_cellstr('deltas')
@@ -221,7 +226,8 @@ m_plus_only = m_bools('deltaPlusOnly')
 m_pairs = set()
 for d, plus_only in zip(m_deltas, m_plus_only):
     if not plus_only:
-        m_pairs.add(('CountingStars_bs%d_bf%d_ef%d_cf%d' % (m_slope, m_floor, m_efrac, m_cfrac), d))
+        for hg in m_hopeless:
+            m_pairs.add(('CountingStars_bs%d_bf%d_ef%d_cf%d_hg%d' % (m_slope, m_floor, m_efrac, m_cfrac, hg), d))
         m_pairs.add(('KPAX', d))
         for anc in m_true_anc:
             m_pairs.add(('KinoPaxSTARTrue_cap%d_anc%d' % (m_true_cap, anc), d))
@@ -245,6 +251,9 @@ if tok(cu_true_cap) != m_true_cap:
 if sorted(cu_true_anc) != sorted(m_true_anc):
     problems.append('KINOPAXSTARTRUE ANCESTOR_PRUNE DRIFT: .cu ANCESTOR_PRUNE_VALUES %s != '
                     '.m trueAncestorPruneValues %s' % (cu_true_anc, m_true_anc))
+if sorted(cu_hopeless) != sorted(m_hopeless):
+    problems.append('HOPELESS GUARD DRIFT: .cu CS_HOPELESS_GUARD_VALUES %s != '
+                    '.m csHopelessGuardValues %s' % (cu_hopeless, m_hopeless))
 
 if sh_deltas != m_deltas:
     problems.append('DELTA_LABELS %s (%s) != deltas %s (%s)' % (sh_deltas, SH, m_deltas, M))
@@ -342,8 +351,8 @@ if cu_writer_prefixes and (m_loader_prefixes or m_loader_exact):
 print('cost metrics : %s' % ', '.join(sh_metrics))
 print('deltas       : %s  (--only-kinopaxplus: %s)'
       % (', '.join(sh_deltas), ', '.join(str(b) for b in sh_plus_only)))
-print('CountingStars fixed point : bufferSlope=%g bufferFloor=%g explore_frac=%g cost_frac=%g'
-      % (cu_slope, cu_floor, cu_efrac, cu_cfrac))
+print('CountingStars fixed point : bufferSlope=%g bufferFloor=%g explore_frac=%g cost_frac=%g '
+      'x hopelessGuard %s' % (cu_slope, cu_floor, cu_efrac, cu_cfrac, cu_hopeless))
 print('KinoPaxSTARTrue points    : syclopCap=%g x ancestorPrune %s' % (cu_true_cap, cu_true_anc))
 print('series (.cu) : %d' % len(cu_pairs))
 print('series (.m)  : %d' % len(m_pairs))

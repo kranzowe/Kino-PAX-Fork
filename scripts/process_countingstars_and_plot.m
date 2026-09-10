@@ -18,13 +18,19 @@
 %
 %   KPAX, KinoPaxPlus                                                                   =   2
 %   KinoPaxSTARTrue  syclopCap 1.0 (no cap) x ancestorPrune {0, 1}                       =   2
-%   CountingStars    ONE FIXED POINT (bufferSlope 1.2, bufferFloor 0.3,
-%                    explore_frac 0.1, cost_frac 0.8)                                    =   1
+%   CountingStars    FIXED POINT (bufferSlope 1.2, bufferFloor 0.3,
+%                    explore_frac 0.1, cost_frac 0.8) x hopelessGuard {0, 1} (v3.5)       =   2
 %                                                                                      -----
-%                                                                        per delta          5
+%                                                                        per delta          6
 %                                                                      x 3 deltas     x    3
 %                                                                                      -----
-%                                                                                           15
+%                                                                                           18
+%
+% v3.5's HOPELESS GUARD is the newest addition: hg1 excludes any candidate/dormant node whose own
+% cost already forecloses beating the best solution found so far from every door (FRESHEST/
+% CHEAPEST/OPTIMAL/both completeness floors), not just the cost-based ones -- see
+% h_hopelessGuard_ in include/planners/CountingStars.cuh. hg0 reproduces the fixed point's prior
+% behaviour exactly, so the hg0/hg1 pair is a direct before/after comparison at the same point.
 %
 % KinoPaxSTARCleanCost AND KPAXCap ARE KEPT OUT OF THIS SWEEP -- see the header of
 % countingstars_sweep.cu; they are runnable on their own via kinopaxstar_cost_tuning_sweep.cu /
@@ -33,7 +39,7 @@
 % RUN ONCE PER COST METRIC TOO -- effort ONLY this pass (length dropped, see metrics below): the
 % series count above applies to this one build.
 %
-% ALL FIVE SERIES RUN AT ALL THREE DELTAS THIS PASS -- a hang/crash found at one delta is not
+% ALL SIX SERIES RUN AT ALL THREE DELTAS THIS PASS -- a hang/crash found at one delta is not
 % assumed to reproduce at the others, so all three need the full comparison measured, not
 % KinoPaxPlus alone at the finer ones.
 %
@@ -111,10 +117,10 @@
 % there and simply does not draw on that panel.
 %
 % ENCODING THIS PASS: colour + marker + style are assigned PER PLANNER now that CountingStars is a
-% single fixed point rather than a grid -- KPAX near-black/'s', KinoPaxPlus blue/'d' (both drawn
+% pair of fixed points rather than a grid -- KPAX near-black/'s', KinoPaxPlus blue/'d' (both drawn
 % thicker as reference anchors), KinoPaxSTARTrue two shades of crimson/'p'(anc0)/'h'(anc1),
-% CountingStars amber/'o'. Line width = delta. Every legend here is CLICKABLE - click an entry to
-% hide/show that series.
+% CountingStars two shades of amber/'o'(hg0)/'^'(hg1). Line width = delta. Every legend here is
+% CLICKABLE - click an entry to hide/show that series.
 %
 % FAIR-COMPARISON NOTE: an "iteration" is a different unit of work per planner, so
 % cost-vs-TIME is the fair cross-planner axis. Error bands and error bars are
@@ -182,6 +188,12 @@ csBufferFloor = 30;    % bufferFloor 0.3
 csExploreFrac = 100;   % explore_frac 0.1
 csCostFrac    = 800;   % cost_frac 0.8
 
+% v3.5: THE HOPELESS GUARD axis -- off (0) vs on (1), at the SAME (slope, floor, ef, cf) point
+% above. Must match CS_HOPELESS_GUARD_VALUES in countingstars_sweep.cu. See h_hopelessGuard_ in
+% CountingStars.cuh: on excludes any candidate/dormant node whose own cost already forecloses
+% beating the best solution found so far from every door (FRESHEST/CHEAPEST/OPTIMAL/both floors).
+csHopelessGuardValues = [0 1];
+
 % KinoPaxSTARTrue -- two fixed naive points, added to test whether THIS planner, not KPAX, is
 % where paper_benchmark.cu's illegal-memory-access/hang bug lives. Must match trueLabel() in
 % countingstars_sweep.cu: h_syclopCap_ pinned at 1.0 (no cap, a genuine no-op) at both points;
@@ -219,7 +231,14 @@ trueColors  = [0.70 0.15 0.20;    % anc0 (naive, no prune)      -- lighter crims
                0.45 0.05 0.10];   % anc1 (naive, stale-best prune) -- darker crimson
 trueStyles  = {'-', '-.'};
 trueMarkers = {'p', 'h'};         % pentagram (anc0), hexagram (anc1)
-csColor     = [0.85 0.45 0.05];   % CountingStars, single fixed point -- amber
+
+% v3.5: TWO CountingStars points now (hopelessGuard 0/1), not one -- same amber family as before,
+% two shades: hg0 (today's behaviour) lighter, hg1 (the new guard) darker, mirroring how
+% trueColors shades anc0/anc1 within one hue family.
+csColors  = [0.90 0.60 0.20;    % hg0 (guard off)  -- lighter amber
+             0.55 0.30 0.05];   % hg1 (guard on)   -- darker amber
+csStyles  = {':', '-.'};
+csMarkers = {'o', '^'};          % circle (hg0), triangle-up (hg1)
 
 for di = 1:numel(deltas)
     dWidth = deltaWidths(di);
@@ -254,18 +273,22 @@ for di = 1:numel(deltas)
         plannerBufferFloor(end + 1) = NaN;                                                %#ok<SAGROW>
     end
 
-    % --- CountingStars: ONE FIXED POINT (matches CS_BUFFER_SLOPE/... in countingstars_sweep.cu,
-    % the same point paper_benchmark.cu itself runs at). ---
-    plannerNames{end + 1}   = sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d', ...
-                                      csBufferSlope, csBufferFloor, csExploreFrac, csCostFrac); %#ok<SAGROW>
-    plannerDisplay{end + 1} = sprintf('CountingStars [%s]', dTag); %#ok<SAGROW>
-    plannerColors(end + 1, :) = csColor;   %#ok<SAGROW>
-    plannerStyles{end + 1}    = ':';       %#ok<SAGROW>
-    plannerMarkers{end + 1}   = 'o';       %#ok<SAGROW>
-    plannerWidths(end + 1)    = dWidth + 0.8;   %#ok<SAGROW>
-    plannerBaseline(end + 1)  = false;          %#ok<SAGROW>
-    plannerDeltaIdx(end + 1)  = di;              %#ok<SAGROW>
-    plannerBufferFloor(end + 1) = csBufferFloor; %#ok<SAGROW>
+    % --- CountingStars: TWO FIXED POINTS (matches CS_BUFFER_SLOPE/... x CS_HOPELESS_GUARD_VALUES
+    % in countingstars_sweep.cu) -- the same (slope, floor, ef, cf) paper_benchmark.cu runs at, at
+    % hopelessGuard off (hg0) and on (hg1). ---
+    for hi = 1:numel(csHopelessGuardValues)
+        hg = csHopelessGuardValues(hi);
+        plannerNames{end + 1}   = sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d_hg%d', ...
+                                          csBufferSlope, csBufferFloor, csExploreFrac, csCostFrac, hg); %#ok<SAGROW>
+        plannerDisplay{end + 1} = sprintf('CountingStars hg%d [%s]', hg, dTag); %#ok<SAGROW>
+        plannerColors(end + 1, :) = csColors(hi, :);   %#ok<SAGROW>
+        plannerStyles{end + 1}    = csStyles{hi};       %#ok<SAGROW>
+        plannerMarkers{end + 1}   = csMarkers{hi};      %#ok<SAGROW>
+        plannerWidths(end + 1)    = dWidth + 0.8;   %#ok<SAGROW>
+        plannerBaseline(end + 1)  = false;          %#ok<SAGROW>
+        plannerDeltaIdx(end + 1)  = di;              %#ok<SAGROW>
+        plannerBufferFloor(end + 1) = csBufferFloor; %#ok<SAGROW>
+    end
 
     end   % ~dPlus
 
@@ -374,9 +397,11 @@ for ei = 1:numel(environments)
         % check that the realized B(itr) actually matches the intended slope*x + bufferFloor before
         % reading any panel that divides by it.
         %
-        % One CountingStars series per delta now (fixed point, not a grid): each should rise
-        % roughly linearly from bufferFloor's starting value toward (bufferSlope + bufferFloor) *
-        % MAX_TREE_SIZE / fill_iters at the last iteration.
+        % Two CountingStars series per delta now (hg0/hg1 at the same fixed point, not a grid):
+        % both should rise roughly linearly from bufferFloor's starting value toward
+        % (bufferSlope + bufferFloor) * MAX_TREE_SIZE / fill_iters at the last iteration -- the
+        % hopeless guard only ever REMOVES nodes from the doors, it does not touch the ramp itself,
+        % so hg0 and hg1 should trace the same ramp.
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Budget Ramp (%s)', envTitle, costTitle), ...
                'Position', [100 100 900 560]);
@@ -496,6 +521,41 @@ for ei = 1:numel(environments)
         xlabel('Iteration'); ylabel('nodes');
         title({'optimal measured (thick solid) vs admitted (thick dotted), explore (dashed), cheapest (thin solid),', ...
                'guarantee -- always 0 now (dash-dot), cheap-reactivation (thin dashed), reactivation floor (dotted), admission floor (thin dotted)'});
+
+        %% ---------- FIGURE: v3.5 the hopeless guard's effect ----------
+        % hopeless_count / hopeless_dormant_count are how many candidates / dormant nodes were
+        % measured hopeless THIS iteration -- own cost already >= the best full-solution cost, so
+        % no descendant of it could ever beat that solution. Pinned at -1 for hg0 series (the
+        % guard is off, so the column is never written -- see clearCountingStarsCols) and 0 for
+        % hg1 whenever no solution has been found yet (h_minCost_ starts at MAX_FLOAT, so nothing
+        % can be hopeless before a first solution exists). RISING after a first solution is
+        % expected: h_minCost_ only shrinks, so the hopeless population can only grow over a run.
+        % THIS IS THE DIRECT READ ON WHETHER THE GUARD IS DOING ANYTHING: near 0 for the whole run
+        % means the guard rarely finds anything to exclude at this operating point; a large,
+        % growing count is where cost/time-to-first-solution improvements (or regressions) would
+        % have to come from.
+        figNum = figNum + 1;
+        figure('Name', sprintf('%s - Hopeless Guard (%s)', envTitle, costTitle), ...
+               'Position', [145 145 1200 560]);
+        subplot(1, 2, 1); hold on;
+        for pi = 1:nPlanner
+            plotMeanIter(R{pi}, @(t) getCol(t, 'hopeless_count'), ...
+                         plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
+        end
+        grid on;
+        xlabel('Iteration'); ylabel('hopeless\_count (candidates)');
+        title({'Hopeless CANDIDATES per iteration', 'rising after first solution is expected -- h\_minCost\_ only shrinks'});
+        clickableLegend();
+
+        subplot(1, 2, 2); hold on;
+        for pi = 1:nPlanner
+            plotMeanIter(R{pi}, @(t) getCol(t, 'hopeless_dormant_count'), ...
+                         plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
+        end
+        grid on;
+        xlabel('Iteration'); ylabel('hopeless\_dormant\_count (tree nodes)');
+        title({'Hopeless DORMANT tree nodes per iteration', 'excluded from reactivation entirely, not just the cost arm'});
+        clickableLegend();
 
         %% ---------- FIGURE: is freshness still scarce ----------
         % ord_cutoff is the freshness threshold the remaining budget bought this iteration: a
@@ -865,17 +925,17 @@ for ei = 1:numel(environments)
         end
 
         % The marker legend, written once and used by both titles so they cannot drift apart.
-        % marker is assigned per planner now that CountingStars is a single fixed point:
+        % marker is assigned per planner now that CountingStars is a pair of fixed points:
         % \x25a1 KPAX, \x25c7 KinoPaxPlus, \x2606 KinoPaxSTARTrue anc0, \x2605 KinoPaxSTARTrue anc1
         % (hollow vs. filled star, matching the pentagram/hexagram marker shapes), \x25cb
-        % CountingStars. plannerDisplay's legend text always carries the exact series identity
-        % regardless, so nothing is ever ambiguous.
+        % CountingStars hg0, \x25b3 CountingStars hg1. plannerDisplay's legend text always carries
+        % the exact series identity regardless, so nothing is ever ambiguous.
         % sprintf, NOT a bare concatenation: the \x.... marker glyphs and the \\_ TeX underscore
         % escapes are only resolved by a formatting call, and this string is substituted into the
         % titles below via %s -- which inserts it verbatim rather than re-interpreting it. Built as
         % a plain [...] it would print the escape sequences literally.
         markerKey = sprintf(['lower-left is better (fast and cheap); \x25a1 KPAX, \x25c7 KinoPaxPlus, ' ...
-                             '\x2606 True(anc0), \x2605 True(anc1), \x25cb CountingStars']);
+                             '\x2606 True(anc0), \x2605 True(anc1), \x25cb CS(hg0), \x25b3 CS(hg1)']);
 
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Tradeoff Scatter, Final Cost (%s)', envTitle, costTitle), ...

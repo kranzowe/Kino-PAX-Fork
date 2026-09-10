@@ -36,6 +36,13 @@ static const float CS_BUFFER_FLOOR = 0.3f;
 static const float CS_EXPLORE_FRAC = 0.1f;
 static const float CS_COST_FRAC    = 0.8f;
 
+// v3.5: THE HOPELESS GUARD axis -- off (today's behaviour) vs on. Encoded as int 0/1, same
+// convention as ANCESTOR_PRUNE_VALUES below, for the same cross_check_countingstars_grid.py
+// parsing (cu_array with ctype='int'). See h_hopelessGuard_ in CountingStars.cuh: a
+// candidate/dormant node whose own cost already forecloses beating h_minCost_ is excluded from
+// every door (FRESHEST, CHEAPEST, OPTIMAL, both completeness floors), not just the cost-based ones.
+static const int CS_HOPELESS_GUARD_VALUES[] = {0, 1};
+
 // How many iterations a run actually completes inside the 10s wall-clock cap at
 // MAX_TREE_SIZE = 3,000,000 (empirical). The ramp's x = itr/fill_iters must track the REAL run
 // length, not MAX_ITER: h_fillIters_ defaults to MAX_ITER (1000 in write_config()'s heredoc), but a
@@ -46,25 +53,28 @@ static const float CS_COST_FRAC    = 0.8f;
 // the same (slope, floor) mean a different ramp in each binary.
 static const int CS_RAMP_FILL_ITERS = 700;
 
-// "CountingStars_bs120_bf30_ef100_cf800". MUST start with a name loadRuns() dispatches on.
+// "CountingStars_bs120_bf30_ef100_cf800_hg0". MUST start with a name loadRuns() dispatches on.
 //
 //   bs   bufferSlope, round(100 x float)
 //   bf   bufferFloor, round(100 x float)   -- B(x) is DERIVED from these, and goal_frontier_size is
 //                                             a per-ITERATION CSV column, not a per-run constant
 //   ef   explore_frac, round(1000 x float)
 //   cf   cost_frac,    round(1000 x float)
+//   hg   hopelessGuard, 0 or 1 (v3.5) -- see CS_HOPELESS_GUARD_VALUES above
 //
-// Kept as a function (rather than a hardcoded literal) even now that there is only one point, for
-// the same reason paper_benchmark.cu keeps its own copy: self-documenting, and it stays correct if
-// the operating point ever needs re-deriving.
-static std::string countingStarsLabel(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac)
+// Kept as a function (rather than a hardcoded literal) even now that there is only one
+// (slope, floor, ef, cf) point, for the same reason paper_benchmark.cu keeps its own copy:
+// self-documenting, and it stays correct if the operating point ever needs re-deriving.
+static std::string countingStarsLabel(float bufferSlope, float bufferFloor, float exploreFrac, float costFrac,
+                                      int hopelessGuard)
 {
-    char buf[160];
-    snprintf(buf, sizeof(buf), "CountingStars_bs%d_bf%d_ef%d_cf%d",
+    char buf[176];
+    snprintf(buf, sizeof(buf), "CountingStars_bs%d_bf%d_ef%d_cf%d_hg%d",
              (int)lroundf(100.0f * bufferSlope),
              (int)lroundf(100.0f * bufferFloor),
              (int)lroundf(1000.0f * exploreFrac),
-             (int)lroundf(1000.0f * costFrac));
+             (int)lroundf(1000.0f * costFrac),
+             hopelessGuard);
     return std::string(buf);
 }
 
@@ -200,6 +210,11 @@ struct IterationData
     // is inert, which is a goal_frontier_size problem and no other knob will move it.
     float block_ceiling;
     float block_scale;
+    // v3.5: how many candidates / dormant nodes were measured HOPELESS this iteration (own cost
+    // already >= the best full-solution cost, so no descendant could ever beat it) -- see
+    // h_hopelessGuard_ in CountingStars.cuh. Both are 0 for every run with hg0 (guard off).
+    int   hopeless_count;
+    int   hopeless_dormant_count;
 };
 
 // Blank the CountingStars-only columns. Every other planner calls this, exactly as KinoPaxPlus
@@ -227,6 +242,8 @@ static void clearCountingStarsCols(IterationData& d)
     d.reactivated_best = -1;
     d.block_ceiling = NAN;
     d.block_scale = NAN;
+    d.hopeless_count = -1;
+    d.hopeless_dormant_count = -1;
 }
 
 struct RunResult
@@ -351,7 +368,7 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
     // Baselines include the build's delta label so runs at different discretizations
     // don't overwrite each other:
     //   KPAX baseline:  {env}_KPAX_delta{build}_run{n}.csv
-    //   CountingStars:  {env}_{planner label}_delta{build}_run{n}.csv, e.g. CountingStars_bs120_bf30_ef100_cf800
+    //   CountingStars:  {env}_{planner label}_delta{build}_run{n}.csv, e.g. CountingStars_bs120_bf30_ef100_cf800_hg0
     //   KinoPaxSTARTrue: same form, e.g. KinoPaxSTARTrue_cap100_anc0
     //   KinoPaxPlus:    {env}_delta{label}_run{n}.csv
     // KinoPaxPlus deliberately keys on the DELTA rather than a planner name: that is what keeps
@@ -387,7 +404,8 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
          << "admitted_opt_fresh_both,admitted_floor,"
          << "reactivated_cost,reactivated_count,reactivated_best,"
          << "block_ceiling,block_scale,"
-         << "admitted_cost\n";
+         << "admitted_cost,"
+         << "hopeless_count,hopeless_dormant_count\n";
 
     for(const auto& d : result.per_iteration)
     {
@@ -419,7 +437,9 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
              << d.reactivated_best << ","
              << std::fixed << std::setprecision(1) << d.block_ceiling << ","
              << std::fixed << std::setprecision(4) << d.block_scale << ","
-             << d.admitted_cost << "\n";
+             << d.admitted_cost << ","
+             << d.hopeless_count << ","
+             << d.hopeless_dormant_count << "\n";
     }
     file.close();
 }
@@ -922,6 +942,7 @@ RunResult benchmarkCountingStars(
     float bufferFloor,
     float exploreFrac,
     float costFrac,
+    int hopelessGuard,
     const std::string& label)
 {
     // Override the planner's defaults for this run. resetPlanner (called below) does not touch the
@@ -946,6 +967,9 @@ RunResult benchmarkCountingStars(
     planner.h_bufferFloor_ = bufferFloor;
     planner.h_exploreFrac_ = exploreFrac;
     planner.h_costFrac_    = costFrac;
+    // v3.5: the hopeless guard -- see h_hopelessGuard_ in CountingStars.cuh. Set alongside the
+    // other tunables, before resetPlanner(), for the same reason: resetPlanner() does not touch it.
+    planner.h_hopelessGuard_ = (hopelessGuard != 0);
 
     RunResult result;
     result.delta_label = label;
@@ -1045,6 +1069,8 @@ RunResult benchmarkCountingStars(
         d.reactivated_best     = (int)planner.h_reactivatedBest_;
         d.block_ceiling        = planner.h_blockCeiling_;
         d.block_scale          = planner.h_blockScale_;
+        d.hopeless_count         = (int)planner.h_hopelessCount_;
+        d.hopeless_dormant_count = (int)planner.h_hopelessDormantCount_;
         result.per_iteration.push_back(d);
 
         if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
@@ -1080,37 +1106,45 @@ void runCountingStarsBenchmark(
            environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
     printf("========================================\n");
 
-    const std::string label = countingStarsLabel(CS_BUFFER_SLOPE, CS_BUFFER_FLOOR, CS_EXPLORE_FRAC, CS_COST_FRAC);
-
     // B's RANGE over the run, not a single value: B(x=0) = floor, B(x=1) = slope + floor. Uses
     // CS_RAMP_FILL_ITERS, matching what planner.h_fillIters_ is actually set to below -- not
-    // MAX_ITER, which is not the ramp's real denominator (see CS_RAMP_FILL_ITERS above).
+    // MAX_ITER, which is not the ramp's real denominator (see CS_RAMP_FILL_ITERS above). Same at
+    // both hopelessGuard values -- the guard only ever REMOVES candidates/nodes from the doors, it
+    // never touches the ramp itself.
     int bStart = (int)floorf(CS_BUFFER_FLOOR * float(MAX_TREE_SIZE) / float(CS_RAMP_FILL_ITERS));
     int bEnd   = (int)floorf((CS_BUFFER_SLOPE + CS_BUFFER_FLOOR) * float(MAX_TREE_SIZE) / float(CS_RAMP_FILL_ITERS));
-    printf("  --- bufferSlope = %.2f, bufferFloor = %.2f (B: %d -> %d), explore_frac = %.3f, "
-           "cost_frac = %.3f, react_frac = %.3f (%s) ---\n",
-           CS_BUFFER_SLOPE, CS_BUFFER_FLOOR, bStart, bEnd,
-           CS_EXPLORE_FRAC, CS_COST_FRAC, 1.0f - CS_EXPLORE_FRAC - CS_COST_FRAC, label.c_str());
-    CountingStars planner;
-    for(int run = 0; run < numRuns; run++)
-    {
-        RunResult result = benchmarkCountingStars(planner, deltaLabel, environment_name, run,
-                                             h_initial, h_goal, d_obstacles,
-                                             numObstacles, maxIterations, maxTimeMs,
-                                             CS_BUFFER_SLOPE, CS_BUFFER_FLOOR, CS_EXPLORE_FRAC, CS_COST_FRAC, label);
-        printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-               run + 1, numRuns, result.total_time_seconds,
-               result.total_iterations, result.final_tree_size, result.first_solution_iteration,
-               result.first_solution_cost, result.final_best_cost);
-        writePerIterationCSV(result, outputDir);
-        if(g_dumpViz && run == 0)
-            dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
-                        planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
-                        vizTreePath(g_vizDir, environment_name, label));
-        all_results.push_back(result);
 
-        if(run < numRuns - 1)
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    // v3.5: TWO POINTS, not one -- hopelessGuard off/on at the SAME (slope, floor, ef, cf), mirroring
+    // runKinoPaxSTARTrueBenchmark()'s own ANCESTOR_PRUNE_VALUES loop. See CS_HOPELESS_GUARD_VALUES.
+    for(int hg : CS_HOPELESS_GUARD_VALUES)
+    {
+        const std::string label = countingStarsLabel(CS_BUFFER_SLOPE, CS_BUFFER_FLOOR, CS_EXPLORE_FRAC, CS_COST_FRAC, hg);
+        printf("  --- bufferSlope = %.2f, bufferFloor = %.2f (B: %d -> %d), explore_frac = %.3f, "
+               "cost_frac = %.3f, react_frac = %.3f, hopelessGuard = %d (%s) ---\n",
+               CS_BUFFER_SLOPE, CS_BUFFER_FLOOR, bStart, bEnd,
+               CS_EXPLORE_FRAC, CS_COST_FRAC, 1.0f - CS_EXPLORE_FRAC - CS_COST_FRAC, hg, label.c_str());
+        CountingStars planner;
+        for(int run = 0; run < numRuns; run++)
+        {
+            RunResult result = benchmarkCountingStars(planner, deltaLabel, environment_name, run,
+                                                 h_initial, h_goal, d_obstacles,
+                                                 numObstacles, maxIterations, maxTimeMs,
+                                                 CS_BUFFER_SLOPE, CS_BUFFER_FLOOR, CS_EXPLORE_FRAC, CS_COST_FRAC,
+                                                 hg, label);
+            printf("  hg=%d Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
+                   hg, run + 1, numRuns, result.total_time_seconds,
+                   result.total_iterations, result.final_tree_size, result.first_solution_iteration,
+                   result.first_solution_cost, result.final_best_cost);
+            writePerIterationCSV(result, outputDir);
+            if(g_dumpViz && run == 0)
+                dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
+                            planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
+                            vizTreePath(g_vizDir, environment_name, label));
+            all_results.push_back(result);
+
+            if(run < numRuns - 1)
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
     }
 }
 
@@ -1177,8 +1211,9 @@ int main(int argc, char* argv[])
         printf("KinoPaxSTARTrue: syclopCap = %.2f (no cap) x ancestorPrune {0, 1}, %d runs each = %d runs\n",
                1.0f, NUM_TRUE_RUNS, 2 * NUM_TRUE_RUNS);
         printf("CountingStars:  ONE FIXED POINT -- bufferSlope=%.2f, bufferFloor=%.2f, "
-               "explore_frac=%.2f, cost_frac=%.2f, %d runs\n",
-               CS_BUFFER_SLOPE, CS_BUFFER_FLOOR, CS_EXPLORE_FRAC, CS_COST_FRAC, NUM_CS_RUNS);
+               "explore_frac=%.2f, cost_frac=%.2f,\n"
+               "                x hopelessGuard {0, 1} (v3.5), %d runs each = %d runs\n",
+               CS_BUFFER_SLOPE, CS_BUFFER_FLOOR, CS_EXPLORE_FRAC, CS_COST_FRAC, NUM_CS_RUNS, 2 * NUM_CS_RUNS);
         printf("                B IS A RAMP, RECOMPUTED EVERY ITERATION:\n"
                "                  x = itr/fill_iters, B(x) = floor((slope*x + floor) * MAX_TREE_SIZE / fill_iters)\n"
                "                  B(x=0) = floor(bufferFloor * ...) = %d\n"
