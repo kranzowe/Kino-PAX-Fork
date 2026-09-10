@@ -1,37 +1,37 @@
 #!/bin/bash
 # =============================================================================
-# CountingStars v3.4 Sweep Runner -- tuning around permanently-budgeted OPTIMAL admission
+# CountingStars v3.4 Sweep Runner -- now a fixed-point BUG-ISOLATION harness, not a tuning sweep
 #
-# CountingStars v3.4, against KPAX and KinoPaxPlus. KPAXCap and KinoPaxSTARCleanCost are gone from
-# this sweep entirely: with the optimal-accept-budget question settled (see below), this tool's
-# job is tuning CountingStars' own remaining axes, not re-running comparisons against tuned STAR
-# variants on every pass. Both are still runnable on their own via kinopaxstar_cost_tuning_sweep.cu
-# / kinopaxstar_combo_tuning_sweep.cu. COMBO and TrueStar are, as before, deliberately NOT in this
-# sweep -- COMBO is the thing CountingStars replaced, and TrueStar answers a cap question this
-# planner does not ask.
+# THIS FILE NO LONGER SWEEPS COUNTINGSTARS' TUNING GRID. The bufferSlope x bufferFloor x
+# explore_frac x cost_frac grid that used to run here already found a good operating point --
+# (1.2, 0.3, 0.1, 0.8) -- and paper_benchmark.cu already runs CountingStars at exactly that point.
+# This tool's current job is different: paper_benchmark.cu hit a cudaErrorIllegalAddress / hang at
+# its own `tiny` delta in the `empty` environment. A confirmed buffer-overflow fix landed in
+# KPAX.cu's updateFrontier_kernel (and two matching sites in KinoPaxPlus.cu), but the hang
+# persisted afterward -- so the bug is not fully understood yet. This sweep reproduces
+# paper_benchmark.cu's own comparison -- KPAX, KinoPaxPlus, KinoPaxSTARTrue (both anc0/anc1),
+# CountingStars at its one fixed point -- at discretizations already confirmed NOT to hang or
+# crash (see DELTA_LABELS below), to help isolate which planner and which discretization the
+# still-open bug actually lives in. KinoPaxSTARTrue is the newest addition: KPAX, KinoPaxPlus and
+# CountingStars have all now run clean at all three deltas here, leaving KinoPaxSTARTrue as the
+# one paper_benchmark.cu series this harness had not yet tested.
 #
-# THE OPTIMAL-ACCEPT-BUDGET TOGGLE IS GONE. It ran as an on/off axis (h_optimalAcceptBudgeted_) in
-# the previous pass through this file: the OPTIMAL door (a candidate at distance 0 from its
-# region's minimum) used to be UNCAPPED, admitted unconditionally outside any budget. That sweep
-# confirmed folding it into the SAME cost_frac * B histogram/cutoff CHEAPEST already spends against
-# -- it always votes into bucket 0 and has to clear that cutoff/roll like anything else, "the
-# cheapest of the cheap" rather than free -- improves final cost / time-to-first-solution. It is
-# now the planner's ONLY behavior; there is no toggle, no h_optimalAcceptBudgeted_ field, and no
-# `_ob` label token left to sweep.
-#
-# THIS PASS TUNES THE FOUR REMAINING AXES around that permanent behavior:
 # Per (environment, cost metric), AT EACH OF THREE DISCRETIZATIONS (`large`/`fine` copied from
 # paper_benchmark.cu's own current coarse/fine deltas, plus this sweep's own pre-existing `tiny` --
 # see DELTA_LABELS below; ALL THREE run the full comparison, not KinoPaxPlus-only at any of them):
-#   CountingStars   bufferSlope {1.0, 1.5} x bufferFloor {0.3, 0.5}
-#                   explore_frac {0.1, 0.2}, cost_frac {0.4, 0.6, 0.8}
-#                   optimalAcceptBudgeted PERMANENTLY ON (not an axis any more)
-#                   = 24 points (FULL FACTORIAL) x 5 runs = 120 runs, per delta
 #   KPAX                                                    = 1 point  x 5 runs
 #   KinoPaxPlus                                             = 1 point  x 5 runs
+#   KinoPaxSTARTrue syclopCap 1.0 (no cap) x ancestorPrune {0, 1}
+#                                                            = 2 points x 5 runs
+#   CountingStars   bufferSlope 1.2, bufferFloor 0.3, explore_frac 0.1, cost_frac 0.8 (fixed)
+#                                                            = 1 point  x 5 runs
 #
 # ONE COST METRIC THIS PASS (effort/COST_MODE=1 only -- length is dropped), one environment
-# (zigzag), one full build per delta: 360 CountingStars runs total across the three deltas.
+# (zigzag), one full build per delta: 5 series x 5 runs x 3 deltas = 75 runs total.
+#
+# If tuning CountingStars' own grid resumes later, that grid (and the old 4-axis banner/label
+# machinery it used) is recoverable from git history -- see countingstars_sweep.cu's own header
+# comment near CS_BUFFER_SLOPE for the exact commit-era description.
 #
 # ============================================================================================
 # WHAT CHANGED FROM v2, AND WHY THIS SWEEP EXISTS
@@ -97,8 +97,9 @@
 #    that subgrid is a free, structural comparison against the old fixed-buffer design rather than
 #    a separate baseline that has to be swept again. (Not on this pass's grid -- see below.)
 #
-#    explore_frac AND cost_frac ARE BOTH SWEPT THIS PASS, now that the toggle axis is gone and there
-#    is room to actually tune both shares alongside bufferSlope/bufferFloor.
+#    explore_frac AND cost_frac were both swept in the pass that found this file's current fixed
+#    point (1.2, 0.3, 0.1, 0.8); this pass holds all four at that point (see CS_BUFFER_SLOPE etc.
+#    in countingstars_sweep.cu) rather than sweeping them again.
 #
 #    B IS A PURE HOST SCALAR (read only inside updateFrontier(), never by propagateFrontier() or
 #    any device kernel directly), so making it dynamic cost no device array, no new kernel, and no
@@ -149,9 +150,9 @@
 #   8. ord_cutoff over the run. Rising means regions are filling and freshness is getting scarce,
 #      which is expected. Pinned at 0 means explore_frac is doing nothing; pinned at 256 means the
 #      whole candidate pool is fresh enough and explore_frac is not binding either.
-#   9. First-solution time and cost, final cost. THE ACTUAL QUESTION THIS PASS ASKS: which
-#      (bufferSlope, bufferFloor, explore_frac, cost_frac) point wins on time-to-first-solution AND
-#      final cost, now that budgeting OPTIMAL is a settled, permanent part of the design.
+#   9. First-solution time and cost, final cost, and -- THE ACTUAL QUESTION THIS PASS ASKS -- whether
+#      any series at any delta reproduces paper_benchmark.cu's cudaErrorIllegalAddress / hang. A
+#      crash or a run that never reaches a final iteration count is the signal, not a cost number.
 #
 # ALL THREE DELTAS RUN THE FULL COMPARISON THIS PASS -- NOT --only-kinopaxplus at any of them,
 # unchanged from the pass that settled the toggle question. Tuning conclusions at one delta do not
@@ -404,7 +405,7 @@ CONFIGEOF
 
 echo ""
 echo "======================================================="
-echo "  CountingStars v3.4 Sweep -- optimal-accept budgeting toggle"
+echo "  CountingStars v3.4 Sweep -- BUG-ISOLATION harness (fixed point, not a tuning grid)"
 echo "  Model: 1 (6D Double Integrator)"
 echo "  Environments: ${ENV_NAMES[*]}  (separate output subfolders)"
 for i in "${!DELTA_LABELS[@]}"; do
@@ -417,66 +418,31 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  CountingStars:  bufferSlope {1.0,1.5} x bufferFloor {0.3,0.5}"
-echo "                  explore_frac {0.1,0.2}, cost_frac {0.4,0.6,0.8}"
-echo "                  optimalAcceptBudgeted PERMANENTLY ON -- not an axis any more"
-echo "                  = 24 points (full factorial) x ALL THREE deltas"
-echo "                  Filenames: _bs<round(100*slope)>_bf<round(100*floor)>_ef<..>_cf<..>,"
-echo "                  e.g. CountingStars_bs100_bf30_ef200_cf600."
-echo "                  Earlier CSVs (_rgon/_rgoff, _abon/_aboff, _obon/_oboff tokens) cannot collide"
-echo "                  with this shape, so they simply stop loading -- intended for three retired"
-echo "                  axes, not a loss."
-echo "                  B IS STILL A RAMP, RECOMPUTED EVERY ITERATION:"
-echo "                    x = itr/fill_iters, B(x) = floor((slope*x + floor) * MAX_TREE_SIZE/fill_iters)"
-echo "                  THREE DOORS PLUS A FLAT ADMISSION FLOOR, ALL BUDGETED. THE REGION-BEST"
-echo "                  GUARANTEE DOOR IS GONE PERMANENTLY -- folded into CHEAPEST's reactivation"
-echo "                  budget, no toggle left for it (see CS_DOORBIT_GUAR in CountingStars.cuh):"
-echo "                    FRESHEST   explore_frac * B, from the least-populated regions"
-echo "                    CHEAPEST   cost_frac * B, from the smallest cost distances -- OPTIMAL"
-echo "                               candidates (distance 0, i.e. cost <= minCostsR1[r]) compete here"
-echo "                               too, permanently (v3.4, see below), always at bucket 0. v3.3:"
-echo "                               also competes for FRESHEST rather than returning early."
-echo "                    ADMIT FLOOR (v3.3) every candidate at accept_floor = 1e-4, only when nothing"
-echo "                               else admitted it -- a completeness guarantee, not a reach tool"
-echo "                    REACT FLOOR every dormant node at react_floor = 1e-5, ON TOP of the budget"
-echo "                  OPTIMAL-ACCEPT BUDGETING IS PERMANENT (v3.4). It ran as an on/off toggle in"
-echo "                  the previous pass; that sweep confirmed folding OPTIMAL into the SAME"
-echo "                  cost-distance histogram/cutoff CHEAPEST already spends against -- it always"
-echo "                  lands in bucket 0 (csCostBucket(0.0f,...) == 0 for any distMax), so it has to"
-echo "                  clear that cutoff/boundary-roll like anything else -- improves final cost /"
-echo "                  time-to-first-solution. There is no unconditional admission left to compare"
-echo "                  against. Read optimal_count (measured at distance 0) against admitted_cost"
-echo "                  (actually admitted via CS_DOORBIT_OPTIMAL) -- their gap is how many optimal"
-echo "                  candidates the budget did not have room for at a given grid point."
-echo "                  REACTIVATION IS COST-SELECTIVE (v3.1, unchanged this pass): CleanCost weights"
-echo "                  its own reactivation arm by cost, and that was the one cost mechanism this"
-echo "                  line lacked -- the volumes already matched, so it was selectivity not"
-echo "                  throughput. Part B is the only thing that re-expands the tree INTERIOR, which"
-echo "                  is where cost refinement happens."
-echo "                  THE REACTIVATION FLOOR IS A CORRECTNESS CONSTANT, not a knob: a node's cost"
-echo "                  distance only ever grows (fixed cost over a non-increasing region min), so"
-echo "                  under a pure top-K a node above the cutoff is dead permanently and its"
-echo "                  subtree unreachable. 1e-5 wakes ~30 nodes/iter -- completeness in the limit."
-echo "                  THE ADMISSION FLOOR (v3.3) makes the same guarantee for CANDIDATES: every"
-echo "                  collision-free candidate keeps a nonzero admission chance whatever its"
-echo "                  region's state, at 1e-4 -- an order of magnitude above the reactivation"
-echo "                  floor, since its pool is per-iteration and far smaller than the whole tree."
-echo "                  CLEAR THE OUTPUT FOLDER FIRST IF A PREVIOUS PASS RAN -- the label shape"
-echo "                  changed again, so old and new CSVs would otherwise coexist under different"
-echo "                  names rather than colliding, which is fine but confusing to plot together."
-echo "                  FRESHEST, CHEAPEST AND (v3.3) OPTIMAL select over the SAME candidate pool on"
-echo "                  independent signals -- a candidate can clear more than one, and it is still"
-echo "                  ONE tree node: every door that admits it buys ONE propagation block"
-echo "                  (nodeBlocks = popcount(door) in Part A), not a duplicate node."
-echo "                  FAN-OUT IS DOOR-COUNT (v3.3), FULL STOP: nodeBlocks = popcount(door), no"
-echo "                  region-thinness signal and no swept boost size left -- the region-keyed rule"
-echo "                  KPAXCap and CleanCost used is gone from this planner (and both baselines are"
-echo "                  gone from this sweep -- see the file header)."
-echo "                  READ FIRST: goal_frontier_size vs iteration (does the realized ramp match"
-echo "                  the intended shape), then optimal_count against admitted_cost, then"
-echo "                  budget_used/goal_frontier_size as a CURVE against a MOVING target, then"
-echo "                  admitted_costdist against admitted_explore, then cost_cutoff_dist against"
-echo "                  dist_max."
+echo "  Series this pass, ALL AT ALL THREE DELTAS (5 runs each):"
+echo "    KPAX             baseline"
+echo "    KinoPaxPlus       "
+echo "    KinoPaxSTARTrue  syclopCap 1.0 (no cap) x ancestorPrune {0, 1} -- 2 points. Newest addition:"
+echo "                     testing whether THIS planner, not KPAX, is where paper_benchmark.cu's"
+echo "                     still-open cudaErrorIllegalAddress/hang lives."
+echo "    CountingStars    ONE FIXED POINT: bufferSlope=1.2, bufferFloor=0.3, explore_frac=0.1,"
+echo "                     cost_frac=0.8 (the point paper_benchmark.cu itself runs at)."
+echo "  = 5 series x 5 runs x 3 deltas = 75 runs total."
+echo "  Filenames: CountingStars_bs120_bf30_ef100_cf800, KinoPaxSTARTrue_cap100_anc0/anc1."
+echo "  Earlier CSVs from the retired tuning grid (_bs100_bf30_ef200_cf600 and similar) do not"
+echo "  collide with these names, so they simply stop loading if left in the output folder."
+echo "  B IS STILL A RAMP, RECOMPUTED EVERY ITERATION:"
+echo "    x = itr/fill_iters, B(x) = floor((slope*x + floor) * MAX_TREE_SIZE/fill_iters)"
+echo "  THREE DOORS PLUS A FLAT ADMISSION FLOOR, ALL BUDGETED (v3.4, permanent, not swept here):"
+echo "    FRESHEST   explore_frac * B, from the least-populated regions"
+echo "    CHEAPEST   cost_frac * B, from the smallest cost distances -- OPTIMAL candidates (distance"
+echo "               0, i.e. cost <= minCostsR1[r]) compete here too, permanently, always at bucket 0"
+echo "    ADMIT FLOOR every candidate at accept_floor = 1e-4, only when nothing else admitted it"
+echo "    REACT FLOOR every dormant node at react_floor = 1e-5, ON TOP of the budget"
+echo "  Read optimal_count (measured at distance 0) against admitted_cost (actually admitted) -- their"
+echo "  gap is how many optimal candidates the budget did not have room for."
+echo "  THE ACTUAL QUESTION THIS PASS ASKS: does any series at any delta reproduce"
+echo "  paper_benchmark.cu's crash/hang? A run that never reaches a final iteration count, or a"
+echo "  cudaErrorIllegalAddress, is the signal -- not a cost or timing number."
 echo "  Score floor:    COUNTINGSTARS HAS NO SCORE FLOOR AND USES NO EPSILON: it never reads"
 echo "                  vertexScores, h_scoreFloor_, h_nActive_ or regionCoverage in any decision."
 echo "  Baselines: KPAX, KinoPaxPlus -- BOTH AT ALL THREE DELTAS this pass, not KinoPaxPlus-only at"

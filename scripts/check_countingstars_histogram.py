@@ -76,6 +76,13 @@ def cu_array(text, name, path):
     return [float(x) for x in re.findall(r'-?\d+\.?\d*', mo.group(1))]
 
 
+def cu_scalar(text, name, path):
+    mo = re.search(r'static const float\s+%s\s*=\s*(-?\d+\.?\d*)f?' % name, text)
+    if not mo:
+        sys.exit('FATAL: %s not found in %s' % (name, path))
+    return float(mo.group(1))
+
+
 ORD_BUCKETS = int(cuh_const('CS_ORD_BUCKETS'))
 COST_BUCKETS = int(cuh_const('CS_COST_BUCKETS'))
 LOG_SCALE = cuh_const('CS_COST_LOG_SCALE', 'float')
@@ -325,26 +332,22 @@ for kind in ('uniform', 'exponential', 'onebucket'):
 # switches the uniform draw off, and two grid points that differ only in how far past 1 they went
 # would produce identical runs under different labels.
 #
-# v3.2: FILL_FRACS is gone -- B is now a per-iteration ramp over BUFFER_SLOPES/BUFFER_FLOORS, parsed
-# below purely for the grid summary line. Neither ever entered the oversubscription math (only
-# explore_frac + cost_frac do), so dropping the old outer loop over the fill/buffer axis changes
-# nothing about what this check verifies -- explore_frac/cost_frac are now single-element arrays
-# (fixed at 0.3 each), so this degenerates to one check, kept for robustness against a future
-# re-expansion of either axis.
-slopes = cu_array(sweep, 'BUFFER_SLOPES', SWEEP)
-floors = cu_array(sweep, 'BUFFER_FLOORS', SWEEP)
-efracs = cu_array(sweep, 'EXPLORE_FRACS', SWEEP)
-cfracs = cu_array(sweep, 'COST_FRACS', SWEEP)
+# CountingStars runs at ONE FIXED POINT now (bufferSlope/bufferFloor/explore_frac/cost_frac are all
+# scalars in the .cu, not arrays -- see countingstars_sweep.cu's header for why). Parsed here purely
+# for the grid summary line and the one oversubscription check; neither bufferSlope nor bufferFloor
+# ever entered the oversubscription math (only explore_frac + cost_frac do).
+slope = cu_scalar(sweep, 'CS_BUFFER_SLOPE', SWEEP)
+floor = cu_scalar(sweep, 'CS_BUFFER_FLOOR', SWEEP)
+efrac = cu_scalar(sweep, 'CS_EXPLORE_FRAC', SWEEP)
+cfrac = cu_scalar(sweep, 'CS_COST_FRAC', SWEEP)
 
-for ef in efracs:
-    for cf in cfracs:
-        cases += 1
-        react = 1.0 - ef - cf
-        if react < -1e-6:
-            problems.append('OVERSUBSCRIBED BUDGET (explore %g, cost %g): react_frac '
-                            '%g < 0, so the draw is silently switched off' % (ef, cf, react))
-        if ef + cf > 1.0 + 1e-6:
-            problems.append('SHARES SUM ABOVE 1 (explore %g + cost %g = %g)' % (ef, cf, ef + cf))
+cases += 1
+react = 1.0 - efrac - cfrac
+if react < -1e-6:
+    problems.append('OVERSUBSCRIBED BUDGET (explore %g, cost %g): react_frac '
+                    '%g < 0, so the draw is silently switched off' % (efrac, cfrac, react))
+if efrac + cfrac > 1.0 + 1e-6:
+    problems.append('SHARES SUM ABOVE 1 (explore %g + cost %g = %g)' % (efrac, cfrac, efrac + cfrac))
 
 
 # ================================================================= 6. the shared histogram buffer
@@ -410,7 +413,7 @@ print('histogram    : ord[%d,%d) opt[%d] cost[%d,%d) react[%d,%d) dormant[%d]  s
 print('reactFloor   : %g  (~%.0f nodes/iter at a 3e6-node tree)' % (REACT_FLOOR, REACT_FLOOR * 3e6))
 print('ordBuckets %d   costBuckets %d   logScale %g  (window %.1f octaves below distMax)'
       % (ORD_BUCKETS, COST_BUCKETS, LOG_SCALE, (COST_BUCKETS - 1) / LOG_SCALE))
-print('grid       : slope %s x floor %s x explore %s x cost %s' % (slopes, floors, efracs, cfracs))
+print('fixed point : slope %g  floor %g  explore %g  cost %g' % (slope, floor, efrac, cfrac))
 print('cases checked : %d' % cases)
 
 if problems:

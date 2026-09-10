@@ -1,33 +1,40 @@
-%% CountingStars v3.4 Sweep Visualization - tuning around permanently-budgeted OPTIMAL admission
+%% CountingStars v3.4 Sweep Visualization - BUG-ISOLATION harness (fixed point, not a tuning grid)
 % Reads per-iteration CSVs produced by examples/gpu/countingstars_sweep.cu
 % (run via scripts/run_countingstars_sweep.sh).
+%
+% THIS FILE NO LONGER PLOTS A COUNTINGSTARS TUNING GRID. The bufferSlope x bufferFloor x
+% explore_frac x cost_frac grid that used to be plotted here already found a good point --
+% (1.2, 0.3, 0.1, 0.8) -- and paper_benchmark.cu already runs CountingStars at exactly that point.
+% This script's current job is reproducing paper_benchmark.cu's own comparison, at discretizations
+% already confirmed not to hang/crash, to help isolate a still-open cudaErrorIllegalAddress/hang
+% bug paper_benchmark.cu hit at its own `tiny` delta (see countingstars_sweep.cu's header for the
+% fuller story). KinoPaxSTARTrue is the newest addition, testing whether IT -- not KPAX -- is
+% where that bug lives.
 %
 % Series are (planner, delta) pairs. ALL THREE deltas (`large`/`fine` copied from
 % paper_benchmark.cu's own current coarse/fine deltas, plus this sweep's own pre-existing `tiny`)
 % run the FULL comparison -- none is restricted to KinoPaxPlus alone (see deltaPlusOnly below and
 % DELTA_EXTRA_ARGS in run_countingstars_sweep.sh, all-false this pass):
 %
-%   CountingStars   bufferSlope {1.0,1.5} x bufferFloor {0.3,0.5},
-%                   explore_frac {0.1,0.2}, cost_frac {0.4,0.6,0.8}                     =  24
 %   KPAX, KinoPaxPlus                                                                   =   2
+%   KinoPaxSTARTrue  syclopCap 1.0 (no cap) x ancestorPrune {0, 1}                       =   2
+%   CountingStars    ONE FIXED POINT (bufferSlope 1.2, bufferFloor 0.3,
+%                    explore_frac 0.1, cost_frac 0.8)                                    =   1
 %                                                                                      -----
-%                                                                        per delta         26
+%                                                                        per delta          5
 %                                                                      x 3 deltas     x    3
 %                                                                                      -----
-%                                                                                            78
+%                                                                                           15
 %
-% KinoPaxSTARCleanCost, KPAXCap AND KinoPaxSTARTrue ARE ALL KEPT OUT OF THIS SWEEP -- see the
-% header of countingstars_sweep.cu. With the optimal-accept-budget question settled (see below),
-% this sweep's job is tuning CountingStars' own remaining axes against the two simplest baselines,
-% not re-running comparisons against tuned STAR variants on every pass. (KinoPaxSTARTrue is the
-% "naive OR-fusion" reference added to paper_benchmark.cu, not this sweep -- deliberately left out
-% here for now.)
+% KinoPaxSTARCleanCost AND KPAXCap ARE KEPT OUT OF THIS SWEEP -- see the header of
+% countingstars_sweep.cu; they are runnable on their own via kinopaxstar_cost_tuning_sweep.cu /
+% kinopaxstar_combo_tuning_sweep.cu.
 %
 % RUN ONCE PER COST METRIC TOO -- effort ONLY this pass (length dropped, see metrics below): the
 % series count above applies to this one build.
 %
-% CountingStars/KPAX/KinoPaxPlus ALL RUN AT ALL THREE DELTAS THIS PASS -- a tuning conclusion at
-% one delta is not assumed to hold at the others, so all three need the full grid measured, not
+% ALL FIVE SERIES RUN AT ALL THREE DELTAS THIS PASS -- a hang/crash found at one delta is not
+% assumed to reproduce at the others, so all three need the full comparison measured, not
 % KinoPaxPlus alone at the finer ones.
 %
 % THE OPTIMAL-ACCEPT-BUDGET TOGGLE IS GONE. It ran as an on/off axis (optimalAcceptBudgeted) in the
@@ -39,9 +46,9 @@
 % solution. It is now the planner's ONLY behavior; there is no toggle, no h_optimalAcceptBudgeted_
 % field, and no `_ob` label token left.
 %
-% THIS PASS TUNES THE FOUR REMAINING AXES around that permanent behavior: bufferSlope/bufferFloor
-% (the B ramp) and explore_frac/cost_frac (the two shares of B), all swept now that there is room
-% to actually tune them:
+% CountingStars runs at a fixed point on all four of these axes this pass (bufferSlope/bufferFloor,
+% the B ramp; explore_frac/cost_frac, the two shares of B) -- the sweep that tuned them is done;
+% see the file header above for why this file's job right now is bug isolation, not tuning:
 %
 %     x         = itr / fill_iters                             (fraction of the run elapsed)
 %     B_frac(x) = bufferSlope * x + bufferFloor
@@ -79,10 +86,10 @@
 %   7. ord_cutoff               rising = regions filling, freshness getting scarce. 0 = explore_frac
 %                               inert; 256 = saturated, so explore_frac is not binding either.
 %   8. block_scale              near 0 = the rep >= 1 floor ate the budget, fan-out is inert.
-%   9. First-solution time and cost, final cost   THE ACTUAL QUESTION THIS PASS ASKS: which
-%                               (bufferSlope, bufferFloor, explore_frac, cost_frac) point wins on
-%                               time-to-first-solution AND final cost, now that budgeting OPTIMAL
-%                               is a settled, permanent part of the design.
+%   9. First-solution time and cost, final cost, and -- THE ACTUAL QUESTION THIS PASS ASKS --
+%                               whether any series at any delta reproduces paper_benchmark.cu's
+%                               cudaErrorIllegalAddress / hang. A crash or a run that never reaches
+%                               a final iteration count is the signal, not a cost number.
 %
 % WHERE B BINDS. NOTHING ON THE CANDIDATE SIDE IS UNCAPPED ANY MORE (v3.4, permanent) -- the
 % region-best reactivation GUARANTEE that used to also be uncapped is gone permanently too, folded
@@ -103,12 +110,11 @@
 % vertexScores, h_scoreFloor_, h_nActive_ or regionCoverage in any decision -- so it writes NaN
 % there and simply does not draw on that panel.
 %
-% ENCODING THIS PASS: colour = bufferFloor x explore_frac combined (4 entries -- both are real
-% swept axes now that the toggle is gone, and marker is not available on the time-series figures;
-% see fillColors below); line style = bufferSlope (2 linestyles, one per swept value); scatter
-% marker (tradeoff figures only) = cost_frac (3 shapes); line width = delta. KPAX is near-black,
-% KinoPaxPlus blue -- both drawn thicker as reference anchors. Every legend here is CLICKABLE -
-% click an entry to hide/show that series.
+% ENCODING THIS PASS: colour + marker + style are assigned PER PLANNER now that CountingStars is a
+% single fixed point rather than a grid -- KPAX near-black/'s', KinoPaxPlus blue/'d' (both drawn
+% thicker as reference anchors), KinoPaxSTARTrue two shades of crimson/'p'(anc0)/'h'(anc1),
+% CountingStars amber/'o'. Line width = delta. Every legend here is CLICKABLE - click an entry to
+% hide/show that series.
 %
 % FAIR-COMPARISON NOTE: an "iteration" is a different unit of work per planner, so
 % cost-vs-TIME is the fair cross-planner axis. Error bands and error bars are
@@ -163,82 +169,26 @@ deltaWidths = [1.0, 1.8, 2.6];
 % cross_check_countingstars_grid.py asserts it.
 deltaPlusOnly = [false, false, false];
 
-% --single-point is not used by this sweep, so any delta that runs an arm runs its full axis.
-deltaSingleCap = [false, false, false];
-
 deltaLabel = '3 deltas overlaid';
 
-% CountingStars v3.4 grid - must match BUFFER_SLOPES / BUFFER_FLOORS / EXPLORE_FRACS / COST_FRACS in
-% countingstars_sweep.cu. Values are the label tokens exactly as they appear in the filenames:
-% bufferSlope/bufferFloor/explore_frac/cost_frac all as their own round(100x)/round(1000x) tokens.
-% cross_check_countingstars_grid.py asserts these stay in step with the .cu and the .sh; when they
-% drift, MATLAB reports "0 runs" for the orphaned series rather than erroring, which is the failure
-% mode that silently wastes a whole sweep.
-%
-% THE OPTIMAL-ACCEPT-BUDGET TOGGLE IS GONE (v3.4, permanent) -- there is no csOptimalAcceptBudgeted
-% array or `_ob` label token any more; OPTIMAL admission is unconditionally folded into CHEAPEST's
-% own cutoff now. See CS_DOORBIT_OPTIMAL in CountingStars.cuh.
-%
-% B IS A RAMP, RECOMPUTED EVERY ITERATION, and it is a CSV COLUMN. The planner computes
-%
-%     x = itr/fill_iters,   B(x) = floor((bufferSlope*x + bufferFloor) * MAX_TREE_SIZE / fill_iters)
-%
-% B travels in the data as goal_frontier_size, which VARIES ROW TO ROW within a run -- see the
-% "goal_frontier_size vs iteration" figure below.
-%
-% KinoPaxPlus divides the whole budget over a frontier its pruning keeps tiny
-% (bf = MAX_TREE_SIZE/(F*32), 40,000 propagations per node at F = 10), which is the number
-% prop_attempted/frontier_size is read against.
-%
-% csExploreFracs / csCostFracs ARE round(1000 x frac) TOKENS, not 100x -- see countingStarsLabel()
-% in the benchmark. Both are SWEPT this pass, now that the toggle axis is gone and there is room to
-% actually tune them alongside bufferSlope/bufferFloor.
-%
-% csBufferSlopes / csBufferFloors STAY AT 100x, matching v3's csFillFracs convention -- both are
-% coarse axes where `bs150`/`bf50` read directly as 1.5/0.5.
-%
-csBufferSlopes = [100 150];
-csBufferFloors = [30 50];
-csExploreFracs = [100 200];
-csCostFracs    = [400 600 800];
+% CountingStars ONE FIXED POINT -- must match CS_BUFFER_SLOPE / CS_BUFFER_FLOOR / CS_EXPLORE_FRAC /
+% CS_COST_FRAC in countingstars_sweep.cu (the same point paper_benchmark.cu itself runs at). Values
+% are the label tokens exactly as they appear in the filename: round(100x) for slope/floor,
+% round(1000x) for explore/cost -- see countingStarsLabel() in the benchmark.
+% cross_check_countingstars_grid.py asserts these stay in step with the .cu; when they drift,
+% MATLAB reports "0 runs" for the orphaned series rather than erroring.
+csBufferSlope = 120;   % bufferSlope 1.2
+csBufferFloor = 30;    % bufferFloor 0.3
+csExploreFrac = 100;   % explore_frac 0.1
+csCostFrac    = 800;   % cost_frac 0.8
 
-% The derived operating point that --single-point selects. EVERY component must be a member of its
-% list, because the flag selects BY VALUE -- a derived point outside the grid would run nothing.
-csDerivedBufferSlope = 100;        % bufferSlope 1.0 -> round(100 * 1.0); a member of csBufferSlopes
-csDerivedBufferFloor = 30;         % bufferFloor 0.3 -> round(100 * 0.3); a member of csBufferFloors
-csDerivedExploreFrac = 200;        % explore_frac 0.2 -> round(1000 * 0.2); a member of csExploreFracs
-csDerivedCostFrac    = 600;        % cost_frac 0.6 -> round(1000 * 0.6); a member of csCostFracs
-
-% FOUR CountingStars AXES NOW (slope x floor x explore_frac x cost_frac), THREE VISUAL CHANNELS --
-% plotMeanTime/plotMeanIter take only (color, style, width, name) -- no marker parameter, since
-% marker is read only by the two tradeoff-scatter figures (confirmed against their actual
-% signatures below). explore_frac and bufferFloor share the colour channel; bufferSlope gets style;
-% cost_frac gets marker (scatter only).
-%
-% colour = bufferFloor x explore_frac, ONE ROW PER (floor, explore) COMBINATION -- MUST STAY IN
-% SYNC WITH numel(csBufferFloors)*numel(csExploreFracs), since fillColors(idx, :) below is indexed
-% off (fi-1)*numel(csExploreFracs) + ei. One amber gradient, darkest at the smallest (floor,
-% explore) pair and lightest at the largest -- csBufferFloors is currently [30 50] and
-% csExploreFracs is [100 200], so four rows.
-%   rows: floor 0.3/ef 0.1, floor 0.3/ef 0.2, floor 0.5/ef 0.1, floor 0.5/ef 0.2
-fillColors   = [0.75 0.40 0.05;    % floor 0.3  ef 0.1  (darkest)
-                0.90 0.55 0.15;    % floor 0.3  ef 0.2
-                0.90 0.70 0.35;    % floor 0.5  ef 0.1
-                0.98 0.85 0.55];   % floor 0.5  ef 0.2  (lightest)
-% style = bufferSlope. ONE ENTRY PER csBufferSlopes ENTRY -- MUST STAY IN SYNC WITH IT, since
-% fracStyles{bi} below is indexed straight off numel(csBufferSlopes). csBufferSlopes is currently
-% [100 150] (bufferSlope 1.0, 1.5), so two styles.
-fracStyles   = {'-', '--'};   % bufferSlope = 1.0, 1.5 (in csBufferSlopes order)
-
-% marker (SCATTER FIGURES ONLY) = cost_frac. ONE ENTRY PER csCostFracs ENTRY, MUST STAY IN SYNC
-% WITH IT, since cfMarkers{ci} below is indexed straight off numel(csCostFracs). plannerDisplay
-% below carries the exact numeric value of every axis in the legend text regardless, so nothing is
-% ever ambiguous even where two series share a color+style+marker combination.
-%
-% CHOSEN TO AVOID THE BASELINES' MARKERS ('s' KPAX, 'd' KinoPaxPlus, defined further down) so a
-% CountingStars point is never marker-identical to a baseline point -- colour alone already
-% separates the families, but there is no reason to throw that redundancy away.
-cfMarkers = {'o', '^', 'v'};   % one per csCostFracs entry (0.4, 0.6, 0.8)
+% KinoPaxSTARTrue -- two fixed naive points, added to test whether THIS planner, not KPAX, is
+% where paper_benchmark.cu's illegal-memory-access/hang bug lives. Must match trueLabel() in
+% countingstars_sweep.cu: h_syclopCap_ pinned at 1.0 (no cap, a genuine no-op) at both points;
+% only h_ancestorPrune_ varies (0 = pure OR-fusion == stock KinoPaxSTARNoGoalBias, 1 = adds the
+% cost-guarded stale-best prune on top).
+trueCap                  = 100;    % syclopCap 1.0 -> round(100 * 1.0)
+trueAncestorPruneValues  = [0 1];
 
 % --- Build the series arrays: (planner, delta) pairs ---
 % plannerDeltaIdx carries each series' delta so loadRuns can build its own filename token; the
@@ -262,65 +212,21 @@ plannerDeltaIdx = [];   % index into `deltas`
 % to know a piece of the planner's arithmetic.
 plannerBufferFloor = [];
 
+% Fixed per-planner colours/markers/styles for the two new KinoPaxSTARTrue points and the
+% CountingStars point -- both crimson shades and the amber match paper_benchmark.cu's own
+% process_paper_benchmark_and_plot.m so the same planner reads the same way in either tool.
+trueColors  = [0.70 0.15 0.20;    % anc0 (naive, no prune)      -- lighter crimson
+               0.45 0.05 0.10];   % anc1 (naive, stale-best prune) -- darker crimson
+trueStyles  = {'-', '-.'};
+trueMarkers = {'p', 'h'};         % pentagram (anc0), hexagram (anc1)
+csColor     = [0.85 0.45 0.05];   % CountingStars, single fixed point -- amber
+
 for di = 1:numel(deltas)
     dWidth = deltaWidths(di);
     dTag   = deltaTitles{di};
-    dOne   = deltaSingleCap(di);   % this delta ran --single-point: only capDerived exists
     dPlus  = deltaPlusOnly(di);    % this delta ran --only-kinopaxplus: no other arm exists here
 
     if ~dPlus
-
-    % --- CountingStars: bufferSlope x bufferFloor x explore_frac x cost_frac, a full factorial. ---
-    assert(numel(csCostFracs) <= numel(cfMarkers), ...
-        sprintf(['cfMarkers has %d entries but csCostFracs needs %d -- add more marker shapes to ' ...
-                 'cfMarkers before growing that axis.'], numel(cfMarkers), numel(csCostFracs)));
-    assert(numel(csBufferFloors) * numel(csExploreFracs) <= size(fillColors, 1), ...
-        sprintf(['fillColors has %d rows but csBufferFloors x csExploreFracs needs %d -- ' ...
-                 'add more rows to fillColors before growing either axis.'], ...
-                size(fillColors, 1), numel(csBufferFloors) * numel(csExploreFracs)));
-    for bi = 1:numel(csBufferSlopes)
-        for fi = 1:numel(csBufferFloors)
-            for ei = 1:numel(csExploreFracs)
-                for ci = 1:numel(csCostFracs)
-                    sSlope = csBufferSlopes(bi);
-                    sFloor = csBufferFloors(fi);
-                    eFrac  = csExploreFracs(ei);
-                    cFrac  = csCostFracs(ci);
-                    colorIdx = (fi - 1) * numel(csExploreFracs) + ei;
-
-                    % Mirror countingStarsSkip(): --single-point is the only skip.
-                    if dOne && ~(sSlope == csDerivedBufferSlope && sFloor == csDerivedBufferFloor ...
-                                 && eFrac == csDerivedExploreFrac && cFrac == csDerivedCostFrac)
-                        continue;
-                    end
-
-                    plannerNames{end + 1}   = sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d', ...
-                                                      sSlope, sFloor, eFrac, cFrac); %#ok<SAGROW>
-                    % Every swept value is in the legend text -- with four axes varying, a
-                    % color+style combination alone can repeat, and the exact numbers make every
-                    % entry unique on their own regardless.
-                    plannerDisplay{end + 1} = sprintf('CS slope%g floor%g ef%g cf%g [%s]', ...
-                                                      sSlope / 100, sFloor / 100, ...
-                                                      eFrac / 1000, cFrac / 1000, dTag); %#ok<SAGROW>
-                    plannerColors(end + 1, :) = fillColors(colorIdx, :);   %#ok<SAGROW>
-                    plannerStyles{end + 1}    = fracStyles{bi};            %#ok<SAGROW>
-                    plannerMarkers{end + 1}   = cfMarkers{ci};             %#ok<SAGROW>
-                    % The SMALLEST bufferSlope in the grid is drawn thicker at every bufferFloor,
-                    % as the closest-to-flat reference every steeper-ramped series is read
-                    % against. min() reads whatever csBufferSlopes currently is, so this stays
-                    % correct across future revisions.
-                    if sSlope == min(csBufferSlopes)
-                        plannerWidths(end + 1) = dWidth + 0.8;         %#ok<SAGROW>
-                    else
-                        plannerWidths(end + 1) = dWidth;               %#ok<SAGROW>
-                    end
-                    plannerBaseline(end + 1) = false;                  %#ok<SAGROW>
-                    plannerDeltaIdx(end + 1) = di;                     %#ok<SAGROW>
-                    plannerBufferFloor(end + 1) = sFloor;              %#ok<SAGROW>
-                end
-            end
-        end
-    end
 
     % --- KPAX baseline. Gated with the rest: a --only-kinopaxplus delta does not run it. ---
     plannerNames    = [plannerNames,   {'KPAX'}];                                         %#ok<AGROW>
@@ -332,6 +238,34 @@ for di = 1:numel(deltas)
     plannerBaseline = [plannerBaseline, true];                                            %#ok<AGROW>
     plannerDeltaIdx = [plannerDeltaIdx, di];                                              %#ok<AGROW>
     plannerBufferFloor = [plannerBufferFloor, NaN];                                             %#ok<AGROW>
+
+    % --- KinoPaxSTARTrue: two fixed naive points (anc0, anc1). Added to test whether this
+    % planner -- not KPAX -- is where paper_benchmark.cu's illegal-memory-access/hang bug lives. ---
+    for ai = 1:numel(trueAncestorPruneValues)
+        anc = trueAncestorPruneValues(ai);
+        plannerNames{end + 1}   = sprintf('KinoPaxSTARTrue_cap%d_anc%d', trueCap, anc); %#ok<SAGROW>
+        plannerDisplay{end + 1} = sprintf('KinoPaxSTARTrue anc%d [%s]', anc, dTag);       %#ok<SAGROW>
+        plannerColors(end + 1, :) = trueColors(ai, :);                                    %#ok<SAGROW>
+        plannerStyles{end + 1}    = trueStyles{ai};                                       %#ok<SAGROW>
+        plannerMarkers{end + 1}   = trueMarkers{ai};                                      %#ok<SAGROW>
+        plannerWidths(end + 1)    = dWidth;                                               %#ok<SAGROW>
+        plannerBaseline(end + 1)  = false;                                                %#ok<SAGROW>
+        plannerDeltaIdx(end + 1)  = di;                                                   %#ok<SAGROW>
+        plannerBufferFloor(end + 1) = NaN;                                                %#ok<SAGROW>
+    end
+
+    % --- CountingStars: ONE FIXED POINT (matches CS_BUFFER_SLOPE/... in countingstars_sweep.cu,
+    % the same point paper_benchmark.cu itself runs at). ---
+    plannerNames{end + 1}   = sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d', ...
+                                      csBufferSlope, csBufferFloor, csExploreFrac, csCostFrac); %#ok<SAGROW>
+    plannerDisplay{end + 1} = sprintf('CountingStars [%s]', dTag); %#ok<SAGROW>
+    plannerColors(end + 1, :) = csColor;   %#ok<SAGROW>
+    plannerStyles{end + 1}    = ':';       %#ok<SAGROW>
+    plannerMarkers{end + 1}   = 'o';       %#ok<SAGROW>
+    plannerWidths(end + 1)    = dWidth + 0.8;   %#ok<SAGROW>
+    plannerBaseline(end + 1)  = false;          %#ok<SAGROW>
+    plannerDeltaIdx(end + 1)  = di;              %#ok<SAGROW>
+    plannerBufferFloor(end + 1) = csBufferFloor; %#ok<SAGROW>
 
     end   % ~dPlus
 
@@ -440,12 +374,9 @@ for ei = 1:numel(environments)
         % check that the realized B(itr) actually matches the intended slope*x + bufferFloor before
         % reading any panel that divides by it.
         %
-        % Every series here should rise roughly linearly from its bufferFloor's starting value
-        % toward (bufferSlope + bufferFloor) * MAX_TREE_SIZE / fill_iters at the last iteration --
-        % the smallest-bufferSlope series (solid style, drawn thicker) rises the least steeply, the
-        % closest-to-flat reference the steeper-ramped series are read against. There is no literal
-        % bufferSlope = 0 on this grid (csBufferSlopes starts at 0.5), so no series is expected to
-        % be perfectly flat.
+        % One CountingStars series per delta now (fixed point, not a grid): each should rise
+        % roughly linearly from bufferFloor's starting value toward (bufferSlope + bufferFloor) *
+        % MAX_TREE_SIZE / fill_iters at the last iteration.
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Budget Ramp (%s)', envTitle, costTitle), ...
                'Position', [100 100 900 560]);
@@ -457,7 +388,7 @@ for ei = 1:numel(environments)
         end
         grid on;
         xlabel('Iteration'); ylabel('goal\_frontier\_size (B)');
-        title({'The realized budget ramp', 'rising = the ramp in effect; the thickest (smallest bufferSlope) series rises the least steeply'});
+        title({'The realized budget ramp', 'rising = the ramp in effect, tracking slope*x + floor'});
         clickableLegend();
 
         %% ---------- FIGURE: IS THE BUDGET MET ----------
@@ -898,7 +829,7 @@ for ei = 1:numel(environments)
         subplot(2, 3, 5);
         plannerBar(mTotalTime, plannerDisplay, plannerColors, 'Time (s)', 'Total Execution Time');
 
-        sgtitle(sprintf('Cost-Prune Tuning Grid at %s \x2014 %s, %s (run means)', ...
+        sgtitle(sprintf('Bug-Isolation Comparison at %s \x2014 %s, %s (run means)', ...
                 deltaLabel, envTitle, costTitle), 'FontSize', 12, 'FontWeight', 'bold');
 
         %% ---------- FIGURE: Solution Success Rate ----------
@@ -934,17 +865,17 @@ for ei = 1:numel(environments)
         end
 
         % The marker legend, written once and used by both titles so they cannot drift apart.
-        % marker = cost_frac for CountingStars (\x25cb = 0.4, \x25b3 = 0.6, \x25bd = 0.8, in
-        % cfMarkers order). Color (bufferFloor x explore_frac) is the OTHER pair of swept
-        % CountingStars axes this key does not cover; plannerDisplay's legend text always carries
-        % every axis's exact numeric value regardless, so nothing is ever ambiguous.
+        % marker is assigned per planner now that CountingStars is a single fixed point:
+        % \x25a1 KPAX, \x25c7 KinoPaxPlus, \x2606 KinoPaxSTARTrue anc0, \x2605 KinoPaxSTARTrue anc1
+        % (hollow vs. filled star, matching the pentagram/hexagram marker shapes), \x25cb
+        % CountingStars. plannerDisplay's legend text always carries the exact series identity
+        % regardless, so nothing is ever ambiguous.
         % sprintf, NOT a bare concatenation: the \x.... marker glyphs and the \\_ TeX underscore
         % escapes are only resolved by a formatting call, and this string is substituted into the
         % titles below via %s -- which inserts it verbatim rather than re-interpreting it. Built as
         % a plain [...] it would print the escape sequences literally.
-        markerKey = sprintf(['lower-left is better (fast and cheap); \x25cb cost\\_frac 0.4, ' ...
-                             '\x25b3 cost\\_frac 0.6, \x25bd cost\\_frac 0.8; ' ...
-                             '\x25a1 KPAX, \x25c7 KinoPaxPlus']);
+        markerKey = sprintf(['lower-left is better (fast and cheap); \x25a1 KPAX, \x25c7 KinoPaxPlus, ' ...
+                             '\x2606 True(anc0), \x2605 True(anc1), \x25cb CountingStars']);
 
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Tradeoff Scatter, Final Cost (%s)', envTitle, costTitle), ...
@@ -992,13 +923,15 @@ function runs = loadRuns(dataDir, env, planner, delta, numRuns)
             case 'KPAX'
                 fn = sprintf('%s_KPAX_delta%s_run%d.csv', env, delta, ri);
             otherwise
-                % CountingStars uses its planner label directly as the filename token, e.g.
-                % CountingStars_bs100_bf30_ef200_cf600. KinoPaxSTARCleanCost and KPAXCap are gone
-                % from this sweep (see the file header), so CountingStars is the only prefix left.
+                % CountingStars and KinoPaxSTARTrue both use their planner label directly as the
+                % filename token, e.g. CountingStars_bs120_bf30_ef100_cf800 or
+                % KinoPaxSTARTrue_cap100_anc0 -- mirrors writePerIterationCSV()'s own dispatch in
+                % countingstars_sweep.cu (rfind("CountingStars",0)==0 || rfind("KinoPaxSTAR",0)==0).
+                % KinoPaxSTARCleanCost and KPAXCap are gone from this sweep (see the file header).
                 % The list is a WHITELIST on purpose -- an unrecognised label is a typo or a grid
                 % that drifted, and erroring here is far better than silently loading nothing and
                 % reporting "0 runs" for a series that was actually written.
-                if startsWith(planner, 'CountingStars')
+                if startsWith(planner, 'CountingStars') || startsWith(planner, 'KinoPaxSTAR')
                     fn = sprintf('%s_%s_delta%s_run%d.csv', env, planner, delta, ri);
                 else
                     error('unknown planner %s', planner);

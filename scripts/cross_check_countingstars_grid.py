@@ -10,29 +10,21 @@ reports "0 runs" for the orphaned series, so the plot comes out looking merely s
 mode has cost whole sweeps. Everything below is PARSED from the three real files; nothing is
 restated by hand, because a hand-restated grid is just a fourth thing to drift.
 
-This sweep has a second drift axis the COMBO one did not: the two finer deltas run
---only-kinopaxplus, so at those deltas the CountingStars / KPAX series do not exist at all. The .sh
-says so with DELTA_EXTRA_ARGS, the .m says so with deltaPlusOnly, and they have to agree or the plot
-expects series the sweep never wrote.
+This sweep has a second drift axis: the two finer deltas COULD run --only-kinopaxplus (the .sh
+supports it via DELTA_EXTRA_ARGS), so at those deltas the CountingStars / KPAX / KinoPaxSTARTrue
+series would not exist at all. The .sh says so with DELTA_EXTRA_ARGS, the .m says so with
+deltaPlusOnly, and they have to agree or the plot expects series the sweep never wrote. (This pass
+runs all deltas with an empty flag string, so plus_only is False everywhere today -- but the
+mechanism is still checked.)
 
-v3 ADDED A CHECK THAT COULD NOT EXIST IN v2. The budget splits by fixed fractions rather than one
-share plus a remainder, so explore_frac + cost_frac can be oversubscribed -- and the planner floors
-react_frac at 0 rather than failing, which makes it silent. Asserted below.
-
-v3.2 CHANGES WHAT "B" MEANS, AND THE OLD "B < 1 IS BAD" ASSERTION WITH IT. B used to be a single
-fill_frac, required strictly > 0 because 0 meant a permanently empty budget-driven frontier. B is
-now a per-iteration RAMP -- B_frac(x) = bufferSlope*x + bufferFloor. So "does B round to 0" is no
-longer inherently a bug; what still matters is that neither axis goes NEGATIVE, which the code's
-floor-at-1 clamp would silently mask into a positive B that looks fine. That is asserted below in
-place of the old strict-positivity check.
-
-v3.4's OPTIMAL-ACCEPT-BUDGET TOGGLE IS GONE. It ran as a fifth grid axis (OPTIMAL_ACCEPT_BUDGETED,
-a bool) in the previous pass through this script, with its own bool-aware parsers
-(cu_bool_array/cu_bool_scalar/m_bool_scalar) and an `_ob` label token. That sweep confirmed folding
-OPTIMAL admission into cost_frac * B's own budget helps, so it is now the planner's ONLY behavior --
-there is no toggle, no axis, and no `_ob` token left to parse. This script is back to four grid axes
-and the plain tok()/ftok() parsers. KinoPaxSTARCleanCost and KPAXCap are ALSO GONE from this sweep
-(removed, not merely fixed at one point) -- see the .cu file's own header for why.
+THIS FILE IS NO LONGER A GRID CROSS-CHECK. CountingStars used to sweep bufferSlope x bufferFloor x
+explore_frac x cost_frac; that sweep found a good point -- (1.2, 0.3, 0.1, 0.8) -- and
+countingstars_sweep.cu now runs CountingStars at exactly that ONE fixed point (CS_BUFFER_SLOPE /
+CS_BUFFER_FLOOR / CS_EXPLORE_FRAC / CS_COST_FRAC, all scalars, not arrays any more). This script's
+job is now: (1) confirm the .cu's fixed point and the .m's copy of it (csBufferSlope etc.) agree,
+(2) confirm the two KinoPaxSTARTrue points (ANCESTOR_PRUNE_VALUES/SYCLOP_CAP in the .cu,
+trueAncestorPruneValues/trueCap in the .m) agree, and (3) run the same end-to-end filename check as
+before (assertion 3), which is label-agnostic and needs no changes to cover the new series.
 
 Run from anywhere:  python scripts/cross_check_countingstars_grid.py
 Exit 0 = GRIDS MATCH, 1 = GRIDS DIVERGE.
@@ -58,7 +50,7 @@ cu, sh, m = read(CU), read(SH), read(M)
 
 # ---------------------------------------------------------------- parsers
 def cu_array(name, ctype='float'):
-    mo = re.search(r'static const %s %s\[\]\s*=\s*\{([^}]*)\}' % (ctype, name), cu)
+    mo = re.search(r'static const %s\s+%s\[\]\s*=\s*\{([^}]*)\}' % (ctype, name), cu)
     if not mo:
         sys.exit('FATAL: %s[] not found in %s' % (name, CU))
     return [float(x) for x in re.findall(r'-?\d+\.?\d*', mo.group(1))]
@@ -131,25 +123,25 @@ def ftok(x):
     """The SHARE axes' token: round(1000 x float), letters `ef` and `cf`.
 
     1000x because a grid once reached 0.001, which rounds to the token 0 at 100x -- unreadable, and
-    indistinguishable from a genuine share of 0. It is kept so a stale CSV from a 100x grid cannot
-    be silently loaded as the wrong series.
-
-    bufferSlope/bufferFloor use tok() (100x) instead, matching v3's fill_frac convention: both are
-    coarse axes (slope up to 1.6, floor up to 0.1 currently) and `bs140`/`bf10` read directly as
-    1.4/0.1 where `bs1400`/`bf100` would not.
+    indistinguishable from a genuine share of 0. bufferSlope/bufferFloor use tok() (100x) instead,
+    matching v3's fill_frac convention: both are coarse axes and `bs120`/`bf30` read directly as
+    1.2/0.3 where `bs1200`/`bf300` would not.
     """
     return int(round(1000.0 * x))
 
 
 # ---------------------------------------------------------------- the C++ side
-cu_slope  = cu_array('BUFFER_SLOPES')
-cu_floor  = cu_array('BUFFER_FLOORS')
-cu_efrac  = cu_array('EXPLORE_FRACS')
-cu_cfrac  = cu_array('COST_FRACS')
-cu_dslope = cu_scalar('CS_DERIVED_BUFFER_SLOPE')
-cu_dfloor = cu_scalar('CS_DERIVED_BUFFER_FLOOR')
-cu_def = cu_scalar('CS_DERIVED_EXPLORE_FRAC')
-cu_dcf = cu_scalar('CS_DERIVED_COST_FRAC')
+# CountingStars: ONE FIXED POINT now, not a grid -- see the module docstring.
+cu_slope = cu_scalar('CS_BUFFER_SLOPE')
+cu_floor = cu_scalar('CS_BUFFER_FLOOR')
+cu_efrac = cu_scalar('CS_EXPLORE_FRAC')
+cu_cfrac = cu_scalar('CS_COST_FRAC')
+
+# KinoPaxSTARTrue: two fixed points (syclopCap pinned, ancestorPrune varies). Both constants live
+# inside runKinoPaxSTARTrueBenchmark() in the .cu, but cu_array/cu_scalar search the whole file's
+# text, not a scoped function body, so this finds them regardless of nesting.
+cu_true_cap = cu_scalar('SYCLOP_CAP')
+cu_true_anc = [int(v) for v in cu_array('ANCESTOR_PRUNE_VALUES', ctype='int')]
 
 sh_deltas = sh_array('DELTA_LABELS')
 sh_extra = sh_array('DELTA_EXTRA_ARGS')
@@ -162,49 +154,28 @@ sh_metrics = sh_array('COST_LABELS')
 
 problems = []
 
-# --- Assertion 1: every derived point must be a member of its own list. --single-point selects BY
-# VALUE, so a derived point outside the grid means that pass runs nothing at all.
-for val, lst, a, b in ((cu_dslope, cu_slope, 'CS_DERIVED_BUFFER_SLOPE', 'BUFFER_SLOPES'),
-                       (cu_dfloor, cu_floor, 'CS_DERIVED_BUFFER_FLOOR', 'BUFFER_FLOORS'),
-                       (cu_def, cu_efrac, 'CS_DERIVED_EXPLORE_FRAC', 'EXPLORE_FRACS'),
-                       (cu_dcf, cu_cfrac, 'CS_DERIVED_COST_FRAC', 'COST_FRACS')):
-    if not any(abs(v - val) < 1e-6 for v in lst):
-        problems.append('%s (%g) is not in %s %s' % (a, val, b, lst))
-
-# --- Assertion 2: the axes must stay in their meaningful ranges.
+# --- Assertion 1: the fixed point's axes must stay in their meaningful ranges.
 #
-# v3.2: BUFFER_SLOPES / BUFFER_FLOORS replace the old fill_frac, which was required strictly > 0
-# because 0 meant a permanently empty budget-driven frontier. That no longer holds -- 0 is not on
-# the current grid for either axis, but B_frac can legitimately exceed 1 (slope + floor up to 2.0
-# on this grid) and the invariant that actually matters is just non-negativity: a negative slope or
-# floor would let B go negative, which the code's floor-at-1 clamp would silently turn into a
-# positive B that looks fine. explore_frac and cost_frac are SHARES OF B, so each must still be in
-# [0, 1] on its own.
-for name, vals in (('BUFFER_SLOPES', cu_slope), ('BUFFER_FLOORS', cu_floor)):
-    if any(v < 0.0 for v in vals):
-        problems.append('%s %s has a negative entry -- B_frac = slope*x + floor could go negative, '
-                        'and the planner\'s floor-at-1 clamp would silently mask it' % (name, vals))
-for name, vals in (('EXPLORE_FRACS', cu_efrac), ('COST_FRACS', cu_cfrac)):
-    if any(v < 0.0 or v > 1.0 for v in vals):
-        problems.append('%s %s has an entry outside [0, 1] -- it is a share of B, not a count'
-                        % (name, vals))
+# B_frac = slope*x + floor must stay non-negative (a negative slope or floor would let B go
+# negative, which the code's floor-at-1 clamp would silently turn into a positive B that looks
+# fine); explore_frac and cost_frac are SHARES OF B, so each must be in [0, 1] on its own.
+if cu_slope < 0.0 or cu_floor < 0.0:
+    problems.append('CS_BUFFER_SLOPE=%g / CS_BUFFER_FLOOR=%g has a negative entry -- B_frac = '
+                    'slope*x + floor could go negative, and the planner\'s floor-at-1 clamp would '
+                    'silently mask it' % (cu_slope, cu_floor))
+if not (0.0 <= cu_efrac <= 1.0) or not (0.0 <= cu_cfrac <= 1.0):
+    problems.append('CS_EXPLORE_FRAC=%g / CS_COST_FRAC=%g has an entry outside [0, 1] -- each is a '
+                    'share of B, not a count' % (cu_efrac, cu_cfrac))
 
-# --- Assertion 2b: react_frac = 1 - explore_frac - cost_frac MUST STAY NON-NEGATIVE at every point
-# on the grid. The planner floors it at 0, so an oversubscribed pair does not crash -- it silently
-# switches the uniform DRAW off, and two grid points that differ only in how far past 1 they went
-# would produce identical runs under different labels. Independent of the buffer axes, which never
-# entered this arithmetic even under v3.
-for ef in cu_efrac:
-    for cf in cu_cfrac:
-        if ef + cf > 1.0 + 1e-6:
-            problems.append('OVERSUBSCRIBED BUDGET at (explore %g, cost %g): '
-                            'explore + cost = %g > 1, so react_frac would be negative and the '
-                            'draw silently switches off' % (ef, cf, ef + cf))
+# --- Assertion 2: react_frac = 1 - explore_frac - cost_frac MUST STAY NON-NEGATIVE. The planner
+# floors it at 0, so an oversubscribed pair does not crash -- it silently switches the uniform DRAW
+# off.
+if cu_efrac + cu_cfrac > 1.0 + 1e-6:
+    problems.append('OVERSUBSCRIBED BUDGET: explore_frac + cost_frac = %g > 1, so react_frac would '
+                    'be negative and the draw silently switches off' % (cu_efrac + cu_cfrac))
 
-# --- Assertion 2c: informational only, not a "problems" check -- see the module docstring for why
-# the old strict "B < 1 is bad" framing no longer applies (bufferFloor = 0 is now intentional). Logs
-# the ramp's minimum (at x = 0, i.e. bufferFloor alone -- the true infimum since slope >= 0 on every
-# swept combination) so a reader can see it without re-deriving it.
+# --- Assertion 2b: informational only, not a "problems" check -- logs the ramp's minimum (at
+# x = 0, i.e. bufferFloor alone) so a reader can see it without re-deriving it.
 #
 # THE DENOMINATOR IS CS_RAMP_FILL_ITERS, NOT MAX_ITER. benchmarkCountingStars() sets
 # planner.h_fillIters_ = CS_RAMP_FILL_ITERS explicitly before every run (it no longer relies on
@@ -214,8 +185,8 @@ for ef in cu_efrac:
 # the benchmark never actually runs.
 cfg_tree = sh_config_int('MAX_TREE_SIZE')
 cfg_fill_iters = int(cu_scalar('CS_RAMP_FILL_ITERS', ctype='int'))
-ramp_min_info = ['floor(%g * %d / %d) = %d' % (fl, cfg_tree, cfg_fill_iters, int(fl * cfg_tree / cfg_fill_iters))
-                 for fl in cu_floor]
+ramp_min_info = 'floor(%g * %d / %d) = %d' % (
+    cu_floor, cfg_tree, cfg_fill_iters, int(cu_floor * cfg_tree / cfg_fill_iters))
 
 
 def cs_label(slope, floor, efrac, cfrac):
@@ -223,52 +194,57 @@ def cs_label(slope, floor, efrac, cfrac):
     return 'CountingStars_bs%d_bf%d_ef%d_cf%d' % (tok(slope), tok(floor), ftok(efrac), ftok(cfrac))
 
 
+def true_label(cap, anc):
+    """Mirrors trueLabel() in the benchmark."""
+    return 'KinoPaxSTARTrue_cap%d_anc%d' % (tok(cap), anc)
+
+
 cu_pairs = set()
 for d, plus_only in zip(sh_deltas, sh_plus_only):
     if not plus_only:
-        # FULL FACTORIAL: --single-point is the only skip, so there is no cs_skip() to mirror.
-        for slope in cu_slope:
-            for floor in cu_floor:
-                for efrac in cu_efrac:
-                    for cfrac in cu_cfrac:
-                        cu_pairs.add((cs_label(slope, floor, efrac, cfrac), d))
+        cu_pairs.add((cs_label(cu_slope, cu_floor, cu_efrac, cu_cfrac), d))
         cu_pairs.add(('KPAX', d))
+        for anc in cu_true_anc:
+            cu_pairs.add((true_label(cu_true_cap, anc), d))
     cu_pairs.add(('KinoPaxPlus', d))
 
 # ---------------------------------------------------------------- the MATLAB side
-m_slope   = m_ints('csBufferSlopes')
-m_floor   = m_ints('csBufferFloors')
-m_efrac   = m_ints('csExploreFracs')
-m_cfrac   = m_ints('csCostFracs')
-m_deltas  = m_cellstr('deltas')
+m_slope = m_scalar_int('csBufferSlope')
+m_floor = m_scalar_int('csBufferFloor')
+m_efrac = m_scalar_int('csExploreFrac')
+m_cfrac = m_scalar_int('csCostFrac')
+m_true_cap = m_scalar_int('trueCap')
+m_true_anc = m_ints('trueAncestorPruneValues')
+m_deltas = m_cellstr('deltas')
 m_plus_only = m_bools('deltaPlusOnly')
-m_dslope = m_scalar_int('csDerivedBufferSlope')
-m_dfloor = m_scalar_int('csDerivedBufferFloor')
-m_def = m_scalar_int('csDerivedExploreFrac')
-m_dcf = m_scalar_int('csDerivedCostFrac')
 
 m_pairs = set()
 for d, plus_only in zip(m_deltas, m_plus_only):
     if not plus_only:
-        for slope in m_slope:
-            for floor in m_floor:
-                for efrac in m_efrac:
-                    for cfrac in m_cfrac:
-                        m_pairs.add(('CountingStars_bs%d_bf%d_ef%d_cf%d'
-                                     % (slope, floor, efrac, cfrac), d))
+        m_pairs.add(('CountingStars_bs%d_bf%d_ef%d_cf%d' % (m_slope, m_floor, m_efrac, m_cfrac), d))
         m_pairs.add(('KPAX', d))
+        for anc in m_true_anc:
+            m_pairs.add(('KinoPaxSTARTrue_cap%d_anc%d' % (m_true_cap, anc), d))
     m_pairs.add(('KinoPaxPlus', d))
 
 # ---------------------------------------------------------------- diff
 only_cu = sorted(cu_pairs - m_pairs)
 only_m = sorted(m_pairs - cu_pairs)
 
-if (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf)) \
-        != (m_dslope, m_dfloor, m_def, m_dcf):
-    problems.append('DERIVED POINT DRIFT: .cu (bs%d, bf%d, ef%d, cf%d) != '
+# --- Assertion 3: the fixed points themselves must agree between .cu and .m, not just their
+# resulting label sets (which the diff above already checks) -- this pins down WHICH axis drifted
+# when it does.
+if (tok(cu_slope), tok(cu_floor), ftok(cu_efrac), ftok(cu_cfrac)) != (m_slope, m_floor, m_efrac, m_cfrac):
+    problems.append('COUNTINGSTARS FIXED POINT DRIFT: .cu (bs%d, bf%d, ef%d, cf%d) != '
                     '.m (bs%d, bf%d, ef%d, cf%d)'
-                    % (tok(cu_dslope), tok(cu_dfloor), ftok(cu_def), ftok(cu_dcf),
-                       m_dslope, m_dfloor, m_def, m_dcf))
+                    % (tok(cu_slope), tok(cu_floor), ftok(cu_efrac), ftok(cu_cfrac),
+                       m_slope, m_floor, m_efrac, m_cfrac))
+if tok(cu_true_cap) != m_true_cap:
+    problems.append('KINOPAXSTARTRUE CAP DRIFT: .cu SYCLOP_CAP -> cap%d != .m trueCap=%d'
+                    % (tok(cu_true_cap), m_true_cap))
+if sorted(cu_true_anc) != sorted(m_true_anc):
+    problems.append('KINOPAXSTARTRUE ANCESTOR_PRUNE DRIFT: .cu ANCESTOR_PRUNE_VALUES %s != '
+                    '.m trueAncestorPruneValues %s' % (cu_true_anc, m_true_anc))
 
 if sh_deltas != m_deltas:
     problems.append('DELTA_LABELS %s (%s) != deltas %s (%s)' % (sh_deltas, SH, m_deltas, M))
@@ -276,7 +252,7 @@ if sh_plus_only != m_plus_only:
     problems.append('--only-kinopaxplus flags %s (%s) != deltaPlusOnly %s (%s)'
                     % (sh_plus_only, SH, m_plus_only, M))
 
-# --- Assertion 3: THE FILENAMES MUST MATCH END TO END.
+# --- Assertion 4: THE FILENAMES MUST MATCH END TO END.
 #
 # Matching label SETS is not enough, and this is the assertion that would have caught the two bugs
 # that actually shipped. Both sides agreed perfectly on the label `CountingStars_r0_h1_e300` while:
@@ -286,7 +262,9 @@ if sh_plus_only != m_plus_only:
 #     effort builds then wrote the SAME path, and the second overwrote the first.
 #   * loadRuns()'s whitelist did not know it either, so the plot script error()d on it.
 #
-# So model both filename constructions from their real source, and diff the resulting PATHS.
+# So model both filename constructions from their real source, and diff the resulting PATHS. This
+# assertion is label-agnostic (it iterates m_pairs and re-derives the prefix whitelist from the
+# actual function bodies), so it needs no changes to cover the new KinoPaxSTARTrue series.
 
 # Parse the benchmark's writer whitelist rather than restating it.
 wmo = re.search(r'void writePerIterationCSV\(.*?\n\}', cu, re.S)
@@ -361,23 +339,15 @@ if cu_writer_prefixes and (m_loader_prefixes or m_loader_exact):
             problems.append('COST-METRIC COLLISION for "%s" [%s]: every metric writes %s, so the '
                             'second build overwrites the first' % (lbl, d, names.pop()))
 
-# --- Assertion 4: distinct floats must not collapse onto the same label token. 0.01 and 0.1 both
-# look plausible and both want "cap1"/"cap10"; a collision means two grid points silently write to
-# ONE filename and the second overwrites the first.
-for name, vals, f in (('BUFFER_SLOPES', cu_slope, tok),
-                      ('BUFFER_FLOORS', cu_floor, tok),
-                      ('EXPLORE_FRACS', cu_efrac, ftok),
-                      ('COST_FRACS', cu_cfrac, ftok)):
-    toks = [f(v) for v in vals]
-    if len(set(toks)) != len(set(vals)):
-        problems.append('TOKEN COLLISION in %s: %s -> %s' % (name, vals, toks))
-
 print('cost metrics : %s' % ', '.join(sh_metrics))
 print('deltas       : %s  (--only-kinopaxplus: %s)'
       % (', '.join(sh_deltas), ', '.join(str(b) for b in sh_plus_only)))
+print('CountingStars fixed point : bufferSlope=%g bufferFloor=%g explore_frac=%g cost_frac=%g'
+      % (cu_slope, cu_floor, cu_efrac, cu_cfrac))
+print('KinoPaxSTARTrue points    : syclopCap=%g x ancestorPrune %s' % (cu_true_cap, cu_true_anc))
 print('series (.cu) : %d' % len(cu_pairs))
 print('series (.m)  : %d' % len(m_pairs))
-print('ramp minimum : B(x=0) at each bufferFloor -- %s' % ', '.join(ramp_min_info))
+print('ramp minimum : B(x=0) at bufferFloor -- %s' % ramp_min_info)
 
 if only_cu:
     print('\nWritten by the benchmark but NEVER LOADED by the plot script (%d):' % len(only_cu))
