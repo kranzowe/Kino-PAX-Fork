@@ -24,8 +24,8 @@
 #                                                            = 4 points x 5 runs
 #
 # ONE COST METRIC THIS PASS (length/COST_MODE=0 only -- effort is dropped this pass), one
-# environment (zigzag, unchanged), one full build per delta: 8 series x 5 runs x 3 deltas = 120
-# runs total.
+# environment (empty, CHANGED THIS PASS from zigzag -- see ENV_NAMES below for why), one full
+# build per delta: 8 series x 5 runs x 3 deltas = 120 runs total.
 #
 # If tuning CountingStars' own grid resumes later at a different shape, this grid (and the
 # fixed-point/hopelessGuard-toggle passes it replaced) is recoverable from git history -- see
@@ -158,8 +158,8 @@
 # automatically hold at the others, so all three need the full grid, not KinoPaxPlus alone at the
 # finer ones.
 #
-# Runs on zigzag only this pass, written to its own subfolder under
-# Data/Benchmarks/CountingStars/zigzag/.
+# Runs on empty only this pass (changed from zigzag -- see ENV_NAMES below), written to its own
+# subfolder under Data/Benchmarks/CountingStars/empty/.
 #
 # NUM_R1_REGIONS and COST_MODE are both COMPILE-TIME (config.h, and a #if inside edgeCost), so
 # neither can vary within one binary. This script therefore borrows run_delta_benchmark.sh's
@@ -244,9 +244,21 @@ COST_MODES=(0)
 # COST_MODES=(0 1)
 
 # Environments (obstacles already in [0,1]^3 for Model 1). Each gets its own output subfolder.
-# SCOPE: zigzag only this pass. Other environments preserved below, commented out, for later runs.
-ENV_NAMES=("zigzag")
-ENV_OBSTACLES=("../include/config/obstacles/zigzag/obstacles.csv")
+# SCOPE: empty only this pass -- CHANGED FROM zigzag. paper_benchmark.cu's tiny/empty run froze,
+# `empty` was pulled out of that suite as a diagnostic, and the freeze PERSISTED on the remaining
+# environments (house/narrowPassage/zigzag) -- so `empty` alone is not the (sole) trigger there.
+# But this harness itself has NEVER run `empty` -- every "confirmed clean at tiny" claim so far
+# (KPAX, KinoPaxPlus, CountingStars, KinoPaxSTARTrue, and now the hopeless guard) was measured on
+# zigzag only, under Model 1. Pointing this harness at `empty` instead tests the ONE combination
+# still never isolated this way: `empty` itself, on Model 1, in this simpler one-planner-at-a-time
+# harness (which paper_benchmark.cu's own five/six/eight-series-at-once run is not). If tiny stays
+# clean here, that argues against `empty` (under Model 1) as a factor at all, pointing harder at
+# Model 2 (Dubins Airplane) -- which this harness still does not run -- as the real new variable.
+# zigzag preserved below, commented out, to switch back.
+ENV_NAMES=("empty")
+ENV_OBSTACLES=("../include/config/obstacles/empty/obstacles.csv")
+# ENV_NAMES=("zigzag")
+# ENV_OBSTACLES=("../include/config/obstacles/zigzag/obstacles.csv")
 
 # --- narrowPassage --- a wall at x in [0.3, 0.5] spanning all z, split by a gap at y in
 # [0.49, 0.51] -- 0.02 wide against an agent diameter of 0.01 (AGENT_RADIUS 0.005). The

@@ -121,7 +121,7 @@
 % deliberately omitted throughout; the scatter shows run means only.
 %
 % USAGE: cd into the data directory, then call the script BY NAME, not via run():
-%   cd build/Data/Benchmarks/CountingStars/zigzag     % or .../house, .../narrowPassage
+%   cd build/Data/Benchmarks/CountingStars/empty     % or .../house, .../narrowPassage, .../zigzag
 %   addpath('<repo>/scripts')
 %   process_countingstars_and_plot
 % run('<abs path>/process_countingstars_and_plot.m') would cd to the scripts folder
@@ -133,12 +133,17 @@ clear; clc; close all;
 dataDir = '';   % '' = current directory (run this from Data/Benchmarks/CountingStars/<env>)
 
 % One environment per run — must match the subfolder you cd'd into.
-% SCOPE: zigzag this pass (matches ENV_NAMES in run_countingstars_sweep.sh).
+% SCOPE: empty this pass (matches ENV_NAMES in run_countingstars_sweep.sh) -- CHANGED FROM zigzag:
+% paper_benchmark.cu's tiny/empty run froze, empty was pulled from that suite and the freeze
+% persisted on the other three environments, and this harness itself had never actually run
+% `empty` before (every earlier "confirmed clean at tiny" claim here was measured on zigzag only).
 % ONE PER RUN -- each environment writes to its own subfolder, so set this to match the folder you
 % cd'd into and re-run for another.
-%   'zigzag' -> 'Zigzag Corridor',  'narrowPassage' -> 'Narrow Passage',  'house' -> 'House'
-environments = {'zigzag'};
-envTitles    = {'Zigzag Corridor'};
+%   'empty' -> 'Empty',  'zigzag' -> 'Zigzag Corridor',  'narrowPassage' -> 'Narrow Passage',
+%   'house' -> 'House'
+environments = {'empty'};
+envTitles    = {'Empty'};
+% environments = {'zigzag'};   envTitles = {'Zigzag Corridor'};
 % environments = {'house'};   envTitles = {'House'};
 % environments = {'narrowPassage'};   envTitles = {'Narrow Passage'};
 
