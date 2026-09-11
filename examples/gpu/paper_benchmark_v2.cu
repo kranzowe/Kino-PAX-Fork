@@ -625,6 +625,7 @@ RunResult benchmarkKPAX(
     float iterMs    = 0.0f;
 
     planner.resetPlanner(h_initial, h_goal);
+    printf("    [KPAX diag] resetPlanner() returned\n"); fflush(stdout);
 
     int zero = 0;
     int itr = 0;
@@ -638,14 +639,23 @@ RunResult benchmarkKPAX(
         planner.h_pathToGoal_ = 0;
 
         cudaEventRecord(iterStart);
+        if(itr <= 3) { printf("    [KPAX diag] itr=%d: propagateFrontier...\n", itr); fflush(stdout); }
         planner.propagateFrontier(d_obstacles, numObstacles);
+        if(itr <= 3) { printf("    [KPAX diag] itr=%d: updateVertices...\n", itr); fflush(stdout); }
         planner.graph_.updateVertices();
         int oldTreeSize = planner.h_treeSize_;   // nodes before this iter's additions
+        if(itr <= 3) { printf("    [KPAX diag] itr=%d: updateFrontier...\n", itr); fflush(stdout); }
         planner.updateFrontier();
         cudaEventRecord(iterStop);
         cudaEventSynchronize(iterStop);
         cudaEventElapsedTime(&iterMs, iterStart, iterStop);
         plannerMs += iterMs;
+
+        if(itr <= 5 || itr % 50 == 0)
+            {
+                printf("    [KPAX diag] itr=%d done, tree=%d, plannerMs=%.1f\n", itr, planner.h_treeSize_, plannerMs);
+                fflush(stdout);
+            }
 
         // Check if a new path to goal was found THIS iteration
         if(planner.h_pathToGoal_ != 0)
@@ -1263,10 +1273,21 @@ int main(int argc, char* argv[])
     std::vector<RunResult> all_results;
 
     // --- KPAX baseline (matched to this build's discretization) ---
-    if(!skipBaselines && !onlyKinoPaxPlus)
+    // SKIPPED AT tiny: KPAX has repeatedly hung at the finest discretization -- first under
+    // Dubins Airplane (traced live to its frontier-repeat-count mechanism exploding tree size
+    // 125->845,106 in 5 iterations), now recurring under Quad too. Cutting the upper
+    // discretization from KPAX specifically (large/fine still run) rather than dropping tiny
+    // from the whole comparison, since KinoPaxPlus/KinoPaxSTARTrue/CountingStars have not shown
+    // this failure mode at tiny.
+    bool skipKPAXThisDelta = deltaLabel.rfind("tiny", 0) == 0;
+    if(!skipBaselines && !onlyKinoPaxPlus && !skipKPAXThisDelta)
     {
         runKPAXBaseline(deltaLabel, envName, h_initial, h_goal, d_obstacles, numObstacles,
                         all_results, outputDir, NUM_KPAX_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
+    }
+    else if(skipKPAXThisDelta)
+    {
+        printf("KPAX: SKIPPED at delta=%s (tiny excluded from KPAX -- see comment above)\n", deltaLabel.c_str());
     }
 
     // --- KinoPaxPlus delta benchmark (the one series the --only-kinopaxplus pass runs) ---

@@ -469,30 +469,37 @@ echo "  PAPER BENCHMARK V2 -- fixed 4-planner comparison, on countingstars_sweep
 echo "  Model: 3 (12D Non-Linear Quad) -- W_DIM=3/C_DIM=3/V_DIM=3, native [0,100] workspace scale"
 echo "         (obstacles/start/goal scaled x100 from their [0,1]-authored CSVs -- see file header)"
 echo "  Environments: ${ENV_NAMES[*]}  (separate output subfolders)"
+KPAX_DELTA_COUNT=0
 for i in "${!DELTA_LABELS[@]}"; do
-    R=$(( DELTA_W_R1S[i]**3 * DELTA_V_R1S[i]**3 ))
+    R=$(( DELTA_W_R1S[i]**3 * DELTA_C_R1S[i]**3 * DELTA_V_R1S[i]**3 ))
     if [ -z "${DELTA_EXTRA_ARGS[$i]}" ]; then
         WHAT="full comparison"
     else
         WHAT="KinoPaxPlus only"
     fi
+    if [[ "${DELTA_LABELS[$i]}" == tiny* ]]; then
+        WHAT="$WHAT, KPAX SKIPPED (see main()'s skipKPAXThisDelta)"
+    else
+        KPAX_DELTA_COUNT=$((KPAX_DELTA_COUNT + 1))
+    fi
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  Series this pass, ALL AT ALL THREE DELTAS x ALL FOUR ENVIRONMENTS x BOTH COST METRICS"
-echo "  (5 runs each) -- every axis below is a SINGLE FIXED POINT, not a grid:"
-echo "    KPAX             baseline"
-echo "    KinoPaxPlus       "
+echo "  Series this pass, ALL FOUR ENVIRONMENTS x BOTH COST METRICS (5 runs each) -- every axis"
+echo "  below is a SINGLE FIXED POINT, not a grid:"
+echo "    KPAX             baseline -- EVERY DELTA EXCEPT tiny (repeatedly hung there, first under"
+echo "                     Dubins Airplane, now Quad too -- see paper_benchmark_v2.cu's comment)."
+echo "    KinoPaxPlus      all deltas"
 echo "    KinoPaxSTARTrue  syclopCap 1.0 (no cap), ancestorPrune = 1 (guarded stale-best prune on"
-echo "                     top of the naive KPAX/KinoPaxPlus fusion)."
+echo "                     top of the naive KPAX/KinoPaxPlus fusion), all deltas."
 echo "    CountingStars    bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,"
 echo "                     hopelessGuard PERMANENTLY ON (v3.5): excludes any candidate/dormant node"
 echo "                     whose own cost already forecloses beating the best solution found so far"
 echo "                     from every door (FRESHEST/CHEAPEST/OPTIMAL/both floors), not just"
-echo "                     cost-based ones -- see h_hopelessGuard_ in CountingStars.cuh."
-TOTAL_RUNS=$(( 4 * 5 * ${#DELTA_LABELS[@]} * ${#ENV_NAMES[@]} * ${#COST_LABELS[@]} ))
-echo "  = 4 series x 5 runs x ${#DELTA_LABELS[@]} deltas x ${#ENV_NAMES[@]} environments x ${#COST_LABELS[@]} cost"
-echo "    metrics = ${TOTAL_RUNS} runs total."
+echo "                     cost-based ones -- see h_hopelessGuard_ in CountingStars.cuh. All deltas."
+TOTAL_RUNS=$(( 5 * ${#ENV_NAMES[@]} * ${#COST_LABELS[@]} * (3 * ${#DELTA_LABELS[@]} + KPAX_DELTA_COUNT) ))
+echo "  = 5 runs x ${#ENV_NAMES[@]} environments x ${#COST_LABELS[@]} cost metrics x (3 series x"
+echo "    ${#DELTA_LABELS[@]} deltas + KPAX x ${KPAX_DELTA_COUNT} deltas) = ${TOTAL_RUNS} runs total."
 echo "  Filenames: CountingStars_bs120_bf40_ef150_cf750_hg1, KinoPaxSTARTrue_cap100_anc1."
 echo "  Earlier CSVs from the retired tuning grid (_bs120_bf30_..., _bs180_bf50_..., anc0, etc.) do"
 echo "  not collide with these names, so they simply stop loading if left in the output folder."
