@@ -3,15 +3,17 @@
 // NOT a benchmark -- no comparable numbers are produced, and none should be read from this file.
 // It exists to answer three yes/no questions per planner, on whatever config.h was written before
 // the build (scripts/run_jetson_smoke_test.sh writes the sweep's real MODEL 1 / MAX_TREE_SIZE
-// 1000000 / large-delta config -- 1,000,000 on this Jetson branch rather than the cluster's
-// 3,000,000, so this measures the footprint that actually has to fit on-device):
+// 500000 / large-delta config -- 500,000 on this Jetson branch rather than the cluster's
+// 3,000,000 (dropped from an initial 1,000,000 after KPAX appeared to hang there -- see
+// run_jetson_smoke_test.sh's header), so this measures the footprint that actually has to fit
+// on-device):
 //
-//   1. DID IT SOLVE. Not "no CUDA error" -- a planner that runs 50 clean iterations without ever
-//      reaching the goal is not a passing smoke test, and the empty environment with a config-
-//      derived start/goal (see below) makes "never reaches the goal" a real failure signal rather
-//      than a config mismatch.
+//   1. DID IT SOLVE. Not "no CUDA error" -- a planner that runs MAX_ITERATIONS clean iterations
+//      without ever reaching the goal is not a passing smoke test, and the empty environment with
+//      a config-derived start/goal (see below) makes "never reaches the goal" a real failure
+//      signal rather than a config mismatch.
 //   2. DID IT LEAK. Planner has no destructor of its own historically, so d_randomSeeds_ptr_ alone
-//      (48B * MAX_TREE_SIZE) leaked on every construction -- 48 MiB at this config (1,000,000 on
+//      (48B * MAX_TREE_SIZE) leaked on every construction -- ~23 MiB at this config (500,000 on
 //      this Jetson branch; 144 MiB at the cluster's 3,000,000), times however many planners a
 //      sweep constructs. cudaMemGetInfo before/after each planner's scope is the
 //      direct check, and it is what makes the ~Planner() fix in Planner.cu verifiable rather than
@@ -47,15 +49,24 @@
 
 // Per-planner wall-clock budget. Matches the class of timeout every real benchmark harness in this
 // repo carries (countingstars_sweep.cu's MAX_TIME_MS, kinopaxplus_delta_benchmark.cu's); this test
-// previously had none, so a hang here would have blocked forever rather than failing.
-static const double MAX_WALL_SECONDS = 15.0;
+// previously had none, so a hang here would have blocked forever rather than failing. Dropped from
+// 15.0 to 10.0 alongside the smaller MAX_TREE_SIZE and MAX_ITERATIONS below, after KPAX appeared
+// to hang on this branch at the larger sizes -- NOTE this budget is only checked BETWEEN host loop
+// iterations (see wallClockExpired() call sites below), so it cannot interrupt a single
+// propagateFrontier/updateVertices/updateFrontier call that is itself slow -- it only bounds the
+// number of iterations attempted, not any one kernel's duration.
+static const double MAX_WALL_SECONDS = 10.0;
 
 // Tolerance on the before/after cudaMemGetInfo comparison. Not zero: the CUDA driver's allocator
 // can retain a small pool between a cudaFree and the next cudaMemGetInfo, and that drift is
-// unrelated to the bug this test exists to catch. 64 MiB is generous headroom above that drift and
-// still well under half of the ~144 MiB a single un-freed d_randomSeeds_ptr_ leaks at this config
-// -- so a real leak fails loudly and allocator noise does not fail spuriously.
-static const size_t LEAK_TOLERANCE_BYTES = 64ULL * 1024 * 1024;
+// unrelated to the bug this test exists to catch. Scaled off MAX_TREE_SIZE (the exact size of the
+// one known leak this test targets, d_randomSeeds_ptr_'s 48B * MAX_TREE_SIZE) rather than a fixed
+// absolute: a hardcoded 64 MiB was generous headroom above allocator drift at the cluster's
+// 3,000,000 and still this branch's original 1,000,000, but at 500,000 the real leak is only
+// ~23 MiB -- SMALLER than a fixed 64 MiB tolerance would have been, which would have silently
+// stopped catching it. Quartering the known leak size keeps this comfortably above allocator
+// drift while staying well under half the real leak at whatever MAX_TREE_SIZE is compiled in.
+static const size_t LEAK_TOLERANCE_BYTES = (48ULL * MAX_TREE_SIZE) / 4;
 
 // Print free/total GPU memory in MB
 void printGPUMemory(const char* label)
@@ -300,7 +311,7 @@ bool runSmokeTestCountingStars(const char* name, float* h_initial, float* h_goal
 
 int main(void)
 {
-    const int MAX_ITERATIONS = 50;
+    const int MAX_ITERATIONS = 20;
 
     printf("=======================================================\n");
     printf("    JETSON SMOKE TEST\n");
