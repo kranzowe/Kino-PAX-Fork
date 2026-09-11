@@ -23,14 +23,18 @@ static std::string g_vizDir;
 // ---- PAPER BENCHMARK V2 ----
 //
 // This file is countingstars_sweep.cu's proven-reliable harness (same four planners, same
-// large/fine/tiny discretizations, same MODEL 1 / Double Integrator, same MAX_ITERATIONS/
-// MAX_TIME_MS), minimally adapted to reproduce paper_benchmark.cu's fixed 4-planner headline
-// comparison across all four environments -- paper_benchmark.cu (MODEL 2 / Dubins Airplane) hangs
-// at the tiny discretization and the root cause is still open; this tool sidesteps that by running
-// the same comparison on the harness that has actually completed every delta without hanging.
-// NOTE: results here describe the Double Integrator, not the Dubins Airplane paper_benchmark.cu
-// originally targeted -- MODEL was not one of the two things this pass changed (environments,
-// algorithms), so it stays at the sweep's own value.
+// large/fine/tiny discretizations, same MAX_ITERATIONS/MAX_TIME_MS), minimally adapted to
+// reproduce paper_benchmark.cu's fixed 4-planner headline comparison across all four
+// environments -- paper_benchmark.cu (MODEL 2 / Dubins Airplane) hangs at the tiny discretization
+// and the root cause is still open; this tool sidesteps that by running the same comparison, on
+// the same MODEL 2 / Dubins Airplane target, on the harness that has actually completed every
+// delta without hanging.
+// NOTE: the region-discretization dimension breakdown here is the CORRECTED one (C_DIM=2 for
+// yaw+pitch, V_DIM=1 for airspeed only, both properly bounded), not paper_benchmark.cu's own
+// C_DIM=0/V_DIM=3 (which crams yaw/pitch into the velocity-shaped V_DIM=3 slot bounded to
+// [-0.3,0.3] -- a real region-density-skew bug flagged earlier). So this tool's numbers are not
+// directly comparable to paper_benchmark.cu's own Model 2 results -- see run_paper_benchmark_v2.sh
+// for the full derivation.
 //
 // CountingStars             bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,
 //                           h_hopelessGuard_ PERMANENTLY ON (v3.5) -- countingstars_sweep.cu's

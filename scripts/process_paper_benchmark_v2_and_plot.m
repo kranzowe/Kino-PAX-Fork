@@ -3,9 +3,12 @@
 % scripts/run_paper_benchmark_v2.sh) -- countingstars_sweep.cu's proven-reliable harness, minimally
 % adapted (all four environments, single fixed operating points) to reproduce
 % paper_benchmark.cu's own headline comparison without paper_benchmark.cu's unresolved hang at
-% `tiny`. RESULTS HERE DESCRIBE THE DOUBLE INTEGRATOR (MODEL 1), NOT THE DUBINS AIRPLANE (MODEL 2)
-% paper_benchmark.cu originally targeted -- see paper_benchmark_v2.cu / run_paper_benchmark_v2.sh
-% for why. Otherwise identical in structure/presentation to process_paper_benchmark_and_plot.m.
+% `tiny`. Runs the same MODEL 2 / Dubins Airplane paper_benchmark.cu targets, but with a corrected
+% region-discretization dimension breakdown (C_DIM=2 for yaw+pitch, V_DIM=1 for airspeed only,
+% both properly bounded) instead of paper_benchmark.cu's own C_DIM=0/V_DIM=3 -- so results here are
+% NOT directly comparable to paper_benchmark.cu's own numbers. See paper_benchmark_v2.cu /
+% run_paper_benchmark_v2.sh for the full derivation. Otherwise identical in structure/presentation
+% to process_paper_benchmark_and_plot.m.
 %
 % A FIXED COMPARISON, not a sweep -- there is no grid here, so the series list below is NOT built
 % from nested loops over swept parameters the way process_countingstars_and_plot.m's is. It is
@@ -69,9 +72,8 @@ envTitles    = {'Empty'};
 % environments = {'zigzag'};         envTitles = {'Zigzag Corridor (tightened)'};
 
 % Cost metric axis -- one build each, so one set of figures each. BOTH THIS PASS (see
-% run_paper_benchmark.sh; Model 2's own COST_MODE==1 effort branch in edgeCost() (helper.cuh) is
-% what makes "effort" a genuinely different metric from "length" for Dubins Airplane rather than
-% a silent duplicate).
+% run_paper_benchmark_v2.sh's COST_LABELS; Dubins Airplane's own COST_MODE==1 effort branch in
+% edgeCost() (helper.cuh) is what makes "effort" a genuinely different metric from "length" here).
 metrics       = {'length', 'effort'};
 metricTitles  = {'Workspace Path Length', 'Control Effort'};
 metricYLabels = {'Path Cost (workspace path length)', 'Path Cost (control effort)'};

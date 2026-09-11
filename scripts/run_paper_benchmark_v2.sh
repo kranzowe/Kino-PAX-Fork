@@ -6,13 +6,22 @@
 # paper_benchmark.cu (MODEL 2 / Dubins Airplane) hangs at the `tiny` discretization; the root cause
 # was not fully resolved despite a deep investigation. countingstars_sweep.cu (MODEL 1 / Double
 # Integrator), built from the same four planners at the same three discretizations, has completed
-# every delta including `tiny` without hanging. This file is that harness with exactly two changes
-# from it: (1) all four environments run, not just one; (2) the sweep's two exploratory grids
+# every delta including `tiny` without hanging. This file is that harness with three changes from
+# it: (1) all four environments run, not just one; (2) the sweep's two exploratory grids
 # (CountingStars bufferSlope/bufferFloor, KinoPaxSTARTrue ancestorPrune) are collapsed to the single
-# fixed operating points paper_benchmark.cu was always meant to report. MODEL, MAX_ITERATIONS,
-# MAX_TIME_MS, the discretizations, and the cost metric are all UNCHANGED from the sweep --
-# RESULTS HERE DESCRIBE THE DOUBLE INTEGRATOR, NOT THE DUBINS AIRPLANE paper_benchmark.cu
-# originally targeted.
+# fixed operating points paper_benchmark.cu was always meant to report; (3) MODEL switched from 1
+# (Double Integrator) to 2 (Dubins Airplane) -- reproducing paper_benchmark.cu's original target
+# model on a harness that has actually completed every delta without hanging.
+#
+# THE DIMENSION BREAKDOWN IS THE CORRECTED ONE, NOT PAPER_BENCHMARK.CU'S: paper_benchmark.cu treats
+# Dubins' state as if it were shaped like the Double Integrator (C_DIM=0, V_DIM=3, so yaw/pitch get
+# crammed into the velocity-shaped V_DIM=3 slot bounded to [-0.3,0.3]) -- a real region-density-skew
+# bug flagged earlier this session. This file uses config.h's own correctly-shaped Dubins reference
+# block instead: C_DIM=2 (yaw+pitch, properly bounded [-pi,pi]), V_DIM=1 (airspeed only, bounded
+# [0,0.3] -- also fixing a separate flagged bug: the old V_MIN=-0.3 let the "airplane" fly backward).
+# Consequence: this tool's Model 2 results are NOT directly comparable to paper_benchmark.cu's own
+# Model 2 numbers (different, better-calibrated region discretization), though the same COST_MODE
+# and MAX_ITERATIONS/MAX_TIME_MS apply to both.
 #
 # THE HOPELESS GUARD (v3.5, see h_hopelessGuard_ in include/planners/CountingStars.cuh) runs ON,
 # unconditionally: a candidate/dormant node whose own cost already forecloses beating the best
@@ -30,9 +39,9 @@
 #   CountingStars   bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,
 #                   hopelessGuard PERMANENTLY ON (v3.5)      = 1 point  x 5 runs
 #
-# TWO COST METRICS (length/COST_MODE=0 and effort/COST_MODE=1), FOUR ENVIRONMENTS (empty, house,
-# narrowPassage, zigzag -- see ENV_NAMES below), one full build per (delta, cost metric): 4 series
-# x 5 runs x 3 deltas x 4 environments x 2 cost metrics = 480 runs total, from 6 compiled binaries.
+# ONE COST METRIC (length/COST_MODE=0 only), FOUR ENVIRONMENTS (empty, house, narrowPassage,
+# zigzag -- see ENV_NAMES below), one full build per delta: 4 series x 5 runs x 3 deltas x 4
+# environments = 240 runs total, from 3 compiled binaries.
 #
 # The original grid-sweep version of this file (bufferSlope/bufferFloor grid, ancestorPrune {0,1})
 # is countingstars_sweep.cu / run_countingstars_sweep.sh, unmodified by this file's existence.
@@ -180,14 +189,14 @@
 # so re-check both files if either one's deltas change again), plus this sweep's own "tiny",
 # unchanged from earlier passes, all full comparison, per the header above.
 #
-# C_R1 STAYS AT 1 EVERYWHERE. NUM_R1_REGIONS = W_R1^3 * V_R1^3 has no C term, and this config sets
-# C_DIM 0, so getRegion / getSubRegion skip the C dimension entirely -- raising C_R1 would change
-# nothing at all. The control-side refinement rides on V_R1.
+# C_R1 IS REAL HERE, UNLIKE THE DOUBLE-INTEGRATOR SWEEP'S C_R1=1. NUM_R1_REGIONS = W_R1^3 *
+# C_R1^2 * V_R1 (C_DIM=2: yaw+pitch; V_DIM=1: airspeed only), so C_R1 genuinely discriminates
+# attitude at the R1 level, unlike the C_DIM=0 sweep this file started from.
 #
-# Deltas (Model 1: W_DIM=3, C_DIM=0, V_DIM=3):
-#   large   W_R1=7   C_R1=1  V_R1=3  ->   7^3 * 3^3 =   9,261   (full comparison)
-#   fine    W_R1=16  C_R1=1  V_R1=4  ->  16^3 * 4^3 = 262,144   (full comparison)
-#   tiny    W_R1=14  C_R1=1  V_R1=6  ->  14^3 * 6^3 = 592,704   (full comparison)
+# Deltas (Dubins Airplane: W_DIM=3, C_DIM=2, V_DIM=1):
+#   large   W_R1=7   C_R1=3  V_R1=3  ->  7^3  * 3^2 * 3 =   9,261   (full comparison)
+#   fine    W_R1=16  C_R1=4  V_R1=4  -> 16^3  * 4^2 * 4 = 262,144   (full comparison)
+#   tiny    W_R1=14  C_R1=6  V_R1=6  -> 14^3  * 6^2 * 6 = 592,704   (full comparison)
 #
 # "tiny" names the CELL, not the count: it is the finest delta this pass runs, at 592,704 regions.
 # Watch it for the per-region arrays -- every NUM_R1_REGIONS allocation and every full-array fill
@@ -228,16 +237,22 @@ BUILD_DIR="$PROJECT_DIR/build"
 # for KPAX/KinoPaxPlus/CountingStars/KinoPaxSTARTrue at all three deltas here, so
 # run_paper_benchmark.sh was updated to reuse it -- see that script's own header for the same
 # history from its side.
+# C_R1/V_R1 are NOT inert for Dubins Airplane (C_DIM=2: yaw+pitch; V_DIM=1: airspeed only -- see
+# the MODEL 2 switch below). NUM_R1_REGIONS = W_R1^3 * C_R1^2 * V_R1 for this model, a different
+# shape from Double Integrator's W_R1^3 * V_R1^3, so these are NOT the same numbers reused
+# unchanged -- C_R1/V_R1 were re-derived to land on the same 9,261 / 262,144 / 592,704 region
+# counts (all three exact) under this model's own formula: large 7^3*3^2*3=9261,
+# fine 16^3*4^2*4=262144, tiny 14^3*6^2*6=592704.
 DELTA_LABELS=("large" "fine" "tiny")
-DELTA_W_R1S=(7 16 14)
-DELTA_C_R1S=(1  1  1)   # inert for Model 1 (C_DIM 0); control refinement rides on V_R1
+DELTA_W_R1S=(7  16 14)
+DELTA_C_R1S=(3  4  6)
 DELTA_V_R1S=(3  4  6)
 DELTA_EXTRA_ARGS=("" "" "")
 
 # --- Coarse delta only (uncomment to restore; comment out the four lines above) ---
 # DELTA_LABELS=("large")
 # DELTA_W_R1S=(7)
-# DELTA_C_R1S=(1)
+# DELTA_C_R1S=(3)
 # DELTA_V_R1S=(3)
 # DELTA_EXTRA_ARGS=("")
 
@@ -248,7 +263,8 @@ COST_MODES=(0 1)
 # COST_LABELS=("length")
 # COST_MODES=(0)
 
-# Environments (obstacles already in [0,1]^3 for Model 1). Each gets its own output subfolder.
+# Environments (obstacles already in [0,1]^3; W_MIN/W_MAX/W_SIZE unchanged from the Double
+# Integrator sweep, so no rescaling needed). Each gets its own output subfolder.
 # SCOPE: empty only this pass -- CHANGED FROM zigzag. paper_benchmark.cu's tiny/empty run froze,
 # `empty` was pulled out of that suite as a diagnostic, and the freeze PERSISTED on the remaining
 # environments (house/narrowPassage/zigzag) -- so `empty` alone is not the (sole) trigger there.
@@ -310,7 +326,7 @@ cp "$CONFIG_FILE" "$CONFIG_BACKUP"
 # --- Ensure build directory exists ---
 mkdir -p "$BUILD_DIR"
 
-# Function to write complete Model 1 config.h
+# Function to write complete Model 2 (Dubins Airplane) config.h
 write_config() {
     local W_R1=$1
     local C_R1=$2
@@ -319,10 +335,10 @@ write_config() {
     cat > "$CONFIG_FILE" << CONFIGEOF
 #pragma once
 /***************************/
-/* 6D DOUBLE INTEGRATOR    */
+/* 6D DUBINS AIRPLANE      */
 /***************************/
-#define MODEL 1
-#define COST_MODE ${COST_MODE}  // path cost: 1 = control effort ((ax^2+ay^2+az^2)*dt), 0 = workspace distance
+#define MODEL 2
+#define COST_MODE ${COST_MODE}  // path cost: 1 = control effort ((yawRate^2+pitchRate^2+a^2)*dt), 0 = workspace distance
 #define MAX_TREE_SIZE 3000000
 #define MAX_FLOAT 1e38f
 #define MAX_SOL_SET_SIZE 500
@@ -337,30 +353,30 @@ write_config() {
 #define CONTROL_DIM 3
 #define SAMPLE_DIM (STATE_DIM + CONTROL_DIM + 1)
 #define W_DIM 3
-#define C_DIM 0
-#define V_DIM 3
+#define C_DIM 2
+#define V_DIM 1
 #define W_MIN 0.0f
 #define W_MAX 1.0f
 #define W_SIZE 1.0f
 #define C_MIN -M_PI
 #define C_MAX M_PI
-#define V_MIN -0.3f
+#define V_MIN 0.0f
 #define V_MAX 0.3f
-#define A_MIN -0.2f
-#define A_MAX 0.2f
+#define A_MIN -0.3f
+#define A_MAX 0.3f
 #define W_R1_LENGTH ${W_R1}
 #define C_R1_LENGTH ${C_R1}
 #define V_R1_LENGTH ${V_R1}
 #define W_R2_LENGTH 2
-#define C_R2_LENGTH 1
+#define C_R2_LENGTH 2
 #define V_R2_LENGTH 2
 #define W_R1_SIZE ((W_MAX - W_MIN) / W_R1_LENGTH)
 #define C_R1_SIZE ((C_MAX - C_MIN) / C_R1_LENGTH)
 #define V_R1_SIZE ((V_MAX - V_MIN) / V_R1_LENGTH)
 #define W_R1_VOL (W_R1_SIZE * W_R1_SIZE * W_R1_SIZE)
-#define NUM_R1_REGIONS (W_R1_LENGTH * W_R1_LENGTH * W_R1_LENGTH * V_R1_LENGTH * V_R1_LENGTH * V_R1_LENGTH)
-#define NUM_R2_REGIONS (NUM_R1_REGIONS * W_R2_LENGTH * W_R2_LENGTH * W_R2_LENGTH * V_R2_LENGTH * V_R2_LENGTH * V_R2_LENGTH)
-#define NUM_R2_PER_R1 W_R2_LENGTH *W_R2_LENGTH *W_R2_LENGTH *V_R2_LENGTH *V_R2_LENGTH *V_R2_LENGTH
+#define NUM_R1_REGIONS (W_R1_LENGTH * W_R1_LENGTH * W_R1_LENGTH * C_R1_LENGTH * C_R1_LENGTH * V_R1_LENGTH)
+#define NUM_R2_REGIONS (NUM_R1_REGIONS * W_R2_LENGTH * W_R2_LENGTH * W_R2_LENGTH * C_R2_LENGTH * C_R2_LENGTH * V_R2_LENGTH)
+#define NUM_R2_PER_R1 W_R2_LENGTH *W_R2_LENGTH *W_R2_LENGTH *C_R2_LENGTH *C_R2_LENGTH *V_R2_LENGTH
 #define NUM_R1_REGIONS_KERNEL1 1024
 #define NUM_PARTIAL_SUMS 1024
 #define EPSILON 1e-2f
@@ -417,7 +433,8 @@ CONFIGEOF
 echo ""
 echo "======================================================="
 echo "  PAPER BENCHMARK V2 -- fixed 4-planner comparison, on countingstars_sweep.cu's harness"
-echo "  Model: 1 (6D Double Integrator) -- NOT the Dubins Airplane paper_benchmark.cu targeted"
+echo "  Model: 2 (6D Dubins Airplane) -- corrected C_DIM=2/V_DIM=1 breakdown, not paper_benchmark.cu's"
+echo "         own C_DIM=0/V_DIM=3 (yaw/pitch crammed into the velocity slot -- see file header)"
 echo "  Environments: ${ENV_NAMES[*]}  (separate output subfolders)"
 for i in "${!DELTA_LABELS[@]}"; do
     R=$(( DELTA_W_R1S[i]**3 * DELTA_V_R1S[i]**3 ))
