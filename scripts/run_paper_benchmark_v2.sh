@@ -30,9 +30,9 @@
 #   CountingStars   bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,
 #                   hopelessGuard PERMANENTLY ON (v3.5)      = 1 point  x 5 runs
 #
-# ONE COST METRIC (length/COST_MODE=0 only), FOUR ENVIRONMENTS (empty, house, narrowPassage,
-# zigzag -- see ENV_NAMES below), one full build per delta: 4 series x 5 runs x 3 deltas x 4
-# environments = 240 runs total.
+# TWO COST METRICS (length/COST_MODE=0 and effort/COST_MODE=1), FOUR ENVIRONMENTS (empty, house,
+# narrowPassage, zigzag -- see ENV_NAMES below), one full build per (delta, cost metric): 4 series
+# x 5 runs x 3 deltas x 4 environments x 2 cost metrics = 480 runs total, from 6 compiled binaries.
 #
 # The original grid-sweep version of this file (bufferSlope/bufferFloor grid, ancestorPrune {0,1})
 # is countingstars_sweep.cu / run_countingstars_sweep.sh, unmodified by this file's existence.
@@ -241,12 +241,12 @@ DELTA_EXTRA_ARGS=("" "" "")
 # DELTA_V_R1S=(3)
 # DELTA_EXTRA_ARGS=("")
 
-# Cost metric axis: label + COST_MODE (0 = workspace distance, 1 = control effort). LENGTH ONLY
-# this pass -- effort disabled, not removed; uncomment the line below to restore it.
-COST_LABELS=("length")
-COST_MODES=(0)
-# COST_LABELS=("length" "effort")
-# COST_MODES=(0 1)
+# Cost metric axis: label + COST_MODE (0 = workspace distance, 1 = control effort). BOTH THIS
+# PASS -- doubles the build count (one binary per delta x cost metric) and the run count.
+COST_LABELS=("length" "effort")
+COST_MODES=(0 1)
+# COST_LABELS=("length")
+# COST_MODES=(0)
 
 # Environments (obstacles already in [0,1]^3 for Model 1). Each gets its own output subfolder.
 # SCOPE: empty only this pass -- CHANGED FROM zigzag. paper_benchmark.cu's tiny/empty run froze,
@@ -416,8 +416,8 @@ CONFIGEOF
 
 echo ""
 echo "======================================================="
-echo "  CountingStars v3.5 Sweep -- bufferSlope/bufferFloor grid, hopelessGuard permanently ON"
-echo "  Model: 1 (6D Double Integrator)"
+echo "  PAPER BENCHMARK V2 -- fixed 4-planner comparison, on countingstars_sweep.cu's harness"
+echo "  Model: 1 (6D Double Integrator) -- NOT the Dubins Airplane paper_benchmark.cu targeted"
 echo "  Environments: ${ENV_NAMES[*]}  (separate output subfolders)"
 for i in "${!DELTA_LABELS[@]}"; do
     R=$(( DELTA_W_R1S[i]**3 * DELTA_V_R1S[i]**3 ))
@@ -429,44 +429,35 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  Series this pass, ALL AT ALL THREE DELTAS (5 runs each):"
+echo "  Series this pass, ALL AT ALL THREE DELTAS x ALL FOUR ENVIRONMENTS x BOTH COST METRICS"
+echo "  (5 runs each) -- every axis below is a SINGLE FIXED POINT, not a grid:"
 echo "    KPAX             baseline"
 echo "    KinoPaxPlus       "
-echo "    KinoPaxSTARTrue  syclopCap 1.0 (no cap) x ancestorPrune {0, 1} -- 2 points. Tests whether"
-echo "                     THIS planner, not KPAX, is where paper_benchmark.cu's still-open"
-echo "                     cudaErrorIllegalAddress/hang lives."
-echo "    CountingStars    bufferSlope {1.2, 1.8} x bufferFloor {0.3, 0.5}, explore_frac=0.1,"
-echo "                     cost_frac=0.8 (fixed) -- 4 points. hopelessGuard is PERMANENTLY ON (v3.5)"
-echo "                     at every point: excludes any candidate/dormant node whose own cost"
-echo "                     already forecloses beating the best solution found so far from every"
-echo "                     door (FRESHEST/CHEAPEST/OPTIMAL/both floors), not just cost-based ones --"
-echo "                     see h_hopelessGuard_ in CountingStars.cuh. Confirmed to help at the old"
-echo "                     single fixed point; this pass re-sweeps bufferSlope/bufferFloor with it"
-echo "                     on, since the best ramp may have changed now that hopeless nodes no"
-echo "                     longer compete for the budget."
-echo "  = 8 series x 5 runs x 3 deltas = 120 runs total."
-echo "  Filenames: CountingStars_bs120_bf30_ef100_cf800_hg1, CountingStars_bs120_bf50_ef100_cf800_hg1,"
-echo "             CountingStars_bs180_bf30_ef100_cf800_hg1, CountingStars_bs180_bf50_ef100_cf800_hg1,"
-echo "             KinoPaxSTARTrue_cap100_anc0/anc1."
-echo "  Earlier CSVs from the retired tuning grid (_bs100_bf30_ef200_cf600 and similar) do not"
-echo "  collide with these names, so they simply stop loading if left in the output folder."
+echo "    KinoPaxSTARTrue  syclopCap 1.0 (no cap), ancestorPrune = 1 (guarded stale-best prune on"
+echo "                     top of the naive KPAX/KinoPaxPlus fusion)."
+echo "    CountingStars    bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,"
+echo "                     hopelessGuard PERMANENTLY ON (v3.5): excludes any candidate/dormant node"
+echo "                     whose own cost already forecloses beating the best solution found so far"
+echo "                     from every door (FRESHEST/CHEAPEST/OPTIMAL/both floors), not just"
+echo "                     cost-based ones -- see h_hopelessGuard_ in CountingStars.cuh."
+TOTAL_RUNS=$(( 4 * 5 * ${#DELTA_LABELS[@]} * ${#ENV_NAMES[@]} * ${#COST_LABELS[@]} ))
+echo "  = 4 series x 5 runs x ${#DELTA_LABELS[@]} deltas x ${#ENV_NAMES[@]} environments x ${#COST_LABELS[@]} cost"
+echo "    metrics = ${TOTAL_RUNS} runs total."
+echo "  Filenames: CountingStars_bs120_bf40_ef150_cf750_hg1, KinoPaxSTARTrue_cap100_anc1."
+echo "  Earlier CSVs from the retired tuning grid (_bs120_bf30_..., _bs180_bf50_..., anc0, etc.) do"
+echo "  not collide with these names, so they simply stop loading if left in the output folder."
 echo "  B IS STILL A RAMP, RECOMPUTED EVERY ITERATION:"
 echo "    x = itr/fill_iters, B(x) = floor((slope*x + floor) * MAX_TREE_SIZE/fill_iters)"
-echo "  THREE DOORS PLUS A FLAT ADMISSION FLOOR, ALL BUDGETED (v3.4, permanent, not swept here):"
+echo "  THREE DOORS PLUS A FLAT ADMISSION FLOOR, ALL BUDGETED (v3.4, permanent):"
 echo "    FRESHEST   explore_frac * B, from the least-populated regions"
 echo "    CHEAPEST   cost_frac * B, from the smallest cost distances -- OPTIMAL candidates (distance"
 echo "               0, i.e. cost <= minCostsR1[r]) compete here too, permanently, always at bucket 0"
 echo "    ADMIT FLOOR every candidate at accept_floor = 1e-4, only when nothing else admitted it"
 echo "    REACT FLOOR every dormant node at react_floor = 1e-5, ON TOP of the budget"
-echo "  Read optimal_count (measured at distance 0) against admitted_cost (actually admitted) -- their"
-echo "  gap is how many optimal candidates the budget did not have room for."
-echo "  THE ACTUAL QUESTION THIS PASS ASKS: does any series at any delta reproduce"
-echo "  paper_benchmark.cu's crash/hang? A run that never reaches a final iteration count, or a"
-echo "  cudaErrorIllegalAddress, is the signal -- not a cost or timing number."
 echo "  Score floor:    COUNTINGSTARS HAS NO SCORE FLOOR AND USES NO EPSILON: it never reads"
 echo "                  vertexScores, h_scoreFloor_, h_nActive_ or regionCoverage in any decision."
 echo "  Baselines: KPAX, KinoPaxPlus -- BOTH AT ALL THREE DELTAS this pass, not KinoPaxPlus-only at"
-echo "             the finer ones (see the header for why)."
+echo "             the finer ones."
 echo "======================================================="
 
 # =============================================================================
