@@ -242,14 +242,26 @@ BUILD_DIR="$PROJECT_DIR/build"
 # grows much faster per unit of W_R1/V_R1 than Dubins' two-cubed-term one did):
 #   large   W_R1=5  C_R1=2  V_R1=2  ->  5^3 * 2^3 * 2^3 =   8,000   (target 9k,   -11%)
 #   fine    W_R1=6  C_R1=2  V_R1=5  ->  6^3 * 2^3 * 5^3 = 216,000   (target 200k, +8%)
-#   tiny    W_R1=7  C_R1=2  V_R1=6  ->  7^3 * 2^3 * 6^3 = 592,704   (target 600k, -1%)
+#
+# tiny WAS W_R1=7/V_R1=6 (592,704 regions) -- KPAX repeatedly hit a confirmed buffer-overshoot
+# bug at that size (h_treeSize_ exceeding MAX_TREE_SIZE via propagateFrontier()'s
+# h_propIterations_==0 edge case, KPAX.cu:254-271): a hang under Dubins Airplane, then a
+# cudaErrorIllegalAddress crash under Quad on Jetson. Reduced instead of patching that kernel
+# logic yet, to test whether staying further from MAX_TREE_SIZE avoids the trigger entirely
+# (paper_benchmark_v2.cu's skipKPAXThisDelta hard-skip is kept commented as the fallback if this
+# doesn't hold):
+#   tiny (OLD)  W_R1=7  C_R1=2  V_R1=6  ->  7^3 * 2^3 * 6^3 = 592,704   (target 600k, -1%)
+#   tiny (NEW)  W_R1=6  C_R1=2  V_R1=6  ->  6^3 * 2^3 * 6^3 = 373,248   (-37% vs old tiny)
 #
 # --- Dubins Airplane deltas (previous model -- commented out, not deleted) ---
 # DELTA_W_R1S=(7  16 14)
 # DELTA_C_R1S=(3  4  6)
 # DELTA_V_R1S=(3  4  6)
+# --- Quad's own OLD tiny (commented out, not deleted -- see note above) ---
+# DELTA_W_R1S=(5  6  7)
+# DELTA_V_R1S=(2  5  6)
 DELTA_LABELS=("large" "fine" "tiny")
-DELTA_W_R1S=(5  6  7)
+DELTA_W_R1S=(5  6  6)
 DELTA_C_R1S=(2  2  2)
 DELTA_V_R1S=(2  5  6)
 DELTA_EXTRA_ARGS=("" "" "")
@@ -469,7 +481,6 @@ echo "  PAPER BENCHMARK V2 -- fixed 4-planner comparison, on countingstars_sweep
 echo "  Model: 3 (12D Non-Linear Quad) -- W_DIM=3/C_DIM=3/V_DIM=3, native [0,100] workspace scale"
 echo "         (obstacles/start/goal scaled x100 from their [0,1]-authored CSVs -- see file header)"
 echo "  Environments: ${ENV_NAMES[*]}  (separate output subfolders)"
-KPAX_DELTA_COUNT=0
 for i in "${!DELTA_LABELS[@]}"; do
     R=$(( DELTA_W_R1S[i]**3 * DELTA_C_R1S[i]**3 * DELTA_V_R1S[i]**3 ))
     if [ -z "${DELTA_EXTRA_ARGS[$i]}" ]; then
@@ -477,18 +488,15 @@ for i in "${!DELTA_LABELS[@]}"; do
     else
         WHAT="KinoPaxPlus only"
     fi
-    if [[ "${DELTA_LABELS[$i]}" == tiny* ]]; then
-        WHAT="$WHAT, KPAX SKIPPED (see main()'s skipKPAXThisDelta)"
-    else
-        KPAX_DELTA_COUNT=$((KPAX_DELTA_COUNT + 1))
-    fi
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
 echo "  Series this pass, ALL FOUR ENVIRONMENTS x BOTH COST METRICS (5 runs each) -- every axis"
 echo "  below is a SINGLE FIXED POINT, not a grid:"
-echo "    KPAX             baseline -- EVERY DELTA EXCEPT tiny (repeatedly hung there, first under"
-echo "                     Dubins Airplane, now Quad too -- see paper_benchmark_v2.cu's comment)."
+echo "    KPAX             baseline, all deltas -- tiny's region count was reduced specifically to"
+echo "                     stop KPAX overshooting MAX_TREE_SIZE there (a confirmed bug, see"
+echo "                     paper_benchmark_v2.cu's skipKPAXThisDelta comment); if it still does,"
+echo "                     that comment also has the hard-skip fallback for tiny."
 echo "    KinoPaxPlus      all deltas"
 echo "    KinoPaxSTARTrue  syclopCap 1.0 (no cap), ancestorPrune = 1 (guarded stale-best prune on"
 echo "                     top of the naive KPAX/KinoPaxPlus fusion), all deltas."
@@ -497,9 +505,9 @@ echo "                     hopelessGuard PERMANENTLY ON (v3.5): excludes any can
 echo "                     whose own cost already forecloses beating the best solution found so far"
 echo "                     from every door (FRESHEST/CHEAPEST/OPTIMAL/both floors), not just"
 echo "                     cost-based ones -- see h_hopelessGuard_ in CountingStars.cuh. All deltas."
-TOTAL_RUNS=$(( 5 * ${#ENV_NAMES[@]} * ${#COST_LABELS[@]} * (3 * ${#DELTA_LABELS[@]} + KPAX_DELTA_COUNT) ))
-echo "  = 5 runs x ${#ENV_NAMES[@]} environments x ${#COST_LABELS[@]} cost metrics x (3 series x"
-echo "    ${#DELTA_LABELS[@]} deltas + KPAX x ${KPAX_DELTA_COUNT} deltas) = ${TOTAL_RUNS} runs total."
+TOTAL_RUNS=$(( 4 * 5 * ${#DELTA_LABELS[@]} * ${#ENV_NAMES[@]} * ${#COST_LABELS[@]} ))
+echo "  = 4 series x 5 runs x ${#DELTA_LABELS[@]} deltas x ${#ENV_NAMES[@]} environments x ${#COST_LABELS[@]} cost"
+echo "    metrics = ${TOTAL_RUNS} runs total."
 echo "  Filenames: CountingStars_bs120_bf40_ef150_cf750_hg1, KinoPaxSTARTrue_cap100_anc1."
 echo "  Earlier CSVs from the retired tuning grid (_bs120_bf30_..., _bs180_bf50_..., anc0, etc.) do"
 echo "  not collide with these names, so they simply stop loading if left in the output folder."

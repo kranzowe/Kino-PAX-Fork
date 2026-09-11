@@ -1273,13 +1273,18 @@ int main(int argc, char* argv[])
     std::vector<RunResult> all_results;
 
     // --- KPAX baseline (matched to this build's discretization) ---
-    // SKIPPED AT tiny: KPAX has repeatedly hung at the finest discretization -- first under
-    // Dubins Airplane (traced live to its frontier-repeat-count mechanism exploding tree size
-    // 125->845,106 in 5 iterations), now recurring under Quad too. Cutting the upper
-    // discretization from KPAX specifically (large/fine still run) rather than dropping tiny
-    // from the whole comparison, since KinoPaxPlus/KinoPaxSTARTrue/CountingStars have not shown
-    // this failure mode at tiny.
-    bool skipKPAXThisDelta = deltaLabel.rfind("tiny", 0) == 0;
+    // KPAX has a confirmed buffer-overshoot bug in propagateFrontier()'s h_propIterations_==0
+    // edge case (KPAX.cu:254-271): when frontier-repeat-count exceeds remaining tree capacity,
+    // the fallback launches with the full (oversized) repeat count instead of clamping to what
+    // remains, so h_treeSize_ can end up exceeding MAX_TREE_SIZE. First seen as a hang under
+    // Dubins Airplane (tree exploding 125->845,106 in 5 iterations), then a
+    // cudaErrorIllegalAddress crash under Quad on Jetson. Rather than patch that kernel-launch
+    // logic yet, tiny's own region count was reduced instead (DELTA_C_R1S/DELTA_V_R1S in
+    // run_paper_benchmark_v2.sh, 592,704 -> 373,248) to test whether a smaller discretization
+    // keeps the tree far enough from MAX_TREE_SIZE to never trigger the edge case at all. If
+    // this experiment doesn't hold, restore the hard skip below (kept as the fallback):
+    //   bool skipKPAXThisDelta = deltaLabel.rfind("tiny", 0) == 0;
+    bool skipKPAXThisDelta = false;
     if(!skipBaselines && !onlyKinoPaxPlus && !skipKPAXThisDelta)
     {
         runKPAXBaseline(deltaLabel, envName, h_initial, h_goal, d_obstacles, numObstacles,
