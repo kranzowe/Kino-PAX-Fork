@@ -3,18 +3,21 @@
 % scripts/run_paper_benchmark_v2.sh) -- countingstars_sweep.cu's proven-reliable harness, minimally
 % adapted (all four environments, single fixed operating points) to reproduce
 % paper_benchmark.cu's own headline comparison without paper_benchmark.cu's unresolved hang at
-% `tiny`. Runs the same MODEL 2 / Dubins Airplane paper_benchmark.cu targets, but with a corrected
-% region-discretization dimension breakdown (C_DIM=2 for yaw+pitch, V_DIM=1 for airspeed only,
-% both properly bounded) instead of paper_benchmark.cu's own C_DIM=0/V_DIM=3 -- so results here are
-% NOT directly comparable to paper_benchmark.cu's own numbers. See paper_benchmark_v2.cu /
-% run_paper_benchmark_v2.sh for the full derivation. Otherwise identical in structure/presentation
-% to process_paper_benchmark_and_plot.m.
+% `tiny`. MODEL has moved twice since: first to 2 (Dubins Airplane, matching paper_benchmark.cu's
+% original target but with a corrected C_DIM=2/V_DIM=1 dimension breakdown instead of
+% paper_benchmark.cu's own C_DIM=0/V_DIM=3), and now to 3 (12D Non-Linear Quad, W_DIM=3/C_DIM=3/
+% V_DIM=3, native [0,100] workspace scale) -- so results here are NOT directly comparable to
+% paper_benchmark.cu's own numbers. See paper_benchmark_v2.cu / run_paper_benchmark_v2.sh for the
+% full derivation of both switches. Otherwise identical in structure/presentation to
+% process_paper_benchmark_and_plot.m.
 %
 % A FIXED COMPARISON, not a sweep -- there is no grid here, so the series list below is NOT built
 % from nested loops over swept parameters the way process_countingstars_and_plot.m's is. It is
 % four already-chosen operating points (KPAX, KinoPaxPlus, KinoPaxSTARTrue at ancestorPrune 1, and
-% ONE CountingStars point), each run at all three deltas -- 12 series total, overlaid inside each
-% figure. CountingStars runs bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,
+% ONE CountingStars point), each run at all three deltas -- 12 series total. Figures 1-2 (cost vs
+% time, tree growth) only plot the "fine" delta, to keep those two clean; Figure 3 (the tradeoff
+% scatter) is the one place all three deltas are overlaid, coded by marker size. CountingStars
+% runs bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,
 % WITH THE HOPELESS GUARD PERMANENTLY ON (v3.5, h_hopelessGuard_ in CountingStars.cuh) --
 % countingstars_sweep.cu's own on/off sweep confirmed the guard helps at an earlier operating
 % point, and slope/floor/ef/cf were re-tuned with it on (replacing the earlier two-point,
@@ -40,12 +43,12 @@
 %                                cost-of-last, success rate, final tree size %. Printed to the
 %                                console AND written to a CSV alongside the figures.
 %
-% COLOR = PLANNER IDENTITY (4 fixed colors: Kino-PAX, Kino-PAX+, SimpleCombo, KinoPax*). DELTA is
-% encoded THREE ways at once so it reads clearly even at a glance: line WIDTH (thin -> thick),
-% line STYLE (dotted -> dashed -> solid for large -> fine -> tiny), and, in the scatter, marker
-% SIZE. This replaces the swept-grid encoding (color=bufferFloor, style=bufferSlope,
-% marker=(ef,cf)) that process_countingstars_summary_plots.m uses -- there is nothing left to sweep
-% here, so color is free to carry the identity that actually varies across this comparison.
+% COLOR = PLANNER IDENTITY (4 fixed colors: Kino-PAX, Kino-PAX+, SimpleCombo, KinoPax*), MARKER =
+% PLANNER IDENTITY too (X, +, circle, star). DELTA only appears as an encoded dimension in Figure
+% 3's scatter, as marker SIZE -- Figures 1-2 are solid lines at a single delta ("fine") instead of
+% overlaying all three, since that reads far more cleanly. This replaces the swept-grid encoding
+% (color=bufferFloor, style=bufferSlope, marker=(ef,cf)) that process_countingstars_summary_plots.m
+% uses -- there is nothing left to sweep here, so color is free to carry planner identity.
 %
 % USAGE: cd into ONE environment's data directory, then call the script BY NAME, not via run():
 %   cd build/Data/Benchmarks/PaperBenchmarkV2/empty
@@ -74,8 +77,11 @@ envTitles    = {'Empty'};
 % environments = {'zigzag'};         envTitles = {'Zigzag Corridor (tightened)'};
 
 % Cost metric axis -- one build each, so one set of figures each. BOTH THIS PASS (see
-% run_paper_benchmark_v2.sh's COST_LABELS; Dubins Airplane's own COST_MODE==1 effort branch in
-% edgeCost() (helper.cuh) is what makes "effort" a genuinely different metric from "length" here).
+% run_paper_benchmark_v2.sh's COST_LABELS). CAUTION under MODEL 3 (Quad): edgeCost() (helper.cuh)
+% has a real COST_MODE==1 branch for MODEL 1 and MODEL 2 (Dubins), but none for MODEL 3 -- so for
+% Quad, "effort" silently falls back to the same workspace-distance formula as "length", and the
+% two metrics' figures/table rows will be identical. Not wrong, just redundant; drop 'effort' below
+% if that's not wanted while running Quad.
 metrics       = {'length', 'effort'};
 metricTitles  = {'Workspace Path Length', 'Control Effort'};
 metricYLabels = {'Path Cost (workspace path length)', 'Path Cost (control effort)'};
@@ -83,10 +89,11 @@ metricYLabels = {'Path Cost (workspace path length)', 'Path Cost (control effort
 % metricTitles  = {'Workspace Path Length'};
 % metricYLabels = {'Path Cost (workspace path length)'};
 
-% Delta axis -- OVERLAID inside each figure, encoded as line WIDTH. The filename token is
-% sprintf('%s_%s', delta, metric), e.g. 'fine_effort'. "fine" and "tiny" refine different axes
-% (workspace vs. velocity) -- see run_paper_benchmark.sh -- and are NOT an identical-region-count
-% pair (262,144 vs 592,704).
+% Delta axis. The filename token is sprintf('%s_%s', delta, metric), e.g. 'fine_effort'. "fine"
+% and "tiny" refine different axes (workspace vs. velocity) -- see run_paper_benchmark.sh -- and
+% are NOT an identical-region-count pair (262,144 vs 592,704). Figures 1-2 only ever load/plot the
+% "fine" entry (fineIdx below); Figure 3's scatter is the only place all three are overlaid,
+% encoded as marker SIZE.
 %
 % TINY CHANGED FROM (W_R1=17, V_R1=5, 614,000 regions) THIS PASS -- that discretization crashed
 % with a cudaErrorIllegalAddress in the `empty` environment (see run_paper_benchmark.sh's header
@@ -95,11 +102,10 @@ metricYLabels = {'Path Cost (workspace path length)', 'Path Cost (control effort
 % harness.
 deltas      = {'large', 'fine', 'tiny'};
 deltaTitles = {'Large (9k)', 'Fine (262k)', 'Tiny (593k)'};
-% Deliberately dramatic spread -- width alone (the old [1.0, 1.8, 2.6]) was too subtle to read at a
-% glance, especially where lines overlap on the cost-vs-time plot. Line STYLE is a second,
-% width-independent cue (dotted/dashed/solid), and the scatter uses marker SIZE instead.
-deltaWidths      = [2.0, 3.5, 5.0];
-deltaStyles      = {':', '--', '-'};
+fineIdx     = find(strcmp(deltas, 'fine'));   % the one delta Figures 1-2 actually plot
+
+% Marker SIZE is the only place delta is visually encoded now (Figure 3's scatter, which overlays
+% all three) -- deliberately dramatic so it reads at a glance.
 deltaMarkerSizes = [7, 11, 16];
 
 maxTreeSize = 3000000;   % MAX_TREE_SIZE in config.h -- denominator for the table's Final Tree (%)
@@ -131,13 +137,13 @@ baseDisplay = { ...
     'SimpleCombo', ...
     'KinoPax*' ...
 };
-% color = planner identity: Kino-PAX near-black, Kino-PAX+ blue, SimpleCombo crimson, KinoPax*
-% amber -- each "family" reads as its own hue.
+% color = planner identity: Kino-PAX near-black, Kino-PAX+ vivid blue, SimpleCombo vivid red,
+% KinoPax* vivid yellow -- each "family" reads as its own hue, saturated enough to pop.
 baseColors = [ ...
     0.10 0.10 0.10;    % Kino-PAX
-    0.20 0.40 0.80;    % Kino-PAX+
-    0.45 0.05 0.10;    % SimpleCombo (crimson)
-    0.85 0.55 0.10 ];  % KinoPax* (amber)
+    0.00 0.40 0.95;    % Kino-PAX+ (vivid blue)
+    0.85 0.05 0.05;    % SimpleCombo (vivid red)
+    0.95 0.70 0.00 ];  % KinoPax* (vivid yellow/gold)
 % marker = planner identity too: X, +, circle, star -- matches the display names above (Kino-PAX
 % is the "X" mark, Kino-PAX+ the "+" mark, SimpleCombo a plain circle, KinoPax* an actual star).
 baseMarkers = {'x', '+', 'o', 'p'};
@@ -147,9 +153,7 @@ baseMarkers = {'x', '+', 'o', 'p'};
 plannerNames    = {};
 plannerDisplay  = {};
 plannerColors   = [];
-plannerStyles   = {};
 plannerMarkers  = {};
-plannerWidths   = [];
 plannerSizes    = [];   % scatter marker size, delta-coded (deltaMarkerSizes) -- every series here
                          % is a headline comparison point, not a swept grid, so size carries delta
                          % rather than a baseline/swept-point distinction
@@ -163,9 +167,7 @@ for si = 1:numel(baseNames)
         plannerNames{end + 1}   = baseNames{si};                              %#ok<SAGROW>
         plannerDisplay{end + 1} = sprintf('%s [%s]', baseDisplay{si}, dTag);  %#ok<SAGROW>
         plannerColors(end + 1, :) = baseColors(si, :);                        %#ok<SAGROW>
-        plannerStyles{end + 1}    = deltaStyles{di};                          %#ok<SAGROW>
         plannerMarkers{end + 1}   = baseMarkers{si};                          %#ok<SAGROW>
-        plannerWidths(end + 1)    = deltaWidths(di);                         %#ok<SAGROW>
         plannerSizes(end + 1)     = deltaMarkerSizes(di);                    %#ok<SAGROW>
         plannerDeltaIdx(end + 1)  = di;                                       %#ok<SAGROW>
         plannerBaseIdx(end + 1)   = si;                                       %#ok<SAGROW>
@@ -233,35 +235,44 @@ for ei = 1:numel(environments)
             if ~isempty(treeVals), mFinalTreePct(pi) = 100 * mean(treeVals) / maxTreeSize; end
         end
 
-        % Legend labels carry the success rate alongside the (planner, delta) identity already in
-        % plannerDisplay -- e.g. "Kino-PAX [9k] (87% solved)". NaN (zero runs loaded) falls back to
-        % the plain label; plotMeanTime/plotMeanIter/tradeoffScatter skip empty series anyway, so a
-        % NaN label never actually renders.
-        legendLabels = plannerDisplay;
+        % Legend labels carry the success rate alongside the series identity. `legendLabels` keeps
+        % the [delta] tag (Figure 3, which overlays all three deltas); `legendLabelsFine` drops it
+        % (Figures 1-2, which only ever show the one "fine" series per planner, so repeating the
+        % same tag on every line would just be noise) -- e.g. "Kino-PAX (87% solved)". NaN (zero
+        % runs loaded) falls back to the plain name; plotMeanTime/plotMeanIter/tradeoffScatter skip
+        % empty series anyway, so a NaN label never actually renders.
+        legendLabels     = plannerDisplay;
+        legendLabelsFine = cell(1, nPlanner);
         for pi = 1:nPlanner
+            baseName = baseDisplay{plannerBaseIdx(pi)};
             if ~isnan(mSuccessPct(pi))
-                legendLabels{pi} = sprintf('%s (%.0f%% solved)', plannerDisplay{pi}, mSuccessPct(pi));
+                legendLabels{pi}     = sprintf('%s (%.0f%% solved)', plannerDisplay{pi}, mSuccessPct(pi));
+                legendLabelsFine{pi} = sprintf('%s (%.0f%% solved)', baseName, mSuccessPct(pi));
+            else
+                legendLabelsFine{pi} = baseName;
             end
         end
 
-        %% ---------- FIGURE 1: Best Cost vs Time (mean lines, no bands) ----------
+        %% ---------- FIGURE 1: Best Cost vs Time (mean lines, no bands, "fine" delta only) ----------
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Cost vs Time (%s)', envTitle, costTitle), ...
                'Position', [40 40 1180 700]);
         hold on;
-        tmax = globalMaxTime(R);
+        tmax = globalMaxTime(R(plannerDeltaIdx == fineIdx));
         if tmax > 0
             ct = linspace(0, tmax, numTimeSamples);
             for pi = 1:nPlanner
+                if plannerDeltaIdx(pi) ~= fineIdx, continue; end
                 plotMeanTime(R{pi}, 'best_cost', ct, plannerColors(pi, :), ...
-                             plannerStyles{pi}, plannerWidths(pi), legendLabels{pi});
+                             '-', 2.5, legendLabelsFine{pi});
             end
         end
         xlabel('Elapsed Time (ms)'); ylabel(costYLab); grid on;
         clickableLegend();
-        title(sprintf('Cost vs Time \x2014 %s, %s', envTitle, costTitle), 'FontWeight', 'bold');
+        title(sprintf('Cost vs Time \x2014 %s, %s, %s', envTitle, costTitle, deltaTitles{fineIdx}), ...
+              'FontWeight', 'bold');
 
-        %% ---------- FIGURE 2: Tree Growth vs Iteration ----------
+        %% ---------- FIGURE 2: Tree Growth vs Iteration ("fine" delta only) ----------
         % THERE IS NO GROWTH CONTROLLER -- this is an OUTPUT of however many candidates the doors
         % admitted, not a target the planner tracks against a reference line.
         figNum = figNum + 1;
@@ -269,12 +280,14 @@ for ei = 1:numel(environments)
                'Position', [70 70 1000 640]);
         hold on;
         for pi = 1:nPlanner
+            if plannerDeltaIdx(pi) ~= fineIdx, continue; end
             plotMeanIter(R{pi}, @(t) getCol(t, 'tree_size'), ...
-                         plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), legendLabels{pi});
+                         plannerColors(pi, :), '-', 2.5, legendLabelsFine{pi});
         end
         xlabel('Iteration'); ylabel('tree\_size'); grid on;
         clickableLegend();
-        title(sprintf('Tree Growth \x2014 %s, %s', envTitle, costTitle), 'FontWeight', 'bold');
+        title(sprintf('Tree Growth \x2014 %s, %s, %s', envTitle, costTitle, deltaTitles{fineIdx}), ...
+              'FontWeight', 'bold');
 
         %% ---------- FIGURE 3: Tradeoff Scatter, Time to First Solution vs Final Cost ----------
         costLims = mFinalCost(isfinite(mFinalCost));
@@ -289,7 +302,7 @@ for ei = 1:numel(environments)
         figure('Name', sprintf('%s - Tradeoff Scatter (%s)', envTitle, costTitle), ...
                'Position', [130 140 1180 700]);
         tradeoffScatter(mFirstSolTime, mFinalCost, plannerMarkers, plannerColors, ...
-                        plannerSizes, legendLabels, costYLim);
+                        plannerSizes, legendLabels, mSuccessPct, costYLim);
         xlabel('Avg Time to First Solution (ms)'); ylabel(sprintf('Avg Final %s', costYLab));
         title(sprintf('Time to First Solution vs Final Cost \x2014 %s, %s', envTitle, costTitle), ...
               'FontWeight', 'bold');
@@ -411,7 +424,10 @@ function plotMeanIter(runs, valueFcn, color, style, width, name)
 end
 
 function clickableLegend()
-    lgd = legend('Location', 'eastoutside', 'FontSize', 6);
+    % ItemTokenSize widens the little icon swatch each legend row draws its line/marker preview
+    % in -- MATLAB's default ([30 18]-ish) clips a big marker down to look the same size as a
+    % small one, which is exactly the "legend symbols don't scale like on the plot" problem.
+    lgd = legend('Location', 'eastoutside', 'FontSize', 6, 'ItemTokenSize', [45, 24]);
     lgd.ItemHitFcn = @toggleSeries;
 end
 
@@ -465,16 +481,34 @@ function c = finalCost(tbl, thresh)
     if isempty(v), c = NaN; else, c = v(end); end
 end
 
-function tradeoffScatter(x, y, markers, colors, sizes, labels, yLim)
+function tradeoffScatter(x, y, markers, colors, sizes, labels, successPct, yLim)
     % sizes is delta-coded (deltaMarkerSizes), not a baseline/swept-point distinction -- every
     % series in this comparison is a headline point, so size is free to carry delta instead.
     hold on;
     for pi = 1:numel(x)
         if isnan(x(pi)) || isnan(y(pi)), continue; end
-        plot(x(pi), y(pi), markers{pi}, ...
-             'MarkerFaceColor', colors(pi, :), ...
-             'MarkerEdgeColor', 'k', 'LineWidth', 1.5, ...
-             'MarkerSize', sizes(pi), 'DisplayName', labels{pi});
+        m = markers{pi};
+        if m == 'x' || m == '+'
+            % Stroke-only markers ('x','+') have no fillable interior -- MATLAB ignores
+            % MarkerFaceColor for them entirely, so their visible color comes ONLY from
+            % MarkerEdgeColor (previously hardcoded 'k', i.e. every one of these was rendering
+            % black regardless of its assigned planner color). A much thicker stroke is also what
+            % makes a '+' actually read as a bold cross instead of a thin plus sign.
+            plot(x(pi), y(pi), m, 'MarkerEdgeColor', colors(pi, :), 'LineWidth', 3.5, ...
+                 'MarkerSize', sizes(pi), 'DisplayName', labels{pi});
+        else
+            plot(x(pi), y(pi), m, ...
+                 'MarkerFaceColor', colors(pi, :), ...
+                 'MarkerEdgeColor', 'k', 'LineWidth', 1.5, ...
+                 'MarkerSize', sizes(pi), 'DisplayName', labels{pi});
+        end
+        if ~isnan(successPct(pi))
+            % Leading spaces nudge the label clear of the marker itself without needing a
+            % coordinate-space offset (which would have to know the axes' current scale).
+            text(x(pi), y(pi), sprintf('  %.0f%%', successPct(pi)), ...
+                 'FontSize', 7, 'Color', [0.15 0.15 0.15], ...
+                 'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'left');
+        end
     end
     grid on;
     if ~isempty(yLim), ylim(yLim); end

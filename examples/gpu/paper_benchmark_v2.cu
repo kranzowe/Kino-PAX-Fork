@@ -26,15 +26,15 @@ static std::string g_vizDir;
 // large/fine/tiny discretizations, same MAX_ITERATIONS/MAX_TIME_MS), minimally adapted to
 // reproduce paper_benchmark.cu's fixed 4-planner headline comparison across all four
 // environments -- paper_benchmark.cu (MODEL 2 / Dubins Airplane) hangs at the tiny discretization
-// and the root cause is still open; this tool sidesteps that by running the same comparison, on
-// the same MODEL 2 / Dubins Airplane target, on the harness that has actually completed every
-// delta without hanging.
-// NOTE: the region-discretization dimension breakdown here is the CORRECTED one (C_DIM=2 for
-// yaw+pitch, V_DIM=1 for airspeed only, both properly bounded), not paper_benchmark.cu's own
-// C_DIM=0/V_DIM=3 (which crams yaw/pitch into the velocity-shaped V_DIM=3 slot bounded to
-// [-0.3,0.3] -- a real region-density-skew bug flagged earlier). So this tool's numbers are not
-// directly comparable to paper_benchmark.cu's own Model 2 results -- see run_paper_benchmark_v2.sh
-// for the full derivation.
+// and the root cause is still open; this tool sidesteps that by running the same comparison on the
+// harness that has actually completed every delta without hanging. MODEL has since moved twice:
+// first to 2 (Dubins Airplane, matching paper_benchmark.cu's original target -- with a corrected
+// C_DIM=2/V_DIM=1 dimension breakdown instead of paper_benchmark.cu's own C_DIM=0/V_DIM=3, which
+// crams yaw/pitch into the velocity-shaped V_DIM=3 slot bounded to [-0.3,0.3], a real
+// region-density-skew bug flagged earlier), and now to 3 (12D Non-Linear Quad). See
+// run_paper_benchmark_v2.sh for the full derivation of both switches, including why Quad keeps its
+// own native [0,100] workspace scale rather than being shrunk to match the others, and how
+// obstacles/start/goal get scaled into it (this file's main(), right after readObstaclesFromCSV).
 //
 // CountingStars             bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,
 //                           h_hopelessGuard_ PERMANENTLY ON (v3.5) -- countingstars_sweep.cu's
@@ -1239,6 +1239,14 @@ int main(int argc, char* argv[])
     int numObstacles;
     float* d_obstacles;
     std::vector<float> obstacles = readObstaclesFromCSV(obstaclePath, numObstacles, W_DIM);
+    // Obstacle CSVs are authored as fractions of a unit [0,1] workspace -- scale into this
+    // build's actual workspace bounds, exactly like h_initial/h_goal above already do. A no-op
+    // for every model except Quad (W_MIN=0, W_SIZE=1.0f for Double Integrator/Dubins/Unicycle;
+    // Quad's own checked-in config.h uses W_MIN=0, W_SIZE=100.0f instead).
+    for(float& coord : obstacles)
+    {
+        coord = W_MIN + coord * W_SIZE;
+    }
     cudaMalloc(&d_obstacles, numObstacles * 2 * W_DIM * sizeof(float));
     cudaMemcpy(d_obstacles, obstacles.data(), numObstacles * 2 * W_DIM * sizeof(float), cudaMemcpyHostToDevice);
     printf("Loaded %d obstacles from %s\n", numObstacles, obstaclePath.c_str());
