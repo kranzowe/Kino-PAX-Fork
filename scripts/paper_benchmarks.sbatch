@@ -9,4 +9,4 @@
 #SBATCH --error=paper_benchmarks-%j.err
 
 cd "$SLURM_SUBMIT_DIR"
-bash run_paper_benchmark.sh
+bash run_paper_benchmark_v2.sh
