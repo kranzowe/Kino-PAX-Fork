@@ -1,0 +1,57 @@
+JETSON CMAKE FIX: CMAKE_CUDA_COMPILER-NOTFOUND
+================================================
+
+Symptom (from CMakeError.log):
+
+    Checking whether the CUDA compiler is NVIDIA using "" did not match ...
+    Compiling the CUDA compiler identification source file "CMakeCUDACompilerId.cu" failed.
+    Compiler: CMAKE_CUDA_COMPILER-NOTFOUND
+    The output was:
+    No such file or directory
+
+This is NOT a bug in the repo's CMakeLists.txt or config. It means CMake could not find
+the nvcc binary at all, so it never got as far as caring about CUDA_ARCHITECTURES,
+MAX_TREE_SIZE, or anything else project-specific. It's a PATH/environment issue on the
+Jetson itself.
+
+Likely cause: on JetPack, nvcc lives at /usr/local/cuda/bin/nvcc (or
+/usr/local/cuda-<version>/bin/nvcc), and that directory usually isn't on PATH unless a
+login shell has sourced /etc/profile.d/*cuda*.sh or your ~/.bashrc. Running cmake from a
+non-login shell (SSH non-login session, a script, etc.) can miss that, giving exactly this
+NOTFOUND error.
+
+STEP 1 -- Confirm nvcc exists and whether it's on PATH:
+
+    which nvcc
+    ls /usr/local/cuda/bin/nvcc
+
+STEP 2 -- If nvcc exists but `which nvcc` found nothing, add CUDA to PATH:
+
+    export PATH=/usr/local/cuda/bin:$PATH
+    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+
+Make it permanent by appending those two lines to ~/.bashrc:
+
+    echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc
+    echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
+    source ~/.bashrc
+
+STEP 3 -- Clear the stale CMake cache before re-running. The failed configure already
+cached the NOTFOUND result, so a bare re-run will just reuse it:
+
+    rm -rf build
+    mkdir build && cd build
+    cmake .. -DCMAKE_BUILD_TYPE=Release
+
+STEP 4 -- If nvcc genuinely isn't installed anywhere (Step 1 finds nothing at all), the
+CUDA toolkit component of JetPack may be missing:
+
+    dpkg -l | grep cuda
+
+If nothing relevant shows up, install the toolkit (adjust version to what JetPack expects):
+
+    sudo apt install cuda-toolkit-<version>
+
+Once `which nvcc` resolves and `nvcc --version` runs cleanly, re-run the smoke test:
+
+    cd scripts && bash run_jetson_smoke_test.sh
