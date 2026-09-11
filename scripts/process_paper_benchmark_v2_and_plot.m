@@ -40,8 +40,10 @@
 %                                cost-of-last, success rate, final tree size %. Printed to the
 %                                console AND written to a CSV alongside the figures.
 %
-% COLOR = PLANNER IDENTITY (4 fixed colors), WIDTH = DELTA (thin -> thick for large -> fine ->
-% tiny). This replaces the swept-grid encoding (color=bufferFloor, style=bufferSlope,
+% COLOR = PLANNER IDENTITY (4 fixed colors: Kino-PAX, Kino-PAX+, SimpleCombo, KinoPax*). DELTA is
+% encoded THREE ways at once so it reads clearly even at a glance: line WIDTH (thin -> thick),
+% line STYLE (dotted -> dashed -> solid for large -> fine -> tiny), and, in the scatter, marker
+% SIZE. This replaces the swept-grid encoding (color=bufferFloor, style=bufferSlope,
 % marker=(ef,cf)) that process_countingstars_summary_plots.m uses -- there is nothing left to sweep
 % here, so color is free to carry the identity that actually varies across this comparison.
 %
@@ -56,7 +58,7 @@
 clear; clc; close all;
 
 %% --- Configuration ---
-dataDir = '';   % '' = current directory (run this from Data/Benchmarks/PaperBenchmarkV2/<env>)
+dataDir = 'empty';   % '' = current directory (run this from Data/Benchmarks/PaperBenchmarkV2/<env>)
 
 % One environment per run -- must match the subfolder you cd'd into. Change this each time you
 % move to a different Data/Benchmarks/PaperBenchmarkV2/<env> folder.
@@ -92,8 +94,13 @@ metricYLabels = {'Path Cost (workspace path length)', 'Path Cost (control effort
 % V_R1=6, 592,704 regions), confirmed clean across all five series in a dedicated bug-isolation
 % harness.
 deltas      = {'large', 'fine', 'tiny'};
-deltaTitles = {'9k', '262k W-refined', '593k V-refined'};
-deltaWidths = [1.0, 1.8, 2.6];
+deltaTitles = {'Large (9k)', 'Fine (262k)', 'Tiny (593k)'};
+% Deliberately dramatic spread -- width alone (the old [1.0, 1.8, 2.6]) was too subtle to read at a
+% glance, especially where lines overlap on the cost-vs-time plot. Line STYLE is a second,
+% width-independent cue (dotted/dashed/solid), and the scatter uses marker SIZE instead.
+deltaWidths      = [2.0, 3.5, 5.0];
+deltaStyles      = {':', '--', '-'};
+deltaMarkerSizes = [7, 11, 16];
 
 maxTreeSize = 3000000;   % MAX_TREE_SIZE in config.h -- denominator for the table's Final Tree (%)
 
@@ -115,20 +122,25 @@ baseNames = { ...
     sprintf('KinoPaxSTARTrue_cap%d_anc%d', trueCap, trueAncestorPrune), ...
     sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d_hg%d', csSlope, csFloor, csExplore, csCost, csHopelessGuard) ...
 };
+% Display names, no algorithm-parameter parentheticals -- the params (syclopCap/ancestorPrune,
+% bufferSlope/bufferFloor/ef/cf/hopelessGuard) still fully identify each series via `baseNames`
+% above (which is what loadRuns() actually matches against); they just don't clutter the legend.
 baseDisplay = { ...
-    'KPAX', ...
-    'KinoPaxPlus', ...
-    'KinoPaxSTARTrue (naive, stale-best prune)', ...
-    'CountingStars (slope 1.2, floor 0.4, ef 0.15, cf 0.75, hopeless guard ON)' ...
+    'Kino-PAX', ...
+    'Kino-PAX+', ...
+    'SimpleCombo', ...
+    'KinoPax*' ...
 };
-% color = planner identity: KPAX near-black, KinoPaxPlus blue, KinoPaxSTARTrue crimson,
-% CountingStars amber -- each "family" reads as its own hue.
+% color = planner identity: Kino-PAX near-black, Kino-PAX+ blue, SimpleCombo crimson, KinoPax*
+% amber -- each "family" reads as its own hue.
 baseColors = [ ...
-    0.10 0.10 0.10;    % KPAX
-    0.20 0.40 0.80;    % KinoPaxPlus
-    0.45 0.05 0.10;    % KinoPaxSTARTrue (crimson)
-    0.85 0.55 0.10 ];  % CountingStars (amber)
-baseMarkers = {'s', 'd', 'h', 'o'};
+    0.10 0.10 0.10;    % Kino-PAX
+    0.20 0.40 0.80;    % Kino-PAX+
+    0.45 0.05 0.10;    % SimpleCombo (crimson)
+    0.85 0.55 0.10 ];  % KinoPax* (amber)
+% marker = planner identity too: X, +, circle, star -- matches the display names above (Kino-PAX
+% is the "X" mark, Kino-PAX+ the "+" mark, SimpleCombo a plain circle, KinoPax* an actual star).
+baseMarkers = {'x', '+', 'o', 'p'};
 
 % --- Build the series arrays: (planner, delta) pairs, planner-major so the legend and table group
 % all three deltas together per planner. ---
@@ -138,23 +150,23 @@ plannerColors   = [];
 plannerStyles   = {};
 plannerMarkers  = {};
 plannerWidths   = [];
-plannerBaseline = [];   % logical: drawn as the larger scatter marker (all true -- every series here
-                         % is a headline comparison point, not a swept grid)
+plannerSizes    = [];   % scatter marker size, delta-coded (deltaMarkerSizes) -- every series here
+                         % is a headline comparison point, not a swept grid, so size carries delta
+                         % rather than a baseline/swept-point distinction
 plannerDeltaIdx = [];   % index into `deltas`
 plannerBaseIdx  = [];   % index into `baseNames`/`baseDisplay` -- table's Planner column
 
 for si = 1:numel(baseNames)
     for di = 1:numel(deltas)
-        dWidth = deltaWidths(di);
-        dTag   = deltaTitles{di};
+        dTag = deltaTitles{di};
 
         plannerNames{end + 1}   = baseNames{si};                              %#ok<SAGROW>
         plannerDisplay{end + 1} = sprintf('%s [%s]', baseDisplay{si}, dTag);  %#ok<SAGROW>
         plannerColors(end + 1, :) = baseColors(si, :);                        %#ok<SAGROW>
-        plannerStyles{end + 1}    = '-';                                      %#ok<SAGROW>
+        plannerStyles{end + 1}    = deltaStyles{di};                          %#ok<SAGROW>
         plannerMarkers{end + 1}   = baseMarkers{si};                          %#ok<SAGROW>
-        plannerWidths(end + 1)    = dWidth;                                   %#ok<SAGROW>
-        plannerBaseline(end + 1)  = true;                                     %#ok<SAGROW>
+        plannerWidths(end + 1)    = deltaWidths(di);                         %#ok<SAGROW>
+        plannerSizes(end + 1)     = deltaMarkerSizes(di);                    %#ok<SAGROW>
         plannerDeltaIdx(end + 1)  = di;                                       %#ok<SAGROW>
         plannerBaseIdx(end + 1)   = si;                                       %#ok<SAGROW>
     end
@@ -168,7 +180,6 @@ MAX_FLOAT_THRESH = 1e30;   % best_cost sentinel (MAX_FLOAT / INFINITY) -> NaN
 numTimeSamples   = 500;
 
 nPlanner = numel(plannerNames);
-deltaLabel = '3 deltas overlaid (width-coded)';
 
 %% ======================================================================
 figNum = 0;
@@ -191,41 +202,7 @@ for ei = 1:numel(environments)
                     ['[' deltas{plannerDeltaIdx(pi)} ']'], numel(R{pi}));
         end
 
-        %% ---------- FIGURE 1: Best Cost vs Time (mean lines, no bands) ----------
-        figNum = figNum + 1;
-        figure('Name', sprintf('%s - Cost vs Time (%s)', envTitle, costTitle), ...
-               'Position', [40 40 1180 700]);
-        hold on;
-        tmax = globalMaxTime(R);
-        if tmax > 0
-            ct = linspace(0, tmax, numTimeSamples);
-            for pi = 1:nPlanner
-                plotMeanTime(R{pi}, 'best_cost', ct, plannerColors(pi, :), ...
-                             plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
-            end
-        end
-        xlabel('Elapsed Time (ms)'); ylabel(costYLab); grid on;
-        clickableLegend();
-        title(sprintf('Best Cost vs Time \x2014 %s, %s, %s', envTitle, deltaLabel, costTitle), ...
-              'FontWeight', 'bold');
-
-        %% ---------- FIGURE 2: Tree Growth vs Iteration ----------
-        % THERE IS NO GROWTH CONTROLLER -- this is an OUTPUT of however many candidates the doors
-        % admitted, not a target the planner tracks against a reference line.
-        figNum = figNum + 1;
-        figure('Name', sprintf('%s - Tree Growth (%s)', envTitle, costTitle), ...
-               'Position', [70 70 1000 640]);
-        hold on;
-        for pi = 1:nPlanner
-            plotMeanIter(R{pi}, @(t) getCol(t, 'tree_size'), ...
-                         plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), plannerDisplay{pi});
-        end
-        xlabel('Iteration'); ylabel('tree\_size'); grid on;
-        clickableLegend();
-        title(sprintf('Tree Growth vs Iteration \x2014 %s, %s, %s', envTitle, deltaLabel, costTitle), ...
-              'FontWeight', 'bold');
-
-        %% ---------- Aggregate summary metrics per planner (FIGURE 3 + the table) ----------
+        %% ---------- Aggregate summary metrics per planner (drives the legends, FIGURE 3, table) ----------
         mFirstSolTime = NaN(1, nPlanner);
         mFirstSolCost = NaN(1, nPlanner);
         mFinalCost    = NaN(1, nPlanner);
@@ -256,6 +233,49 @@ for ei = 1:numel(environments)
             if ~isempty(treeVals), mFinalTreePct(pi) = 100 * mean(treeVals) / maxTreeSize; end
         end
 
+        % Legend labels carry the success rate alongside the (planner, delta) identity already in
+        % plannerDisplay -- e.g. "Kino-PAX [9k] (87% solved)". NaN (zero runs loaded) falls back to
+        % the plain label; plotMeanTime/plotMeanIter/tradeoffScatter skip empty series anyway, so a
+        % NaN label never actually renders.
+        legendLabels = plannerDisplay;
+        for pi = 1:nPlanner
+            if ~isnan(mSuccessPct(pi))
+                legendLabels{pi} = sprintf('%s (%.0f%% solved)', plannerDisplay{pi}, mSuccessPct(pi));
+            end
+        end
+
+        %% ---------- FIGURE 1: Best Cost vs Time (mean lines, no bands) ----------
+        figNum = figNum + 1;
+        figure('Name', sprintf('%s - Cost vs Time (%s)', envTitle, costTitle), ...
+               'Position', [40 40 1180 700]);
+        hold on;
+        tmax = globalMaxTime(R);
+        if tmax > 0
+            ct = linspace(0, tmax, numTimeSamples);
+            for pi = 1:nPlanner
+                plotMeanTime(R{pi}, 'best_cost', ct, plannerColors(pi, :), ...
+                             plannerStyles{pi}, plannerWidths(pi), legendLabels{pi});
+            end
+        end
+        xlabel('Elapsed Time (ms)'); ylabel(costYLab); grid on;
+        clickableLegend();
+        title(sprintf('Cost vs Time \x2014 %s, %s', envTitle, costTitle), 'FontWeight', 'bold');
+
+        %% ---------- FIGURE 2: Tree Growth vs Iteration ----------
+        % THERE IS NO GROWTH CONTROLLER -- this is an OUTPUT of however many candidates the doors
+        % admitted, not a target the planner tracks against a reference line.
+        figNum = figNum + 1;
+        figure('Name', sprintf('%s - Tree Growth (%s)', envTitle, costTitle), ...
+               'Position', [70 70 1000 640]);
+        hold on;
+        for pi = 1:nPlanner
+            plotMeanIter(R{pi}, @(t) getCol(t, 'tree_size'), ...
+                         plannerColors(pi, :), plannerStyles{pi}, plannerWidths(pi), legendLabels{pi});
+        end
+        xlabel('Iteration'); ylabel('tree\_size'); grid on;
+        clickableLegend();
+        title(sprintf('Tree Growth \x2014 %s, %s', envTitle, costTitle), 'FontWeight', 'bold');
+
         %% ---------- FIGURE 3: Tradeoff Scatter, Time to First Solution vs Final Cost ----------
         costLims = mFinalCost(isfinite(mFinalCost));
         if numel(costLims) >= 2 && max(costLims) > min(costLims)
@@ -265,18 +285,14 @@ for ei = 1:numel(environments)
             costYLim = [];   % nothing solved, or a single value: let MATLAB autoscale
         end
 
-        markerKey = sprintf(['lower-left is better (fast and cheap); width = delta (thin->thick = ' ...
-                             'large->fine->tiny); \x25a1 KPAX, \x25c7 KinoPaxPlus, ' ...
-                             '\x2605 KinoPaxSTARTrue, \x25cb CountingStars']);
-
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Tradeoff Scatter (%s)', envTitle, costTitle), ...
                'Position', [130 140 1180 700]);
         tradeoffScatter(mFirstSolTime, mFinalCost, plannerMarkers, plannerColors, ...
-                        plannerBaseline, plannerDisplay, costYLim);
+                        plannerSizes, legendLabels, costYLim);
         xlabel('Avg Time to First Solution (ms)'); ylabel(sprintf('Avg Final %s', costYLab));
-        title(sprintf(['Tuning Tradeoff: Time to First Solution vs FINAL Cost \x2014 %s, %s\n%s'], ...
-                       envTitle, costTitle, markerKey), 'FontWeight', 'bold');
+        title(sprintf('Time to First Solution vs Final Cost \x2014 %s, %s', envTitle, costTitle), ...
+              'FontWeight', 'bold');
 
         %% ---------- TABLE: one row per (planner, delta) ----------
         fprintf('\n--- Summary Table: %s | %s ---\n', envTitle, costTitle);
@@ -449,15 +465,16 @@ function c = finalCost(tbl, thresh)
     if isempty(v), c = NaN; else, c = v(end); end
 end
 
-function tradeoffScatter(x, y, markers, colors, isBaseline, labels, yLim)
+function tradeoffScatter(x, y, markers, colors, sizes, labels, yLim)
+    % sizes is delta-coded (deltaMarkerSizes), not a baseline/swept-point distinction -- every
+    % series in this comparison is a headline point, so size is free to carry delta instead.
     hold on;
     for pi = 1:numel(x)
         if isnan(x(pi)) || isnan(y(pi)), continue; end
-        if isBaseline(pi), msz = 11; else, msz = 8; end
         plot(x(pi), y(pi), markers{pi}, ...
              'MarkerFaceColor', colors(pi, :), ...
-             'MarkerEdgeColor', 'k', 'LineWidth', 0.5, ...
-             'MarkerSize', msz, 'DisplayName', labels{pi});
+             'MarkerEdgeColor', 'k', 'LineWidth', 1.5, ...
+             'MarkerSize', sizes(pi), 'DisplayName', labels{pi});
     end
     grid on;
     if ~isempty(yLim), ylim(yLim); end
