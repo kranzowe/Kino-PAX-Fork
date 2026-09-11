@@ -3,10 +3,13 @@
 # Jetson Smoke Test Runner
 #
 # Builds and runs examples/gpu/jetson_smoke_test.cu against the SWEEP'S REAL CONFIG -- MODEL 1,
-# MAX_TREE_SIZE 3000000, the `large` delta (W_R1=10, V_R1=3, 27,000 regions), COST_MODE 0 -- the
-# same config scripts/run_countingstars_sweep.sh writes. This is NOT a smaller "does it link"
-# config: verifying the actual sweep footprint (~630 MiB per live planner) fits in an embedded
-# GPU's shared memory is the entire point. A smaller tree would pass without proving anything.
+# MAX_TREE_SIZE 1000000, the `large` delta (W_R1=10, V_R1=3, 27,000 regions), COST_MODE 0.
+# MAX_TREE_SIZE is 1,000,000 here, not the 3,000,000 scripts/run_countingstars_sweep.sh writes on
+# the cluster -- this is the JETSON branch (JetsonHopelessNodeGuard), and an Orin Nano's 8 GB
+# shared RAM does not have headroom for the full-size tree across this test's six live planners.
+# This is NOT a smaller "does it link" config: verifying the actual on-device footprint (~210 MiB
+# per live planner at this size) fits in an embedded GPU's shared memory is the entire point. A
+# smaller tree would pass without proving anything.
 #
 # THIS IS A SMOKE TEST, NOT A BENCHMARK. No comparable numbers come out of it. It answers three
 # yes/no questions per planner -- see the header of jetson_smoke_test.cu for what each means and
@@ -96,7 +99,7 @@ write_config() {
 /***************************/
 #define MODEL 1
 #define COST_MODE 0  // path cost: 1 = control effort ((ax^2+ay^2+az^2)*dt), 0 = workspace distance
-#define MAX_TREE_SIZE 3000000
+#define MAX_TREE_SIZE 1000000
 #define MAX_FLOAT 1e38f
 #define MAX_SOL_SET_SIZE 500
 #define MAX_ITER 300
@@ -188,7 +191,7 @@ REGIONS=$(( 10**3 * 3**3 ))
 echo ""
 echo "======================================================="
 echo "  JETSON SMOKE TEST"
-echo "  Model: 1 (6D Double Integrator), MAX_TREE_SIZE=3000000"
+echo "  Model: 1 (6D Double Integrator), MAX_TREE_SIZE=1000000"
 echo "  Delta: large  | W_R1=10 C_R1=1 V_R1=3 | Regions=${REGIONS}"
 echo "  (the sweep's real config -- this is what has to fit, not a smaller stand-in)"
 echo "  Build jobs: ${BUILD_JOBS}"

@@ -3,15 +3,17 @@
 // NOT a benchmark -- no comparable numbers are produced, and none should be read from this file.
 // It exists to answer three yes/no questions per planner, on whatever config.h was written before
 // the build (scripts/run_jetson_smoke_test.sh writes the sweep's real MODEL 1 / MAX_TREE_SIZE
-// 3000000 / large-delta config, so this measures the footprint that matters):
+// 1000000 / large-delta config -- 1,000,000 on this Jetson branch rather than the cluster's
+// 3,000,000, so this measures the footprint that actually has to fit on-device):
 //
 //   1. DID IT SOLVE. Not "no CUDA error" -- a planner that runs 50 clean iterations without ever
 //      reaching the goal is not a passing smoke test, and the empty environment with a config-
 //      derived start/goal (see below) makes "never reaches the goal" a real failure signal rather
 //      than a config mismatch.
 //   2. DID IT LEAK. Planner has no destructor of its own historically, so d_randomSeeds_ptr_ alone
-//      (48B * MAX_TREE_SIZE) leaked on every construction -- 144 MiB at this config, times however
-//      many planners a sweep constructs. cudaMemGetInfo before/after each planner's scope is the
+//      (48B * MAX_TREE_SIZE) leaked on every construction -- 48 MiB at this config (1,000,000 on
+//      this Jetson branch; 144 MiB at the cluster's 3,000,000), times however many planners a
+//      sweep constructs. cudaMemGetInfo before/after each planner's scope is the
 //      direct check, and it is what makes the ~Planner() fix in Planner.cu verifiable rather than
 //      assumed.
 //   3. DID IT HANG. A wall-clock budget per planner, matching every real benchmark harness in this

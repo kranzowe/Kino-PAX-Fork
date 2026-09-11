@@ -1,5 +1,10 @@
 #!/bin/bash
 # =============================================================================
+# JETSON BRANCH (JetsonHopelessNodeGuard): MAX_TREE_SIZE is 1,000,000 here, not the 3,000,000 used
+# on the cluster (scripts/run_paper_benchmark_v2.sh on HopelessNodeGuard) -- an Orin Nano's 8 GB
+# shared RAM does not have headroom for the full-size tree across this harness's per-planner
+# footprint. See scripts/run_jetson_smoke_test.sh, updated the same way on this branch.
+#
 # Paper Benchmark v2 -- countingstars_sweep.cu's harness, minimally adapted to reproduce
 # paper_benchmark.cu's fixed 4-planner headline comparison reliably.
 #
@@ -339,7 +344,7 @@ write_config() {
 /***************************/
 #define MODEL 2
 #define COST_MODE ${COST_MODE}  // path cost: 1 = control effort ((yawRate^2+pitchRate^2+a^2)*dt), 0 = workspace distance
-#define MAX_TREE_SIZE 3000000
+#define MAX_TREE_SIZE 1000000
 #define MAX_FLOAT 1e38f
 #define MAX_SOL_SET_SIZE 500
 #define MAX_ITER 1000
