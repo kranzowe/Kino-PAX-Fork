@@ -10,22 +10,27 @@
 % run_paper_benchmark_v2.sh for the full derivation. Otherwise identical in structure/presentation
 % to process_paper_benchmark_and_plot.m.
 %
+% JETSON BRANCH (JetsonHopelessNodeGuard): ONE DISCRETIZATION ONLY -- `fine` (262,144 regions), not
+% the earlier large/fine/tiny sweep run_paper_benchmark_v2.sh used to run on this branch (see that
+% script's own header for why). This file used to overlay all three deltas per planner (12 series
+% total, delta encoded via line width/style/scatter-marker-size); that machinery is gone now that
+% there is only one point per planner -- 4 series total, color+marker carry planner identity alone.
+%
 % A FIXED COMPARISON, not a sweep -- there is no grid here, so the series list below is NOT built
-% from nested loops over swept parameters the way process_countingstars_and_plot.m's is. It is
-% four already-chosen operating points (KPAX, KinoPaxPlus, KinoPaxSTARTrue at ancestorPrune 1, and
-% ONE CountingStars point), each run at all three deltas -- 12 series total, overlaid inside each
-% figure. CountingStars runs bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,
-% WITH THE HOPELESS GUARD PERMANENTLY ON (v3.5, h_hopelessGuard_ in CountingStars.cuh) --
-% countingstars_sweep.cu's own on/off sweep confirmed the guard helps at an earlier operating
-% point, and slope/floor/ef/cf were re-tuned with it on (replacing the earlier two-point,
-% unguarded bufferFloor 0.3/0.6 arm). KinoPaxSTARTrue (h_syclopCap_ at its 1.0 no-op default,
-% h_ancestorPrune_ = 1) replaces KinoPaxSTARCleanCost as the non-CountingStars "STAR" reference
-% this pass -- the naive OR-fusion of KPAX and KinoPaxPlus plus the guarded stale-best prune tells
-% a "beats the naive fusion of its two parents" story, rather than CleanCost's "beats one already
-% cost-tuned competitor." A second point at ancestorPrune 0 (the pure fusion, == stock
-% KinoPaxSTARNoGoalBias exactly) ran alongside this one in an earlier pass to isolate what the
-% guarded prune buys; it was dropped from this comparison (recoverable from git history as
-% KinoPaxSTARTrue_cap100_anc0). Same three panels as
+% from nested loops over swept parameters the way process_countingstars_and_plot.m's is. It is four
+% already-chosen operating points (KPAX, KinoPaxPlus, KinoPaxSTARTrue at ancestorPrune 1, and ONE
+% CountingStars point), each at the single `fine` delta. CountingStars runs bufferSlope 1.2,
+% bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75, WITH THE HOPELESS GUARD PERMANENTLY ON (v3.5,
+% h_hopelessGuard_ in CountingStars.cuh) -- countingstars_sweep.cu's own on/off sweep confirmed the
+% guard helps at an earlier operating point, and slope/floor/ef/cf were re-tuned with it on
+% (replacing the earlier two-point, unguarded bufferFloor 0.3/0.6 arm). KinoPaxSTARTrue
+% (h_syclopCap_ at its 1.0 no-op default, h_ancestorPrune_ = 1) replaces KinoPaxSTARCleanCost as
+% the non-CountingStars "STAR" reference this pass -- the naive OR-fusion of KPAX and KinoPaxPlus
+% plus the guarded stale-best prune tells a "beats the naive fusion of its two parents" story,
+% rather than CleanCost's "beats one already cost-tuned competitor." A second point at
+% ancestorPrune 0 (the pure fusion, == stock KinoPaxSTARNoGoalBias exactly) ran alongside this one
+% in an earlier pass to isolate what the guarded prune buys; it was dropped from this comparison
+% (recoverable from git history as KinoPaxSTARTrue_cap100_anc0). Same three panels as
 % process_countingstars_summary_plots.m (this script's direct ancestor -- loadRuns and every plot
 % helper below are copies of its versions), plus a results table this one adds:
 %
@@ -35,17 +40,18 @@
 %                                growth controller -- growth is an OUTPUT of the doors, not a
 %                                target).
 %   3. Tradeoff Scatter         mean time-to-first-solution vs mean FINAL cost, one point per
-%                                (planner, delta). Lower-left wins both.
-%   4. SUMMARY TABLE            one row per (planner, delta): time-to-first, cost-of-first,
-%                                cost-of-last, success rate, final tree size %. Printed to the
-%                                console AND written to a CSV alongside the figures.
+%                                planner. Lower-left wins both.
+%   4. SUMMARY TABLE            one row per planner: time-to-first, cost-of-first, cost-of-last,
+%                                success rate, final tree size % -- all at the single `fine`
+%                                discretization, so there's no per-row Delta column any more.
+%                                Printed to the console, and written alongside the figures as BOTH
+%                                a CSV (paper_benchmark_v2_table_<env>_<metric>.csv) and a
+%                                publication-ready LaTeX table
+%                                (paper_benchmark_v2_table_<env>_<metric>.tex, booktabs style,
+%                                \input{}-able directly into the paper).
 %
-% COLOR = PLANNER IDENTITY (4 fixed colors: Kino-PAX, Kino-PAX+, SimpleCombo, KinoPax*). DELTA is
-% encoded THREE ways at once so it reads clearly even at a glance: line WIDTH (thin -> thick),
-% line STYLE (dotted -> dashed -> solid for large -> fine -> tiny), and, in the scatter, marker
-% SIZE. This replaces the swept-grid encoding (color=bufferFloor, style=bufferSlope,
-% marker=(ef,cf)) that process_countingstars_summary_plots.m uses -- there is nothing left to sweep
-% here, so color is free to carry the identity that actually varies across this comparison.
+% COLOR = PLANNER IDENTITY (4 fixed colors: Kino-PAX, Kino-PAX+, SimpleCombo, KinoPax*), MARKER =
+% PLANNER IDENTITY TOO (x, +, o, star). Nothing else needs encoding now that delta is fixed.
 %
 % USAGE: cd into ONE environment's data directory, then call the script BY NAME, not via run():
 %   cd build/Data/Benchmarks/PaperBenchmarkV2/empty
@@ -83,26 +89,22 @@ metricYLabels = {'Path Cost (workspace path length)', 'Path Cost (control effort
 % metricTitles  = {'Workspace Path Length'};
 % metricYLabels = {'Path Cost (workspace path length)'};
 
-% Delta axis -- OVERLAID inside each figure, encoded as line WIDTH. The filename token is
-% sprintf('%s_%s', delta, metric), e.g. 'fine_effort'. "fine" and "tiny" refine different axes
-% (workspace vs. velocity) -- see run_paper_benchmark.sh -- and are NOT an identical-region-count
-% pair (262,144 vs 592,704).
-%
-% TINY CHANGED FROM (W_R1=17, V_R1=5, 614,000 regions) THIS PASS -- that discretization crashed
-% with a cudaErrorIllegalAddress in the `empty` environment (see run_paper_benchmark.sh's header
-% for the debugging history). It is replaced with countingstars_sweep.cu's own tiny (W_R1=14,
-% V_R1=6, 592,704 regions), confirmed clean across all five series in a dedicated bug-isolation
-% harness.
-deltas      = {'large', 'fine', 'tiny'};
-deltaTitles = {'9k', '262k W-refined', '593k V-refined'};
-% Deliberately dramatic spread -- width alone (the old [1.0, 1.8, 2.6]) was too subtle to read at a
-% glance, especially where lines overlap on the cost-vs-time plot. Line STYLE is a second,
-% width-independent cue (dotted/dashed/solid), and the scatter uses marker SIZE instead.
-deltaWidths      = [1.0, 3.5, 7.0];
-deltaStyles      = {':', '--', '-'};
-deltaMarkerSizes = [7, 11, 16];
+% Delta axis -- ONE DISCRETIZATION ONLY THIS PASS (see file header): the existing `fine` point,
+% 262,144 regions. The filename token is sprintf('%s_%s', delta, metric), e.g. 'fine_effort'.
+delta      = 'fine';
+deltaTitle = '262k regions';
 
-maxTreeSize = 3000000;   % MAX_TREE_SIZE in config.h -- denominator for the table's Final Tree (%)
+% Fixed line/marker styling now that delta no longer needs its own visual channel -- planner
+% identity (color + marker, set on baseColors/baseMarkers below) carries the whole comparison.
+seriesWidth     = 2.0;
+seriesStyle     = '-';
+seriesMarkerSize = 12;
+
+% MAX_TREE_SIZE in config.h -- denominator for the table's Final Tree (%). MUST MATCH
+% run_paper_benchmark_v2.sh's write_config() on THIS branch: 1,000,000 (the Jetson-reduced value),
+% NOT the cluster's 3,000,000 -- this was silently wrong (3x understated Final Tree %) before this
+% pass caught it while simplifying this file to one discretization.
+maxTreeSize = 1000000;
 
 % --- The four FIXED series (not swept). Label tokens must match examples/gpu/paper_benchmark.cu's
 % trueLabel() / countingStarsLabel() exactly: round(100 x float) for cap/bs/bf, round(1000 x
@@ -142,39 +144,18 @@ baseColors = [ ...
 % is the "X" mark, Kino-PAX+ the "+" mark, SimpleCombo a plain circle, KinoPax* an actual star).
 baseMarkers = {'x', '+', 'o', 'p'};
 
-% --- Build the series arrays: (planner, delta) pairs, planner-major so the legend and table group
-% all three deltas together per planner. ---
-plannerNames    = {};
-plannerDisplay  = {};
-plannerColors   = [];
-plannerStyles   = {};
-plannerMarkers  = {};
-plannerWidths   = [];
-plannerSizes    = [];   % scatter marker size, delta-coded (deltaMarkerSizes) -- every series here
-                         % is a headline comparison point, not a swept grid, so size carries delta
-                         % rather than a baseline/swept-point distinction
-plannerDeltaIdx = [];   % index into `deltas`
-plannerBaseIdx  = [];   % index into `baseNames`/`baseDisplay` -- table's Planner column
+% --- Build the series arrays: one entry per planner, at the single `fine` delta -- no more nested
+% delta loop now that there's only one point. ---
+plannerNames   = baseNames;     % index si == index into these directly, one series per planner
+plannerDisplay = baseDisplay;
+plannerColors  = baseColors;
+plannerMarkers = baseMarkers;
+plannerStyles  = repmat({seriesStyle}, 1, numel(baseNames));
+plannerWidths  = seriesWidth * ones(1, numel(baseNames));
+plannerSizes   = seriesMarkerSize * ones(1, numel(baseNames));
 
-for si = 1:numel(baseNames)
-    for di = 1:numel(deltas)
-        dTag = deltaTitles{di};
-
-        plannerNames{end + 1}   = baseNames{si};                              %#ok<SAGROW>
-        plannerDisplay{end + 1} = sprintf('%s [%s]', baseDisplay{si}, dTag);  %#ok<SAGROW>
-        plannerColors(end + 1, :) = baseColors(si, :);                        %#ok<SAGROW>
-        plannerStyles{end + 1}    = deltaStyles{di};                          %#ok<SAGROW>
-        plannerMarkers{end + 1}   = baseMarkers{si};                          %#ok<SAGROW>
-        plannerWidths(end + 1)    = deltaWidths(di);                         %#ok<SAGROW>
-        plannerSizes(end + 1)     = deltaMarkerSizes(di);                    %#ok<SAGROW>
-        plannerDeltaIdx(end + 1)  = di;                                       %#ok<SAGROW>
-        plannerBaseIdx(end + 1)   = si;                                       %#ok<SAGROW>
-    end
-end
-
-numRunsPer = 20 * ones(1, numel(plannerNames));   % max runs searched (missing files skipped); the
-                                                    % harness writes 5, this just leaves headroom
-                                                    % for a manual rerun without editing this file
+numRunsPer = 20 * ones(1, numel(plannerNames));   % max runs searched (missing files skipped);
+                                                    % matches NUM_*_RUNS in paper_benchmark_v2.cu
 
 MAX_FLOAT_THRESH = 1e30;   % best_cost sentinel (MAX_FLOAT / INFINITY) -> NaN
 numTimeSamples   = 500;
@@ -193,13 +174,12 @@ for ei = 1:numel(environments)
         costYLab  = metricYLabels{mi};
         fprintf('\n=== Environment: %s | Cost metric: %s ===\n', env, costTitle);
 
-        % --- Load every (planner, delta) series for this cost metric ---
+        % --- Load every planner's series at the single `fine` delta for this cost metric ---
         R = cell(1, nPlanner);
+        tok = sprintf('%s_%s', delta, metric);
         for pi = 1:nPlanner
-            tok   = sprintf('%s_%s', deltas{plannerDeltaIdx(pi)}, metric);
             R{pi} = loadRuns(dataDir, env, plannerNames{pi}, tok, numRunsPer(pi));
-            fprintf('  %-34s %-18s : %d runs\n', plannerNames{pi}, ...
-                    ['[' deltas{plannerDeltaIdx(pi)} ']'], numel(R{pi}));
+            fprintf('  %-34s : %d runs\n', plannerNames{pi}, numel(R{pi}));
         end
 
         %% ---------- Aggregate summary metrics per planner (drives the legends, FIGURE 3, table) ----------
@@ -233,10 +213,10 @@ for ei = 1:numel(environments)
             if ~isempty(treeVals), mFinalTreePct(pi) = 100 * mean(treeVals) / maxTreeSize; end
         end
 
-        % Legend labels carry the success rate alongside the (planner, delta) identity already in
-        % plannerDisplay -- e.g. "Kino-PAX [9k] (87% solved)". NaN (zero runs loaded) falls back to
-        % the plain label; plotMeanTime/plotMeanIter/tradeoffScatter skip empty series anyway, so a
-        % NaN label never actually renders.
+        % Legend labels carry the success rate alongside the planner identity already in
+        % plannerDisplay -- e.g. "Kino-PAX (87% solved)". NaN (zero runs loaded) falls back to the
+        % plain label; plotMeanTime/plotMeanIter/tradeoffScatter skip empty series anyway, so a NaN
+        % label never actually renders.
         legendLabels = plannerDisplay;
         for pi = 1:nPlanner
             if ~isnan(mSuccessPct(pi))
@@ -259,7 +239,7 @@ for ei = 1:numel(environments)
         end
         xlabel('Elapsed Time (ms)'); ylabel(costYLab); grid on;
         clickableLegend();
-        title(sprintf('Cost vs Time \x2014 %s, %s', envTitle, costTitle), 'FontWeight', 'bold');
+        title(sprintf('Cost vs Time \x2014 %s, %s (%s)', envTitle, costTitle, deltaTitle), 'FontWeight', 'bold');
 
         %% ---------- FIGURE 2: Tree Growth vs Iteration ----------
         % THERE IS NO GROWTH CONTROLLER -- this is an OUTPUT of however many candidates the doors
@@ -274,7 +254,7 @@ for ei = 1:numel(environments)
         end
         xlabel('Iteration'); ylabel('tree\_size'); grid on;
         clickableLegend();
-        title(sprintf('Tree Growth \x2014 %s, %s', envTitle, costTitle), 'FontWeight', 'bold');
+        title(sprintf('Tree Growth \x2014 %s, %s (%s)', envTitle, costTitle, deltaTitle), 'FontWeight', 'bold');
 
         %% ---------- FIGURE 3: Tradeoff Scatter, Time to First Solution vs Final Cost ----------
         costLims = mFinalCost(isfinite(mFinalCost));
@@ -291,30 +271,36 @@ for ei = 1:numel(environments)
         tradeoffScatter(mFirstSolTime, mFinalCost, plannerMarkers, plannerColors, ...
                         plannerSizes, legendLabels, costYLim);
         xlabel('Avg Time to First Solution (ms)'); ylabel(sprintf('Avg Final %s', costYLab));
-        title(sprintf('Time to First Solution vs Final Cost \x2014 %s, %s', envTitle, costTitle), ...
+        title(sprintf('Time to First Solution vs Final Cost \x2014 %s, %s (%s)', envTitle, costTitle, deltaTitle), ...
               'FontWeight', 'bold');
 
-        %% ---------- TABLE: one row per (planner, delta) ----------
-        fprintf('\n--- Summary Table: %s | %s ---\n', envTitle, costTitle);
-        fprintf('%-28s %-18s %16s %14s %14s %11s %13s\n', ...
-                'Planner', 'Delta', 'TimeToFirst(ms)', 'CostOfFirst', 'CostOfLast', 'Success(%)', 'FinalTree(%)');
-        tPlanner = cell(nPlanner, 1);
-        tDelta   = cell(nPlanner, 1);
+        %% ---------- TABLE: one row per planner, at the single fine delta ----------
+        % No Delta column any more -- every row is the same 262,144-region point (deltaTitle),
+        % named once in the header/caption instead of repeated on every row.
+        fprintf('\n--- Summary Table: %s | %s (%s) ---\n', envTitle, costTitle, deltaTitle);
+        fprintf('%-14s %16s %14s %14s %11s %13s\n', ...
+                'Planner', 'TimeToFirst(ms)', 'CostOfFirst', 'CostOfLast', 'Success(%)', 'FinalTree(%)');
+        tPlanner = plannerDisplay(:);
         for pi = 1:nPlanner
-            tPlanner{pi} = baseDisplay{plannerBaseIdx(pi)};
-            tDelta{pi}   = deltas{plannerDeltaIdx(pi)};
-            fprintf('%-28s %-18s %16.2f %14.4f %14.4f %11.1f %13.2f\n', ...
-                    tPlanner{pi}, tDelta{pi}, mFirstSolTime(pi), mFirstSolCost(pi), mFinalCost(pi), ...
+            fprintf('%-14s %16.2f %14.4f %14.4f %11.1f %13.2f\n', ...
+                    tPlanner{pi}, mFirstSolTime(pi), mFirstSolCost(pi), mFinalCost(pi), ...
                     mSuccessPct(pi), mFinalTreePct(pi));
         end
 
-        T = table(tPlanner, tDelta, mFirstSolTime(:), mFirstSolCost(:), mFinalCost(:), ...
+        T = table(tPlanner, mFirstSolTime(:), mFirstSolCost(:), mFinalCost(:), ...
                   mSuccessPct(:), mFinalTreePct(:), 'VariableNames', ...
-                  {'Planner', 'Delta', 'TimeToFirst_ms', 'CostOfFirst', 'CostOfLast', ...
+                  {'Planner', 'TimeToFirst_ms', 'CostOfFirst', 'CostOfLast', ...
                    'SuccessPct', 'FinalTreePct'});
         csvName = sprintf('paper_benchmark_v2_table_%s_%s.csv', sanitize_name(env), metric);
         writetable(T, fullfile(dataDir, csvName));
-        fprintf('Table written to: %s\n', csvName);
+        fprintf('Table (CSV) written to: %s\n', csvName);
+
+        % Publication-ready LaTeX table -- booktabs style, \input{}-able directly. Caption/label
+        % carry the environment, cost metric, and discretization once, matching what used to be a
+        % per-row Delta column now that there's only one delta to report.
+        texName = sprintf('paper_benchmark_v2_table_%s_%s.tex', sanitize_name(env), metric);
+        writeLatexTable(fullfile(dataDir, texName), T, envTitle, costTitle, deltaTitle);
+        fprintf('Table (LaTeX) written to: %s\n', texName);
     end
 end
 
@@ -466,8 +452,9 @@ function c = finalCost(tbl, thresh)
 end
 
 function tradeoffScatter(x, y, markers, colors, sizes, labels, yLim)
-    % sizes is delta-coded (deltaMarkerSizes), not a baseline/swept-point distinction -- every
-    % series in this comparison is a headline point, so size is free to carry delta instead.
+    % sizes is a fixed constant (seriesMarkerSize) now that delta no longer needs its own visual
+    % channel -- kept as a per-series vector argument anyway so a future re-introduced axis (e.g.
+    % highlighting one planner) can vary it again without changing this function's signature.
     hold on;
     for pi = 1:numel(x)
         if isnan(x(pi)) || isnan(y(pi)), continue; end
@@ -479,4 +466,64 @@ function tradeoffScatter(x, y, markers, colors, sizes, labels, yLim)
     grid on;
     if ~isempty(yLim), ylim(yLim); end
     clickableLegend();
+end
+
+function writeLatexTable(filePath, T, envTitle, costTitle, deltaTitle)
+    % Publication-ready LaTeX table (booktabs style) for one (environment, cost metric) summary --
+    % \input{} this directly into the paper. Numeric columns are rounded to a sensible display
+    % precision (not the CSV's full float precision); the best (lowest cost / time, highest
+    % success) value in each of those columns is bolded so the table reads at a glance.
+    fid = fopen(filePath, 'w');
+    cleanupObj = onCleanup(@() fclose(fid));
+
+    nRows = height(T);
+    % "Best" per column: lower is better for time/cost, higher is better for success rate.
+    % NaN-safe (min/max with 'omitnan') so an unsolved planner never wins by default.
+    bestTime    = min(T.TimeToFirst_ms, [], 'omitnan');
+    bestFirst   = min(T.CostOfFirst,    [], 'omitnan');
+    bestLast    = min(T.CostOfLast,     [], 'omitnan');
+    bestSuccess = max(T.SuccessPct,     [], 'omitnan');
+
+    fprintf(fid, '%% Auto-generated by process_paper_benchmark_v2_and_plot.m -- do not hand-edit.\n');
+    fprintf(fid, '%% %s, %s, %s. Regenerate by re-running the script against the same data.\n', ...
+            envTitle, costTitle, deltaTitle);
+    fprintf(fid, '\\begin{table}[t]\n\\centering\n');
+    fprintf(fid, '\\caption{%s comparison in the %s environment (%s cost, %s).}\n', ...
+            'Planner', envTitle, lower(costTitle), deltaTitle);
+    fprintf(fid, '\\label{tab:paper_benchmark_v2_%s_%s}\n', sanitize_name(lower(envTitle)), sanitize_name(lower(costTitle)));
+    fprintf(fid, '\\begin{tabular}{lrrrrr}\n\\toprule\n');
+    fprintf(fid, 'Planner & Time to First (ms) & Cost of First & Cost of Last & Success (\\%%) & Final Tree (\\%%) \\\\\n');
+    fprintf(fid, '\\midrule\n');
+    for ri = 1:nRows
+        fprintf(fid, '%s & %s & %s & %s & %s & %.1f \\\\\n', ...
+                escapeLatex(T.Planner{ri}), ...
+                latexNum(T.TimeToFirst_ms(ri), 1, bestTime), ...
+                latexNum(T.CostOfFirst(ri),    3, bestFirst), ...
+                latexNum(T.CostOfLast(ri),     3, bestLast), ...
+                latexNum(T.SuccessPct(ri),     0, bestSuccess), ...
+                T.FinalTreePct(ri));
+    end
+    fprintf(fid, '\\bottomrule\n\\end{tabular}\n\\end{table}\n');
+end
+
+function s = latexNum(v, decimals, bestV)
+    % Format one numeric cell, NaN as an em-dash (never solved), and bold the column's best value.
+    if isnan(v)
+        s = '---';
+        return;
+    end
+    s = sprintf('%.*f', decimals, v);
+    if ~isnan(bestV) && v == bestV
+        s = ['\textbf{' s '}'];
+    end
+end
+
+function s = escapeLatex(s)
+    % Escape the handful of LaTeX-special characters that could plausibly appear in a planner
+    % display name (underscore is the only one in practice today -- SimpleCombo/Kino-PAX/etc have
+    % none -- but this guards against a future display name that does).
+    s = strrep(s, '\', '\textbackslash{}');
+    s = strrep(s, '_', '\_');
+    s = strrep(s, '%', '\%');
+    s = strrep(s, '&', '\&');
 end
