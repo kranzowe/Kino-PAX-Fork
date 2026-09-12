@@ -6,13 +6,17 @@
 # paper_benchmark.cu (MODEL 2 / Dubins Airplane) hangs at the `tiny` discretization; the root cause
 # was not fully resolved despite a deep investigation. countingstars_sweep.cu (MODEL 1 / Double
 # Integrator), built from the same four planners at the same three discretizations, has completed
-# every delta including `tiny` without hanging. This file is that harness with three changes from
-# it: (1) all four environments run, not just one; (2) the sweep's two exploratory grids
-# (CountingStars bufferSlope/bufferFloor, KinoPaxSTARTrue ancestorPrune) are collapsed to the single
-# fixed operating points paper_benchmark.cu was always meant to report; (3) MODEL, originally
-# switched from 1 (Double Integrator) to 2 (Dubins Airplane) to reproduce paper_benchmark.cu's
-# original target model, is now switched again to 3 (12D Non-Linear Quad) -- see the MODEL 3
-# block in write_config() below for the full derivation of this switch specifically.
+# every delta including `tiny` without hanging. This file is that harness with changes from it:
+# (1) all four environments run, not just one; (2) the sweep's two exploratory grids (CountingStars
+# bufferSlope/bufferFloor, KinoPaxSTARTrue ancestorPrune) are collapsed to the single fixed operating
+# points paper_benchmark.cu was always meant to report; (3) MODEL, which used to name a single
+# active build (originally 1 / Double Integrator, then switched to 2 / Dubins Airplane, then to 3 /
+# 12D Non-Linear Quad -- see write_config()'s three case arms for each model's full derivation),
+# is now ALL THREE, built and run together every pass (MODEL_IDS below); (4) each model now runs at
+# exactly ONE discretization instead of a large/fine/tiny sweep, and each of the four planners runs
+# as its OWN process invocation wrapped in an external timeout, so a true CUDA hang -- which has no
+# in-process recovery -- is detected, logged as a failure, and skipped past instead of freezing the
+# whole sweep (see the RUN phase further below).
 #
 # THE DUBINS DIMENSION BREAKDOWN (WHEN THIS FILE RAN MODEL 2) WAS THE CORRECTED ONE, NOT
 # PAPER_BENCHMARK.CU'S: paper_benchmark.cu treats Dubins' state as if it were shaped like the
@@ -30,18 +34,24 @@
 # further below still applies in full -- only the "sweep a grid" framing changed to "one fixed
 # point per axis".
 #
-# Per environment, AT EACH OF THREE DISCRETIZATIONS (`large`/`fine`/`tiny`, unchanged from the
-# sweep -- see DELTA_LABELS below; all three run the full comparison):
-#   KPAX                                                    = 1 point  x 5 runs
-#   KinoPaxPlus                                             = 1 point  x 5 runs
+# ALL THREE VEHICLE MODELS THIS PASS (Double Integrator, Dubins Airplane, Quad -- MODEL_IDS below),
+# each at ONE FIXED DISCRETIZATION (no more large/fine/tiny sweep -- see MODEL_W_R1S/MODEL_C_R1S/
+# MODEL_V_R1S below), 30 RUNS PER PLANNER (up from 5), and each planner isolated to its OWN PROCESS
+# invocation wrapped in an external `timeout` (PLANNER_FLAGS/PLANNER_NAMES below) -- a true CUDA
+# hang has no in-process recovery (see the KPAX buffer-overshoot history further below), so this is
+# what actually lets a hang be detected, logged as a failure, and skipped past rather than freezing
+# the whole sweep. Per (model, environment, cost metric):
+#   KPAX                                                    = 1 point  x 30 runs
+#   KinoPaxPlus                                             = 1 point  x 30 runs
 #   KinoPaxSTARTrue syclopCap 1.0 (no cap), ancestorPrune = 1
-#                                                            = 1 point  x 5 runs
+#                                                            = 1 point  x 30 runs
 #   CountingStars   bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,
-#                   hopelessGuard PERMANENTLY ON (v3.5)      = 1 point  x 5 runs
+#                   hopelessGuard PERMANENTLY ON (v3.5)      = 1 point  x 30 runs
 #
-# ONE COST METRIC (length/COST_MODE=0 only), FOUR ENVIRONMENTS (empty, house, narrowPassage,
-# zigzag -- see ENV_NAMES below), one full build per delta: 4 series x 5 runs x 3 deltas x 4
-# environments = 240 runs total, from 3 compiled binaries.
+# BOTH COST METRICS (length + effort), FOUR ENVIRONMENTS (empty, house, narrowPassage, zigzag --
+# see ENV_NAMES below), one build per (model, cost metric): 3 models x 4 series x 30 runs x 4
+# environments x 2 cost metrics = 2,880 runs total, from 6 compiled binaries, run as 96 separate
+# (model, cost, environment, planner) process invocations, each wrapped in its own timeout.
 #
 # The original grid-sweep version of this file (bufferSlope/bufferFloor grid, ancestorPrune {0,1})
 # is countingstars_sweep.cu / run_countingstars_sweep.sh, unmodified by this file's existence.
@@ -166,38 +176,42 @@
 #   9. First-solution time and cost, final cost, and success rate -- the headline comparison this
 #      tool exists to produce reliably across all four planners and environments.
 #
-# ALL THREE DELTAS RUN THE FULL COMPARISON -- NOT --only-kinopaxplus at any of them. Conclusions at
-# one delta do not automatically hold at the others, so all three need the full comparison, not
-# KinoPaxPlus alone at the finer ones.
+# ALL THREE MODELS RUN THE FULL COMPARISON -- NOT --only-kinopaxplus at any of them. Conclusions at
+# one model do not automatically hold at the others, so all three need the full comparison, not
+# KinoPaxPlus alone.
 #
 # Runs on all four environments (empty, house, narrowPassage, zigzag -- see ENV_NAMES below), each
 # written to its own subfolder under Data/Benchmarks/PaperBenchmarkV2/<env>/.
 #
-# NUM_R1_REGIONS and COST_MODE are both COMPILE-TIME (config.h, and a #if inside edgeCost), so
-# neither can vary within one binary. This script therefore borrows run_delta_benchmark.sh's
-# build-cache pattern: write config.h and build once per (delta, cost metric), caching each binary
-# under a suffixed name, then run them in a second pass. Both labels ride into every output filename
-# as the argv[1] delta label (large_length / large_effort / fine_length / ...).
+# MODEL, NUM_R1_REGIONS, and COST_MODE are all COMPILE-TIME (config.h, and MODEL/a #if inside
+# edgeCost), so none can vary within one binary. This script therefore borrows
+# run_delta_benchmark.sh's build-cache pattern: write config.h and build once per (model, cost
+# metric), caching each binary under a suffixed name, then run them in a second pass. Both labels
+# ride into every output filename via the argv[1] TAG (m1_tiny_length / m2_tiny_effort / ... -- see
+# the model axis further below), which is what keeps different models' per-run CSVs from colliding
+# (see the BUILD phase's own comment for why that matters).
 #
 # It builds ONLY the PaperBenchmarkV2 target. That still compiles KPAX_lib, which is the
 # monolithic library holding every planner in the repo -- so warnings from unrelated sources
 # (ReKino and friends) scroll past on every build. They are pre-existing and unavoidable without
 # splitting the library.
 #
-# THREE DELTAS RUN THIS PASS -- "large" and "fine" are paper_benchmark.cu's own current large/fine
-# (copied by hand from run_paper_benchmark.sh; there is no cross-check enforcing they stay equal,
-# so re-check both files if either one's deltas change again), plus this sweep's own "tiny",
-# unchanged from earlier passes, all full comparison, per the header above.
+# ALL THREE MODELS RUN THIS PASS, each at exactly ONE discretization ("tiny") instead of a
+# large/fine/tiny sweep -- see the model axis (MODEL_IDS/MODEL_W_R1S/MODEL_C_R1S/MODEL_V_R1S)
+# further below for the derivation of each model's one point.
 #
-# NUM_R1_REGIONS = W_R1^3 * C_R1^3 * V_R1^3 for Quad (MODEL 3, C_DIM=3/V_DIM=3 -- see the
-# DELTA_W_R1S/DELTA_C_R1S/DELTA_V_R1S definitions below for the actual numbers and their
-# derivation; this file has switched models twice now (Double Integrator -> Dubins Airplane ->
-# Quad) and each switch changed this formula's shape, so it is not re-derived twice in one file).
+# NUM_R1_REGIONS' FORMULA SHAPE DIFFERS BY MODEL (Double Integrator: W^3*V^3, no C term; Dubins
+# Airplane: W^3*C^2*V; Quad: W^3*C^3*V^3) -- see the model axis further below for the actual numbers
+# and their derivation; this file's ACTIVE model has switched twice before this pass (Double
+# Integrator -> Dubins Airplane -> Quad), and each switch changed this formula's shape for whichever
+# model was active, which is why all three shapes are handled explicitly (compute_regions() below,
+# and write_config()'s three case arms) rather than one formula being re-derived per switch.
 #
-# "tiny" names the CELL, not the count: it is the finest delta this pass runs, at 592,704 regions.
-# Watch it for the per-region arrays -- every NUM_R1_REGIONS allocation and every full-array fill
-# scales with this, and graph_.updateVertices() runs a kernel over all of them with 64 sub-vertex
-# reads each.
+# "tiny" names the CELL, not the count, and the count differs by model: 592,704 regions for Double
+# Integrator and Dubins Airplane, 373,248 for Quad (see the model axis further below for why Quad is
+# deliberately kept smaller). Watch it for the per-region arrays -- every NUM_R1_REGIONS allocation
+# and every full-array fill scales with this, and graph_.updateVertices() runs a kernel over all of
+# them with 64 sub-vertex reads each.
 #
 # Original config.h is backed up and restored on exit/error.
 #
@@ -219,29 +233,43 @@ CONFIG_FILE="$PROJECT_DIR/include/config/config.h"
 CONFIG_BACKUP="$CONFIG_FILE.bak"
 BUILD_DIR="$PROJECT_DIR/build"
 
-# Deltas: parallel arrays of label / W_R1 / C_R1 / V_R1. ALL THREE run the FULL comparison this
-# pass (see DELTA_EXTRA_ARGS) -- a tuning conclusion at one delta is not assumed to hold at the
-# others, so there is no "--only-kinopaxplus" arm to skip it with here. One build per
-# (delta, cost metric), cached, so restoring or trimming the list changes only the loop bounds.
+# Model axis (NEW this pass): build and run ALL THREE vehicle models, not one at a time.
+# MODEL_IDS/MODEL_NAMES drive write_config()'s `case "$MODEL"` (see write_config() below).
+# Discretization is ALSO no longer a 3-point (large/fine/tiny) sweep per model -- each model now
+# runs at exactly ONE fixed point (MODEL_W_R1S/MODEL_C_R1S/MODEL_V_R1S), reusing the "tiny" label
+# for continuity with the plotting script's existing filename expectations:
+#   Model 1 (Double Integrator): W_R1=14, V_R1=6 (C_R1 inert, C_DIM=0) -> 14^3*6^3     = 592,704
+#   Model 2 (Dubins Airplane):   W_R1=14, C_R1=6, V_R1=6               -> 14^3*6^2*6   = 592,704
+#   Model 3 (Quad):              W_R1=6,  C_R1=2, V_R1=6               -> 6^3*2^3*6^3  = 373,248
+# Models 1/2 land on the SAME ~592,704-region point -- independently confirmed clean for all four
+# planners by run_countingstars_sweep.sh (see its own header: "This sweep's own tiny (W_R1=14,
+# V_R1=6) ran clean for KPAX/KinoPaxPlus/CountingStars/KinoPaxSTARTrue at all three deltas"). Quad
+# is deliberately NOT moved to that scale -- kept at its own smaller, separately hard-won point
+# instead (see the large/fine/tiny derivation history immediately below for exactly why: a
+# 592,704-ish point is documented to trigger a KPAX hang/crash on this model, and Quad's
+# three-cubed-term region formula has no clean integer combination landing on 592,704 anyway, so
+# there's no natural "same count, different shape" analogue to reach for even if it were safe).
+# large/fine are now dead (every model runs exactly ONE point, "tiny", this pass) -- kept as
+# comments below, not deleted, along with the rest of this derivation history.
 #
-# ALL THREE DELTAS NOW MATCH run_paper_benchmark.sh's OWN DELTAS EXACTLY (kept in step by hand --
-# there is no cross-check between the two sweep tools). "tiny" here USED TO be this sweep's own,
-# independently-chosen delta while paper_benchmark.cu ran a different, riskier tiny (W_R1=17,
-# V_R1=5) that hit a cudaErrorIllegalAddress / hang in the `empty` environment (a buffer-overflow
-# bug in KPAX.cu/KinoPaxPlus.cu's goal-path reconstruction, fixed at three sites -- but the hang
-# persisted afterward, root cause still open). This sweep's own tiny (W_R1=14, V_R1=6) ran clean
-# for KPAX/KinoPaxPlus/CountingStars/KinoPaxSTARTrue at all three deltas here, so
-# run_paper_benchmark.sh was updated to reuse it -- see that script's own header for the same
-# history from its side.
+# ALL THREE DELTAS USED TO MATCH run_paper_benchmark.sh's OWN DELTAS EXACTLY for Double
+# Integrator/Dubins (kept in step by hand -- there is no cross-check between the two sweep tools).
+# "tiny" here USED TO be this sweep's own, independently-chosen delta while paper_benchmark.cu ran
+# a different, riskier tiny (W_R1=17, V_R1=5) that hit a cudaErrorIllegalAddress / hang in the
+# `empty` environment (a buffer-overflow bug in KPAX.cu/KinoPaxPlus.cu's goal-path reconstruction,
+# fixed at three sites -- but the hang persisted afterward, root cause still open). This sweep's
+# own tiny (W_R1=14, V_R1=6) ran clean for KPAX/KinoPaxPlus/CountingStars/KinoPaxSTARTrue at all
+# three deltas here, so run_paper_benchmark.sh was updated to reuse it -- see that script's own
+# header for the same history from its side.
 # Quad (MODEL 3) has a THIRD cubed discretization axis: NUM_R1_REGIONS = W_R1^3 * C_R1^3 * V_R1^3
-# (roll/pitch/yaw at C_DIM=3, not yaw/pitch at C_DIM=2 -- see the MODEL 3 switch above), so the
-# Dubins Airplane numbers below don't carry over even in shape, let alone value. Re-derived to
-# land close to the SAME rough targets (9k / 200k / 600k) this pass, holding C_R1=2 fixed at every
-# delta (a consistent minimum attitude resolution, the same role C_R1=3/4/6 played for Dubins --
-# just not big enough on its own here to hit the exact counts, since the three-cubed-term formula
-# grows much faster per unit of W_R1/V_R1 than Dubins' two-cubed-term one did):
-#   large   W_R1=5  C_R1=2  V_R1=2  ->  5^3 * 2^3 * 2^3 =   8,000   (target 9k,   -11%)
-#   fine    W_R1=6  C_R1=2  V_R1=5  ->  6^3 * 2^3 * 5^3 = 216,000   (target 200k, +8%)
+# (roll/pitch/yaw at C_DIM=3, not yaw/pitch at C_DIM=2), so the Dubins Airplane numbers above don't
+# carry over even in shape, let alone value. Re-derived to land close to the SAME rough targets
+# (9k / 200k / 600k), holding C_R1=2 fixed at every delta (a consistent minimum attitude
+# resolution, the same role C_R1=3/4/6 played for Dubins -- just not big enough on its own here to
+# hit the exact counts, since the three-cubed-term formula grows much faster per unit of W_R1/V_R1
+# than Dubins' two-cubed-term one did):
+#   large   W_R1=5  C_R1=2  V_R1=2  ->  5^3 * 2^3 * 2^3 =   8,000   (target 9k,   -11%)  -- now dead
+#   fine    W_R1=6  C_R1=2  V_R1=5  ->  6^3 * 2^3 * 5^3 = 216,000   (target 200k, +8%)   -- now dead
 #
 # tiny WAS W_R1=7/V_R1=6 (592,704 regions) -- KPAX repeatedly hit a confirmed buffer-overshoot
 # bug at that size (h_treeSize_ exceeding MAX_TREE_SIZE via propagateFrontier()'s
@@ -249,10 +277,19 @@ BUILD_DIR="$PROJECT_DIR/build"
 # cudaErrorIllegalAddress crash under Quad on Jetson. Reduced instead of patching that kernel
 # logic yet, to test whether staying further from MAX_TREE_SIZE avoids the trigger entirely
 # (paper_benchmark_v2.cu's skipKPAXThisDelta hard-skip is kept commented as the fallback if this
-# doesn't hold):
+# doesn't hold -- as does the NEW per-planner `timeout`-wrapped process isolation further below,
+# which would now catch and log a recurrence instead of hanging the whole sweep):
 #   tiny (OLD)  W_R1=7  C_R1=2  V_R1=6  ->  7^3 * 2^3 * 6^3 = 592,704   (target 600k, -1%)
-#   tiny (NEW)  W_R1=6  C_R1=2  V_R1=6  ->  6^3 * 2^3 * 6^3 = 373,248   (-37% vs old tiny)
+#   tiny (NEW, ACTIVE FOR QUAD)  W_R1=6  C_R1=2  V_R1=6  ->  6^3 * 2^3 * 6^3 = 373,248   (-37% vs old tiny)
 #
+# --- OLD three-delta, Quad-only sweep (commented out, not deleted -- superseded by the model axis
+# below; restore by uncommenting these four lines and reverting write_config()'s call sites and the
+# BUILD/RUN loops to iterate DELTA_LABELS directly instead of MODEL_IDS) ---
+# DELTA_LABELS=("large" "fine" "tiny")
+# DELTA_W_R1S=(5  6  6)
+# DELTA_C_R1S=(2  2  2)
+# DELTA_V_R1S=(2  5  6)
+# DELTA_EXTRA_ARGS=("" "" "")
 # --- Dubins Airplane deltas (previous model -- commented out, not deleted) ---
 # DELTA_W_R1S=(7  16 14)
 # DELTA_C_R1S=(3  4  6)
@@ -260,21 +297,43 @@ BUILD_DIR="$PROJECT_DIR/build"
 # --- Quad's own OLD tiny (commented out, not deleted -- see note above) ---
 # DELTA_W_R1S=(5  6  7)
 # DELTA_V_R1S=(2  5  6)
-DELTA_LABELS=("large" "fine" "tiny")
-DELTA_W_R1S=(5  6  6)
-DELTA_C_R1S=(2  2  2)
-DELTA_V_R1S=(2  5  6)
-DELTA_EXTRA_ARGS=("" "" "")
-
-# --- Coarse delta only (uncomment to restore; comment out the four lines above) ---
+# --- Coarse delta only (uncomment to restore; comment out the four DELTA_* lines above) ---
 # DELTA_LABELS=("large")
 # DELTA_W_R1S=(7)
 # DELTA_C_R1S=(3)
 # DELTA_V_R1S=(3)
 # DELTA_EXTRA_ARGS=("")
 
+MODEL_IDS=(1 2 3)
+MODEL_NAMES=("DoubleIntegrator" "DubinsAirplane" "Quad")
+MODEL_DELTA_LABELS=("tiny" "tiny" "tiny")
+MODEL_W_R1S=(14 14 6)
+MODEL_C_R1S=(1  6  2)   # placeholder/inert for Model 1 (C_DIM 0 -- see write_config())
+MODEL_V_R1S=(6  6  6)
+
+# Per-model NUM_R1_REGIONS formula -- shape differs by model (see write_config()'s three arms):
+#   Model 1 (C_DIM 0): W_R1^3 * V_R1^3               (no C_R1 term)
+#   Model 2 (C_DIM 2): W_R1^3 * C_R1^2 * V_R1
+#   Model 3 (C_DIM 3): W_R1^3 * C_R1^3 * V_R1^3
+compute_regions() {
+    local model=$1 w=$2 c=$3 v=$4
+    case "$model" in
+        1) echo $(( w**3 * v**3 )) ;;
+        2) echo $(( w**3 * c**2 * v )) ;;
+        3) echo $(( w**3 * c**3 * v**3 )) ;;
+        *) echo "ERROR: compute_regions: unknown MODEL '$model'" >&2; exit 1 ;;
+    esac
+}
+
+# Planner axis (NEW this pass): one process invocation per planner now, instead of one process
+# running all four sequentially -- bounds a hang's blast radius to just the one planner that hung
+# (see paper_benchmark_v2.cu's main() for the matching --only-* flags), and lets the RUN phase
+# below wrap each invocation in an external `timeout`. Order matches today's dispatch order.
+PLANNER_FLAGS=("--only-kpax" "--only-kinopaxplus" "--only-kinopaxstartrue" "--only-countingstars")
+PLANNER_NAMES=("KPAX"        "KinoPaxPlus"        "KinoPaxSTARTrue"        "CountingStars")
+
 # Cost metric axis: label + COST_MODE (0 = workspace distance, 1 = control effort). BOTH THIS
-# PASS -- doubles the build count (one binary per delta x cost metric) and the run count.
+# PASS -- doubles the build count (one binary per model x cost metric) and the run count.
 COST_LABELS=("length" "effort")
 COST_MODES=(0 1)
 # COST_LABELS=("length")
@@ -346,26 +405,234 @@ cp "$CONFIG_FILE" "$CONFIG_BACKUP"
 # --- Ensure build directory exists ---
 mkdir -p "$BUILD_DIR"
 
-# Function to write complete Model 3 (Non-Linear Quad) config.h
+# Function to write config.h for the given MODEL (1=Double Integrator, 2=Dubins Airplane,
+# 3=Quad) at the given discretization. One `case` arm per model -- kept as three FULL blocks
+# (matching this repo's "every model's constants stay physically present, active or not" convention
+# seen in config.h itself) rather than one DRY/parameterized block, so each arm can be diffed
+# directly against its own proven source:
+#   Model 1 -- copied from scripts/run_countingstars_sweep.sh's own write_config() (that sweep is
+#              this harness's proven-reliable ancestor, run clean at exactly this discretization).
+#   Model 2 -- recovered from THIS FILE's own git history (commit 5a09775, "model 2" -- the real
+#              config this script actually compiled and ran before switching to Quad), not
+#              reconstructed from config.h's separately-maintained historical comment block (which,
+#              per its own header, was never actually built from by this script).
+#   Model 3 -- unchanged from today's active (Quad) content.
 write_config() {
-    local W_R1=$1
-    local C_R1=$2
-    local V_R1=$3
-    local COST_MODE=$4
-    cat > "$CONFIG_FILE" << CONFIGEOF
+    local MODEL=$1
+    local W_R1=$2
+    local C_R1=$3
+    local V_R1=$4
+    local COST_MODE=$5
+    case "$MODEL" in
+    1)
+        cat > "$CONFIG_FILE" << CONFIGEOF
+#pragma once
+/***************************/
+/* 6D DOUBLE INTEGRATOR    */
+/***************************/
+#define MODEL 1
+#define COST_MODE ${COST_MODE}  // path cost: 1 = control effort ((ax^2+ay^2+az^2)*dt), 0 = workspace distance
+#define MAX_TREE_SIZE 3000000
+#define MAX_FLOAT 1e38f
+#define MAX_SOL_SET_SIZE 500
+#define MAX_ITER 1000
+#define MAX_ITER_REKINO 20000
+#define STEP_SIZE 0.1f
+#define MAX_PROPAGATION_DURATION 10
+#define ACCEPT 0.99f
+#define AGENT_RADIUS 0.005f
+#define GOAL_THRESH 0.05f
+#define STATE_DIM 6
+#define CONTROL_DIM 3
+#define SAMPLE_DIM (STATE_DIM + CONTROL_DIM + 1)
+#define W_DIM 3
+#define C_DIM 0
+#define V_DIM 3
+#define W_MIN 0.0f
+#define W_MAX 1.0f
+#define W_SIZE 1.0f
+#define C_MIN -M_PI
+#define C_MAX M_PI
+#define V_MIN -0.3f
+#define V_MAX 0.3f
+#define A_MIN -0.2f
+#define A_MAX 0.2f
+#define W_R1_LENGTH ${W_R1}
+#define C_R1_LENGTH ${C_R1}
+#define V_R1_LENGTH ${V_R1}
+#define W_R2_LENGTH 2
+#define C_R2_LENGTH 1
+#define V_R2_LENGTH 2
+#define W_R1_SIZE ((W_MAX - W_MIN) / W_R1_LENGTH)
+#define C_R1_SIZE ((C_MAX - C_MIN) / C_R1_LENGTH)
+#define V_R1_SIZE ((V_MAX - V_MIN) / V_R1_LENGTH)
+#define W_R1_VOL (W_R1_SIZE * W_R1_SIZE * W_R1_SIZE)
+#define NUM_R1_REGIONS (W_R1_LENGTH * W_R1_LENGTH * W_R1_LENGTH * V_R1_LENGTH * V_R1_LENGTH * V_R1_LENGTH)
+#define NUM_R2_REGIONS (NUM_R1_REGIONS * W_R2_LENGTH * W_R2_LENGTH * W_R2_LENGTH * V_R2_LENGTH * V_R2_LENGTH * V_R2_LENGTH)
+#define NUM_R2_PER_R1 W_R2_LENGTH *W_R2_LENGTH *W_R2_LENGTH *V_R2_LENGTH *V_R2_LENGTH *V_R2_LENGTH
+#define NUM_R1_REGIONS_KERNEL1 1024
+#define NUM_PARTIAL_SUMS 1024
+#define EPSILON 1e-2f
+#define VERBOSE 1
+// Without this the #if in KinoPaxPlus.cu sees an undefined macro and takes the 0 branch, so
+// the baseline would run NODE-ONLY pruning instead of the full parent chain that the
+// checked-in config.h selects. KinoPaxPlus is a headline series here (at two
+// discretizations), so it must be the real one.
+#define KINOPAXPLUS_PARENT_CHAIN_PRUNING 1
+// --- UNICYCLE MODEL: MODEL 0 ---
+#define UNI_MIN_STEERING -M_PI / 2
+#define UNI_MAX_STEERING M_PI / 2
+#define UNI_MIN_DT 0.1f
+#define UNI_MAX_DT 2.0f
+#define UNI_LENGTH 1.0f
+// --- DUBINS AIRPLANE: MODEL 2 ---
+#define DUBINS_AIRPLANE_MIN_PR (-M_PI / 4)
+#define DUBINS_AIRPLANE_MAX_PR (M_PI / 4)
+#define DUBINS_AIRPLANE_MIN_YR (-M_PI / 4)
+#define DUBINS_AIRPLANE_MAX_YR (M_PI / 4)
+#define DUBINS_AIRPLANE_MIN_YAW -M_PI
+#define DUBINS_AIRPLANE_MAX_YAW M_PI
+#define DUBINS_AIRPLANE_MIN_PITCH -M_PI / 3
+#define DUBINS_AIRPLANE_MAX_PITCH M_PI / 3
+// --- NON LINEAR QUAD: MODEL 3 ---
+#define QUAD_MIN_Zc 0.0f
+#define QUAD_MAX_Zc 30.0f
+#define QUAD_MIN_Lc -M_PI
+#define QUAD_MAX_Lc M_PI
+#define QUAD_MIN_Mc -M_PI
+#define QUAD_MAX_Mc M_PI
+#define QUAD_MIN_Nc -M_PI
+#define QUAD_MAX_Nc M_PI
+#define QUAD_MIN_YAW -M_PI
+#define QUAD_MAX_YAW M_PI
+#define QUAD_MIN_PITCH -M_PI
+#define QUAD_MAX_PITCH M_PI
+#define QUAD_MIN_ROLL -M_PI
+#define QUAD_MAX_ROLL M_PI
+#define QUAD_MIN_ANGLE_RATE -30.0f
+#define QUAD_MAX_ANGLE_RATE 30.0f
+#define NU 10e-3f
+#define MU 2e-6f
+#define KM 0.03f
+#define IX 1.0f
+#define IY 1.0f
+#define IZ 2.0f
+#define GRAVITY -9.81f
+#define MASS 1.0f
+#define MASS_INV 1.0f / MASS
+CONFIGEOF
+        ;;
+    2)
+        cat > "$CONFIG_FILE" << CONFIGEOF
+#pragma once
+/***************************/
+/* 6D DUBINS AIRPLANE      */
+/***************************/
+#define MODEL 2
+#define COST_MODE ${COST_MODE}  // path cost: 1 = control effort ((yawRate^2+pitchRate^2+a^2)*dt), 0 = workspace distance
+#define MAX_TREE_SIZE 3000000
+#define MAX_FLOAT 1e38f
+#define MAX_SOL_SET_SIZE 500
+#define MAX_ITER 1000
+#define MAX_ITER_REKINO 20000
+#define STEP_SIZE 0.1f
+#define MAX_PROPAGATION_DURATION 10
+#define ACCEPT 0.99f
+#define AGENT_RADIUS 0.005f
+#define GOAL_THRESH 0.05f
+#define STATE_DIM 6
+#define CONTROL_DIM 3
+#define SAMPLE_DIM (STATE_DIM + CONTROL_DIM + 1)
+#define W_DIM 3
+#define C_DIM 2
+#define V_DIM 1
+#define W_MIN 0.0f
+#define W_MAX 1.0f
+#define W_SIZE 1.0f
+#define C_MIN -M_PI
+#define C_MAX M_PI
+#define V_MIN 0.0f
+#define V_MAX 0.3f
+#define A_MIN -0.3f
+#define A_MAX 0.3f
+#define W_R1_LENGTH ${W_R1}
+#define C_R1_LENGTH ${C_R1}
+#define V_R1_LENGTH ${V_R1}
+#define W_R2_LENGTH 2
+#define C_R2_LENGTH 2
+#define V_R2_LENGTH 2
+#define W_R1_SIZE ((W_MAX - W_MIN) / W_R1_LENGTH)
+#define C_R1_SIZE ((C_MAX - C_MIN) / C_R1_LENGTH)
+#define V_R1_SIZE ((V_MAX - V_MIN) / V_R1_LENGTH)
+#define W_R1_VOL (W_R1_SIZE * W_R1_SIZE * W_R1_SIZE)
+#define NUM_R1_REGIONS (W_R1_LENGTH * W_R1_LENGTH * W_R1_LENGTH * C_R1_LENGTH * C_R1_LENGTH * V_R1_LENGTH)
+#define NUM_R2_REGIONS (NUM_R1_REGIONS * W_R2_LENGTH * W_R2_LENGTH * W_R2_LENGTH * C_R2_LENGTH * C_R2_LENGTH * V_R2_LENGTH)
+#define NUM_R2_PER_R1 W_R2_LENGTH *W_R2_LENGTH *W_R2_LENGTH *C_R2_LENGTH *C_R2_LENGTH *V_R2_LENGTH
+#define NUM_R1_REGIONS_KERNEL1 1024
+#define NUM_PARTIAL_SUMS 1024
+#define EPSILON 1e-2f
+#define VERBOSE 1
+// Without this the #if in KinoPaxPlus.cu sees an undefined macro and takes the 0 branch, so
+// the baseline would run NODE-ONLY pruning instead of the full parent chain that the
+// checked-in config.h selects. KinoPaxPlus is a headline series here (at two
+// discretizations), so it must be the real one.
+#define KINOPAXPLUS_PARENT_CHAIN_PRUNING 1
+// --- UNICYCLE MODEL: MODEL 0 ---
+#define UNI_MIN_STEERING -M_PI / 2
+#define UNI_MAX_STEERING M_PI / 2
+#define UNI_MIN_DT 0.1f
+#define UNI_MAX_DT 2.0f
+#define UNI_LENGTH 1.0f
+// --- DUBINS AIRPLANE: MODEL 2 ---
+#define DUBINS_AIRPLANE_MIN_PR (-M_PI / 4)
+#define DUBINS_AIRPLANE_MAX_PR (M_PI / 4)
+#define DUBINS_AIRPLANE_MIN_YR (-M_PI / 4)
+#define DUBINS_AIRPLANE_MAX_YR (M_PI / 4)
+#define DUBINS_AIRPLANE_MIN_YAW -M_PI
+#define DUBINS_AIRPLANE_MAX_YAW M_PI
+#define DUBINS_AIRPLANE_MIN_PITCH -M_PI / 3
+#define DUBINS_AIRPLANE_MAX_PITCH M_PI / 3
+// --- NON LINEAR QUAD: MODEL 3 ---
+#define QUAD_MIN_Zc 0.0f
+#define QUAD_MAX_Zc 30.0f
+#define QUAD_MIN_Lc -M_PI
+#define QUAD_MAX_Lc M_PI
+#define QUAD_MIN_Mc -M_PI
+#define QUAD_MAX_Mc M_PI
+#define QUAD_MIN_Nc -M_PI
+#define QUAD_MAX_Nc M_PI
+#define QUAD_MIN_YAW -M_PI
+#define QUAD_MAX_YAW M_PI
+#define QUAD_MIN_PITCH -M_PI
+#define QUAD_MAX_PITCH M_PI
+#define QUAD_MIN_ROLL -M_PI
+#define QUAD_MAX_ROLL M_PI
+#define QUAD_MIN_ANGLE_RATE -30.0f
+#define QUAD_MAX_ANGLE_RATE 30.0f
+#define NU 10e-3f
+#define MU 2e-6f
+#define KM 0.03f
+#define IX 1.0f
+#define IY 1.0f
+#define IZ 2.0f
+#define GRAVITY -9.81f
+#define MASS 1.0f
+#define MASS_INV 1.0f / MASS
+CONFIGEOF
+        ;;
+    3)
+        cat > "$CONFIG_FILE" << CONFIGEOF
 #pragma once
 /***************************/
 /* 12D NON-LINEAR QUAD     */
 /***************************/
-// --- Previous model this file used (Dubins Airplane) -- commented out, not deleted. See
-// run_paper_benchmark_v2.sh's header for why the switch to Quad needs the whole block below, not
-// just this one line: Quad is STATE_DIM=12 (not 6), has a THIRD cubed discretization axis
-// (NUM_R1_REGIONS = W^3*C^3*V^3, not W^3*C^2*V), and its own checked-in config.h values use a
-// [0,100] workspace/[-30,30] velocity scale (not [0,1]/[-0.3,0.3]) -- kept as-is here rather than
-// shrunk to match, so gravity/mass/thrust stay physically consistent with how Quad was tuned;
-// obstacles/start/goal are scaled x100 at load time in paper_benchmark_v2.cu instead (a no-op for
-// every other model, since their W_SIZE is 1.0). ---
-// #define MODEL 2
+// --- Previous models this file has used (Double Integrator, Dubins Airplane) -- see this
+// function's case 1)/2) arms above for their full blocks, not deleted. Quad is STATE_DIM=12 (not
+// 6), has a THIRD cubed discretization axis (NUM_R1_REGIONS = W^3*C^3*V^3, not W^3*C^2*V or
+// W^3*V^3), and its own values use a [0,100] workspace/[-30,30] velocity scale (not [0,1]/
+// [-0.3,0.3]) -- kept as-is here rather than shrunk to match, so gravity/mass/thrust stay
+// physically consistent with how Quad was tuned; obstacles/start/goal are scaled x100 at load
+// time in paper_benchmark_v2.cu instead (a no-op for every other model, since their W_SIZE is 1.0). ---
 #define MODEL 3
 #define COST_MODE ${COST_MODE}  // path cost: 1 = control effort, 0 = workspace distance (see edgeCost() -- Quad has no COST_MODE==1 branch of its own, so effort silently falls back to distance)
 #define MAX_TREE_SIZE 3000000
@@ -376,30 +643,19 @@ write_config() {
 #define STEP_SIZE 0.1f
 #define MAX_PROPAGATION_DURATION 10
 #define ACCEPT 0.99f
-// #define AGENT_RADIUS 0.005f   // Dubins/[0,1]-scale value
 #define AGENT_RADIUS 0.5f        // x100, matching Quad's workspace scale (still unused by collision checking today, same as before)
-// #define GOAL_THRESH 0.05f     // Dubins/[0,1]-scale value
 #define GOAL_THRESH 5.0f         // x100 -- matches Quad's own checked-in config.h default exactly
-// #define STATE_DIM 6
-// #define CONTROL_DIM 3
 #define STATE_DIM 12
 #define CONTROL_DIM 4
 #define SAMPLE_DIM (STATE_DIM + CONTROL_DIM + 1)
 #define W_DIM 3
-// #define C_DIM 2
-// #define V_DIM 1
 #define C_DIM 3   // roll, pitch, yaw (not validity-checked by the propagator, region-binning only)
 #define V_DIM 3   // body-frame u, v, w (the propagator DOES validity-check these against V_MIN/V_MAX)
-// #define W_MIN 0.0f
-// #define W_MAX 1.0f
-// #define W_SIZE 1.0f
 #define W_MIN 0.0f
 #define W_MAX 100.0f
 #define W_SIZE 100.0f
 #define C_MIN -M_PI
 #define C_MAX M_PI
-// #define V_MIN 0.0f
-// #define V_MAX 0.3f
 #define V_MIN -30.0f
 #define V_MAX 30.0f
 #define A_MIN -0.3f
@@ -408,17 +664,12 @@ write_config() {
 #define C_R1_LENGTH ${C_R1}
 #define V_R1_LENGTH ${V_R1}
 #define W_R2_LENGTH 2
-// #define C_R2_LENGTH 2
-// #define V_R2_LENGTH 2
 #define C_R2_LENGTH 1
 #define V_R2_LENGTH 2
 #define W_R1_SIZE ((W_MAX - W_MIN) / W_R1_LENGTH)
 #define C_R1_SIZE ((C_MAX - C_MIN) / C_R1_LENGTH)
 #define V_R1_SIZE ((V_MAX - V_MIN) / V_R1_LENGTH)
 #define W_R1_VOL (W_R1_SIZE * W_R1_SIZE * W_R1_SIZE)
-// #define NUM_R1_REGIONS (W_R1_LENGTH * W_R1_LENGTH * W_R1_LENGTH * C_R1_LENGTH * C_R1_LENGTH * V_R1_LENGTH)
-// #define NUM_R2_REGIONS (NUM_R1_REGIONS * W_R2_LENGTH * W_R2_LENGTH * W_R2_LENGTH * C_R2_LENGTH * C_R2_LENGTH * V_R2_LENGTH)
-// #define NUM_R2_PER_R1 W_R2_LENGTH *W_R2_LENGTH *W_R2_LENGTH *C_R2_LENGTH *C_R2_LENGTH *V_R2_LENGTH
 #define NUM_R1_REGIONS (W_R1_LENGTH * W_R1_LENGTH * W_R1_LENGTH * C_R1_LENGTH * C_R1_LENGTH * C_R1_LENGTH * V_R1_LENGTH * V_R1_LENGTH * V_R1_LENGTH)
 #define NUM_R2_REGIONS (NUM_R1_REGIONS * W_R2_LENGTH * W_R2_LENGTH * W_R2_LENGTH * C_R2_LENGTH * C_R2_LENGTH * C_R2_LENGTH * V_R2_LENGTH * V_R2_LENGTH * V_R2_LENGTH)
 #define NUM_R2_PER_R1 W_R2_LENGTH *W_R2_LENGTH *W_R2_LENGTH *C_R2_LENGTH *C_R2_LENGTH *C_R2_LENGTH *V_R2_LENGTH *V_R2_LENGTH *V_R2_LENGTH
@@ -473,41 +724,48 @@ write_config() {
 #define MASS 1.0f
 #define MASS_INV 1.0f / MASS
 CONFIGEOF
+        ;;
+    *)
+        echo "ERROR: write_config: unknown MODEL '$MODEL' (expected 1, 2, or 3)" >&2
+        exit 1
+        ;;
+    esac
 }
 
 echo ""
 echo "======================================================="
 echo "  PAPER BENCHMARK V2 -- fixed 4-planner comparison, on countingstars_sweep.cu's harness"
-echo "  Model: 3 (12D Non-Linear Quad) -- W_DIM=3/C_DIM=3/V_DIM=3, native [0,100] workspace scale"
-echo "         (obstacles/start/goal scaled x100 from their [0,1]-authored CSVs -- see file header)"
+echo "  ALL THREE MODELS this pass: ${MODEL_NAMES[*]}"
+echo "  (Quad's obstacles/start/goal are scaled x100 from their [0,1]-authored CSVs -- see file header)"
 echo "  Environments: ${ENV_NAMES[*]}  (separate output subfolders)"
-for i in "${!DELTA_LABELS[@]}"; do
-    R=$(( DELTA_W_R1S[i]**3 * DELTA_C_R1S[i]**3 * DELTA_V_R1S[i]**3 ))
-    if [ -z "${DELTA_EXTRA_ARGS[$i]}" ]; then
-        WHAT="full comparison"
-    else
-        WHAT="KinoPaxPlus only"
-    fi
-    echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
+for m in "${!MODEL_IDS[@]}"; do
+    MODEL="${MODEL_IDS[$m]}"
+    R=$(compute_regions "$MODEL" "${MODEL_W_R1S[$m]}" "${MODEL_C_R1S[$m]}" "${MODEL_V_R1S[$m]}")
+    echo "  Model ${MODEL} (${MODEL_NAMES[$m]}): delta=${MODEL_DELTA_LABELS[$m]} | W_R1=${MODEL_W_R1S[$m]} C_R1=${MODEL_C_R1S[$m]} V_R1=${MODEL_V_R1S[$m]} | Regions=${R} | full comparison"
 done
-echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  Series this pass, ALL FOUR ENVIRONMENTS x BOTH COST METRICS (5 runs each) -- every axis"
-echo "  below is a SINGLE FIXED POINT, not a grid:"
-echo "    KPAX             baseline, all deltas -- tiny's region count was reduced specifically to"
-echo "                     stop KPAX overshooting MAX_TREE_SIZE there (a confirmed bug, see"
+echo "  Cost metrics: ${COST_LABELS[*]}  (one build each, per model)"
+echo "  Planners run as SEPARATE PROCESSES this pass (${PLANNER_NAMES[*]}), each wrapped in an"
+echo "  external timeout -- a true CUDA hang has no in-process recovery, so this bounds a hang's"
+echo "  blast radius to the one planner that hung and logs it as a failure instead of freezing the"
+echo "  whole sweep (see RUN_TIMEOUT_S / FAILURE_LOG below). Series per (model, env, cost), 30 runs"
+echo "  each -- every axis below is a SINGLE FIXED POINT, not a grid:"
+echo "    KPAX             baseline -- Quad's tiny region count was reduced specifically to stop"
+echo "                     KPAX overshooting MAX_TREE_SIZE there (a confirmed bug, see"
 echo "                     paper_benchmark_v2.cu's skipKPAXThisDelta comment); if it still does,"
-echo "                     that comment also has the hard-skip fallback for tiny."
-echo "    KinoPaxPlus      all deltas"
+echo "                     that comment also has the hard-skip fallback for tiny, and the new"
+echo "                     per-planner timeout below will catch and log any recurrence regardless."
+echo "    KinoPaxPlus"
 echo "    KinoPaxSTARTrue  syclopCap 1.0 (no cap), ancestorPrune = 1 (guarded stale-best prune on"
-echo "                     top of the naive KPAX/KinoPaxPlus fusion), all deltas."
+echo "                     top of the naive KPAX/KinoPaxPlus fusion)."
 echo "    CountingStars    bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,"
 echo "                     hopelessGuard PERMANENTLY ON (v3.5): excludes any candidate/dormant node"
 echo "                     whose own cost already forecloses beating the best solution found so far"
 echo "                     from every door (FRESHEST/CHEAPEST/OPTIMAL/both floors), not just"
-echo "                     cost-based ones -- see h_hopelessGuard_ in CountingStars.cuh. All deltas."
-TOTAL_RUNS=$(( 4 * 5 * ${#DELTA_LABELS[@]} * ${#ENV_NAMES[@]} * ${#COST_LABELS[@]} ))
-echo "  = 4 series x 5 runs x ${#DELTA_LABELS[@]} deltas x ${#ENV_NAMES[@]} environments x ${#COST_LABELS[@]} cost"
-echo "    metrics = ${TOTAL_RUNS} runs total."
+echo "                     cost-based ones -- see h_hopelessGuard_ in CountingStars.cuh."
+TOTAL_INVOCATIONS=$(( ${#MODEL_IDS[@]} * ${#COST_LABELS[@]} * ${#ENV_NAMES[@]} * ${#PLANNER_NAMES[@]} ))
+TOTAL_RUNS=$(( TOTAL_INVOCATIONS * 30 ))
+echo "  = ${#MODEL_IDS[@]} models x ${#PLANNER_NAMES[@]} planners x 30 runs x ${#ENV_NAMES[@]} environments x ${#COST_LABELS[@]} cost"
+echo "    metrics = ${TOTAL_INVOCATIONS} process invocations, ${TOTAL_RUNS} runs total."
 echo "  Filenames: CountingStars_bs120_bf40_ef150_cf750_hg1, KinoPaxSTARTrue_cap100_anc1."
 echo "  Earlier CSVs from the retired tuning grid (_bs120_bf30_..., _bs180_bf50_..., anc0, etc.) do"
 echo "  not collide with these names, so they simply stop loading if left in the output folder."
@@ -521,32 +779,38 @@ echo "    ADMIT FLOOR every candidate at accept_floor = 1e-4, only when nothing 
 echo "    REACT FLOOR every dormant node at react_floor = 1e-5, ON TOP of the budget"
 echo "  Score floor:    COUNTINGSTARS HAS NO SCORE FLOOR AND USES NO EPSILON: it never reads"
 echo "                  vertexScores, h_scoreFloor_, h_nActive_ or regionCoverage in any decision."
-echo "  Baselines: KPAX, KinoPaxPlus -- BOTH AT ALL THREE DELTAS this pass, not KinoPaxPlus-only at"
-echo "             the finer ones."
 echo "======================================================="
 
 # =============================================================================
-# BUILD — compile the Large delta config once per cost metric, caching each binary
+# BUILD — compile once per (model, cost metric), caching each binary. TAG carries the model (not
+# just the delta), both because MODEL is now an independent build axis and because per-run CSV
+# filenames are keyed only by (environment, delta label, run number) -- NEVER by model -- so
+# without a model-qualified label, two models' per-run CSVs for the same env/cost would land at
+# IDENTICAL paths and silently overwrite each other. TAG is threaded into argv[1] in the RUN phase
+# below for exactly this reason, not just into the binary's own filename.
 # =============================================================================
 if [ "$SKIP_BUILD" = false ]; then
-    for d in "${!DELTA_LABELS[@]}"; do
-        DL="${DELTA_LABELS[$d]}"
+    for m in "${!MODEL_IDS[@]}"; do
+        MODEL="${MODEL_IDS[$m]}"
+        DL="${MODEL_DELTA_LABELS[$m]}"
+        W_R1="${MODEL_W_R1S[$m]}"; C_R1="${MODEL_C_R1S[$m]}"; V_R1="${MODEL_V_R1S[$m]}"
+        TAG="m${MODEL}_${DL}"
         for i in "${!COST_LABELS[@]}"; do
             CL="${COST_LABELS[$i]}"
             CM="${COST_MODES[$i]}"
-            REGIONS=$(( DELTA_W_R1S[d]**3 * DELTA_V_R1S[d]**3 ))
+            REGIONS=$(compute_regions "$MODEL" "$W_R1" "$C_R1" "$V_R1")
 
             echo ""
-            echo "=== BUILDING (delta=${DL}, cost=${CL}, COST_MODE=${CM}, Regions=${REGIONS}) ==="
+            echo "=== BUILDING (model=${MODEL_NAMES[$m]}, delta=${DL}, cost=${CL}, COST_MODE=${CM}, Regions=${REGIONS}) ==="
 
-            write_config "${DELTA_W_R1S[$d]}" "${DELTA_C_R1S[$d]}" "${DELTA_V_R1S[$d]}" "$CM"
+            write_config "$MODEL" "$W_R1" "$C_R1" "$V_R1" "$CM"
 
             cd "$BUILD_DIR"
             # shellcheck disable=SC2086
             cmake .. -DCMAKE_BUILD_TYPE=Release $CMAKE_COMPILER_FLAGS 2>&1 | tail -5
             make PaperBenchmarkV2 -j"$(nproc)" 2>&1 | tail -20
-            # Cache under a (delta, metric)-suffixed name so the run phase needs no rebuild
-            cp PaperBenchmarkV2 "PaperBenchmarkV2_${DL}_${CL}"
+            # Cache under a (model, delta, metric)-suffixed name so the run phase needs no rebuild
+            cp PaperBenchmarkV2 "PaperBenchmarkV2_${TAG}_${CL}"
             cd "$PROJECT_DIR"
         done
     done
@@ -554,10 +818,13 @@ else
     echo ""
     echo "=== SKIPPING BUILD PHASE (using cached binaries) ==="
     cd "$BUILD_DIR"
-    for DL in "${DELTA_LABELS[@]}"; do
+    for m in "${!MODEL_IDS[@]}"; do
+        MODEL="${MODEL_IDS[$m]}"
+        DL="${MODEL_DELTA_LABELS[$m]}"
+        TAG="m${MODEL}_${DL}"
         for CL in "${COST_LABELS[@]}"; do
-            if [ ! -f "PaperBenchmarkV2_${DL}_${CL}" ]; then
-                echo "ERROR: Cached binary not found: PaperBenchmarkV2_${DL}_${CL}"
+            if [ ! -f "PaperBenchmarkV2_${TAG}_${CL}" ]; then
+                echo "ERROR: Cached binary not found: PaperBenchmarkV2_${TAG}_${CL}"
                 echo "Run without --skip-build first to create cached binaries."
                 exit 1
             fi
@@ -568,7 +835,12 @@ else
 fi
 
 # =============================================================================
-# RUN — one pass per cost metric, using the cached binaries
+# RUN — model x cost x environment x planner, each its own process invocation, wrapped in an
+# external timeout. NOTHING inside the .cu file's own host loop can recover from a true hang: the
+# same host thread that would check plannerMs >= maxTimeMs is the one parked inside
+# cudaEventSynchronize if a single kernel launch genuinely wedges (see paper_benchmark_v2.cu's
+# skipKPAXThisDelta comment for the historical hang this guards against). OS-level termination from
+# outside the process is the only mechanism that can recover.
 # =============================================================================
 # --dump-viz writes run-0's full tree per variant (+ meta.csv) for the tree-growth /
 # R1-density visualization. OFF by default here: every variant dumps a full tree of up to
@@ -579,28 +851,68 @@ if [ "${DUMP_VIZ:-0}" != "0" ]; then
     VIZ_FLAG="--dump-viz"
 fi
 
+# RUN_TIMEOUT_S: 30 runs x up to 10s MAX_TIME_MS + 29 x 0.5s inter-run sleeps = 314.5s pure
+# planner-loop ceiling (the expected case, not a pessimistic one) + ~60s margin for CUDA context
+# init/teardown + 30 per-run CSV writes (now paid once per PLANNER instead of once per 4 planners)
+# ~= 375s "everything completes normally" ceiling, DOUBLED to 900s so a legitimately slow run is
+# never misclassified as a failure -- a real hang only costs a few extra minutes of detection
+# across 96 invocations either way.
+RUN_TIMEOUT_S=900
+KILL_AFTER_S=30   # grace period after SIGTERM before timeout escalates to SIGKILL
+
+OUTPUT_ROOT="$BUILD_DIR/Data/Benchmarks/PaperBenchmarkV2"
+FAILURE_LOG="$OUTPUT_ROOT/failures.log"
+mkdir -p "$OUTPUT_ROOT"
+: > "$FAILURE_LOG"   # fresh log every sweep
+
 cd "$BUILD_DIR"
-for CL in "${COST_LABELS[@]}"; do
-    for i in "${!ENV_NAMES[@]}"; do
-        EN="${ENV_NAMES[$i]}"
-        EO="${ENV_OBSTACLES[$i]}"
-        for d in "${!DELTA_LABELS[@]}"; do
-            DL="${DELTA_LABELS[$d]}"
-            EXTRA="${DELTA_EXTRA_ARGS[$d]}"
-            # All three deltas are full-sweep this pass (DELTA_EXTRA_ARGS all empty), so all three
-            # dump viz when enabled; the branch below still matters if DELTA_EXTRA_ARGS is ever
-            # restored to a KinoPaxPlus-only entry, which has nothing extra to show.
-            if [ -z "$EXTRA" ]; then
-                PASS_FLAGS="$VIZ_FLAG"
-            else
-                PASS_FLAGS="$EXTRA"
-            fi
-            echo ""
-            echo "=== RUNNING (delta=${DL}, cost=${CL}, Env=${EN}) ${EXTRA} ==="
-            # argv[1] carries the discretization and the cost metric, so it lands in every output
-            # filename as _delta${DL}_${CL}; argv[3] selects the per-environment subfolder.
-            # shellcheck disable=SC2086
-            "./PaperBenchmarkV2_${DL}_${CL}" "${DL}_${CL}" "$EO" "$EN" $PASS_FLAGS
+for m in "${!MODEL_IDS[@]}"; do
+    MODEL="${MODEL_IDS[$m]}"
+    DL="${MODEL_DELTA_LABELS[$m]}"
+    TAG="m${MODEL}_${DL}"
+    for i in "${!COST_LABELS[@]}"; do
+        CL="${COST_LABELS[$i]}"
+        BIN="PaperBenchmarkV2_${TAG}_${CL}"
+        for e in "${!ENV_NAMES[@]}"; do
+            EN="${ENV_NAMES[$e]}"
+            EO="${ENV_OBSTACLES[$e]}"
+            for p in "${!PLANNER_NAMES[@]}"; do
+                PN="${PLANNER_NAMES[$p]}"
+                PF="${PLANNER_FLAGS[$p]}"
+
+                echo ""
+                echo "=== RUNNING (model=${MODEL_NAMES[$m]}, planner=${PN}, cost=${CL}, env=${EN}) ==="
+
+                # `|| ec=$?` (NOT `if ! CMD; then ec=$?`): `!` negation collapses $? to a plain 0/1
+                # boolean and would destroy the exit-code distinction (124 timeout vs 128+N killed
+                # vs a plain crash) the log below depends on. This form also needs no set +e/-e
+                # toggling: a command on the left of `||` is already exempt from errexit.
+                ec=0
+                # argv[1] carries the model-qualified TAG + cost metric, so it lands in every
+                # output filename as _delta${TAG}_${CL} -- this is what keeps different models'
+                # per-run CSVs from colliding (see the BUILD phase's TAG comment above).
+                # shellcheck disable=SC2086
+                timeout --kill-after="${KILL_AFTER_S}s" "${RUN_TIMEOUT_S}s" \
+                    "./${BIN}" "${TAG}_${CL}" "$EO" "$EN" "$PF" $VIZ_FLAG || ec=$?
+
+                if [ "$ec" -ne 0 ]; then
+                    # Without --preserve-status (not used here, deliberately), `timeout` itself
+                    # reports 124 for ANY timeout-triggered kill -- whether the initial TERM was
+                    # enough or --kill-after had to escalate to KILL -- so 124 alone already means
+                    # "this hung" unambiguously. ec>=128 is therefore something else entirely: the
+                    # process died from a signal on its OWN (e.g. a genuine CUDA crash), unrelated
+                    # to this timeout wrapper.
+                    if   [ "$ec" -eq 124 ]; then STATUS="TIMEOUT"                   # hit RUN_TIMEOUT_S
+                    elif [ "$ec" -ge 128 ]; then STATUS="CRASHED_SIG$((ec - 128))"  # 139=SEGV, 134=ABRT, ...
+                    else                          STATUS="ERROR"
+                    fi
+                    echo "  *** FAILURE: exit=${ec} status=${STATUS} -- logged to ${FAILURE_LOG} ***"
+                    printf '%s model=%s planner=%s env=%s cost=%s exit=%s status=%s\n' \
+                        "$(date -Iseconds)" "$MODEL" "$PN" "$EN" "$CL" "$ec" "$STATUS" >> "$FAILURE_LOG"
+                fi
+                # Falls through to the next (model, cost, env, planner) combination either way --
+                # nothing above calls exit/return/break on a nonzero $ec.
+            done
         done
     done
 done
@@ -618,5 +930,10 @@ echo "scripts/process_paper_benchmark_v2_and_plot.m to match, then run it by nam
 echo "Plot with:  scripts/process_paper_benchmark_v2_and_plot.m (run it from that directory)"
 if [ "${DUMP_VIZ:-0}" != "0" ]; then
     echo "Viz dumps:  $BUILD_DIR/Data/Benchmarks/PaperBenchmarkV2/viz/  (visualize with scripts/visualize_tree_growth.m)"
+fi
+FAILURE_COUNT=$(wc -l < "$FAILURE_LOG" | tr -d ' ')
+echo "Failures logged: ${FAILURE_COUNT} (see $FAILURE_LOG)"
+if [ "$FAILURE_COUNT" != "0" ]; then
+    cat "$FAILURE_LOG"
 fi
 echo "Config.h will be restored to original on exit."

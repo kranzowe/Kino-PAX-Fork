@@ -50,6 +50,16 @@
 % (color=bufferFloor, style=bufferSlope, marker=(ef,cf)) that process_countingstars_summary_plots.m
 % uses -- there is nothing left to sweep here, so color is free to carry planner identity.
 %
+% ALL THREE LEGENDS RENDER BELOW THEIR PLOT ('southoutside', not 'eastoutside') so figures stay
+% narrow enough for a paper column. Figure 3's marker SIZE still encodes delta -- see
+% clickableLegend()'s ItemTokenSize comment for the legend-icon-scaling caveat and which MATLAB
+% release actually needs to fix it.
+%
+% MODEL TOGGLE (below, near `deltas`) selects which vehicle model's region-count numbers
+% `deltaTitles` shows -- the delta TOKENS are the same text for every model, but the real region
+% counts behind 'large'/'fine'/'tiny' differ per model, so this must match whatever produced the
+% CSVs being loaded.
+%
 % USAGE: cd into ONE environment's data directory, then call the script BY NAME, not via run():
 %   cd build/Data/Benchmarks/PaperBenchmarkV2/empty
 %   addpath('<repo>/scripts')
@@ -61,7 +71,7 @@
 clear; clc; close all;
 
 %% --- Configuration ---
-dataDir = 'empty';   % '' = current directory (run this from Data/Benchmarks/PaperBenchmarkV2/<env>)
+dataDir = '';   % '' = current directory (run this from Data/Benchmarks/PaperBenchmarkV2/<env>)
 
 % One environment per run -- must match the subfolder you cd'd into. Change this each time you
 % move to a different Data/Benchmarks/PaperBenchmarkV2/<env> folder.
@@ -89,20 +99,30 @@ metricYLabels = {'Path Cost (workspace path length)', 'Path Cost (control effort
 % metricTitles  = {'Workspace Path Length'};
 % metricYLabels = {'Path Cost (workspace path length)'};
 
-% Delta axis. The filename token is sprintf('%s_%s', delta, metric), e.g. 'fine_effort'. "fine"
-% and "tiny" refine different axes (workspace vs. velocity) -- see run_paper_benchmark.sh -- and
-% are NOT an identical-region-count pair (262,144 vs 592,704). Figures 1-2 only ever load/plot the
-% "fine" entry (fineIdx below); Figure 3's scatter is the only place all three are overlaid,
-% encoded as marker SIZE.
-%
-% TINY CHANGED FROM (W_R1=17, V_R1=5, 614,000 regions) THIS PASS -- that discretization crashed
-% with a cudaErrorIllegalAddress in the `empty` environment (see run_paper_benchmark.sh's header
-% for the debugging history). It is replaced with countingstars_sweep.cu's own tiny (W_R1=14,
-% V_R1=6, 592,704 regions), confirmed clean across all five series in a dedicated bug-isolation
-% harness.
-deltas      = {'large', 'fine', 'tiny'};
-deltaTitles = {'Large (9k)', 'Fine (262k)', 'Tiny (593k)'};
-fineIdx     = find(strcmp(deltas, 'fine'));   % the one delta Figures 1-2 actually plot
+% Delta axis. The filename token is sprintf('%s_%s', delta, metric), e.g. 'fine_effort'. Delta
+% TOKENS ('large'/'fine'/'tiny') are identical text across every model that has ever produced
+% these CSVs -- but the REGION COUNTS behind each token are NOT, since each model discretizes a
+% different W/C/V shape (see the MODEL TOGGLE below, which is what actually needs to change per
+% model). Figures 1-2 only ever load/plot the "fine" entry (fineIdx below); Figure 3's scatter is
+% the only place all three are overlaid, encoded as marker SIZE.
+deltas  = {'large', 'fine', 'tiny'};
+fineIdx = find(strcmp(deltas, 'fine'));   % the one delta Figures 1-2 actually plot
+
+% --- MODEL TOGGLE --- must match whichever MODEL (paper_benchmark_v2.cu / write_config() in
+% run_paper_benchmark_v2.sh) actually produced the CSVs being loaded below. Uncomment the one
+% block matching your data; comment the other two.
+
+% MODEL 3 -- 12D Non-Linear Quad (W_DIM=3/C_DIM=3/V_DIM=3, native [0,100] workspace scale) -- CURRENT
+modelTitle  = '12D Non-Linear Quad';
+deltaTitles = {'Large (8k)', 'Fine (216k)', 'Tiny (373k)'};
+
+% MODEL 2 -- 6D Dubins Airplane (C_DIM=2/V_DIM=1) -- uncomment if plotting Dubins-era CSVs:
+% modelTitle  = '6D Dubins Airplane';
+% deltaTitles = {'Large (9k)', 'Fine (262k)', 'Tiny (593k)'};
+
+% MODEL 1 -- 6D Double Integrator (C_DIM=0/V_DIM=3) -- uncomment if plotting Double-Integrator CSVs:
+% modelTitle  = '6D Double Integrator';
+% deltaTitles = {'Large (9k)', 'Fine (262k)', 'Tiny (593k)'};
 
 % Marker SIZE is the only place delta is visually encoded now (Figure 3's scatter, which overlays
 % all three) -- deliberately dramatic so it reads at a glance.
@@ -193,7 +213,7 @@ for ei = 1:numel(environments)
         metric    = metrics{mi};
         costTitle = metricTitles{mi};
         costYLab  = metricYLabels{mi};
-        fprintf('\n=== Environment: %s | Cost metric: %s ===\n', env, costTitle);
+        fprintf('\n=== Environment: %s | Cost metric: %s | Model: %s ===\n', env, costTitle, modelTitle);
 
         % --- Load every (planner, delta) series for this cost metric ---
         R = cell(1, nPlanner);
@@ -235,28 +255,21 @@ for ei = 1:numel(environments)
             if ~isempty(treeVals), mFinalTreePct(pi) = 100 * mean(treeVals) / maxTreeSize; end
         end
 
-        % Legend labels carry the success rate alongside the series identity. `legendLabels` keeps
-        % the [delta] tag (Figure 3, which overlays all three deltas); `legendLabelsFine` drops it
-        % (Figures 1-2, which only ever show the one "fine" series per planner, so repeating the
-        % same tag on every line would just be noise) -- e.g. "Kino-PAX (87% solved)". NaN (zero
-        % runs loaded) falls back to the plain name; plotMeanTime/plotMeanIter/tradeoffScatter skip
-        % empty series anyway, so a NaN label never actually renders.
+        % `legendLabels` keeps the [delta] tag (Figure 3, which overlays all three deltas);
+        % `legendLabelsFine` drops it (Figures 1-2, which only ever show the one "fine" series per
+        % planner, so repeating the same tag on every line would just be noise). Success rate is
+        % NOT shown here -- it's still computed above (mSuccessPct) and lives in the printed table
+        % and CSV export below, just not on the plots themselves.
         legendLabels     = plannerDisplay;
         legendLabelsFine = cell(1, nPlanner);
         for pi = 1:nPlanner
-            baseName = baseDisplay{plannerBaseIdx(pi)};
-            if ~isnan(mSuccessPct(pi))
-                legendLabels{pi}     = sprintf('%s (%.0f%% solved)', plannerDisplay{pi}, mSuccessPct(pi));
-                legendLabelsFine{pi} = sprintf('%s (%.0f%% solved)', baseName, mSuccessPct(pi));
-            else
-                legendLabelsFine{pi} = baseName;
-            end
+            legendLabelsFine{pi} = baseDisplay{plannerBaseIdx(pi)};
         end
 
         %% ---------- FIGURE 1: Best Cost vs Time (mean lines, no bands, "fine" delta only) ----------
         figNum = figNum + 1;
-        figure('Name', sprintf('%s - Cost vs Time (%s)', envTitle, costTitle), ...
-               'Position', [40 40 1180 700]);
+        figure('Name', sprintf('%s - Cost vs Time (%s, %s)', envTitle, costTitle, modelTitle), ...
+               'Position', [40 40 1180 760]);
         hold on;
         tmax = globalMaxTime(R(plannerDeltaIdx == fineIdx));
         if tmax > 0
@@ -276,8 +289,8 @@ for ei = 1:numel(environments)
         % THERE IS NO GROWTH CONTROLLER -- this is an OUTPUT of however many candidates the doors
         % admitted, not a target the planner tracks against a reference line.
         figNum = figNum + 1;
-        figure('Name', sprintf('%s - Tree Growth (%s)', envTitle, costTitle), ...
-               'Position', [70 70 1000 640]);
+        figure('Name', sprintf('%s - Tree Growth (%s, %s)', envTitle, costTitle, modelTitle), ...
+               'Position', [70 70 1000 700]);
         hold on;
         for pi = 1:nPlanner
             if plannerDeltaIdx(pi) ~= fineIdx, continue; end
@@ -299,12 +312,12 @@ for ei = 1:numel(environments)
         end
 
         figNum = figNum + 1;
-        figure('Name', sprintf('%s - Tradeoff Scatter (%s)', envTitle, costTitle), ...
-               'Position', [130 140 1180 700]);
+        figure('Name', sprintf('%s - Tradeoff Scatter (%s, %s)', envTitle, costTitle, modelTitle), ...
+               'Position', [130 140 1180 820]);
         tradeoffScatter(mFirstSolTime, mFinalCost, plannerMarkers, plannerColors, ...
-                        plannerSizes, legendLabels, mSuccessPct, costYLim);
+                        plannerSizes, legendLabels, costYLim);
         xlabel('Avg Time to First Solution (ms)'); ylabel(sprintf('Avg Final %s', costYLab));
-        title(sprintf('Time to First Solution vs Final Cost \x2014 %s, %s', envTitle, costTitle), ...
+        title(sprintf('Time to First Solution vs Final Cost \x2014 %s, %s, %s', envTitle, costTitle, modelTitle), ...
               'FontWeight', 'bold');
 
         %% ---------- TABLE: one row per (planner, delta) ----------
@@ -423,11 +436,42 @@ function plotMeanIter(runs, valueFcn, color, style, width, name)
     plot(find(keep), mu(keep), style, 'Color', color, 'LineWidth', width, 'DisplayName', name);
 end
 
-function clickableLegend()
+function clickableLegend(numCols)
+    % numCols: optional column count to wrap a big legend (Figure 3's 12 entries) into multiple
+    % rows below the plot instead of one very wide row. Omit/pass [] for a plain single-row
+    % legend (Figures 1-2's 4 entries).
+    if nargin < 1
+        numCols = [];
+    end
+    lgd = legend('Location', 'southoutside', 'FontSize', 6);
+
+    % Orientation='horizontal' is a long-standing legend property. NumColumns -- the property that
+    % actually WRAPS a horizontal legend into multiple rows once numCols is given -- was only
+    % added in MATLAB R2018a, so it gets the same defensive try/catch as ItemTokenSize below.
+    % Both are set inside the SAME try: if NumColumns throws on an older release, fall back to a
+    % VERTICAL (single column, just tall) legend instead of ending up horizontal-but-unwrapped,
+    % which could render one legend row wider than the whole figure with 12 entries.
+    try
+        if ~isempty(numCols)
+            lgd.NumColumns = numCols;
+        end
+        lgd.Orientation = 'horizontal';
+    catch
+        lgd.Orientation = 'vertical';
+    end
+
     % ItemTokenSize widens the little icon swatch each legend row draws its line/marker preview
     % in -- MATLAB's default ([30 18]-ish) clips a big marker down to look the same size as a
     % small one, which is exactly the "legend symbols don't scale like on the plot" problem.
-    lgd = legend('Location', 'eastoutside', 'FontSize', 6, 'ItemTokenSize', [45, 24]);
+    % NOT SUPPORTED on MATLAB releases before it was added (errors as "Unknown property" if passed
+    % to the legend(...) constructor itself, which is why this is a try/catch property SET
+    % afterward, not a constructor argument -- silently no-ops on any release that lacks it). This
+    % is the only mechanism left for delta-size legend scaling (the earlier hand-built size-key
+    % inset was removed as redundant once this property is available).
+    try
+        lgd.ItemTokenSize = [45, 24];
+    catch
+    end
     lgd.ItemHitFcn = @toggleSeries;
 end
 
@@ -481,9 +525,11 @@ function c = finalCost(tbl, thresh)
     if isempty(v), c = NaN; else, c = v(end); end
 end
 
-function tradeoffScatter(x, y, markers, colors, sizes, labels, successPct, yLim)
+function tradeoffScatter(x, y, markers, colors, sizes, labels, yLim)
     % sizes is delta-coded (deltaMarkerSizes), not a baseline/swept-point distinction -- every
     % series in this comparison is a headline point, so size is free to carry delta instead.
+    % Delta-size legend scaling relies on clickableLegend()'s ItemTokenSize (see its comment) --
+    % there is no hand-built fallback key here any more.
     hold on;
     for pi = 1:numel(x)
         if isnan(x(pi)) || isnan(y(pi)), continue; end
@@ -502,15 +548,15 @@ function tradeoffScatter(x, y, markers, colors, sizes, labels, successPct, yLim)
                  'MarkerEdgeColor', 'k', 'LineWidth', 1.5, ...
                  'MarkerSize', sizes(pi), 'DisplayName', labels{pi});
         end
-        if ~isnan(successPct(pi))
-            % Leading spaces nudge the label clear of the marker itself without needing a
-            % coordinate-space offset (which would have to know the axes' current scale).
-            text(x(pi), y(pi), sprintf('  %.0f%%', successPct(pi)), ...
-                 'FontSize', 7, 'Color', [0.15 0.15 0.15], ...
-                 'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'left');
-        end
     end
     grid on;
     if ~isempty(yLim), ylim(yLim); end
-    clickableLegend();
+
+    n = numel(labels);
+    if n > 6
+        numCols = ceil(n / 3);   % wrap a big legend (Figure 3's 12 entries) into ~3 rows
+    else
+        numCols = [];
+    end
+    clickableLegend(numCols);
 end
