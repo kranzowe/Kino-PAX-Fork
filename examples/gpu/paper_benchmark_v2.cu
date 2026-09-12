@@ -1183,10 +1183,10 @@ int main(int argc, char* argv[])
             onlyKinoPaxPlus = true;
     }
 
-    const int NUM_KPAX_RUNS        = 5;
-    const int NUM_KINOPAXPLUS_RUNS = 5;   // drives the KinoPaxPlus runner
-    const int NUM_TRUE_RUNS        = 5;    // drives the KinoPaxSTARTrue anc0/anc1 pair
-    const int NUM_CS_RUNS          = 5;    // drives the CountingStars fixed point
+    const int NUM_KPAX_RUNS        = 20;
+    const int NUM_KINOPAXPLUS_RUNS = 20;   // drives the KinoPaxPlus runner
+    const int NUM_TRUE_RUNS        = 20;    // drives the KinoPaxSTARTrue anc0/anc1 pair
+    const int NUM_CS_RUNS          = 20;    // drives the CountingStars fixed point
     const int MAX_ITERATIONS       = 1000;
     const float MAX_TIME_MS      = 10000.0f;  // 10 second per-run timeout
 

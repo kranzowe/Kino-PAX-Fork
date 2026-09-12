@@ -35,18 +35,18 @@
 # further below still applies in full -- only the "sweep a grid" framing changed to "one fixed
 # point per axis".
 #
-# Per environment, AT EACH OF THREE DISCRETIZATIONS (`large`/`fine`/`tiny`, unchanged from the
-# sweep -- see DELTA_LABELS below; all three run the full comparison):
-#   KPAX                                                    = 1 point  x 5 runs
-#   KinoPaxPlus                                             = 1 point  x 5 runs
+# Per environment, AT THE SINGLE `fine` DISCRETIZATION (262,144 regions -- ONE DISCRETIZATION ONLY
+# this pass, not the earlier large/fine/tiny sweep; see DELTA_LABELS below):
+#   KPAX                                                    = 1 point  x 20 runs
+#   KinoPaxPlus                                             = 1 point  x 20 runs
 #   KinoPaxSTARTrue syclopCap 1.0 (no cap), ancestorPrune = 1
-#                                                            = 1 point  x 5 runs
+#                                                            = 1 point  x 20 runs
 #   CountingStars   bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,
-#                   hopelessGuard PERMANENTLY ON (v3.5)      = 1 point  x 5 runs
+#                   hopelessGuard PERMANENTLY ON (v3.5)      = 1 point  x 20 runs
 #
-# ONE COST METRIC (length/COST_MODE=0 only), FOUR ENVIRONMENTS (empty, house, narrowPassage,
-# zigzag -- see ENV_NAMES below), one full build per delta: 4 series x 5 runs x 3 deltas x 4
-# environments = 240 runs total, from 3 compiled binaries.
+# BOTH COST METRICS (length + effort), FOUR ENVIRONMENTS (empty, house, narrowPassage, zigzag --
+# see ENV_NAMES below), one build per (delta, cost metric): 4 series x 20 runs x 1 delta x 4
+# environments x 2 cost metrics = 640 runs total, from 2 compiled binaries.
 #
 # The original grid-sweep version of this file (bufferSlope/bufferFloor grid, ancestorPrune {0,1})
 # is countingstars_sweep.cu / run_countingstars_sweep.sh, unmodified by this file's existence.
@@ -171,9 +171,9 @@
 #   9. First-solution time and cost, final cost, and success rate -- the headline comparison this
 #      tool exists to produce reliably across all four planners and environments.
 #
-# ALL THREE DELTAS RUN THE FULL COMPARISON -- NOT --only-kinopaxplus at any of them. Conclusions at
-# one delta do not automatically hold at the others, so all three need the full comparison, not
-# KinoPaxPlus alone at the finer ones.
+# ONE DISCRETIZATION RUNS THE FULL COMPARISON -- NOT --only-kinopaxplus. `large` and `tiny` used to
+# also run (each independently, to check a tuning conclusion held across discretizations); this
+# pass only needs the one `fine` point, so that cross-delta check is out of scope here.
 #
 # Runs on all four environments (empty, house, narrowPassage, zigzag -- see ENV_NAMES below), each
 # written to its own subfolder under Data/Benchmarks/PaperBenchmarkV2/<env>/.
@@ -182,31 +182,28 @@
 # neither can vary within one binary. This script therefore borrows run_delta_benchmark.sh's
 # build-cache pattern: write config.h and build once per (delta, cost metric), caching each binary
 # under a suffixed name, then run them in a second pass. Both labels ride into every output filename
-# as the argv[1] delta label (large_length / large_effort / fine_length / ...).
+# as the argv[1] delta label (fine_length / fine_effort).
 #
 # It builds ONLY the PaperBenchmarkV2 target. That still compiles KPAX_lib, which is the
 # monolithic library holding every planner in the repo -- so warnings from unrelated sources
 # (ReKino and friends) scroll past on every build. They are pre-existing and unavoidable without
 # splitting the library.
 #
-# THREE DELTAS RUN THIS PASS -- "large" and "fine" are paper_benchmark.cu's own current large/fine
+# ONE DISCRETIZATION RUNS THIS PASS -- "fine" is paper_benchmark.cu's own current fine point
 # (copied by hand from run_paper_benchmark.sh; there is no cross-check enforcing they stay equal,
-# so re-check both files if either one's deltas change again), plus this sweep's own "tiny",
-# unchanged from earlier passes, all full comparison, per the header above.
+# so re-check both files if either one's deltas change again). "large" and "tiny" used to also run
+# every pass -- dropped, not commented out, since there's no plan to re-sweep them; their numbers
+# are kept below for provenance only.
 #
 # C_R1 IS REAL HERE, UNLIKE THE DOUBLE-INTEGRATOR SWEEP'S C_R1=1. NUM_R1_REGIONS = W_R1^3 *
 # C_R1^2 * V_R1 (C_DIM=2: yaw+pitch; V_DIM=1: airspeed only), so C_R1 genuinely discriminates
 # attitude at the R1 level, unlike the C_DIM=0 sweep this file started from.
 #
-# Deltas (Dubins Airplane: W_DIM=3, C_DIM=2, V_DIM=1):
-#   large   W_R1=7   C_R1=3  V_R1=3  ->  7^3  * 3^2 * 3 =   9,261   (full comparison)
+# Deltas (Dubins Airplane: W_DIM=3, C_DIM=2, V_DIM=1) -- ACTIVE this pass:
 #   fine    W_R1=16  C_R1=4  V_R1=4  -> 16^3  * 4^2 * 4 = 262,144   (full comparison)
-#   tiny    W_R1=14  C_R1=6  V_R1=6  -> 14^3  * 6^2 * 6 = 592,704   (full comparison)
-#
-# "tiny" names the CELL, not the count: it is the finest delta this pass runs, at 592,704 regions.
-# Watch it for the per-region arrays -- every NUM_R1_REGIONS allocation and every full-array fill
-# scales with this, and graph_.updateVertices() runs a kernel over all of them with 64 sub-vertex
-# reads each.
+# Formerly also run every pass, now dropped (kept for provenance only, not active):
+#   large   W_R1=7   C_R1=3  V_R1=3  ->  7^3  * 3^2 * 3 =   9,261
+#   tiny    W_R1=14  C_R1=6  V_R1=6  -> 14^3  * 6^2 * 6 = 592,704
 #
 # Original config.h is backed up and restored on exit/error.
 #
@@ -228,38 +225,23 @@ CONFIG_FILE="$PROJECT_DIR/include/config/config.h"
 CONFIG_BACKUP="$CONFIG_FILE.bak"
 BUILD_DIR="$PROJECT_DIR/build"
 
-# Deltas: parallel arrays of label / W_R1 / C_R1 / V_R1. ALL THREE run the FULL comparison this
-# pass (see DELTA_EXTRA_ARGS) -- a tuning conclusion at one delta is not assumed to hold at the
-# others, so there is no "--only-kinopaxplus" arm to skip it with here. One build per
-# (delta, cost metric), cached, so restoring or trimming the list changes only the loop bounds.
+# Deltas: parallel arrays of label / W_R1 / C_R1 / V_R1. ONE DISCRETIZATION ONLY THIS PASS -- see
+# the file header. Just the existing `fine` point (262,144 regions), matching
+# run_paper_benchmark.sh's own `fine` exactly (kept in step by hand -- there is no cross-check
+# between the two sweep tools). `large` and `tiny` are dropped, not commented out for restoration,
+# since `fine` was already confirmed clean and there's no plan to re-sweep the other two. One build
+# per (delta, cost metric), cached, so restoring or trimming the list changes only the loop bounds.
 #
-# ALL THREE DELTAS NOW MATCH run_paper_benchmark.sh's OWN DELTAS EXACTLY (kept in step by hand --
-# there is no cross-check between the two sweep tools). "tiny" here USED TO be this sweep's own,
-# independently-chosen delta while paper_benchmark.cu ran a different, riskier tiny (W_R1=17,
-# V_R1=5) that hit a cudaErrorIllegalAddress / hang in the `empty` environment (a buffer-overflow
-# bug in KPAX.cu/KinoPaxPlus.cu's goal-path reconstruction, fixed at three sites -- but the hang
-# persisted afterward, root cause still open). This sweep's own tiny (W_R1=14, V_R1=6) ran clean
-# for KPAX/KinoPaxPlus/CountingStars/KinoPaxSTARTrue at all three deltas here, so
-# run_paper_benchmark.sh was updated to reuse it -- see that script's own header for the same
-# history from its side.
 # C_R1/V_R1 are NOT inert for Dubins Airplane (C_DIM=2: yaw+pitch; V_DIM=1: airspeed only -- see
 # the MODEL 2 switch below). NUM_R1_REGIONS = W_R1^3 * C_R1^2 * V_R1 for this model, a different
-# shape from Double Integrator's W_R1^3 * V_R1^3, so these are NOT the same numbers reused
-# unchanged -- C_R1/V_R1 were re-derived to land on the same 9,261 / 262,144 / 592,704 region
-# counts (all three exact) under this model's own formula: large 7^3*3^2*3=9261,
-# fine 16^3*4^2*4=262144, tiny 14^3*6^2*6=592704.
-DELTA_LABELS=("large" "fine" "tiny")
-DELTA_W_R1S=(7  16 14)
-DELTA_C_R1S=(3  4  6)
-DELTA_V_R1S=(3  4  6)
-DELTA_EXTRA_ARGS=("" "" "")
-
-# --- Coarse delta only (uncomment to restore; comment out the four lines above) ---
-# DELTA_LABELS=("large")
-# DELTA_W_R1S=(7)
-# DELTA_C_R1S=(3)
-# DELTA_V_R1S=(3)
-# DELTA_EXTRA_ARGS=("")
+# shape from Double Integrator's W_R1^3 * V_R1^3, so C_R1/V_R1 were re-derived (not reused
+# unchanged) to land on the target 262,144 region count under this model's own formula:
+# 16^3*4^2*4=262144.
+DELTA_LABELS=("fine")
+DELTA_W_R1S=(16)
+DELTA_C_R1S=(4)
+DELTA_V_R1S=(4)
+DELTA_EXTRA_ARGS=("")
 
 # Cost metric axis: label + COST_MODE (0 = workspace distance, 1 = control effort). BOTH THIS
 # PASS -- doubles the build count (one binary per delta x cost metric) and the run count.
@@ -451,8 +433,8 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  Series this pass, ALL AT ALL THREE DELTAS x ALL FOUR ENVIRONMENTS x BOTH COST METRICS"
-echo "  (5 runs each) -- every axis below is a SINGLE FIXED POINT, not a grid:"
+echo "  Series this pass, AT THE SINGLE fine DELTA x ALL FOUR ENVIRONMENTS x BOTH COST METRICS"
+echo "  (20 runs each) -- every axis below is a SINGLE FIXED POINT, not a grid:"
 echo "    KPAX             baseline"
 echo "    KinoPaxPlus       "
 echo "    KinoPaxSTARTrue  syclopCap 1.0 (no cap), ancestorPrune = 1 (guarded stale-best prune on"
@@ -462,8 +444,8 @@ echo "                     hopelessGuard PERMANENTLY ON (v3.5): excludes any can
 echo "                     whose own cost already forecloses beating the best solution found so far"
 echo "                     from every door (FRESHEST/CHEAPEST/OPTIMAL/both floors), not just"
 echo "                     cost-based ones -- see h_hopelessGuard_ in CountingStars.cuh."
-TOTAL_RUNS=$(( 4 * 5 * ${#DELTA_LABELS[@]} * ${#ENV_NAMES[@]} * ${#COST_LABELS[@]} ))
-echo "  = 4 series x 5 runs x ${#DELTA_LABELS[@]} deltas x ${#ENV_NAMES[@]} environments x ${#COST_LABELS[@]} cost"
+TOTAL_RUNS=$(( 4 * 20 * ${#DELTA_LABELS[@]} * ${#ENV_NAMES[@]} * ${#COST_LABELS[@]} ))
+echo "  = 4 series x 20 runs x ${#DELTA_LABELS[@]} delta x ${#ENV_NAMES[@]} environments x ${#COST_LABELS[@]} cost"
 echo "    metrics = ${TOTAL_RUNS} runs total."
 echo "  Filenames: CountingStars_bs120_bf40_ef150_cf750_hg1, KinoPaxSTARTrue_cap100_anc1."
 echo "  Earlier CSVs from the retired tuning grid (_bs120_bf30_..., _bs180_bf50_..., anc0, etc.) do"
@@ -478,12 +460,11 @@ echo "    ADMIT FLOOR every candidate at accept_floor = 1e-4, only when nothing 
 echo "    REACT FLOOR every dormant node at react_floor = 1e-5, ON TOP of the budget"
 echo "  Score floor:    COUNTINGSTARS HAS NO SCORE FLOOR AND USES NO EPSILON: it never reads"
 echo "                  vertexScores, h_scoreFloor_, h_nActive_ or regionCoverage in any decision."
-echo "  Baselines: KPAX, KinoPaxPlus -- BOTH AT ALL THREE DELTAS this pass, not KinoPaxPlus-only at"
-echo "             the finer ones."
+echo "  Baselines: KPAX, KinoPaxPlus -- both at the single fine delta this pass."
 echo "======================================================="
 
 # =============================================================================
-# BUILD — compile the Large delta config once per cost metric, caching each binary
+# BUILD — compile the fine delta config once per cost metric, caching each binary
 # =============================================================================
 if [ "$SKIP_BUILD" = false ]; then
     for d in "${!DELTA_LABELS[@]}"; do
@@ -544,9 +525,9 @@ for CL in "${COST_LABELS[@]}"; do
         for d in "${!DELTA_LABELS[@]}"; do
             DL="${DELTA_LABELS[$d]}"
             EXTRA="${DELTA_EXTRA_ARGS[$d]}"
-            # All three deltas are full-sweep this pass (DELTA_EXTRA_ARGS all empty), so all three
-            # dump viz when enabled; the branch below still matters if DELTA_EXTRA_ARGS is ever
-            # restored to a KinoPaxPlus-only entry, which has nothing extra to show.
+            # The single delta this pass is full-sweep (DELTA_EXTRA_ARGS empty), so it dumps viz
+            # when enabled; the branch below still matters if DELTA_EXTRA_ARGS is ever restored to
+            # a KinoPaxPlus-only entry, which has nothing extra to show.
             if [ -z "$EXTRA" ]; then
                 PASS_FLAGS="$VIZ_FLAG"
             else
