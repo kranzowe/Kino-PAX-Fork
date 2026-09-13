@@ -11,7 +11,7 @@ build/*
 # figures
 viz/figs/*
 !viz/figs/.gitkeep
-
+plots/DATA/*
 # NSIGHT
 NSight/*
 !NSight/command.md
