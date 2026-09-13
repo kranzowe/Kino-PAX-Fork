@@ -1,36 +1,37 @@
-%% Paper Benchmark Plots v2 - fixed 4-planner comparison, 3 panels + summary table per (env, metric)
+%% Paper Benchmark Plots v2 - fixed 4-planner comparison, 3 panels + summary table per (env, model)
 % Reads per-iteration CSVs produced by examples/gpu/paper_benchmark_v2.cu (run via
 % scripts/run_paper_benchmark_v2.sh) -- countingstars_sweep.cu's proven-reliable harness, minimally
 % adapted (all four environments, single fixed operating points) to reproduce
 % paper_benchmark.cu's own headline comparison without paper_benchmark.cu's unresolved hang at
-% `tiny`. MODEL has moved twice since: first to 2 (Dubins Airplane, matching paper_benchmark.cu's
-% original target but with a corrected C_DIM=2/V_DIM=1 dimension breakdown instead of
-% paper_benchmark.cu's own C_DIM=0/V_DIM=3), and now to 3 (12D Non-Linear Quad, W_DIM=3/C_DIM=3/
-% V_DIM=3, native [0,100] workspace scale) -- so results here are NOT directly comparable to
-% paper_benchmark.cu's own numbers. See paper_benchmark_v2.cu / run_paper_benchmark_v2.sh for the
-% full derivation of both switches. Otherwise identical in structure/presentation to
-% process_paper_benchmark_and_plot.m.
+% `tiny`. run_paper_benchmark_v2.sh now builds and runs ALL THREE vehicle models in one sweep
+% (Double Integrator, Dubins Airplane, Quad), each at exactly ONE discretization ("tiny" -- no more
+% large/fine/tiny sweep per model) -- see that script's own header for the full derivation. This
+% script still plots ONE MODEL AT A TIME (via the MODEL TOGGLE below), matching its original
+% design: Figures 1-2 plot raw cost/tree-size values directly, which are only comparable WITHIN one
+% vehicle model (Quad's workspace is [0,100]^3, the other two are [0,1]^3 -- overlaying models on
+% these axes would mix physically different units, the same reason
+% process_paper_benchmark_improvement_scatter.m's grand average omits raw cost across models).
+% Otherwise identical in structure/presentation to process_paper_benchmark_and_plot.m.
 %
 % A FIXED COMPARISON, not a sweep -- there is no grid here, so the series list below is NOT built
-% from nested loops over swept parameters the way process_countingstars_and_plot.m's is. It is
-% four already-chosen operating points (KPAX, KinoPaxPlus, KinoPaxSTARTrue at ancestorPrune 1, and
-% ONE CountingStars point), each run at all three deltas -- 12 series total. Figures 1-2 (cost vs
-% time, tree growth) only plot the "fine" delta, to keep those two clean; Figure 3 (the tradeoff
-% scatter) is the one place all three deltas are overlaid, coded by marker size. CountingStars
-% runs bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,
-% WITH THE HOPELESS GUARD PERMANENTLY ON (v3.5, h_hopelessGuard_ in CountingStars.cuh) --
-% countingstars_sweep.cu's own on/off sweep confirmed the guard helps at an earlier operating
-% point, and slope/floor/ef/cf were re-tuned with it on (replacing the earlier two-point,
-% unguarded bufferFloor 0.3/0.6 arm). KinoPaxSTARTrue (h_syclopCap_ at its 1.0 no-op default,
-% h_ancestorPrune_ = 1) replaces KinoPaxSTARCleanCost as the non-CountingStars "STAR" reference
-% this pass -- the naive OR-fusion of KPAX and KinoPaxPlus plus the guarded stale-best prune tells
-% a "beats the naive fusion of its two parents" story, rather than CleanCost's "beats one already
-% cost-tuned competitor." A second point at ancestorPrune 0 (the pure fusion, == stock
+% from nested loops over swept parameters the way process_countingstars_and_plot.m's is. It is four
+% already-chosen operating points (KPAX, KinoPaxPlus, KinoPaxSTARTrue at ancestorPrune 1, and ONE
+% CountingStars point), each at the ONE discretization the toggled model actually produced -- 4
+% series total (used to be 12, one per (planner, delta), back when each model still ran a
+% large/fine/tiny sweep). CountingStars runs bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15,
+% cost_frac 0.75, WITH THE HOPELESS GUARD PERMANENTLY ON (v3.5, h_hopelessGuard_ in
+% CountingStars.cuh) -- countingstars_sweep.cu's own on/off sweep confirmed the guard helps at an
+% earlier operating point, and slope/floor/ef/cf were re-tuned with it on (replacing the earlier
+% two-point, unguarded bufferFloor 0.3/0.6 arm). KinoPaxSTARTrue (h_syclopCap_ at its 1.0 no-op
+% default, h_ancestorPrune_ = 1) replaces KinoPaxSTARCleanCost as the non-CountingStars "STAR"
+% reference this pass -- the naive OR-fusion of KPAX and KinoPaxPlus plus the guarded stale-best
+% prune tells a "beats the naive fusion of its two parents" story, rather than CleanCost's "beats
+% one already cost-tuned competitor." A second point at ancestorPrune 0 (the pure fusion, == stock
 % KinoPaxSTARNoGoalBias exactly) ran alongside this one in an earlier pass to isolate what the
 % guarded prune buys; it was dropped from this comparison (recoverable from git history as
-% KinoPaxSTARTrue_cap100_anc0). Same three panels as
-% process_countingstars_summary_plots.m (this script's direct ancestor -- loadRuns and every plot
-% helper below are copies of its versions), plus a results table this one adds:
+% KinoPaxSTARTrue_cap100_anc0). Same three panels as process_countingstars_summary_plots.m (this
+% script's direct ancestor -- loadRuns and every plot helper below are copies of its versions),
+% plus a results table this one adds:
 %
 %   1. Best Cost vs Time        the fair cross-planner axis (an "iteration" is a different unit of
 %                                work per planner; elapsed time is not).
@@ -38,47 +39,52 @@
 %                                growth controller -- growth is an OUTPUT of the doors, not a
 %                                target).
 %   3. Tradeoff Scatter         mean time-to-first-solution vs mean FINAL cost, one point per
-%                                (planner, delta). Lower-left wins both.
-%   4. SUMMARY TABLE            one row per (planner, delta): time-to-first, cost-of-first,
-%                                cost-of-last, success rate, final tree size %. Printed to the
-%                                console AND written to a CSV alongside the figures.
+%                                planner. Lower-left wins both.
+%   4. SUMMARY TABLE            one row per planner: time-to-first, cost-of-first, cost-of-last,
+%                                success rate, final tree size %. Printed to the console AND
+%                                written to a CSV alongside the figures.
 %
 % COLOR = PLANNER IDENTITY (4 fixed colors: Kino-PAX, Kino-PAX+, SimpleCombo, KinoPax*), MARKER =
-% PLANNER IDENTITY too (X, +, circle, star). DELTA only appears as an encoded dimension in Figure
-% 3's scatter, as marker SIZE -- Figures 1-2 are solid lines at a single delta ("fine") instead of
-% overlaying all three, since that reads far more cleanly. This replaces the swept-grid encoding
-% (color=bufferFloor, style=bufferSlope, marker=(ef,cf)) that process_countingstars_summary_plots.m
-% uses -- there is nothing left to sweep here, so color is free to carry planner identity.
+% PLANNER IDENTITY too (X, +, circle, star). There is no delta/model axis left to encode via marker
+% size any more -- every planner runs at exactly the one discretization the toggled model produces,
+% so all points share one plain size.
 %
 % ALL THREE LEGENDS RENDER BELOW THEIR PLOT ('southoutside', not 'eastoutside') so figures stay
-% narrow enough for a paper column. Figure 3's marker SIZE still encodes delta -- see
-% clickableLegend()'s ItemTokenSize comment for the legend-icon-scaling caveat and which MATLAB
-% release actually needs to fix it.
+% narrow enough for a paper column.
 %
-% MODEL TOGGLE (below, near `deltas`) selects which vehicle model's region-count numbers
-% `deltaTitles` shows -- the delta TOKENS are the same text for every model, but the real region
-% counts behind 'large'/'fine'/'tiny' differ per model, so this must match whatever produced the
-% CSVs being loaded.
+% MODEL TOGGLE (below, near `modelId`) selects both which vehicle model's region-count numbers
+% `deltaTitle` shows AND which model's CSVs actually get loaded (via the "m<N>_" filename prefix
+% run_paper_benchmark_v2.sh now writes into every output filename) -- this must match whatever
+% produced the CSVs being loaded, or every series below will silently report "0 runs".
 %
-% USAGE: cd into ONE environment's data directory, then call the script BY NAME, not via run():
+% USAGE: cd into ONE environment's data directory, then call the script BY NAME, not via run() --
+% and NOT via the MATLAB Editor's Run/F5 button, which silently cd's to this file's OWN folder
+% first, exactly like run() does, even if you already cd'd to the data folder in the Command Window:
 %   cd build/Data/Benchmarks/PaperBenchmarkV2/empty
 %   addpath('<repo>/scripts')
 %   process_paper_benchmark_v2_and_plot
-% run('<abs path>/process_paper_benchmark_v2_and_plot.m') would cd to the scripts folder first, and
-% dataDir below ('' = current folder) would then find nothing. Repeat once per environment,
-% changing `environments` below to match the subfolder you cd'd into each time.
+% Repeat once per environment, changing `environments` below to match the subfolder you cd'd into
+% each time -- and once per model, changing the MODEL TOGGLE below to match.
 
 clear; clc; close all;
 
+fprintf('Running from: %s\n', pwd);
+
 %% --- Configuration ---
 dataDir = '';   % '' = current directory (run this from Data/Benchmarks/PaperBenchmarkV2/<env>)
+
+% Figure size, in pixels -- one width/height pair per figure so each can be tuned independently
+% (their default sizes already differ on purpose: Figure 3 is tallest, Figure 2 narrowest).
+FIG1_WIDTH = 1180; FIG1_HEIGHT = 760;   % Cost vs Time
+FIG2_WIDTH = 1000; FIG2_HEIGHT = 700;   % Tree Growth
+FIG3_WIDTH = 1180; FIG3_HEIGHT = 820;   % Tradeoff Scatter
 
 % One environment per run -- must match the subfolder you cd'd into. Change this each time you
 % move to a different Data/Benchmarks/PaperBenchmarkV2/<env> folder.
 %
 % ALL FOUR ENVIRONMENTS ARE VALID HERE (unlike process_paper_benchmark_and_plot.m, which excludes
 % `empty` because paper_benchmark.cu hangs at tiny/empty) -- paper_benchmark_v2.cu runs on
-% countingstars_sweep.cu's harness instead, which completes every delta including tiny cleanly.
+% countingstars_sweep.cu's harness instead, which completes every environment cleanly.
 environments = {'empty'};
 envTitles    = {'Empty'};
 % Other environments this suite produces (uncomment the one you cd'd into):
@@ -99,38 +105,35 @@ metricYLabels = {'Path Cost (workspace path length)', 'Path Cost (control effort
 % metricTitles  = {'Workspace Path Length'};
 % metricYLabels = {'Path Cost (workspace path length)'};
 
-% Delta axis. The filename token is sprintf('%s_%s', delta, metric), e.g. 'fine_effort'. Delta
-% TOKENS ('large'/'fine'/'tiny') are identical text across every model that has ever produced
-% these CSVs -- but the REGION COUNTS behind each token are NOT, since each model discretizes a
-% different W/C/V shape (see the MODEL TOGGLE below, which is what actually needs to change per
-% model). Figures 1-2 only ever load/plot the "fine" entry (fineIdx below); Figure 3's scatter is
-% the only place all three are overlaid, encoded as marker SIZE.
-deltas  = {'large', 'fine', 'tiny'};
-fineIdx = find(strcmp(deltas, 'fine'));   % the one delta Figures 1-2 actually plot
-
 % --- MODEL TOGGLE --- must match whichever MODEL (paper_benchmark_v2.cu / write_config() in
-% run_paper_benchmark_v2.sh) actually produced the CSVs being loaded below. Uncomment the one
-% block matching your data; comment the other two.
+% run_paper_benchmark_v2.sh) actually produced the CSVs being loaded below. `modelId` feeds the
+% "m<N>_" filename prefix run_paper_benchmark_v2.sh's TAG now writes into every output filename (so
+% all three models' CSVs can coexist in the same environment folder without colliding) -- uncomment
+% the one block matching your data; comment the other two.
 
 % MODEL 3 -- 12D Non-Linear Quad (W_DIM=3/C_DIM=3/V_DIM=3, native [0,100] workspace scale) -- CURRENT
-modelTitle  = '12D Non-Linear Quad';
-deltaTitles = {'Large (8k)', 'Fine (216k)', 'Tiny (373k)'};
+modelId    = 3;
+modelTitle = '12D Non-Linear Quad';
+deltaTitle = 'Tiny (373k)';
 
 % MODEL 2 -- 6D Dubins Airplane (C_DIM=2/V_DIM=1) -- uncomment if plotting Dubins-era CSVs:
-% modelTitle  = '6D Dubins Airplane';
-% deltaTitles = {'Large (9k)', 'Fine (262k)', 'Tiny (593k)'};
+% modelId    = 2;
+% modelTitle = '6D Dubins Airplane';
+% deltaTitle = 'Tiny (593k)';
 
 % MODEL 1 -- 6D Double Integrator (C_DIM=0/V_DIM=3) -- uncomment if plotting Double-Integrator CSVs:
-% modelTitle  = '6D Double Integrator';
-% deltaTitles = {'Large (9k)', 'Fine (262k)', 'Tiny (593k)'};
+% modelId    = 1;
+% modelTitle = '6D Double Integrator';
+% deltaTitle = 'Tiny (593k)';
 
-% Marker SIZE is the only place delta is visually encoded now (Figure 3's scatter, which overlays
-% all three) -- deliberately dramatic so it reads at a glance.
-deltaMarkerSizes = [7, 11, 16];
+% Each model now runs at exactly ONE discretization (no more large/fine/tiny sweep -- see
+% run_paper_benchmark_v2.sh's MODEL_W_R1S/MODEL_C_R1S/MODEL_V_R1S), always labeled "tiny" on disk;
+% `deltaLabel` below is the bare on-disk token, `deltaTitle` above is just the display string.
+deltaLabel = 'tiny';
 
 maxTreeSize = 3000000;   % MAX_TREE_SIZE in config.h -- denominator for the table's Final Tree (%)
 
-% --- The four FIXED series (not swept). Label tokens must match examples/gpu/paper_benchmark.cu's
+% --- The four FIXED series (not swept). Label tokens must match examples/gpu/paper_benchmark_v2.cu's
 % trueLabel() / countingStarsLabel() exactly: round(100 x float) for cap/bs/bf, round(1000 x
 % float) for ef/cf, plain int for hopelessGuard. ---
 trueCap          = 100;   % syclopCap 1.0 (no cap)
@@ -168,34 +171,17 @@ baseColors = [ ...
 % is the "X" mark, Kino-PAX+ the "+" mark, SimpleCombo a plain circle, KinoPax* an actual star).
 baseMarkers = {'x', '+', 'o', 'p'};
 
-% --- Build the series arrays: (planner, delta) pairs, planner-major so the legend and table group
-% all three deltas together per planner. ---
-plannerNames    = {};
-plannerDisplay  = {};
-plannerColors   = [];
-plannerMarkers  = {};
-plannerSizes    = [];   % scatter marker size, delta-coded (deltaMarkerSizes) -- every series here
-                         % is a headline comparison point, not a swept grid, so size carries delta
-                         % rather than a baseline/swept-point distinction
-plannerDeltaIdx = [];   % index into `deltas`
-plannerBaseIdx  = [];   % index into `baseNames`/`baseDisplay` -- table's Planner column
+% One series per planner now -- no more (planner, delta) pairs, since each model runs exactly one
+% discretization. plannerNames/plannerDisplay/plannerColors/plannerMarkers line up 1:1 with
+% baseNames/baseDisplay/baseColors/baseMarkers; kept as separate names anyway so the rest of this
+% file didn't need touching beyond dropping the now-gone delta axis.
+plannerNames   = baseNames;
+plannerDisplay = baseDisplay;
+plannerColors  = baseColors;
+plannerMarkers = baseMarkers;
 
-for si = 1:numel(baseNames)
-    for di = 1:numel(deltas)
-        dTag = deltaTitles{di};
-
-        plannerNames{end + 1}   = baseNames{si};                              %#ok<SAGROW>
-        plannerDisplay{end + 1} = sprintf('%s [%s]', baseDisplay{si}, dTag);  %#ok<SAGROW>
-        plannerColors(end + 1, :) = baseColors(si, :);                        %#ok<SAGROW>
-        plannerMarkers{end + 1}   = baseMarkers{si};                          %#ok<SAGROW>
-        plannerSizes(end + 1)     = deltaMarkerSizes(di);                    %#ok<SAGROW>
-        plannerDeltaIdx(end + 1)  = di;                                       %#ok<SAGROW>
-        plannerBaseIdx(end + 1)   = si;                                       %#ok<SAGROW>
-    end
-end
-
-numRunsPer = 20 * ones(1, numel(plannerNames));   % max runs searched (missing files skipped); the
-                                                    % harness writes 5, this just leaves headroom
+numRunsPer = 35 * ones(1, numel(plannerNames));   % max runs searched (missing files skipped); the
+                                                    % harness writes 30, this just leaves headroom
                                                     % for a manual rerun without editing this file
 
 MAX_FLOAT_THRESH = 1e30;   % best_cost sentinel (MAX_FLOAT / INFINITY) -> NaN
@@ -215,13 +201,14 @@ for ei = 1:numel(environments)
         costYLab  = metricYLabels{mi};
         fprintf('\n=== Environment: %s | Cost metric: %s | Model: %s ===\n', env, costTitle, modelTitle);
 
-        % --- Load every (planner, delta) series for this cost metric ---
+        % --- Load every planner's one series for this cost metric. Token carries the model, so
+        % different models' CSVs in this same environment folder don't collide (see
+        % run_paper_benchmark_v2.sh's TAG). ---
         R = cell(1, nPlanner);
         for pi = 1:nPlanner
-            tok   = sprintf('%s_%s', deltas{plannerDeltaIdx(pi)}, metric);
+            tok   = sprintf('m%d_%s_%s', modelId, deltaLabel, metric);
             R{pi} = loadRuns(dataDir, env, plannerNames{pi}, tok, numRunsPer(pi));
-            fprintf('  %-34s %-18s : %d runs\n', plannerNames{pi}, ...
-                    ['[' deltas{plannerDeltaIdx(pi)} ']'], numel(R{pi}));
+            fprintf('  %-34s : %d runs\n', plannerNames{pi}, numel(R{pi}));
         end
 
         %% ---------- Aggregate summary metrics per planner (drives the legends, FIGURE 3, table) ----------
@@ -255,51 +242,42 @@ for ei = 1:numel(environments)
             if ~isempty(treeVals), mFinalTreePct(pi) = 100 * mean(treeVals) / maxTreeSize; end
         end
 
-        % `legendLabels` keeps the [delta] tag (Figure 3, which overlays all three deltas);
-        % `legendLabelsFine` drops it (Figures 1-2, which only ever show the one "fine" series per
-        % planner, so repeating the same tag on every line would just be noise). Success rate is
-        % NOT shown here -- it's still computed above (mSuccessPct) and lives in the printed table
-        % and CSV export below, just not on the plots themselves.
-        legendLabels     = plannerDisplay;
-        legendLabelsFine = cell(1, nPlanner);
-        for pi = 1:nPlanner
-            legendLabelsFine{pi} = baseDisplay{plannerBaseIdx(pi)};
-        end
+        % Success rate is NOT shown on the legends/plots -- it's still computed above
+        % (mSuccessPct) and lives in the printed table and CSV export below.
+        legendLabels = plannerDisplay;
 
-        %% ---------- FIGURE 1: Best Cost vs Time (mean lines, no bands, "fine" delta only) ----------
+        %% ---------- FIGURE 1: Best Cost vs Time (mean lines, +/-1 std band across runs) ----------
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Cost vs Time (%s, %s)', envTitle, costTitle, modelTitle), ...
-               'Position', [40 40 1180 760]);
+               'Position', [40 40 FIG1_WIDTH FIG1_HEIGHT]);
         hold on;
-        tmax = globalMaxTime(R(plannerDeltaIdx == fineIdx));
+        tmax = globalMaxTime(R);
         if tmax > 0
             ct = linspace(0, tmax, numTimeSamples);
             for pi = 1:nPlanner
-                if plannerDeltaIdx(pi) ~= fineIdx, continue; end
                 plotMeanTime(R{pi}, 'best_cost', ct, plannerColors(pi, :), ...
-                             '-', 2.5, legendLabelsFine{pi});
+                             '-', 2.5, legendLabels{pi});
             end
         end
         xlabel('Elapsed Time (ms)'); ylabel(costYLab); grid on;
         clickableLegend();
-        title(sprintf('Cost vs Time \x2014 %s, %s, %s', envTitle, costTitle, deltaTitles{fineIdx}), ...
+        title(sprintf('Cost vs Time \x2014 %s, %s, %s (%s)', envTitle, costTitle, modelTitle, deltaTitle), ...
               'FontWeight', 'bold');
 
-        %% ---------- FIGURE 2: Tree Growth vs Iteration ("fine" delta only) ----------
+        %% ---------- FIGURE 2: Tree Growth vs Iteration ----------
         % THERE IS NO GROWTH CONTROLLER -- this is an OUTPUT of however many candidates the doors
         % admitted, not a target the planner tracks against a reference line.
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Tree Growth (%s, %s)', envTitle, costTitle, modelTitle), ...
-               'Position', [70 70 1000 700]);
+               'Position', [70 70 FIG2_WIDTH FIG2_HEIGHT]);
         hold on;
         for pi = 1:nPlanner
-            if plannerDeltaIdx(pi) ~= fineIdx, continue; end
             plotMeanIter(R{pi}, @(t) getCol(t, 'tree_size'), ...
-                         plannerColors(pi, :), '-', 2.5, legendLabelsFine{pi});
+                         plannerColors(pi, :), '-', 2.5, legendLabels{pi});
         end
         xlabel('Iteration'); ylabel('tree\_size'); grid on;
         clickableLegend();
-        title(sprintf('Tree Growth \x2014 %s, %s, %s', envTitle, costTitle, deltaTitles{fineIdx}), ...
+        title(sprintf('Tree Growth \x2014 %s, %s, %s (%s)', envTitle, costTitle, modelTitle, deltaTitle), ...
               'FontWeight', 'bold');
 
         %% ---------- FIGURE 3: Tradeoff Scatter, Time to First Solution vs Final Cost ----------
@@ -313,32 +291,33 @@ for ei = 1:numel(environments)
 
         figNum = figNum + 1;
         figure('Name', sprintf('%s - Tradeoff Scatter (%s, %s)', envTitle, costTitle, modelTitle), ...
-               'Position', [130 140 1180 820]);
-        tradeoffScatter(mFirstSolTime, mFinalCost, plannerMarkers, plannerColors, ...
-                        plannerSizes, legendLabels, costYLim);
+               'Position', [130 140 FIG3_WIDTH FIG3_HEIGHT]);
+        tradeoffScatter(mFirstSolTime, mFinalCost, plannerMarkers, plannerColors, legendLabels, costYLim);
         xlabel('Avg Time to First Solution (ms)'); ylabel(sprintf('Avg Final %s', costYLab));
-        title(sprintf('Time to First Solution vs Final Cost \x2014 %s, %s, %s', envTitle, costTitle, modelTitle), ...
-              'FontWeight', 'bold');
+        title(sprintf('Time to First Solution vs Final Cost \x2014 %s, %s, %s (%s)', ...
+                      envTitle, costTitle, modelTitle, deltaTitle), 'FontWeight', 'bold');
 
-        %% ---------- TABLE: one row per (planner, delta) ----------
-        fprintf('\n--- Summary Table: %s | %s ---\n', envTitle, costTitle);
-        fprintf('%-28s %-18s %16s %14s %14s %11s %13s\n', ...
-                'Planner', 'Delta', 'TimeToFirst(ms)', 'CostOfFirst', 'CostOfLast', 'Success(%)', 'FinalTree(%)');
+        %% ---------- TABLE: one row per planner ----------
+        fprintf('\n--- Summary Table: %s | %s | %s ---\n', envTitle, costTitle, modelTitle);
+        fprintf('%-28s %16s %14s %14s %11s %13s\n', ...
+                'Planner', 'TimeToFirst(ms)', 'CostOfFirst', 'CostOfLast', 'Success(%)', 'FinalTree(%)');
         tPlanner = cell(nPlanner, 1);
-        tDelta   = cell(nPlanner, 1);
         for pi = 1:nPlanner
-            tPlanner{pi} = baseDisplay{plannerBaseIdx(pi)};
-            tDelta{pi}   = deltas{plannerDeltaIdx(pi)};
-            fprintf('%-28s %-18s %16.2f %14.4f %14.4f %11.1f %13.2f\n', ...
-                    tPlanner{pi}, tDelta{pi}, mFirstSolTime(pi), mFirstSolCost(pi), mFinalCost(pi), ...
+            tPlanner{pi} = plannerDisplay{pi};
+            fprintf('%-28s %16.2f %14.4f %14.4f %11.1f %13.2f\n', ...
+                    tPlanner{pi}, mFirstSolTime(pi), mFirstSolCost(pi), mFinalCost(pi), ...
                     mSuccessPct(pi), mFinalTreePct(pi));
         end
 
-        T = table(tPlanner, tDelta, mFirstSolTime(:), mFirstSolCost(:), mFinalCost(:), ...
+        T = table(tPlanner, mFirstSolTime(:), mFirstSolCost(:), mFinalCost(:), ...
                   mSuccessPct(:), mFinalTreePct(:), 'VariableNames', ...
-                  {'Planner', 'Delta', 'TimeToFirst_ms', 'CostOfFirst', 'CostOfLast', ...
+                  {'Planner', 'TimeToFirst_ms', 'CostOfFirst', 'CostOfLast', ...
                    'SuccessPct', 'FinalTreePct'});
-        csvName = sprintf('paper_benchmark_v2_table_%s_%s.csv', sanitize_name(env), metric);
+        % modelId is part of the filename -- all three models now write into the SAME environment
+        % folder, so without it, plotting model 2 after model 1 would silently overwrite model 1's
+        % table (this is the exact per-model collision bug fixed for the raw per-run CSVs in
+        % run_paper_benchmark_v2.sh, applied here to this script's own summary-table output).
+        csvName = sprintf('paper_benchmark_v2_table_%s_%s_m%d.csv', sanitize_name(env), metric, modelId);
         writetable(T, fullfile(dataDir, csvName));
         fprintf('Table written to: %s\n', csvName);
     end
@@ -387,7 +366,11 @@ end
 function plotMeanTime(runs, col, commonTime, color, style, width, name)
     % Mean of column 'col' vs a shared time grid (previous-sample hold, held forward past a run's
     % last sample so the curve's right edge is the mean of each run's FINAL value, not just the
-    % longest-lasting run's).
+    % longest-lasting run's). Also draws a shaded +/-1 std band across runs at each time sample,
+    % UNDER the mean line and excluded from the legend (HandleVisibility off) -- this is what "add
+    % error bars" resolves to for a continuous multi-run mean curve: discrete errorbar() whiskers
+    % at every one of numTimeSamples points, x4 planners, would be unreadable clutter, so a
+    % continuous band carries the same "how much do runs vary" information instead.
     if isempty(runs), return; end
     A = NaN(numel(runs), numel(commonTime));
     for ri = 1:numel(runs)
@@ -403,12 +386,16 @@ function plotMeanTime(runs, col, commonTime, color, style, width, name)
             A(ri, :) = row;
         end
     end
-    A  = sanitize(A);
-    mu = mean(A, 1, 'omitnan');
+    A     = sanitize(A);
+    mu    = mean(A, 1, 'omitnan');
+    sigma = std(A, 0, 1, 'omitnan');
+    sigma(isnan(sigma)) = 0;   % exactly one contributing run at that sample has zero spread, not NaN
     valid = ~isnan(mu);
     if ~any(valid), return; end
-    plot(commonTime(valid), mu(valid), style, 'Color', color, ...
-         'LineWidth', width, 'DisplayName', name);
+    tv = commonTime(valid); muv = mu(valid); sv = sigma(valid);
+    fill([tv, fliplr(tv)], [muv + sv, fliplr(muv - sv)], color, ...
+         'FaceAlpha', 0.15, 'EdgeColor', 'none', 'HandleVisibility', 'off');
+    plot(tv, muv, style, 'Color', color, 'LineWidth', width, 'DisplayName', name);
 end
 
 function plotMeanIter(runs, valueFcn, color, style, width, name)
@@ -437,9 +424,9 @@ function plotMeanIter(runs, valueFcn, color, style, width, name)
 end
 
 function clickableLegend(numCols)
-    % numCols: optional column count to wrap a big legend (Figure 3's 12 entries) into multiple
-    % rows below the plot instead of one very wide row. Omit/pass [] for a plain single-row
-    % legend (Figures 1-2's 4 entries).
+    % numCols: optional column count to wrap a big legend into multiple rows below the plot
+    % instead of one very wide row. Omit/pass [] for a plain single-row legend -- all three
+    % figures here have exactly 4 entries now, so this is rarely needed, but kept for headroom.
     if nargin < 1
         numCols = [];
     end
@@ -448,9 +435,6 @@ function clickableLegend(numCols)
     % Orientation='horizontal' is a long-standing legend property. NumColumns -- the property that
     % actually WRAPS a horizontal legend into multiple rows once numCols is given -- was only
     % added in MATLAB R2018a, so it gets the same defensive try/catch as ItemTokenSize below.
-    % Both are set inside the SAME try: if NumColumns throws on an older release, fall back to a
-    % VERTICAL (single column, just tall) legend instead of ending up horizontal-but-unwrapped,
-    % which could render one legend row wider than the whole figure with 12 entries.
     try
         if ~isempty(numCols)
             lgd.NumColumns = numCols;
@@ -460,14 +444,12 @@ function clickableLegend(numCols)
         lgd.Orientation = 'vertical';
     end
 
-    % ItemTokenSize widens the little icon swatch each legend row draws its line/marker preview
-    % in -- MATLAB's default ([30 18]-ish) clips a big marker down to look the same size as a
-    % small one, which is exactly the "legend symbols don't scale like on the plot" problem.
-    % NOT SUPPORTED on MATLAB releases before it was added (errors as "Unknown property" if passed
-    % to the legend(...) constructor itself, which is why this is a try/catch property SET
-    % afterward, not a constructor argument -- silently no-ops on any release that lacks it). This
-    % is the only mechanism left for delta-size legend scaling (the earlier hand-built size-key
-    % inset was removed as redundant once this property is available).
+    % ItemTokenSize widens the little icon swatch each legend row draws its line/marker preview in
+    % -- not needed for delta/model-size encoding any more (each model now runs exactly one
+    % discretization), kept for general marker legibility. NOT SUPPORTED on MATLAB releases before
+    % it was added (errors as "Unknown property" if passed to the legend(...) constructor itself,
+    % which is why this is a try/catch property SET afterward, not a constructor argument --
+    % silently no-ops on any release that lacks it).
     try
         lgd.ItemTokenSize = [45, 24];
     catch
@@ -525,11 +507,11 @@ function c = finalCost(tbl, thresh)
     if isempty(v), c = NaN; else, c = v(end); end
 end
 
-function tradeoffScatter(x, y, markers, colors, sizes, labels, yLim)
-    % sizes is delta-coded (deltaMarkerSizes), not a baseline/swept-point distinction -- every
-    % series in this comparison is a headline point, so size is free to carry delta instead.
-    % Delta-size legend scaling relies on clickableLegend()'s ItemTokenSize (see its comment) --
-    % there is no hand-built fallback key here any more.
+function tradeoffScatter(x, y, markers, colors, labels, yLim)
+    % One point per planner -- no more delta/model size-coding (each model now runs exactly one
+    % discretization; this script plots one model at a time via the MODEL TOGGLE), so every point
+    % shares one plain size.
+    MARKER_SIZE = 12;
     hold on;
     for pi = 1:numel(x)
         if isnan(x(pi)) || isnan(y(pi)), continue; end
@@ -537,26 +519,18 @@ function tradeoffScatter(x, y, markers, colors, sizes, labels, yLim)
         if m == 'x' || m == '+'
             % Stroke-only markers ('x','+') have no fillable interior -- MATLAB ignores
             % MarkerFaceColor for them entirely, so their visible color comes ONLY from
-            % MarkerEdgeColor (previously hardcoded 'k', i.e. every one of these was rendering
-            % black regardless of its assigned planner color). A much thicker stroke is also what
-            % makes a '+' actually read as a bold cross instead of a thin plus sign.
+            % MarkerEdgeColor. A much thicker stroke is also what makes a '+' actually read as a
+            % bold cross instead of a thin plus sign.
             plot(x(pi), y(pi), m, 'MarkerEdgeColor', colors(pi, :), 'LineWidth', 3.5, ...
-                 'MarkerSize', sizes(pi), 'DisplayName', labels{pi});
+                 'MarkerSize', MARKER_SIZE, 'DisplayName', labels{pi});
         else
             plot(x(pi), y(pi), m, ...
                  'MarkerFaceColor', colors(pi, :), ...
                  'MarkerEdgeColor', 'k', 'LineWidth', 1.5, ...
-                 'MarkerSize', sizes(pi), 'DisplayName', labels{pi});
+                 'MarkerSize', MARKER_SIZE, 'DisplayName', labels{pi});
         end
     end
     grid on;
     if ~isempty(yLim), ylim(yLim); end
-
-    n = numel(labels);
-    if n > 6
-        numCols = ceil(n / 3);   % wrap a big legend (Figure 3's 12 entries) into ~3 rows
-    else
-        numCols = [];
-    end
-    clickableLegend(numCols);
+    clickableLegend();
 end
