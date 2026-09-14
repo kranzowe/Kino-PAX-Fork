@@ -8,8 +8,10 @@
 # Paper Benchmark v2 -- countingstars_sweep.cu's harness, minimally adapted to reproduce
 # paper_benchmark.cu's fixed 4-planner headline comparison reliably.
 #
-# JETSON BRANCH: NOW TARGETS MODEL 3 (12D Non-Linear Quad), at the single `fine` discretization
-# (216,000 regions, W_R1=6/C_R1=2/V_R1=5 -- see DELTA_* and write_config() below). This file
+# JETSON BRANCH: NOW TARGETS MODEL 3 (12D Non-Linear Quad), at the single `large` (coarse)
+# discretization (8,000 regions, W_R1=5/C_R1=2/V_R1=2 -- see DELTA_* and write_config() below).
+# Was `fine` (216,000 regions); switched to `large` to try the coarse end of the discretization
+# range instead. This file
 # previously targeted MODEL 2 (Dubins Airplane); that history (and the reason this harness exists
 # at all rather than paper_benchmark.cu itself) is kept below since it still explains this file's
 # own lineage, but no longer describes what's currently active.
@@ -42,8 +44,8 @@
 # further below still applies in full -- only the "sweep a grid" framing changed to "one fixed
 # point per axis".
 #
-# Per environment, AT THE SINGLE `fine` DISCRETIZATION (262,144 regions -- ONE DISCRETIZATION ONLY
-# this pass, not the earlier large/fine/tiny sweep; see DELTA_LABELS below):
+# Per environment, AT THE SINGLE `large` (coarse) DISCRETIZATION (8,000 regions -- ONE
+# DISCRETIZATION ONLY this pass, not a large/fine/tiny sweep; see DELTA_LABELS below):
 #   KPAX                                                    = 1 point  x 20 runs
 #   KinoPaxPlus                                             = 1 point  x 20 runs
 #   KinoPaxSTARTrue syclopCap 1.0 (no cap), ancestorPrune = 1
@@ -178,9 +180,9 @@
 #   9. First-solution time and cost, final cost, and success rate -- the headline comparison this
 #      tool exists to produce reliably across all four planners and environments.
 #
-# ONE DISCRETIZATION RUNS THE FULL COMPARISON -- NOT --only-kinopaxplus. `large` and `tiny` used to
+# ONE DISCRETIZATION RUNS THE FULL COMPARISON -- NOT --only-kinopaxplus. `fine` and `tiny` used to
 # also run (each independently, to check a tuning conclusion held across discretizations); this
-# pass only needs the one `fine` point, so that cross-delta check is out of scope here.
+# pass only needs the one `large` (coarse) point, so that cross-delta check is out of scope here.
 #
 # Runs on all four environments (empty, house, narrowPassage, zigzag -- see ENV_NAMES below), each
 # written to its own subfolder under Data/Benchmarks/PaperBenchmarkV2/<env>/.
@@ -189,18 +191,16 @@
 # neither can vary within one binary. This script therefore borrows run_delta_benchmark.sh's
 # build-cache pattern: write config.h and build once per (delta, cost metric), caching each binary
 # under a suffixed name, then run them in a second pass. Both labels ride into every output filename
-# as the argv[1] delta label (fine_length / fine_effort).
+# as the argv[1] delta label (large_length / large_effort).
 #
 # It builds ONLY the PaperBenchmarkV2 target. That still compiles KPAX_lib, which is the
 # monolithic library holding every planner in the repo -- so warnings from unrelated sources
 # (ReKino and friends) scroll past on every build. They are pre-existing and unavoidable without
 # splitting the library.
 #
-# ONE DISCRETIZATION RUNS THIS PASS -- "fine" is paper_benchmark.cu's own current fine point
-# (copied by hand from run_paper_benchmark.sh; there is no cross-check enforcing they stay equal,
-# so re-check both files if either one's deltas change again). "large" and "tiny" used to also run
-# every pass -- dropped, not commented out, since there's no plan to re-sweep them; their numbers
-# are kept below for provenance only.
+# ONE DISCRETIZATION RUNS THIS PASS -- "large" (coarse) was tried after "fine" (216,000 regions)
+# to see the coarse end of the range; "fine" and "tiny" are dropped, not commented out, since
+# there's no plan to re-sweep them right now -- their numbers are kept below for provenance only.
 #
 # QUAD HAS A THIRD CUBED DISCRETIZATION AXIS, UNLIKE DUBINS AIRPLANE (W_R1^3 * C_R1^2 * V_R1) OR
 # THE DOUBLE-INTEGRATOR SWEEP (C_R1 inert, W_R1^3 * V_R1^3). NUM_R1_REGIONS = W_R1^3 * C_R1^3 *
@@ -208,9 +208,9 @@
 # one step moves the region count much faster than either earlier model's formula.
 #
 # Deltas (Quad: W_DIM=3, C_DIM=3, V_DIM=3) -- ACTIVE this pass:
-#   fine    W_R1=6  C_R1=2  V_R1=5  -> 6^3 * 2^3 * 5^3 = 216,000   (target ~200k, full comparison)
+#   large   W_R1=5  C_R1=2  V_R1=2  -> 5^3 * 2^3 * 2^3 =   8,000   (full comparison)
 # Formerly also run every pass, now dropped (kept for provenance only, not active):
-#   large   W_R1=5  C_R1=2  V_R1=2  -> 5^3 * 2^3 * 2^3 =   8,000
+#   fine    W_R1=6  C_R1=2  V_R1=5  -> 6^3 * 2^3 * 5^3 = 216,000
 #   tiny    W_R1=6  C_R1=2  V_R1=6  -> 6^3 * 2^3 * 6^3 = 373,248
 #
 # Original config.h is backed up and restored on exit/error.
@@ -234,21 +234,20 @@ CONFIG_BACKUP="$CONFIG_FILE.bak"
 BUILD_DIR="$PROJECT_DIR/build"
 
 # Deltas: parallel arrays of label / W_R1 / C_R1 / V_R1. ONE DISCRETIZATION ONLY THIS PASS -- see
-# the file header. Just the existing `fine` point (262,144 regions), matching
-# run_paper_benchmark.sh's own `fine` exactly (kept in step by hand -- there is no cross-check
-# between the two sweep tools). `large` and `tiny` are dropped, not commented out for restoration,
-# since `fine` was already confirmed clean and there's no plan to re-sweep the other two. One build
-# per (delta, cost metric), cached, so restoring or trimming the list changes only the loop bounds.
+# the file header. Just the coarse `large` point (8,000 regions) this time, trying the coarse end
+# of the range after `fine` (216,000 regions). `fine` and `tiny` are dropped, not commented out for
+# restoration, since there's no plan to re-sweep them right now. One build per (delta, cost
+# metric), cached, so restoring or trimming the list changes only the loop bounds.
 #
 # C_R1/V_R1 are NOT inert for Quad (C_DIM=3: roll/pitch/yaw; V_DIM=3: body-frame u/v/w -- see the
 # MODEL 3 switch below). NUM_R1_REGIONS = W_R1^3 * C_R1^3 * V_R1^3 for this model -- a THIRD cubed
 # term, unlike Dubins Airplane's W_R1^3 * C_R1^2 * V_R1 or Double Integrator's W_R1^3 * V_R1^3 --
-# so W_R1/C_R1/V_R1 were re-derived from scratch (not reused unchanged) to land on the target
-# ~200k region count under this model's own formula: 6^3*2^3*5^3=216000.
-DELTA_LABELS=("fine")
-DELTA_W_R1S=(6)
+# so W_R1/C_R1/V_R1 were re-derived from scratch (not reused unchanged) to land on this coarse
+# target under this model's own formula: 5^3*2^3*2^3=8000.
+DELTA_LABELS=("large")
+DELTA_W_R1S=(5)
 DELTA_C_R1S=(2)
-DELTA_V_R1S=(5)
+DELTA_V_R1S=(2)
 DELTA_EXTRA_ARGS=("")
 
 # Cost metric axis: label + COST_MODE (0 = workspace distance, 1 = control effort). BOTH THIS
@@ -455,7 +454,7 @@ for i in "${!DELTA_LABELS[@]}"; do
     echo "  Delta: ${DELTA_LABELS[$i]} | W_R1=${DELTA_W_R1S[$i]} C_R1=${DELTA_C_R1S[$i]} V_R1=${DELTA_V_R1S[$i]} | Regions=${R} | ${WHAT}"
 done
 echo "  Cost metrics: ${COST_LABELS[*]}  (one build each)"
-echo "  Series this pass, AT THE SINGLE fine DELTA x ALL FOUR ENVIRONMENTS x BOTH COST METRICS"
+echo "  Series this pass, AT THE SINGLE large (coarse) DELTA x ALL FOUR ENVIRONMENTS x BOTH COST METRICS"
 echo "  (20 runs each) -- every axis below is a SINGLE FIXED POINT, not a grid:"
 echo "    KPAX             baseline"
 echo "    KinoPaxPlus       "
@@ -482,11 +481,11 @@ echo "    ADMIT FLOOR every candidate at accept_floor = 1e-4, only when nothing 
 echo "    REACT FLOOR every dormant node at react_floor = 1e-5, ON TOP of the budget"
 echo "  Score floor:    COUNTINGSTARS HAS NO SCORE FLOOR AND USES NO EPSILON: it never reads"
 echo "                  vertexScores, h_scoreFloor_, h_nActive_ or regionCoverage in any decision."
-echo "  Baselines: KPAX, KinoPaxPlus -- both at the single fine delta this pass."
+echo "  Baselines: KPAX, KinoPaxPlus -- both at the single large (coarse) delta this pass."
 echo "======================================================="
 
 # =============================================================================
-# BUILD — compile the fine delta config once per cost metric, caching each binary
+# BUILD — compile the large (coarse) delta config once per cost metric, caching each binary
 # =============================================================================
 if [ "$SKIP_BUILD" = false ]; then
     for d in "${!DELTA_LABELS[@]}"; do
