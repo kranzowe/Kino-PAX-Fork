@@ -230,21 +230,22 @@ def style_log_axis(ax) -> None:
     """Shared look for a log-log ratio-scatter axis: bold, denser tick marks, and decade labels in
     exponent form ("10^3", via LogFormatterMathtext) rather than plain numbers ("1000") -- makes
     the log scale itself legible at a glance instead of requiring the reader to notice the
-    uneven tick spacing. Sub-decade minor ticks (2x/5x each decade) keep their tick marks for
-    visual density but are left unlabeled -- mixing "10^3" majors with plain "2000"/"5000" minors
-    read as inconsistent."""
+    uneven tick spacing. Sub-decade minor ticks at 2x/4x/6x/8x each decade (not 2x/5x -- that
+    left an oddly large, visually irregular gap between the 2x and 5x marks) keep their tick
+    marks for visual density but are left unlabeled -- labeling them (even just the 2x one) was
+    tried and dropped again: it added clutter without earning its keep once the major decade
+    labels alone were legible."""
     from matplotlib.ticker import LogFormatterMathtext, LogLocator, NullFormatter
 
     for axis in (ax.xaxis, ax.yaxis):
         axis.set_major_locator(LogLocator(base=10, subs=(1.0,)))
-        axis.set_minor_locator(LogLocator(base=10, subs=(2.0, 5.0)))
+        axis.set_minor_locator(LogLocator(base=10, subs=(2.0, 4.0, 6.0, 8.0)))
         axis.set_major_formatter(LogFormatterMathtext(base=10))
         axis.set_minor_formatter(NullFormatter())
 
     ax.tick_params(which="major", width=1.6, length=6, labelsize=9)
     ax.tick_params(which="minor", width=1.2, length=3.5, labelsize=8)
-    for label in (ax.get_xticklabels(minor=False) + ax.get_xticklabels(minor=True)
-                  + ax.get_yticklabels(minor=False) + ax.get_yticklabels(minor=True)):
+    for label in (ax.get_xticklabels(minor=False) + ax.get_yticklabels(minor=False)):
         label.set_fontweight("bold")
 
 

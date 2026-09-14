@@ -113,10 +113,9 @@ def plot_combined(table: pd.DataFrame, environments: list[str], discretization_l
         ax.set_xticks([])
         ax.set_yticks([])
     else:
-        xs = plotted["Mean_TTFS_ms"].to_numpy()
-        ys = plotted["KinoPaxPlus_Mean_TTFS_ms"].to_numpy()
-        lo = min(xs.min(), ys.min()) / 1.5
-        hi = max(xs.max(), ys.max()) * 1.5
+        # Fixed 10^0-10^4 ms range (1ms-10s) rather than auto-fit to this data -- gives every
+        # figure the same decade gridlines to anchor against, at the cost of some empty margin.
+        lo, hi = 1.0, 10000.0
 
         # Set the final scale/limits/aspect BEFORE anything below measures pixel positions
         # (declutter_label_ys needs ax.transData to already reflect the real rendered layout).

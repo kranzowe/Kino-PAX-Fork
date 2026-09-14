@@ -1,32 +1,25 @@
-"""Kino-PAX / Kino-PAX+ / KinoPax* comparison table: Time to First Solution, broken down by region
-(discretization level) and environment. One table set per model. SimpleCombo is intentionally
-excluded (per request, to match a specific 3-column paper table); all four algorithms are still
-available in ttfs_ratio_scatter.py / cost_ratio_scatter.py if a fuller comparison is ever needed.
-TTFS is pooled across the length and effort cost-metric sweeps (cost metric doesn't affect solve
-timing). The "empty" environment is excluded (trivially solved by everyone). Within each row, the
-best (lowest) value across the three algorithms is bolded. See plots/cost_table_wide.py for the
-companion cost table (first-solution cost and final cost, both cost metrics) -- kept as a
-separate, wider table on purpose rather than crammed into this one.
+"""Success rate comparison table: percentage of runs that found ANY solution (best_cost ever
+dropped below the unsolved sentinel), broken down by region (discretization level) and
+environment, for all four algorithms (Kino-PAX, Kino-PAX+, SimpleCombo, KinoPax*) -- unlike
+ttfs_cost_table.py / cost_table_wide.py, this one keeps SimpleCombo, since there's no specific
+paper table it needs to match column-for-column here. One table set per model.
 
-Regions are Zephyr's Coarse/Fine/Tiny plus two confirmed Jetson rows (provenance confirmed by
-hand this time, not inferred from git history -- see the earlier, wrong guess this docstring used
-to describe): Jetson's discretizationCOARSE is the 12D Nonlinear Drone (Model 3) ONLY, so it adds
-a "Jetson (Coarse)" row to Model 3's table right after "Coarse"; discretizationFINE is the two 6D
-systems (Models 1 and 2), so it adds a "Jetson (Fine)" row to BOTH of their tables right after
-"Fine". Unlike the Jetson data this table showed once before, Coarse and Fine now come from two
-DIFFERENT harnesses with different filename conventions:
-  - discretizationCOARSE/<env>/ is still the OLDER, pre-v2 pipeline (examples/gpu/
-    paper_benchmark.cu) -- one hardcoded model per binary, NO "m<N>_" tag in the filename (e.g.
-    "house_KPAX_deltalarge_length_run0.csv"), loaded with load_runs_no_model_tag() below.
-  - discretizationFINE/FINE/<env>/ (note the doubled "FINE" -- the run harness's own output
-    layout, not a mistake on this table's part) is the NEWER paper_benchmark_v3 pipeline, which
-    swept all three models in one pass and DOES tag every filename with "m<N>_" (e.g.
-    "..._deltam1_fine_length_run0.csv") -- loaded with the same load_runs() the Zephyr regions
-    use, no special-casing needed, and Model 3's own (mostly-failed, per that run's
-    failures.log -- Kino-PAX+ got 0/20 successful runs in two of three environments) fine-
-    resolution attempt is deliberately NOT surfaced here, since Model 3's real fine-resolution
-    story is Zephyr's own Fine row, not this troubled Jetson attempt at it.
-A region whose folder doesn't exist yet prints as "--" rather than erroring.
+NOT POOLED ACROSS COST METRICS, on purpose (unlike ttfs_cost_table.py's TTFS, which pools length
+and effort since solve timing doesn't depend on which cost is being minimized): success/failure
+CAN differ between the two sweeps -- they're separate run batches, and this project has already
+found real cases where one metric succeeds cleanly while the other fails outright for the same
+(model, discretization) cell (e.g. Kino-PAX+ at Coarse for the Dubins Airplane: 0/90 successful
+runs on Control Effort specifically, per cost_big_panel.py's own red-flagged finding). Pooling
+would average that away into a misleadingly middling number instead of surfacing it. So each
+model's table has two sections, one per cost metric, each showing that metric's own success rate.
+
+Within each row, the BEST (highest, not lowest -- success rate is the one metric in this whole
+table suite where bigger is better) value across the four algorithms is bolded.
+
+Regions are Zephyr's Coarse/Fine/Tiny plus two confirmed Jetson rows -- see ttfs_cost_table.py's
+module docstring for the full two-harness provenance story (discretizationCOARSE untagged/older
+pipeline, Model 3 only; discretizationFINE/FINE tagged/newer pipeline, Models 1 and 2 only). A
+region whose folder doesn't exist yet prints as "--" rather than erroring.
 
 For each model, writes a CSV (plots/output/tables/) and prints + saves the equivalent LaTeX table
 source (as a .txt file, ready to paste into the paper).
@@ -43,10 +36,11 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zephyr_common import (  # noqa: E402
+    BASE_DISPLAY,
+    BASE_NAMES,
+    COST_METRIC_LABELS,
     COST_METRICS,
     DEFAULT_MAX_RUNS,
-    KINOPAX_PLUS,
-    KINOPAX_STAR,
     KPAX,
     MODEL_IDS,
     aggregate_ttfs,
@@ -114,9 +108,10 @@ def regions_for_model(model_id: int) -> list:
 
 ENVIRONMENTS = ["house", "narrowPassage", "zigzag"]  # on-disk spelling; "empty" excluded
 
-# Exactly the three columns requested -- SimpleCombo intentionally omitted.
-TABLE_PLANNERS = [KPAX, KINOPAX_PLUS, KINOPAX_STAR]
-COLUMN_LABELS = {KPAX: "Kino-PAX", KINOPAX_PLUS: "Kino-PAX+", KINOPAX_STAR: "KinoPax*"}
+# All four algorithms -- see module docstring for why this table doesn't drop SimpleCombo the way
+# ttfs_cost_table.py / cost_table_wide.py do.
+TABLE_PLANNERS = list(BASE_NAMES)
+COLUMN_LABELS = {p: BASE_DISPLAY[p] for p in TABLE_PLANNERS}
 
 MODEL_NAMES_LOCAL = {1: "DoubleIntegrator", 2: "DubinsAirplane", 3: "Quad"}
 MODEL_SUBTITLES = {
@@ -125,13 +120,21 @@ MODEL_SUBTITLES = {
     3: "12D Nonlinear Drone",
 }
 
-# (section title, metrics to load, aggregator, decimal places to print)
-SECTIONS = [
-    ("TTFS (ms)", COST_METRICS, aggregate_ttfs, 1),
-]
+# One section per cost metric, deliberately NOT pooled -- see module docstring.
+SECTIONS = [(COST_METRIC_LABELS[m], (m,)) for m in COST_METRICS]
 
 
-def region_env_values(region: dict, env: str, model_id: int, metrics, aggregator) -> dict:
+def success_rate(runs: list) -> float:
+    """Percentage of runs that found ANY solution -- n_success/n_total from aggregate_ttfs()
+    (whose success criterion, "did best_cost ever drop below the unsolved sentinel", is exactly
+    "did this run solve at all", independent of which stat you aggregate). NaN if there were no
+    runs to begin with (region/environment combination doesn't exist), same "--" convention as
+    every other table in this folder."""
+    stats = aggregate_ttfs(runs)
+    return 100.0 * stats.n_success / stats.n_total if stats.n_total else math.nan
+
+
+def region_env_values(region: dict, env: str, model_id: int, metrics) -> dict:
     env_dir = os.path.join(region["dir"], env)
     if not os.path.isdir(env_dir):
         return {p: math.nan for p in TABLE_PLANNERS}
@@ -142,77 +145,75 @@ def region_env_values(region: dict, env: str, model_id: int, metrics, aggregator
             runs = load_runs(env_dir, env, planner, model_id, region["token"], metrics=metrics)
         else:
             runs = load_runs_no_model_tag(env_dir, env, planner, region["token"], metrics)
-        values[planner] = aggregator(runs).mean
+        values[planner] = success_rate(runs)
     return values
 
 
 def build_model_sections(model_id: int, regions: list) -> dict:
-    """{section_title: (decimals, {env: {region_label: {planner: value}}})}"""
+    """{section_title: {env: {region_label: {planner: success_rate_pct}}}}"""
     sections = {}
-    for section_title, metrics, aggregator, decimals in SECTIONS:
+    for section_title, metrics in SECTIONS:
         env_data = {}
         for env in ENVIRONMENTS:
             region_rows = {}
             for region in regions:
-                region_rows[region["label"]] = region_env_values(region, env, model_id, metrics, aggregator)
+                region_rows[region["label"]] = region_env_values(region, env, model_id, metrics)
             env_data[env] = region_rows
-        sections[section_title] = (decimals, env_data)
+        sections[section_title] = env_data
     return sections
 
 
-def fmt(value: float, decimals: int, bold: bool = False) -> str:
+def fmt_pct(value: float, bold: bool = False) -> str:
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return "--"
-    text = f"{value:.{decimals}f}"
+    text = f"{value:.0f}\\%"
     return rf"\textbf{{{text}}}" if bold else text
 
 
 def best_planner(vals: dict) -> object:
-    """Planner key with the lowest (best) value in `vals`, ignoring NaN/missing; None if all
-    missing."""
+    """Planner key with the HIGHEST (best) value in `vals`, ignoring NaN/missing; None if all
+    missing -- success rate is the one stat in this table suite where bigger is better."""
     valid = {p: v for p, v in vals.items() if v is not None and not (isinstance(v, float) and math.isnan(v))}
-    return min(valid, key=valid.get) if valid else None
+    return max(valid, key=valid.get) if valid else None
 
 
 def sections_to_dataframe(sections: dict, regions: list) -> pd.DataFrame:
     rows = []
-    for section_title, (decimals, env_data) in sections.items():
+    for section_title, env_data in sections.items():
         for env in ENVIRONMENTS:
             for region in regions:
                 region_label = region["label"]
                 vals = env_data[env][region_label]
-                rows.append({
-                    "Section": section_title,
-                    "Environment": env_display_name(env),
-                    "Region": region_label,
-                    "Kino-PAX": vals[KPAX],
-                    "Kino-PAX+": vals[KINOPAX_PLUS],
-                    "KinoPax*": vals[KINOPAX_STAR],
-                })
+                row = {"Section": section_title, "Environment": env_display_name(env), "Region": region_label}
+                for planner in TABLE_PLANNERS:
+                    row[COLUMN_LABELS[planner]] = vals[planner]
+                rows.append(row)
     return pd.DataFrame(rows)
 
 
 def render_latex(subtitle: str, sections: dict, regions: list) -> str:
+    n_cols = 1 + len(TABLE_PLANNERS)
+    col_spec = "l" + "r" * len(TABLE_PLANNERS)
     lines = [
         r"\begin{table}[htbp]",
         r"\centering",
-        rf"\caption{{Time to First Solution --- {subtitle}}}",
-        rf"\label{{tab:ttfs_comparison_{sanitize_name(subtitle).lower()}}}",
-        r"\begin{tabular}{lrrr}",
+        rf"\caption{{Success Rate --- {subtitle}}}",
+        rf"\label{{tab:success_rate_{sanitize_name(subtitle).lower()}}}",
+        rf"\begin{{tabular}}{{{col_spec}}}",
         r"\toprule",
         r"Region & " + " & ".join(COLUMN_LABELS[p] for p in TABLE_PLANNERS) + r" \\",
     ]
-    for section_title, (decimals, env_data) in sections.items():
+    for section_title, env_data in sections.items():
         lines.append(r"\midrule")
-        lines.append(rf"\multicolumn{{4}}{{l}}{{\textbf{{{section_title}}}}} \\")
+        lines.append(rf"\multicolumn{{{n_cols}}}{{l}}{{\textbf{{{section_title}}}}} \\")
         for env in ENVIRONMENTS:
             lines.append(r"\midrule")
-            lines.append(rf"\multicolumn{{4}}{{l}}{{\textit{{{env_display_name(env)}}}}} \\")
+            lines.append(rf"\multicolumn{{{n_cols}}}{{l}}{{\textit{{{env_display_name(env)}}}}} \\")
             for region in regions:
                 region_label = region["label"]
                 vals = env_data[env][region_label]
                 best = best_planner(vals)
-                cells = " & ".join(fmt(vals[p], decimals, bold=(p == best)) for p in TABLE_PLANNERS)
+                cells = " & ".join(fmt_pct(vals[p], bold=(p == best)) for p in TABLE_PLANNERS)
                 lines.append(f"{region_label} & {cells} " + r"\\")
     lines.append(r"\bottomrule")
     lines.append(r"\end{tabular}")
@@ -232,7 +233,7 @@ def main() -> None:
 
         sections = build_model_sections(model_id, regions)
 
-        base_name = f"ttfs_table_m{model_id}_{sanitize_name(MODEL_NAMES_LOCAL[model_id])}"
+        base_name = f"success_rate_table_m{model_id}_{sanitize_name(MODEL_NAMES_LOCAL[model_id])}"
         csv_path = os.path.join(OUT_DIR, f"{base_name}.csv")
         sections_to_dataframe(sections, regions).to_csv(csv_path, index=False)
 
