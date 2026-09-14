@@ -280,6 +280,17 @@ target_link_libraries(JetsonPaperBenchmarkV3
     Python3::NumPy
 )
 
+add_executable(PaperBenchmarkV3Quad examples/gpu/paper_benchmark_v3_quad.cu)
+target_link_libraries(PaperBenchmarkV3Quad
+    PUBLIC KPAX_lib
+    ${CUDA_LIBRARIES}
+    ${Boost_LIBRARIES}
+    ${EIGEN3_LIBRARIES}
+    yaml-cpp
+    Python3::Python
+    Python3::NumPy
+)
+
 add_executable(PaperBenchmark examples/gpu/paper_benchmark.cu)
 target_link_libraries(PaperBenchmark
     PUBLIC KPAX_lib
@@ -344,6 +355,7 @@ set_target_properties(CountingStarsSweep PROPERTIES CUDA_SEPARABLE_COMPILATION O
 set_target_properties(PaperBenchmarkV2 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(PaperBenchmarkV3 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(JetsonPaperBenchmarkV3 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(PaperBenchmarkV3Quad PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(PaperBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(KinoPaxStarComparison PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(KinoPaxStarAcceptBreakdown PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
@@ -375,6 +387,7 @@ set_property(TARGET CountingStarsSweep PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET PaperBenchmarkV2 PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET PaperBenchmarkV3 PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET JetsonPaperBenchmarkV3 PROPERTY CUDA_ARCHITECTURES 61 86 87)
+set_property(TARGET PaperBenchmarkV3Quad PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET PaperBenchmark PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET KinoPaxStarComparison PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET KinoPaxStarAcceptBreakdown PROPERTY CUDA_ARCHITECTURES 61 86 87)
