@@ -1,25 +1,25 @@
 """Kino-PAX / Kino-PAX+ / KinoPax* comparison table: Time to First Solution, broken down by region
-(discretization level -- coarse/fine/tiny, plus the separate Jetson "fine" sweep) and environment.
-One table set per model. SimpleCombo is intentionally excluded (per request, to match a specific
-3-column paper table); all four algorithms are still available in ttfs_ratio_scatter.py /
-cost_ratio_scatter.py if a fuller comparison is ever needed. TTFS is pooled across the length and
-effort cost-metric sweeps (cost metric doesn't affect solve timing). The "empty" and "zigzag"
-environments are excluded. See plots/cost_table_wide.py for the companion cost table (first-
-solution cost and final cost, both cost metrics) -- kept as a separate, wider table on purpose
-rather than crammed into this one.
+(discretization level) and environment. One table set per model. SimpleCombo is intentionally
+excluded (per request, to match a specific 3-column paper table); all four algorithms are still
+available in ttfs_ratio_scatter.py / cost_ratio_scatter.py if a fuller comparison is ever needed.
+TTFS is pooled across the length and effort cost-metric sweeps (cost metric doesn't affect solve
+timing). The "empty" environment is excluded (trivially solved by everyone). Within each row, the
+best (lowest) value across the three algorithms is bolded. See plots/cost_table_wide.py for the
+companion cost table (first-solution cost and final cost, both cost metrics) -- kept as a
+separate, wider table on purpose rather than crammed into this one.
 
-"Fine (Jetson)" reads from a completely separate dataset folder (plots/DATA/JETSON_20_runs),
-which turns out to come from the OLDER, pre-v2 benchmark pipeline (examples/gpu/paper_benchmark.cu,
-not paper_benchmark_v2.cu): its filenames have no "m<N>_" model tag at all (e.g.
-"house_KPAX_deltafine_length_run0.csv", not "..._deltam2_fine_length_run0.csv"), because that
-harness only ever built one hardcoded model per binary (#define MODEL 2 in the current checkout)
-rather than sweeping all three. So this region is loaded with a separate, model-tag-free filename
-pattern and is only ever populated for Model 2 (Dubins Airplane) -- Models 1 and 3 correctly show
-"--" here since no such data exists. It also only has "length"-metric runs (no "effort" at all),
-and its zigzag sweep only got as far as the Kino-PAX series before stopping, so the other three
-algorithms correctly show "--" for zigzag specifically. A region whose folder doesn't exist yet
-(coarse/fine haven't been swept on Zephyr as of this writing) prints as "--" rather than erroring,
-so this script can be rerun as-is once those sweeps are added.
+Regions are Zephyr's Coarse/Fine/Tiny plus, model-dependent, a single Jetson row: the Jetson
+dataset (plots/DATA/JETSON_20_runs) comes from the OLDER, pre-v2 benchmark pipeline
+(examples/gpu/paper_benchmark.cu, not paper_benchmark_v2.cu), which only ever built one hardcoded
+model per binary rather than sweeping all three, so each Jetson sweep is a *different single
+model*: discretizationFINE was run at Model 2 (Dubins Airplane), discretizationCOARSE at Model 3
+(Quad) -- confirmed from that harness's own header comments, which is also why COARSE's on-disk
+delta token is "large" (that pipeline's own coarsest label) even though the folder is named
+"discretizationCOARSE" to match Zephyr's convention. So Model 1's table has no Jetson row at all,
+Model 2's table's Jetson row reads discretizationFINE, and Model 3's Jetson row reads
+discretizationCOARSE -- each with its own model-tag-free filename pattern (e.g.
+"house_KPAX_deltafine_length_run0.csv", no "m<N>_" prefix). A region whose folder doesn't exist
+yet prints as "--" rather than erroring.
 
 For each model, writes a CSV (plots/output/tables/) and prints + saves the equivalent LaTeX table
 source (as a .txt file, ready to paste into the paper).
@@ -58,21 +58,25 @@ ZEPHYR_DIR = os.path.join(PLOTS_DIR, "DATA", "ZEPHYR_30_runs")
 JETSON_DIR = os.path.join(PLOTS_DIR, "DATA", "JETSON_20_runs")
 OUT_DIR = os.path.join(PLOTS_DIR, "output", "tables")
 
-# label, discretization folder, on-disk discretization token used inside run filenames,
-# whether that filename carries a "m<N>_" model tag, and (if not) which single model the data
-# actually is -- see the Jetson explanation above.
-REGIONS = [
-    {"label": "Coarse", "dir": os.path.join(ZEPHYR_DIR, "discretizationCOARSE"),
-     "token": "coarse", "model_tag": True, "only_model": None},
-    {"label": "Fine", "dir": os.path.join(ZEPHYR_DIR, "discretizationFINE"),
-     "token": "fine", "model_tag": True, "only_model": None},
-    {"label": "Fine (Jetson)", "dir": os.path.join(JETSON_DIR, "discretizationFINE"),
-     "token": "fine", "model_tag": False, "only_model": 2},
-    {"label": "Tiny", "dir": os.path.join(ZEPHYR_DIR, "discretizationTINY"),
-     "token": "tiny", "model_tag": True, "only_model": None},
-]
+def regions_for_model(model_id: int) -> list:
+    """Region rows for one model's table -- label, discretization folder, on-disk discretization
+    token used inside run filenames, and whether that filename carries a "m<N>_" model tag. The
+    Jetson row (if any) is model-specific -- see the module docstring."""
+    regions = [{"label": "Coarse", "dir": os.path.join(ZEPHYR_DIR, "discretizationCOARSE"),
+                "token": "large", "model_tag": True}]
+    if model_id == 3:
+        regions.append({"label": "Jetson (Coarse)", "dir": os.path.join(JETSON_DIR, "discretizationCOARSE"),
+                         "token": "large", "model_tag": False})
+    regions.append({"label": "Fine", "dir": os.path.join(ZEPHYR_DIR, "discretizationFINE"),
+                     "token": "fine", "model_tag": True})
+    if model_id == 2:
+        regions.append({"label": "Jetson (Fine)", "dir": os.path.join(JETSON_DIR, "discretizationFINE"),
+                         "token": "fine", "model_tag": False})
+    regions.append({"label": "Tiny", "dir": os.path.join(ZEPHYR_DIR, "discretizationTINY"),
+                     "token": "tiny", "model_tag": True})
+    return regions
 
-ENVIRONMENTS = ["house", "narrowPassage"]  # on-disk spelling; "empty" and "zigzag" excluded
+ENVIRONMENTS = ["house", "narrowPassage", "zigzag"]  # on-disk spelling; "empty" excluded
 
 # Exactly the three columns requested -- SimpleCombo intentionally omitted.
 TABLE_PLANNERS = [KPAX, KINOPAX_PLUS, KINOPAX_STAR]
@@ -118,8 +122,6 @@ def load_runs_no_model_tag(env_dir, env, planner_token, discretization_label, me
 
 
 def region_env_values(region: dict, env: str, model_id: int, metrics, aggregator) -> dict:
-    if region["only_model"] is not None and region["only_model"] != model_id:
-        return {p: math.nan for p in TABLE_PLANNERS}
     env_dir = os.path.join(region["dir"], env)
     if not os.path.isdir(env_dir):
         return {p: math.nan for p in TABLE_PLANNERS}
@@ -134,31 +136,39 @@ def region_env_values(region: dict, env: str, model_id: int, metrics, aggregator
     return values
 
 
-def build_model_sections(model_id: int) -> dict:
+def build_model_sections(model_id: int, regions: list) -> dict:
     """{section_title: (decimals, {env: {region_label: {planner: value}}})}"""
     sections = {}
     for section_title, metrics, aggregator, decimals in SECTIONS:
         env_data = {}
         for env in ENVIRONMENTS:
             region_rows = {}
-            for region in REGIONS:
+            for region in regions:
                 region_rows[region["label"]] = region_env_values(region, env, model_id, metrics, aggregator)
             env_data[env] = region_rows
         sections[section_title] = (decimals, env_data)
     return sections
 
 
-def fmt(value: float, decimals: int) -> str:
+def fmt(value: float, decimals: int, bold: bool = False) -> str:
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return "--"
-    return f"{value:.{decimals}f}"
+    text = f"{value:.{decimals}f}"
+    return rf"\textbf{{{text}}}" if bold else text
 
 
-def sections_to_dataframe(sections: dict) -> pd.DataFrame:
+def best_planner(vals: dict) -> object:
+    """Planner key with the lowest (best) value in `vals`, ignoring NaN/missing; None if all
+    missing."""
+    valid = {p: v for p, v in vals.items() if v is not None and not (isinstance(v, float) and math.isnan(v))}
+    return min(valid, key=valid.get) if valid else None
+
+
+def sections_to_dataframe(sections: dict, regions: list) -> pd.DataFrame:
     rows = []
     for section_title, (decimals, env_data) in sections.items():
         for env in ENVIRONMENTS:
-            for region in REGIONS:
+            for region in regions:
                 region_label = region["label"]
                 vals = env_data[env][region_label]
                 rows.append({
@@ -172,7 +182,7 @@ def sections_to_dataframe(sections: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def render_latex(subtitle: str, sections: dict) -> str:
+def render_latex(subtitle: str, sections: dict, regions: list) -> str:
     lines = [
         r"\begin{table}[htbp]",
         r"\centering",
@@ -188,10 +198,11 @@ def render_latex(subtitle: str, sections: dict) -> str:
         for env in ENVIRONMENTS:
             lines.append(r"\midrule")
             lines.append(rf"\multicolumn{{4}}{{l}}{{\textit{{{env_display_name(env)}}}}} \\")
-            for region in REGIONS:
+            for region in regions:
                 region_label = region["label"]
                 vals = env_data[env][region_label]
-                cells = " & ".join(fmt(vals[p], decimals) for p in TABLE_PLANNERS)
+                best = best_planner(vals)
+                cells = " & ".join(fmt(vals[p], decimals, bold=(p == best)) for p in TABLE_PLANNERS)
                 lines.append(f"{region_label} & {cells} " + r"\\")
     lines.append(r"\bottomrule")
     lines.append(r"\end{tabular}")
@@ -201,19 +212,21 @@ def render_latex(subtitle: str, sections: dict) -> str:
 
 def main() -> None:
     os.makedirs(OUT_DIR, exist_ok=True)
-    missing_regions = [r["label"] for r in REGIONS if not os.path.isdir(r["dir"])]
-    if missing_regions:
-        print(f"Note: these regions have no data folder yet and will print as '--': {missing_regions}\n")
 
     for model_id in MODEL_IDS:
         subtitle = MODEL_SUBTITLES[model_id]
-        sections = build_model_sections(model_id)
+        regions = regions_for_model(model_id)
+        missing_regions = [r["label"] for r in regions if not os.path.isdir(r["dir"])]
+        if missing_regions:
+            print(f"[{subtitle}] Note: no data folder yet, will print as '--': {missing_regions}")
+
+        sections = build_model_sections(model_id, regions)
 
         base_name = f"ttfs_table_m{model_id}_{sanitize_name(MODEL_NAMES_LOCAL[model_id])}"
         csv_path = os.path.join(OUT_DIR, f"{base_name}.csv")
-        sections_to_dataframe(sections).to_csv(csv_path, index=False)
+        sections_to_dataframe(sections, regions).to_csv(csv_path, index=False)
 
-        latex = render_latex(subtitle, sections)
+        latex = render_latex(subtitle, sections, regions)
         txt_path = os.path.join(OUT_DIR, f"{base_name}.tex.txt")
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(latex + "\n")

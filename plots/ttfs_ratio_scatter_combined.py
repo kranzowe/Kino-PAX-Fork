@@ -38,10 +38,12 @@ from zephyr_common import (  # noqa: E402
     MODEL_NAMES,
     OTHER_PLANNERS,
     aggregate_ttfs,
+    declutter_label_ys,
     discover_environments,
     env_display_name,
     load_runs,
     sanitize_name,
+    style_log_axis,
     warn_on_unexpected_star_suffixes,
 )
 
@@ -116,6 +118,14 @@ def plot_combined(table: pd.DataFrame, environments: list[str], discretization_l
         lo = min(xs.min(), ys.min()) / 1.5
         hi = max(xs.max(), ys.max()) * 1.5
 
+        # Set the final scale/limits/aspect BEFORE anything below measures pixel positions
+        # (declutter_label_ys needs ax.transData to already reflect the real rendered layout).
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlim(lo, hi)
+        ax.set_ylim(lo, hi)
+        ax.set_aspect("equal", adjustable="box")
+
         ax.plot([lo, hi], [lo, hi], linestyle="--", color=BASE_COLORS[KINOPAX_PLUS], linewidth=1.4, zorder=1)
 
         model_name_to_id = {v: k for k, v in MODEL_NAMES.items()}
@@ -132,25 +142,38 @@ def plot_combined(table: pd.DataFrame, environments: list[str], discretization_l
 
         # Every algorithm compared within one (environment, model) cell shares that cell's
         # Kino-PAX+ mean as its y-value, so they land on one shared horizontal line -- draw that
-        # line explicitly and label it with the environment name instead of adding a third
-        # marker channel (color=algorithm and shape=model already cover the other two).
-        for (env, _model), group in plotted.groupby(["Environment", "Model"]):
+        # line explicitly, mark Kino-PAX+'s own position on it (exactly where that row crosses
+        # y=x) with a small blue symbol, and label the row with the environment name instead of
+        # adding a third marker channel (color=algorithm and shape=model already cover the other
+        # two). All labels line up in one shared column rather than each sitting just past its
+        # own row's rightmost point, so leader lines converge instead of crossing.
+        row_groups = sorted(
+            plotted.groupby(["Environment", "Model"]),
+            key=lambda item: item[1]["KinoPaxPlus_Mean_TTFS_ms"].iloc[0],
+            reverse=True,
+        )
+        label_x = max(group["Mean_TTFS_ms"].max() for _, group in row_groups) * 1.35
+        label_ys = declutter_label_ys(
+            ax, [(key, group["KinoPaxPlus_Mean_TTFS_ms"].iloc[0]) for key, group in row_groups]
+        )
+
+        for (env, model_name), group in row_groups:
+            model_id = model_name_to_id[model_name]
             y = group["KinoPaxPlus_Mean_TTFS_ms"].iloc[0]
             x_min = group["Mean_TTFS_ms"].min()
             x_max = group["Mean_TTFS_ms"].max()
             ax.plot([x_min / 1.08, x_max * 1.08], [y, y], color="#999999", linestyle=":",
                      linewidth=1.0, zorder=0)
+            ax.scatter(y, y, s=45, marker=MODEL_MARKERS[model_id],
+                       facecolors=BASE_COLORS[KINOPAX_PLUS], edgecolors="black", linewidths=0.8, zorder=6)
             ax.annotate(
                 env_display_name(env), xy=(x_max, y), xycoords="data",
-                xytext=(14, 0), textcoords="offset points",
+                xytext=(label_x, label_ys[(env, model_name)]), textcoords="data",
                 ha="left", va="center", fontsize=8.5, color="#555555",
+                arrowprops=dict(arrowstyle="-", color="#bbbbbb", lw=0.7, shrinkA=2, shrinkB=2),
             )
 
-        ax.set_xscale("log")
-        ax.set_yscale("log")
-        ax.set_xlim(lo, hi)
-        ax.set_ylim(lo, hi)
-        ax.set_aspect("equal", adjustable="box")
+        style_log_axis(ax)
 
         algo_handles = [
             Line2D([0], [0], marker="o", linestyle="", markerfacecolor=BASE_COLORS[p],
@@ -159,7 +182,7 @@ def plot_combined(table: pd.DataFrame, environments: list[str], discretization_l
         ]
         algo_handles.append(
             Line2D([0], [0], color=BASE_COLORS[KINOPAX_PLUS], linestyle="--", linewidth=1.4,
-                   label="Kino-PAX+ (y = x)")
+                   marker="o", markersize=6, markeredgecolor="black", label="Kino-PAX+ (y = x)")
         )
         model_handles = [
             Line2D([0], [0], marker=MODEL_MARKERS[m], linestyle="", markerfacecolor="#888888",

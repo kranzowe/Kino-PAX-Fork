@@ -97,7 +97,7 @@ def discover_environments(discretization_dir: str) -> List[str]:
 
 
 def env_display_name(env: str) -> str:
-    overrides = {"narrowpassage": "Narrow Passage", "zigzag": "ZigZag", "house": "House", "empty": "Empty"}
+    overrides = {"narrowpassage": "Narrow", "zigzag": "Windows", "house": "House", "empty": "Empty"}
     return overrides.get(env.lower(), env)
 
 
@@ -107,6 +107,17 @@ def _candidate_filename(env: str, planner_token: str, delta_tok: str, run: int) 
     if planner_token.startswith("CountingStars") or planner_token.startswith("KinoPaxSTAR"):
         return f"{env}_{planner_token}_delta{delta_tok}_run{run}.csv"
     return f"{env}_delta{delta_tok}_run{run}.csv"  # KinoPaxPlus: no planner token in the filename
+
+
+# The benchmark harness's own coarsest-resolution label is "large" (matching the older pipeline's
+# large/fine/tiny terminology), even though the folder is organized/displayed as "coarse"
+# everywhere in these scripts to match "coarse/fine/tiny" -- translate right before it's used to
+# build a filename, so every discretization-driven script gets this for free.
+_DISCRETIZATION_FILE_TOKEN_OVERRIDES = {"coarse": "large"}
+
+
+def _discretization_file_token(discretization_label: str) -> str:
+    return _DISCRETIZATION_FILE_TOKEN_OVERRIDES.get(discretization_label.lower(), discretization_label)
 
 
 def load_runs(
@@ -126,8 +137,9 @@ def load_runs(
     length and effort runs are not comparable and must never be pooled together).
     """
     runs: List[pd.DataFrame] = []
+    file_token = _discretization_file_token(discretization_label)
     for metric in metrics:
-        delta_tok = f"m{model_id}_{discretization_label}_{metric}"
+        delta_tok = f"m{model_id}_{file_token}_{metric}"
         for run in range(max_runs):
             fname = _candidate_filename(env, planner_token, delta_tok, run)
             fpath = os.path.join(env_dir, fname)
@@ -203,6 +215,89 @@ def aggregate_final_cost(runs: Sequence[pd.DataFrame]) -> CellStats:
 def aggregate_first_sol_cost(runs: Sequence[pd.DataFrame]) -> CellStats:
     """Mean/std cost-of-first-solution across successful runs; unsolved runs excluded."""
     return _aggregate([first_sol_cost(df) for df in runs])
+
+
+def style_log_axis(ax) -> None:
+    """Shared look for a log-log ratio-scatter axis: bold, denser tick marks/labels, and plain
+    numbers ("2" not "2 x 10^0") at both the decade marks and a few sub-decade points."""
+    from matplotlib.ticker import FuncFormatter, LogLocator
+
+    plain_number = FuncFormatter(lambda v, _pos: f"{v:g}")
+    for axis in (ax.xaxis, ax.yaxis):
+        axis.set_major_locator(LogLocator(base=10, subs=(1.0,)))
+        axis.set_minor_locator(LogLocator(base=10, subs=(2.0, 5.0)))
+        axis.set_major_formatter(plain_number)
+        axis.set_minor_formatter(plain_number)
+
+    ax.tick_params(which="major", width=1.6, length=6, labelsize=9)
+    ax.tick_params(which="minor", width=1.2, length=3.5, labelsize=8)
+    for label in (ax.get_xticklabels(minor=False) + ax.get_xticklabels(minor=True)
+                  + ax.get_yticklabels(minor=False) + ax.get_yticklabels(minor=True)):
+        label.set_fontweight("bold")
+
+
+def style_linear_axis(ax) -> None:
+    """Shared look for a LINEAR ratio-scatter axis (fixed, human-picked bounds rather than a
+    log range): just bold, slightly heavier tick marks/labels -- plain numbers are already the
+    default on a linear axis, no custom locator/formatter needed the way the log case requires."""
+    ax.tick_params(which="major", width=1.6, length=6, labelsize=9)
+    ax.tick_params(which="minor", width=1.2, length=3.5, labelsize=8)
+    for label in (ax.get_xticklabels(minor=False) + ax.get_xticklabels(minor=True)
+                  + ax.get_yticklabels(minor=False) + ax.get_yticklabels(minor=True)):
+        label.set_fontweight("bold")
+
+
+def declutter_label_ys(ax, sorted_items: Sequence, min_gap_points: float = 14.0) -> dict:
+    """Nudge row-label y-positions apart so they don't print on top of each other.
+
+    `sorted_items` is a list of (key, true_y) pairs already sorted by true_y descending. Returns
+    {key: label_y} such that adjacent labels are at least `min_gap_points` apart in the actual
+    RENDERED figure (points -- a physical, dpi-independent unit), nudging later (lower) labels
+    down as needed. A fixed multiplicative ratio in data-space (the first approach tried here)
+    works for a plot spanning two decades but blows up into a chaotic pile of crossing leader
+    lines on a plot whose rows are all clustered within a much narrower range (e.g. cost ratios
+    near 1) -- measuring in rendered points is scale-invariant, so the same call works either
+    way. Call this only after the axes' final xscale/yscale/xlim/ylim/aspect are set, so
+    ax.transData reflects the real layout, not matplotlib's original auto-scaled one.
+
+    If the rows are packed into a small fraction of a much taller fixed axis range (e.g. Control
+    Effort's data sitting entirely below 0.3 on a fixed 0-1 axis), the naive greedy nudge above
+    only ever pushes labels DOWN from the topmost row's own true position -- so what actually
+    limits it is the room between that top row and the bottom of the plot, not the axes' full
+    height. Get that wrong (e.g. measure against the whole axes) and labels walk straight out
+    through the bottom, overlapping the tick labels or vanishing off the edge. So after the
+    greedy pass, if the resulting column needs more room than that, it's compressed back to fit
+    (preserving order, trading away perfect min-gap spacing for staying on the plot -- a little
+    crowded beats invisible).
+    """
+    fig = ax.figure
+    fig.canvas.draw()  # finalize the aspect-adjusted box position before measuring it
+    points_per_pixel = 72.0 / fig.dpi
+
+    raw_points = []
+    prev_points = None
+    for _key, true_y in sorted_items:
+        pixel_y = ax.transData.transform((0, true_y))[1]
+        label_points = pixel_y * points_per_pixel
+        if prev_points is not None and (prev_points - label_points) < min_gap_points:
+            label_points = prev_points - min_gap_points
+        prev_points = label_points
+        raw_points.append(label_points)
+
+    if raw_points:
+        bbox = ax.get_window_extent()
+        axes_bottom = bbox.y0 * points_per_pixel
+        margin = (bbox.y1 - bbox.y0) * points_per_pixel * 0.03
+        available_span = raw_points[0] - (axes_bottom + margin)
+        used_span = raw_points[0] - raw_points[-1]
+        if used_span > available_span > 0:
+            scale = available_span / used_span
+            raw_points = [raw_points[0] - (raw_points[0] - p) * scale for p in raw_points]
+
+    label_y = {}
+    for (key, _true_y), label_points in zip(sorted_items, raw_points):
+        label_y[key] = ax.transData.inverted().transform((0, label_points / points_per_pixel))[1]
+    return label_y
 
 
 def warn_on_unexpected_star_suffixes(env_dir: str) -> None:

@@ -38,6 +38,7 @@ from zephyr_common import (  # noqa: E402
     MODEL_NAMES,
     OTHER_PLANNERS,
     aggregate_final_cost,
+    declutter_label_ys,
     discover_discretization_dirs,
     discover_environments,
     discretization_display,
@@ -46,6 +47,7 @@ from zephyr_common import (  # noqa: E402
     env_display_name,
     load_runs,
     sanitize_name,
+    style_log_axis,
     warn_on_unexpected_star_suffixes,
 )
 
@@ -131,6 +133,14 @@ def plot_model_cost(table: pd.DataFrame, model_id: int, metric: str, discretizat
         lo = min(xs.min(), ys.min()) / 1.5
         hi = max(xs.max(), ys.max()) * 1.5
 
+        # Set the final scale/limits/aspect BEFORE anything below measures pixel positions
+        # (declutter_label_ys needs ax.transData to already reflect the real rendered layout).
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlim(lo, hi)
+        ax.set_ylim(lo, hi)
+        ax.set_aspect("equal", adjustable="box")
+
         ax.plot([lo, hi], [lo, hi], linestyle="--", color=BASE_COLORS[KINOPAX_PLUS], linewidth=1.4, zorder=1)
 
         display_to_token = {v: k for k, v in BASE_DISPLAY.items()}
@@ -145,44 +155,42 @@ def plot_model_cost(table: pd.DataFrame, model_id: int, metric: str, discretizat
 
         # Every algorithm compared within one (environment, discretization) cell shares that
         # cell's Kino-PAX+ mean as its y-value, so they land on one shared horizontal line --
-        # draw that line explicitly and label it with the environment name. Rows can end up at
-        # nearly the same y (e.g. two environments of similar difficulty for one model), which
-        # would otherwise print two labels on top of each other -- nudge later labels down (in
-        # sorted order) to keep a minimum multiplicative gap; the guide line itself always stays
-        # at the true y.
-        MIN_LABEL_Y_RATIO = 1.35
+        # draw that line explicitly, mark Kino-PAX+'s own position on it (exactly where that row
+        # crosses y=x) with a small blue symbol, and label the row with the environment name. All
+        # labels line up in one shared column (past the row with the largest x) rather than each
+        # sitting just past its own row's rightmost point -- with many rows (3 environments x 3
+        # discretizations), per-row label columns produced crossing leader lines; one shared
+        # column keeps every leader line converging the same direction instead. Rows can still
+        # land at nearly the same y (e.g. two environments of similar difficulty), which would
+        # print two labels on top of each other -- nudge later labels down (in sorted order) to
+        # keep a minimum multiplicative gap; the guide line and Kino-PAX+ marker always stay at
+        # the true y.
         row_groups = sorted(
             plotted.groupby(["Environment", "Discretization"]),
             key=lambda item: item[1]["KinoPaxPlus_Mean_Cost"].iloc[0],
             reverse=True,
         )
-        prev_label_y = None
-        for (env, _disc), group in row_groups:
+        label_x = max(group["Mean_Cost"].max() for _, group in row_groups) * 1.35
+        label_ys = declutter_label_ys(
+            ax, [(key, group["KinoPaxPlus_Mean_Cost"].iloc[0]) for key, group in row_groups]
+        )
+
+        for (env, disc), group in row_groups:
             y = group["KinoPaxPlus_Mean_Cost"].iloc[0]
             x_min = group["Mean_Cost"].min()
             x_max = group["Mean_Cost"].max()
             ax.plot([x_min / 1.08, x_max * 1.08], [y, y], color="#999999", linestyle=":",
                      linewidth=1.0, zorder=0)
-            label_y = y
-            if prev_label_y is not None and prev_label_y / label_y < MIN_LABEL_Y_RATIO:
-                label_y = prev_label_y / MIN_LABEL_Y_RATIO
-            prev_label_y = label_y
-            # When a label had to be nudged away from its line's true y, draw a thin leader back
-            # to it -- otherwise the text would float with no visible connection to its row.
-            arrowprops = None
-            if label_y != y:
-                arrowprops = dict(arrowstyle="-", color="#bbbbbb", lw=0.7, shrinkA=2, shrinkB=2)
+            ax.scatter(y, y, s=45, marker=discretization_marker(disc),
+                       facecolors=BASE_COLORS[KINOPAX_PLUS], edgecolors="black", linewidths=0.8, zorder=6)
             ax.annotate(
                 env_display_name(env), xy=(x_max, y), xycoords="data",
-                xytext=(x_max * 1.18, label_y), textcoords="data",
-                ha="left", va="center", fontsize=8.5, color="#555555", arrowprops=arrowprops,
+                xytext=(label_x, label_ys[(env, disc)]), textcoords="data",
+                ha="left", va="center", fontsize=8.5, color="#555555",
+                arrowprops=dict(arrowstyle="-", color="#bbbbbb", lw=0.7, shrinkA=2, shrinkB=2),
             )
 
-        ax.set_xscale("log")
-        ax.set_yscale("log")
-        ax.set_xlim(lo, hi)
-        ax.set_ylim(lo, hi)
-        ax.set_aspect("equal", adjustable="box")
+        style_log_axis(ax)
 
         algo_handles = [
             Line2D([0], [0], marker="o", linestyle="", markerfacecolor=BASE_COLORS[p],
@@ -191,7 +199,7 @@ def plot_model_cost(table: pd.DataFrame, model_id: int, metric: str, discretizat
         ]
         algo_handles.append(
             Line2D([0], [0], color=BASE_COLORS[KINOPAX_PLUS], linestyle="--", linewidth=1.4,
-                   label="Kino-PAX+ (y = x)")
+                   marker="o", markersize=6, markeredgecolor="black", label="Kino-PAX+ (y = x)")
         )
         disc_handles = [
             Line2D([0], [0], marker=discretization_marker(d), linestyle="", markerfacecolor="#888888",

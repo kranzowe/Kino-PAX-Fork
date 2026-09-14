@@ -36,6 +36,7 @@ from zephyr_common import (  # noqa: E402
     MODEL_IDS,
     OTHER_PLANNERS,
     aggregate_ttfs,
+    declutter_label_ys,
     discover_discretization_dirs,
     discover_environments,
     discretization_display,
@@ -43,6 +44,7 @@ from zephyr_common import (  # noqa: E402
     discretization_marker,
     env_display_name,
     load_runs,
+    style_log_axis,
     warn_on_unexpected_star_suffixes,
 )
 
@@ -109,12 +111,20 @@ def build_model_table(model_id: int, discretization_dirs: list[str]) -> pd.DataF
     return pd.DataFrame(rows)
 
 
-def plot_model_panel(ax, table: pd.DataFrame, subtitle: str, lo: float, hi: float) -> None:
+def plot_model_panel(ax, table: pd.DataFrame, subtitle: str, lo: float, hi: float, model_id: int) -> None:
     plotted = table[
         (table["Algorithm"] != BASE_DISPLAY[KINOPAX_PLUS])
         & table["Mean_TTFS_ms"].notna()
         & table["KinoPaxPlus_Mean_TTFS_ms"].notna()
     ]
+
+    # Set the final scale/limits/aspect BEFORE anything below measures pixel positions
+    # (declutter_label_ys needs ax.transData to already reflect the real rendered layout).
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
+    ax.set_aspect("equal", adjustable="box")
 
     if plotted.empty:
         ax.text(0.5, 0.5, "No successful runs found yet.",
@@ -134,42 +144,53 @@ def plot_model_panel(ax, table: pd.DataFrame, subtitle: str, lo: float, hi: floa
 
         # Every algorithm compared within one (environment, discretization) cell shares that
         # cell's Kino-PAX+ mean as its y-value, so they land on one shared horizontal line --
-        # draw that line explicitly and label it with the environment name. Rows can end up at
-        # nearly the same y (e.g. two environments of similar difficulty for one model), which
-        # would otherwise print two labels on top of each other -- nudge later labels down (in
-        # sorted order) to keep a minimum multiplicative gap; the guide line itself always stays
-        # at the true y.
-        MIN_LABEL_Y_RATIO = 1.35
+        # draw that line explicitly, mark Kino-PAX+'s own position on it (exactly where that row
+        # crosses y=x) with a small blue symbol, and label the row with the environment name. All
+        # of one subplot's labels line up in one shared column (past that subplot's own widest
+        # row) rather than each sitting just past its own row's rightmost point -- with many rows
+        # (3 environments x 3 discretizations), per-row label columns produced crossing leader
+        # lines. Rows can still land at nearly the same y (e.g. two
+        # environments of similar difficulty), which would print two labels on top of each other
+        # -- nudge later labels down (in sorted order) to keep a minimum multiplicative gap; the
+        # guide line and Kino-PAX+ marker always stay at the true y.
         row_groups = sorted(
             plotted.groupby(["Environment", "Discretization"]),
             key=lambda item: item[1]["KinoPaxPlus_Mean_TTFS_ms"].iloc[0],
             reverse=True,
         )
-        prev_label_y = None
-        for (env, _disc), group in row_groups:
+        # Based on THIS subplot's own rows, not the shared hi -- with axes shared across panels
+        # of very different scale (Drone vs. Double Integrator), a fraction of the shared hi left
+        # virtually no room for label text on whichever subplot's own data sits closest to it.
+        # Double Integrator's own data sits well clear of the shared hi, so its labels read fine
+        # to the right of the data (nudged a bit further out); the other two panels' data crowds
+        # much closer to hi, leaving little room on the right but plenty on the left instead.
+        if model_id == 1:
+            label_x = max(group["Mean_TTFS_ms"].max() for _, group in row_groups) * 1.7
+            anchor_side, ha = "max", "left"
+        else:
+            label_x = min(group["Mean_TTFS_ms"].min() for _, group in row_groups) / 1.45
+            anchor_side, ha = "min", "right"
+        label_ys = declutter_label_ys(
+            ax, [(key, group["KinoPaxPlus_Mean_TTFS_ms"].iloc[0]) for key, group in row_groups]
+        )
+
+        for (env, disc), group in row_groups:
             y = group["KinoPaxPlus_Mean_TTFS_ms"].iloc[0]
             x_min = group["Mean_TTFS_ms"].min()
             x_max = group["Mean_TTFS_ms"].max()
+            anchor_x = x_max if anchor_side == "max" else x_min
             ax.plot([x_min / 1.08, x_max * 1.08], [y, y], color="#999999", linestyle=":",
                      linewidth=1.0, zorder=0)
-            label_y = y
-            if prev_label_y is not None and prev_label_y / label_y < MIN_LABEL_Y_RATIO:
-                label_y = prev_label_y / MIN_LABEL_Y_RATIO
-            prev_label_y = label_y
-            arrowprops = None
-            if label_y != y:
-                arrowprops = dict(arrowstyle="-", color="#bbbbbb", lw=0.7, shrinkA=2, shrinkB=2)
+            ax.scatter(y, y, s=40, marker=discretization_marker(disc),
+                       facecolors=BASE_COLORS[KINOPAX_PLUS], edgecolors="black", linewidths=0.8, zorder=6)
             ax.annotate(
-                env_display_name(env), xy=(x_max, y), xycoords="data",
-                xytext=(x_max * 1.18, label_y), textcoords="data",
-                ha="left", va="center", fontsize=8, color="#555555", arrowprops=arrowprops,
+                env_display_name(env), xy=(anchor_x, y), xycoords="data",
+                xytext=(label_x, label_ys[(env, disc)]), textcoords="data",
+                ha=ha, va="center", fontsize=8, color="#555555",
+                arrowprops=dict(arrowstyle="-", color="#bbbbbb", lw=0.7, shrinkA=2, shrinkB=2),
             )
 
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlim(lo, hi)
-    ax.set_ylim(lo, hi)
-    ax.set_aspect("equal", adjustable="box")
+    style_log_axis(ax)
     ax.set_title(subtitle, fontsize=12, fontweight="bold")
     ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.5)
 
@@ -207,11 +228,11 @@ def main() -> None:
                               gridspec_kw={"wspace": 0.06})
 
     for ax, model_id, table in zip(axes, MODEL_IDS, tables):
-        plot_model_panel(ax, table, PANEL_SUBTITLES[model_id], lo, hi)
+        plot_model_panel(ax, table, PANEL_SUBTITLES[model_id], lo, hi, model_id)
         ax.label_outer()
 
-    supxlabel = fig.supxlabel("Time to First Solution (ms) — other algorithms", fontsize=11, y=0.04)
-    supylabel = fig.supylabel("Time to First Solution (ms) — Kino-PAX+", fontsize=11, x=0.02)
+    supxlabel = fig.supxlabel("Time to First Solution (ms, log scale) — other algorithms", fontsize=11, y=0.04)
+    supylabel = fig.supylabel("Time to First Solution (ms, log scale) — Kino-PAX+", fontsize=11, x=0.02)
 
     algo_handles = [
         Line2D([0], [0], marker="o", linestyle="", markerfacecolor=BASE_COLORS[p],
@@ -220,7 +241,7 @@ def main() -> None:
     ]
     algo_handles.append(
         Line2D([0], [0], color=BASE_COLORS[KINOPAX_PLUS], linestyle="--", linewidth=1.4,
-               label="Kino-PAX+ (y = x)")
+               marker="o", markersize=6, markeredgecolor="black", label="Kino-PAX+ (y = x)")
     )
     disc_handles = [
         Line2D([0], [0], marker=discretization_marker(d), linestyle="", markerfacecolor="#888888",
@@ -228,15 +249,17 @@ def main() -> None:
         for d in discretization_labels
     ]
 
+    # Both legends fit inside the Drone panel's bottom-right corner -- that panel's own data all
+    # sits in the upper portion of the shared range, leaving that corner empty.
     last_ax = axes[-1]
-    legend1 = last_ax.legend(handles=algo_handles, title="Algorithm (color)", loc="upper left",
-                              bbox_to_anchor=(1.02, 1.0), fontsize=9, title_fontsize=9, frameon=True)
-    last_ax.add_artist(legend1)
-    legend2 = last_ax.legend(handles=disc_handles, title="Discretization (shape)", loc="upper left",
-                              bbox_to_anchor=(1.02, 0.6), fontsize=9, title_fontsize=9, frameon=True)
+    legend2 = last_ax.legend(handles=disc_handles, title="Discretization (shape)", loc="lower right",
+                              bbox_to_anchor=(0.99, 0.02), fontsize=9, title_fontsize=9, frameon=True)
+    last_ax.add_artist(legend2)
+    legend1 = last_ax.legend(handles=algo_handles, title="Algorithm (color)", loc="lower right",
+                              bbox_to_anchor=(0.99, 0.22), fontsize=9, title_fontsize=9, frameon=True)
     legends = [legend1, legend2, supxlabel, supylabel]
 
-    fig.subplots_adjust(left=0.06, right=0.98, top=0.93, bottom=0.1)
+    fig.subplots_adjust(left=0.06, right=0.99, top=0.93, bottom=0.1)
 
     csv_path = os.path.join(OUT_DIR, "ttfs_ratio_panel_all_models.csv")
     pd.concat(tables, ignore_index=True).to_csv(csv_path, index=False)
