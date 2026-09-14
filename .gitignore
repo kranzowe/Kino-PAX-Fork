@@ -12,6 +12,9 @@ build/*
 viz/figs/*
 !viz/figs/.gitkeep
 plots/DATA/*
+plots/output/*
+!plots/output/.gitkeep
+__pycache__/
 # NSIGHT
 NSight/*
 !NSight/command.md
