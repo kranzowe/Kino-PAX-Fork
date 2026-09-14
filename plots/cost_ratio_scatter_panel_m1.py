@@ -115,6 +115,9 @@ def plot_metric_panel(ax, table: pd.DataFrame, subtitle: str, lo: float, hi: flo
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
     ax.set_aspect("equal", adjustable="box")
+    # X label duplicated per subplot rather than one shared label below both -- Y stays a
+    # single shared label since it's the same "Final Cost -- Kino-PAX+" for both metrics.
+    ax.set_xlabel("Final Cost — other algorithms (Kino-PAX, SimpleCombo, Kino-PAX*)", fontsize=10)
 
     if plotted.empty:
         ax.text(0.5, 0.5, "No successful runs found yet.",
@@ -197,9 +200,8 @@ def main() -> None:
         plot_metric_panel(ax, tables[metric], COST_METRIC_LABELS[metric], lo, hi)
 
     model_name = MODEL_NAMES[MODEL_ID]
-    supxlabel = fig.supxlabel(
-        "Final Cost — other algorithms (Kino-PAX, SimpleCombo, Kino-PAX*)", fontsize=11, y=0.02
-    )
+    # X label is duplicated per subplot (set inside plot_metric_panel); Y stays a single shared
+    # label since it's the same "Final Cost -- Kino-PAX+" for both metrics.
     supylabel = fig.supylabel("Final Cost — Kino-PAX+", fontsize=11, x=0.01)
 
     algo_handles = [
@@ -225,7 +227,7 @@ def main() -> None:
     effort_ax.add_artist(legend1)
     legend2 = effort_ax.legend(handles=disc_handles, title="Discretization (shape)", loc="upper left",
                                 bbox_to_anchor=(0.42, 0.98), fontsize=9, title_fontsize=9, frameon=True)
-    legends = [legend1, legend2, supxlabel, supylabel]
+    legends = [legend1, legend2, supylabel]
 
     fig.subplots_adjust(left=0.07, right=0.97, top=0.9, bottom=0.12)
 

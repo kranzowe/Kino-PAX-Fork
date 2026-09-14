@@ -8,23 +8,24 @@ best (lowest) value across the three algorithms is bolded. See plots/cost_table_
 companion cost table (first-solution cost and final cost, both cost metrics) -- kept as a
 separate, wider table on purpose rather than crammed into this one.
 
-Regions are Zephyr's Coarse/Fine/Tiny plus, model-dependent, a single Jetson row: the Jetson
-dataset (plots/DATA/JETSON_20_runs) comes from the OLDER, pre-v2 benchmark pipeline
-(examples/gpu/paper_benchmark.cu, not paper_benchmark_v2.cu), which only ever built one hardcoded
-model per binary rather than sweeping all three, so each Jetson sweep is a *different single
-model*: discretizationFINE was run at Model 2 (Dubins Airplane), discretizationCOARSE at Model 3
-(Quad) -- confirmed from that harness's own header comments, which is also why COARSE's on-disk
-delta token is "large" (that pipeline's own coarsest label) even though the folder is named
-"discretizationCOARSE" to match Zephyr's convention. So Model 1's table has no Jetson row at all,
-Model 2's table's Jetson row reads discretizationFINE, and Model 3's Jetson row reads
-discretizationCOARSE -- each with its own model-tag-free filename pattern (e.g.
-"house_KPAX_deltafine_length_run0.csv", no "m<N>_" prefix). A region whose folder doesn't exist
-yet prints as "--" rather than erroring.
+Regions are just Zephyr's Coarse/Fine/Tiny. A JETSON_20_runs dataset also exists on disk (the
+OLDER, pre-v2 benchmark pipeline, examples/gpu/paper_benchmark.cu) and used to contribute one
+model-specific row per model here -- deliberately dropped: that pipeline hardcodes exactly one
+vehicle model per compiled binary and never records which one in the run's filename or CSV
+columns, and a check of scripts/run_paper_benchmark.sh's full git history turned up two problems
+with the row-per-model attribution this table used to rely on -- (1) that script has only ever
+been configured for Model 1 or Model 2, never Model 3, so the "Jetson Coarse = Model 3" mapping
+this table used is provably wrong, and (2) within any one script version, ALL THREE deltas
+(large/fine/tiny) always ran under the SAME hardcoded model, so "Jetson Fine = Model 2" is only
+right if that folder's data was actually captured while the script was in its Model-2 state --
+unverifiable from the repo alone. Re-add Jetson rows once that provenance is actually confirmed
+(e.g. from lab notes on what was checked out on the Jetson device at capture time), rather than
+guessing again. A region whose folder doesn't exist yet prints as "--" rather than erroring.
 
 For each model, writes a CSV (plots/output/tables/) and prints + saves the equivalent LaTeX table
 source (as a .txt file, ready to paste into the paper).
 
-Edit ZEPHYR_DIR / JETSON_DIR / OUT_DIR below if your dataset folders move.
+Edit ZEPHYR_DIR / OUT_DIR below if your dataset folders move.
 """
 from __future__ import annotations
 
@@ -37,7 +38,6 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zephyr_common import (  # noqa: E402
     COST_METRICS,
-    DEFAULT_MAX_RUNS,
     KINOPAX_PLUS,
     KINOPAX_STAR,
     KPAX,
@@ -55,26 +55,17 @@ PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
 # EDIT THESE if your dataset folders move.
 # ================================================================================================
 ZEPHYR_DIR = os.path.join(PLOTS_DIR, "DATA", "ZEPHYR_30_runs")
-JETSON_DIR = os.path.join(PLOTS_DIR, "DATA", "JETSON_20_runs")
 OUT_DIR = os.path.join(PLOTS_DIR, "output", "tables")
 
 def regions_for_model(model_id: int) -> list:
-    """Region rows for one model's table -- label, discretization folder, on-disk discretization
-    token used inside run filenames, and whether that filename carries a "m<N>_" model tag. The
-    Jetson row (if any) is model-specific -- see the module docstring."""
-    regions = [{"label": "Coarse", "dir": os.path.join(ZEPHYR_DIR, "discretizationCOARSE"),
-                "token": "large", "model_tag": True}]
-    if model_id == 3:
-        regions.append({"label": "Jetson (Coarse)", "dir": os.path.join(JETSON_DIR, "discretizationCOARSE"),
-                         "token": "large", "model_tag": False})
-    regions.append({"label": "Fine", "dir": os.path.join(ZEPHYR_DIR, "discretizationFINE"),
-                     "token": "fine", "model_tag": True})
-    if model_id == 2:
-        regions.append({"label": "Jetson (Fine)", "dir": os.path.join(JETSON_DIR, "discretizationFINE"),
-                         "token": "fine", "model_tag": False})
-    regions.append({"label": "Tiny", "dir": os.path.join(ZEPHYR_DIR, "discretizationTINY"),
-                     "token": "tiny", "model_tag": True})
-    return regions
+    """Region rows for one model's table -- label, discretization folder, and the on-disk
+    discretization token used inside run filenames. Same three regions for every model -- see the
+    module docstring for why the Jetson dataset's model-specific row was dropped."""
+    return [
+        {"label": "Coarse", "dir": os.path.join(ZEPHYR_DIR, "discretizationCOARSE"), "token": "large"},
+        {"label": "Fine", "dir": os.path.join(ZEPHYR_DIR, "discretizationFINE"), "token": "fine"},
+        {"label": "Tiny", "dir": os.path.join(ZEPHYR_DIR, "discretizationTINY"), "token": "tiny"},
+    ]
 
 ENVIRONMENTS = ["house", "narrowPassage", "zigzag"]  # on-disk spelling; "empty" excluded
 
@@ -95,32 +86,6 @@ SECTIONS = [
 ]
 
 
-def _candidate_filename_no_model_tag(env: str, planner_token: str, delta_tok: str, run: int) -> str:
-    """Filename builder for the older, pre-v2 pipeline (no 'm<N>_' model tag) -- see Jetson note."""
-    if planner_token == KPAX:
-        return f"{env}_KPAX_delta{delta_tok}_run{run}.csv"
-    if planner_token.startswith("CountingStars") or planner_token.startswith("KinoPaxSTAR"):
-        return f"{env}_{planner_token}_delta{delta_tok}_run{run}.csv"
-    return f"{env}_delta{delta_tok}_run{run}.csv"
-
-
-def load_runs_no_model_tag(env_dir, env, planner_token, discretization_label, metrics):
-    runs = []
-    for metric in metrics:
-        delta_tok = f"{discretization_label}_{metric}"
-        for run in range(DEFAULT_MAX_RUNS):
-            fpath = os.path.join(env_dir, _candidate_filename_no_model_tag(env, planner_token, delta_tok, run))
-            if not os.path.isfile(fpath):
-                continue
-            try:
-                df = pd.read_csv(fpath, usecols=["best_cost", "elapsed_time_ms"])
-                df["best_cost"] = pd.to_numeric(df["best_cost"], errors="coerce")
-                runs.append(df)
-            except (ValueError, pd.errors.EmptyDataError):
-                pass
-    return runs
-
-
 def region_env_values(region: dict, env: str, model_id: int, metrics, aggregator) -> dict:
     env_dir = os.path.join(region["dir"], env)
     if not os.path.isdir(env_dir):
@@ -128,10 +93,7 @@ def region_env_values(region: dict, env: str, model_id: int, metrics, aggregator
     warn_on_unexpected_star_suffixes(env_dir)
     values = {}
     for planner in TABLE_PLANNERS:
-        if region["model_tag"]:
-            runs = load_runs(env_dir, env, planner, model_id, region["token"], metrics=metrics)
-        else:
-            runs = load_runs_no_model_tag(env_dir, env, planner, region["token"], metrics=metrics)
+        runs = load_runs(env_dir, env, planner, model_id, region["token"], metrics=metrics)
         values[planner] = aggregator(runs).mean
     return values
 

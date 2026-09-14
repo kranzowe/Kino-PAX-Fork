@@ -64,6 +64,15 @@ def discretization_marker(label: str) -> str:
     return DISCRETIZATION_MARKERS.get(label.lower(), "D")
 
 
+# Line-style analog of DISCRETIZATION_MARKERS, for plots that encode discretization as a line
+# (cost-vs-time convergence curves) rather than a scatter-point shape.
+DISCRETIZATION_LINESTYLES = {"tiny": "-", "fine": "--", "coarse": (0, (1, 1))}  # solid/dashed/dotted
+
+
+def discretization_linestyle(label: str) -> object:
+    return DISCRETIZATION_LINESTYLES.get(label.lower(), "-.")
+
+
 def discretization_display(label: str) -> str:
     return label.capitalize()
 
@@ -218,16 +227,19 @@ def aggregate_first_sol_cost(runs: Sequence[pd.DataFrame]) -> CellStats:
 
 
 def style_log_axis(ax) -> None:
-    """Shared look for a log-log ratio-scatter axis: bold, denser tick marks/labels, and plain
-    numbers ("2" not "2 x 10^0") at both the decade marks and a few sub-decade points."""
-    from matplotlib.ticker import FuncFormatter, LogLocator
+    """Shared look for a log-log ratio-scatter axis: bold, denser tick marks, and decade labels in
+    exponent form ("10^3", via LogFormatterMathtext) rather than plain numbers ("1000") -- makes
+    the log scale itself legible at a glance instead of requiring the reader to notice the
+    uneven tick spacing. Sub-decade minor ticks (2x/5x each decade) keep their tick marks for
+    visual density but are left unlabeled -- mixing "10^3" majors with plain "2000"/"5000" minors
+    read as inconsistent."""
+    from matplotlib.ticker import LogFormatterMathtext, LogLocator, NullFormatter
 
-    plain_number = FuncFormatter(lambda v, _pos: f"{v:g}")
     for axis in (ax.xaxis, ax.yaxis):
         axis.set_major_locator(LogLocator(base=10, subs=(1.0,)))
         axis.set_minor_locator(LogLocator(base=10, subs=(2.0, 5.0)))
-        axis.set_major_formatter(plain_number)
-        axis.set_minor_formatter(plain_number)
+        axis.set_major_formatter(LogFormatterMathtext(base=10))
+        axis.set_minor_formatter(NullFormatter())
 
     ax.tick_params(which="major", width=1.6, length=6, labelsize=9)
     ax.tick_params(which="minor", width=1.2, length=3.5, labelsize=8)

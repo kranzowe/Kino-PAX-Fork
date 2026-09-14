@@ -192,6 +192,7 @@ def plot_model_panel(ax, table: pd.DataFrame, subtitle: str, lo: float, hi: floa
 
     style_log_axis(ax)
     ax.set_title(subtitle, fontsize=12, fontweight="bold")
+    ax.set_xlabel("Time to First Solution (ms, log scale) — other algorithms", fontsize=10)
     ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.5)
 
 
@@ -231,7 +232,8 @@ def main() -> None:
         plot_model_panel(ax, table, PANEL_SUBTITLES[model_id], lo, hi, model_id)
         ax.label_outer()
 
-    supxlabel = fig.supxlabel("Time to First Solution (ms, log scale) — other algorithms", fontsize=11, y=0.04)
+    # X label is duplicated per subplot (set inside plot_model_panel) rather than one shared
+    # label below all three -- Y stays a single shared label since it's not per-model here.
     supylabel = fig.supylabel("Time to First Solution (ms, log scale) — Kino-PAX+", fontsize=11, x=0.02)
 
     algo_handles = [
@@ -257,7 +259,7 @@ def main() -> None:
     last_ax.add_artist(legend2)
     legend1 = last_ax.legend(handles=algo_handles, title="Algorithm (color)", loc="lower right",
                               bbox_to_anchor=(0.99, 0.22), fontsize=9, title_fontsize=9, frameon=True)
-    legends = [legend1, legend2, supxlabel, supylabel]
+    legends = [legend1, legend2, supylabel]
 
     fig.subplots_adjust(left=0.06, right=0.99, top=0.93, bottom=0.1)
 
