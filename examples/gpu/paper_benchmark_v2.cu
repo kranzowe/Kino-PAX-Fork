@@ -23,18 +23,22 @@ static std::string g_vizDir;
 // ---- PAPER BENCHMARK V2 ----
 //
 // This file is countingstars_sweep.cu's proven-reliable harness (same four planners, same
-// large/fine/tiny discretizations, same MAX_ITERATIONS/MAX_TIME_MS), minimally adapted to
-// reproduce paper_benchmark.cu's fixed 4-planner headline comparison across all four
-// environments -- paper_benchmark.cu (MODEL 2 / Dubins Airplane) hangs at the tiny discretization
-// and the root cause is still open; this tool sidesteps that by running the same comparison, on
-// the same MODEL 2 / Dubins Airplane target, on the harness that has actually completed every
-// delta without hanging.
-// NOTE: the region-discretization dimension breakdown here is the CORRECTED one (C_DIM=2 for
-// yaw+pitch, V_DIM=1 for airspeed only, both properly bounded), not paper_benchmark.cu's own
-// C_DIM=0/V_DIM=3 (which crams yaw/pitch into the velocity-shaped V_DIM=3 slot bounded to
-// [-0.3,0.3] -- a real region-density-skew bug flagged earlier). So this tool's numbers are not
-// directly comparable to paper_benchmark.cu's own Model 2 results -- see run_paper_benchmark_v2.sh
-// for the full derivation.
+// MAX_ITERATIONS/MAX_TIME_MS), minimally adapted to reproduce paper_benchmark.cu's fixed
+// 4-planner headline comparison across all four environments.
+//
+// JETSON BRANCH: NOW TARGETS MODEL 3 (12D Non-Linear Quad), at the single `fine` discretization
+// (216,000 regions -- see run_paper_benchmark_v2.sh's write_config()/DELTA_* for the derivation).
+// Quad's workspace is [0,100]^3, not [0,1]^3 -- obstacles are scaled by W_SIZE at load time below
+// (a no-op for every other model) since the obstacle CSVs themselves stay authored in [0,1]^3.
+//
+// HISTORY: this file previously targeted MODEL 2 (Dubins Airplane). paper_benchmark.cu (also
+// MODEL 2) hangs at its own tiny discretization with a still-open root cause; this tool sidestepped
+// that by running the same comparison on countingstars_sweep.cu's harness instead, which had
+// completed every delta without hanging. It also used a CORRECTED region-discretization dimension
+// breakdown for Dubins (C_DIM=2 for yaw+pitch, V_DIM=1 for airspeed only, both properly bounded),
+// not paper_benchmark.cu's own C_DIM=0/V_DIM=3 (which crams yaw/pitch into the velocity-shaped
+// V_DIM=3 slot bounded to [-0.3,0.3] -- a real region-density-skew bug flagged earlier). None of
+// that Dubins-specific history applies now that this file targets Quad instead.
 //
 // CountingStars             bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,
 //                           h_hopelessGuard_ PERMANENTLY ON (v3.5) -- countingstars_sweep.cu's
@@ -1224,8 +1228,10 @@ int main(int argc, char* argv[])
     printf("Max iterations: %d\n", MAX_ITERATIONS);
     printf("=======================================================\n");
 
-    // Start/goal states — workspace coordinates via W_MIN/W_SIZE from config.h
-    // Model 1 [0,1]^3: (0.1,0.08,0.05) -> (0.8,0.95,0.9)
+    // Start/goal states — workspace coordinates via W_MIN/W_SIZE from config.h, generic across
+    // models: (0.1,0.08,0.05) -> (0.8,0.95,0.9) as a FRACTION of the workspace, so this is
+    // [0,1]^3-relative for Double Integrator/Dubins (W_SIZE=1) and [0,100]^3-relative for Quad
+    // (W_SIZE=100) without any change here.
     float h_initial[SAMPLE_DIM] = {0};
     float h_goal[SAMPLE_DIM]    = {0};
     h_initial[0] = W_MIN + 0.1f * W_SIZE;
@@ -1239,6 +1245,14 @@ int main(int argc, char* argv[])
     int numObstacles;
     float* d_obstacles;
     std::vector<float> obstacles = readObstaclesFromCSV(obstaclePath, numObstacles, W_DIM);
+    // Obstacle CSVs are authored as fractions of a unit [0,1] workspace -- scale into this build's
+    // actual workspace bounds, exactly like h_initial/h_goal above already do. A no-op for every
+    // model except Quad (W_MIN=0, W_SIZE=1.0f for Double Integrator/Dubins/Unicycle; Quad's own
+    // config uses W_MIN=0, W_SIZE=100.0f instead).
+    for(float& coord : obstacles)
+    {
+        coord = W_MIN + coord * W_SIZE;
+    }
     cudaMalloc(&d_obstacles, numObstacles * 2 * W_DIM * sizeof(float));
     cudaMemcpy(d_obstacles, obstacles.data(), numObstacles * 2 * W_DIM * sizeof(float), cudaMemcpyHostToDevice);
     printf("Loaded %d obstacles from %s\n", numObstacles, obstaclePath.c_str());

@@ -8,25 +8,32 @@
 # Paper Benchmark v2 -- countingstars_sweep.cu's harness, minimally adapted to reproduce
 # paper_benchmark.cu's fixed 4-planner headline comparison reliably.
 #
-# paper_benchmark.cu (MODEL 2 / Dubins Airplane) hangs at the `tiny` discretization; the root cause
-# was not fully resolved despite a deep investigation. countingstars_sweep.cu (MODEL 1 / Double
-# Integrator), built from the same four planners at the same three discretizations, has completed
-# every delta including `tiny` without hanging. This file is that harness with three changes from
-# it: (1) all four environments run, not just one; (2) the sweep's two exploratory grids
-# (CountingStars bufferSlope/bufferFloor, KinoPaxSTARTrue ancestorPrune) are collapsed to the single
-# fixed operating points paper_benchmark.cu was always meant to report; (3) MODEL switched from 1
-# (Double Integrator) to 2 (Dubins Airplane) -- reproducing paper_benchmark.cu's original target
-# model on a harness that has actually completed every delta without hanging.
+# JETSON BRANCH: NOW TARGETS MODEL 3 (12D Non-Linear Quad), at the single `fine` discretization
+# (216,000 regions, W_R1=6/C_R1=2/V_R1=5 -- see DELTA_* and write_config() below). This file
+# previously targeted MODEL 2 (Dubins Airplane); that history (and the reason this harness exists
+# at all rather than paper_benchmark.cu itself) is kept below since it still explains this file's
+# own lineage, but no longer describes what's currently active.
 #
-# THE DIMENSION BREAKDOWN IS THE CORRECTED ONE, NOT PAPER_BENCHMARK.CU'S: paper_benchmark.cu treats
-# Dubins' state as if it were shaped like the Double Integrator (C_DIM=0, V_DIM=3, so yaw/pitch get
-# crammed into the velocity-shaped V_DIM=3 slot bounded to [-0.3,0.3]) -- a real region-density-skew
-# bug flagged earlier this session. This file uses config.h's own correctly-shaped Dubins reference
-# block instead: C_DIM=2 (yaw+pitch, properly bounded [-pi,pi]), V_DIM=1 (airspeed only, bounded
-# [0,0.3] -- also fixing a separate flagged bug: the old V_MIN=-0.3 let the "airplane" fly backward).
-# Consequence: this tool's Model 2 results are NOT directly comparable to paper_benchmark.cu's own
-# Model 2 numbers (different, better-calibrated region discretization), though the same COST_MODE
-# and MAX_ITERATIONS/MAX_TIME_MS apply to both.
+# HISTORY: paper_benchmark.cu (MODEL 2 / Dubins Airplane) hangs at the `tiny` discretization; the
+# root cause was not fully resolved despite a deep investigation. countingstars_sweep.cu (MODEL 1 /
+# Double Integrator), built from the same four planners at the same three discretizations, has
+# completed every delta including `tiny` without hanging. This file is that harness with three
+# changes from it: (1) all four environments run, not just one; (2) the sweep's two exploratory
+# grids (CountingStars bufferSlope/bufferFloor, KinoPaxSTARTrue ancestorPrune) are collapsed to the
+# single fixed operating points paper_benchmark.cu was always meant to report; (3) MODEL switched
+# from 1 (Double Integrator) to 2 (Dubins Airplane) to reproduce paper_benchmark.cu's original
+# target model on a harness that had actually completed every delta without hanging, then later to
+# 3 (Quad).
+#
+# DUBINS-SPECIFIC HISTORY (no longer active): this file used to run a CORRECTED region-
+# discretization dimension breakdown for Dubins, not paper_benchmark.cu's own. paper_benchmark.cu
+# treats Dubins' state as if it were shaped like the Double Integrator (C_DIM=0, V_DIM=3, so
+# yaw/pitch get crammed into the velocity-shaped V_DIM=3 slot bounded to [-0.3,0.3]) -- a real
+# region-density-skew bug. This file used config.h's own correctly-shaped Dubins reference block
+# instead: C_DIM=2 (yaw+pitch, properly bounded [-pi,pi]), V_DIM=1 (airspeed only, bounded [0,0.3]
+# -- also fixing a separate bug: the old V_MIN=-0.3 let the "airplane" fly backward). None of this
+# applies to Quad, which has its own dimension shape (C_DIM=3, THREE cubed discretization terms --
+# see write_config() below).
 #
 # THE HOPELESS GUARD (v3.5, see h_hopelessGuard_ in include/planners/CountingStars.cuh) runs ON,
 # unconditionally: a candidate/dormant node whose own cost already forecloses beating the best
@@ -195,15 +202,16 @@
 # every pass -- dropped, not commented out, since there's no plan to re-sweep them; their numbers
 # are kept below for provenance only.
 #
-# C_R1 IS REAL HERE, UNLIKE THE DOUBLE-INTEGRATOR SWEEP'S C_R1=1. NUM_R1_REGIONS = W_R1^3 *
-# C_R1^2 * V_R1 (C_DIM=2: yaw+pitch; V_DIM=1: airspeed only), so C_R1 genuinely discriminates
-# attitude at the R1 level, unlike the C_DIM=0 sweep this file started from.
+# QUAD HAS A THIRD CUBED DISCRETIZATION AXIS, UNLIKE DUBINS AIRPLANE (W_R1^3 * C_R1^2 * V_R1) OR
+# THE DOUBLE-INTEGRATOR SWEEP (C_R1 inert, W_R1^3 * V_R1^3). NUM_R1_REGIONS = W_R1^3 * C_R1^3 *
+# V_R1^3 for Quad (C_DIM=3: roll/pitch/yaw; V_DIM=3: body-frame u/v/w), so growing C_R1 or V_R1 by
+# one step moves the region count much faster than either earlier model's formula.
 #
-# Deltas (Dubins Airplane: W_DIM=3, C_DIM=2, V_DIM=1) -- ACTIVE this pass:
-#   fine    W_R1=16  C_R1=4  V_R1=4  -> 16^3  * 4^2 * 4 = 262,144   (full comparison)
+# Deltas (Quad: W_DIM=3, C_DIM=3, V_DIM=3) -- ACTIVE this pass:
+#   fine    W_R1=6  C_R1=2  V_R1=5  -> 6^3 * 2^3 * 5^3 = 216,000   (target ~200k, full comparison)
 # Formerly also run every pass, now dropped (kept for provenance only, not active):
-#   large   W_R1=7   C_R1=3  V_R1=3  ->  7^3  * 3^2 * 3 =   9,261
-#   tiny    W_R1=14  C_R1=6  V_R1=6  -> 14^3  * 6^2 * 6 = 592,704
+#   large   W_R1=5  C_R1=2  V_R1=2  -> 5^3 * 2^3 * 2^3 =   8,000
+#   tiny    W_R1=6  C_R1=2  V_R1=6  -> 6^3 * 2^3 * 6^3 = 373,248
 #
 # Original config.h is backed up and restored on exit/error.
 #
@@ -232,15 +240,15 @@ BUILD_DIR="$PROJECT_DIR/build"
 # since `fine` was already confirmed clean and there's no plan to re-sweep the other two. One build
 # per (delta, cost metric), cached, so restoring or trimming the list changes only the loop bounds.
 #
-# C_R1/V_R1 are NOT inert for Dubins Airplane (C_DIM=2: yaw+pitch; V_DIM=1: airspeed only -- see
-# the MODEL 2 switch below). NUM_R1_REGIONS = W_R1^3 * C_R1^2 * V_R1 for this model, a different
-# shape from Double Integrator's W_R1^3 * V_R1^3, so C_R1/V_R1 were re-derived (not reused
-# unchanged) to land on the target 262,144 region count under this model's own formula:
-# 16^3*4^2*4=262144.
+# C_R1/V_R1 are NOT inert for Quad (C_DIM=3: roll/pitch/yaw; V_DIM=3: body-frame u/v/w -- see the
+# MODEL 3 switch below). NUM_R1_REGIONS = W_R1^3 * C_R1^3 * V_R1^3 for this model -- a THIRD cubed
+# term, unlike Dubins Airplane's W_R1^3 * C_R1^2 * V_R1 or Double Integrator's W_R1^3 * V_R1^3 --
+# so W_R1/C_R1/V_R1 were re-derived from scratch (not reused unchanged) to land on the target
+# ~200k region count under this model's own formula: 6^3*2^3*5^3=216000.
 DELTA_LABELS=("fine")
-DELTA_W_R1S=(16)
-DELTA_C_R1S=(4)
-DELTA_V_R1S=(4)
+DELTA_W_R1S=(6)
+DELTA_C_R1S=(2)
+DELTA_V_R1S=(5)
 DELTA_EXTRA_ARGS=("")
 
 # Cost metric axis: label + COST_MODE (0 = workspace distance, 1 = control effort). BOTH THIS
@@ -250,8 +258,10 @@ COST_MODES=(0 1)
 # COST_LABELS=("length")
 # COST_MODES=(0)
 
-# Environments (obstacles already in [0,1]^3; W_MIN/W_MAX/W_SIZE unchanged from the Double
-# Integrator sweep, so no rescaling needed). Each gets its own output subfolder.
+# Environments -- obstacle CSVs are authored in [0,1]^3, but Quad's W_SIZE is 100, not 1.
+# paper_benchmark_v2.cu scales every obstacle coordinate and the start/goal points by W_SIZE at
+# load time (a no-op for every other model, whose W_SIZE is 1.0), so this still points at the same
+# CSVs unchanged. Each environment gets its own output subfolder.
 # SCOPE: empty only this pass -- CHANGED FROM zigzag. paper_benchmark.cu's tiny/empty run froze,
 # `empty` was pulled out of that suite as a diagnostic, and the freeze PERSISTED on the remaining
 # environments (house/narrowPassage/zigzag) -- so `empty` alone is not the (sole) trigger there.
@@ -263,12 +273,17 @@ COST_MODES=(0 1)
 # clean here, that argues against `empty` (under Model 1) as a factor at all, pointing harder at
 # Model 2 (Dubins Airplane) -- which this harness still does not run -- as the real new variable.
 # ALL FOUR ENVIRONMENTS THIS PASS -- the one deliberate axis change from countingstars_sweep.cu (see
-# file header). narrowPassage's wall sits at x in [0.3, 0.5] spanning all z, split by a gap at y in
-# [0.49, 0.51] -- 0.02 wide against an agent diameter of 0.01 (AGENT_RADIUS 0.005). The benchmark's
-# start (0.1, 0.08, 0.05) and goal (0.8, 0.95, 0.9) are clear of every environment's obstacles and on
-# opposite sides of narrowPassage's wall, so no endpoint change is needed -- but expect low success
-# rates there, and read the success-rate subplot alongside the cost bars (unsolved runs are dropped
-# from the cost mean, so a config that solved once cheaply can look best).
+# file header). Figures below are FRACTIONS of the workspace, as authored in the CSV (pre-W_SIZE-
+# scaling): narrowPassage's wall sits at x in [0.3, 0.5] spanning all z, split by a gap at y in
+# [0.49, 0.51] -- 0.02 wide against an agent diameter of 0.01 (AGENT_RADIUS is defined in real
+# units, 0.5 for Quad -- see write_config() -- which is that same 0.01 fraction x100). Scaling both
+# the gap and the agent uniformly by W_SIZE preserves the ratio, so the passage stays exactly as
+# tight relative to the agent as it was at Dubins Airplane's [0,1]^3 scale. The benchmark's
+# start (0.1, 0.08, 0.05) and goal (0.8, 0.95, 0.9) -- also fractions, scaled the same way -- are
+# clear of every environment's obstacles and on opposite sides of narrowPassage's wall, so no
+# endpoint change is needed -- but expect low success rates there, and read the success-rate
+# subplot alongside the cost bars (unsolved runs are dropped from the cost mean, so a config that
+# solved once cheaply can look best).
 ENV_NAMES=("empty" "house" "narrowPassage" "zigzag")
 ENV_OBSTACLES=(
     "../include/config/obstacles/empty/obstacles.csv"
@@ -313,7 +328,7 @@ cp "$CONFIG_FILE" "$CONFIG_BACKUP"
 # --- Ensure build directory exists ---
 mkdir -p "$BUILD_DIR"
 
-# Function to write complete Model 2 (Dubins Airplane) config.h
+# Function to write complete Model 3 (12D Non-Linear Quad) config.h
 write_config() {
     local W_R1=$1
     local C_R1=$2
@@ -322,10 +337,16 @@ write_config() {
     cat > "$CONFIG_FILE" << CONFIGEOF
 #pragma once
 /***************************/
-/* 6D DUBINS AIRPLANE      */
+/* 12D NON-LINEAR QUAD     */
 /***************************/
-#define MODEL 2
-#define COST_MODE ${COST_MODE}  // path cost: 1 = control effort ((yawRate^2+pitchRate^2+a^2)*dt), 0 = workspace distance
+// Quad is STATE_DIM=12 (not 6), has a THIRD cubed discretization axis (NUM_R1_REGIONS =
+// W^3*C^3*V^3, not the Dubins Airplane W^3*C^2*V this branch previously ran), and its own values
+// use a [0,100] workspace / [-30,30] velocity scale (not [0,1] / [-0.3,0.3]) -- kept as-is here
+// rather than shrunk to match, so gravity/mass/thrust stay physically consistent with how Quad was
+// tuned; obstacles/start/goal are scaled x100 at load time in paper_benchmark_v2.cu instead (a
+// no-op for every other model, since their W_SIZE is 1.0).
+#define MODEL 3
+#define COST_MODE ${COST_MODE}  // path cost: 1 = control effort, 0 = workspace distance (see edgeCost() -- Quad has no COST_MODE==1 branch of its own, so effort silently falls back to distance)
 #define MAX_TREE_SIZE 1000000
 #define MAX_FLOAT 1e38f
 #define MAX_SOL_SET_SIZE 500
@@ -334,36 +355,36 @@ write_config() {
 #define STEP_SIZE 0.1f
 #define MAX_PROPAGATION_DURATION 10
 #define ACCEPT 0.99f
-#define AGENT_RADIUS 0.005f
-#define GOAL_THRESH 0.05f
-#define STATE_DIM 6
-#define CONTROL_DIM 3
+#define AGENT_RADIUS 0.5f        // x100, matching Quad's workspace scale (still unused by collision checking today)
+#define GOAL_THRESH 5.0f         // x100 -- matches Quad's own checked-in config.h default exactly
+#define STATE_DIM 12
+#define CONTROL_DIM 4
 #define SAMPLE_DIM (STATE_DIM + CONTROL_DIM + 1)
 #define W_DIM 3
-#define C_DIM 2
-#define V_DIM 1
+#define C_DIM 3   // roll, pitch, yaw (not validity-checked by the propagator, region-binning only)
+#define V_DIM 3   // body-frame u, v, w (the propagator DOES validity-check these against V_MIN/V_MAX)
 #define W_MIN 0.0f
-#define W_MAX 1.0f
-#define W_SIZE 1.0f
+#define W_MAX 100.0f
+#define W_SIZE 100.0f
 #define C_MIN -M_PI
 #define C_MAX M_PI
-#define V_MIN 0.0f
-#define V_MAX 0.3f
+#define V_MIN -30.0f
+#define V_MAX 30.0f
 #define A_MIN -0.3f
 #define A_MAX 0.3f
 #define W_R1_LENGTH ${W_R1}
 #define C_R1_LENGTH ${C_R1}
 #define V_R1_LENGTH ${V_R1}
 #define W_R2_LENGTH 2
-#define C_R2_LENGTH 2
+#define C_R2_LENGTH 1
 #define V_R2_LENGTH 2
 #define W_R1_SIZE ((W_MAX - W_MIN) / W_R1_LENGTH)
 #define C_R1_SIZE ((C_MAX - C_MIN) / C_R1_LENGTH)
 #define V_R1_SIZE ((V_MAX - V_MIN) / V_R1_LENGTH)
 #define W_R1_VOL (W_R1_SIZE * W_R1_SIZE * W_R1_SIZE)
-#define NUM_R1_REGIONS (W_R1_LENGTH * W_R1_LENGTH * W_R1_LENGTH * C_R1_LENGTH * C_R1_LENGTH * V_R1_LENGTH)
-#define NUM_R2_REGIONS (NUM_R1_REGIONS * W_R2_LENGTH * W_R2_LENGTH * W_R2_LENGTH * C_R2_LENGTH * C_R2_LENGTH * V_R2_LENGTH)
-#define NUM_R2_PER_R1 W_R2_LENGTH *W_R2_LENGTH *W_R2_LENGTH *C_R2_LENGTH *C_R2_LENGTH *V_R2_LENGTH
+#define NUM_R1_REGIONS (W_R1_LENGTH * W_R1_LENGTH * W_R1_LENGTH * C_R1_LENGTH * C_R1_LENGTH * C_R1_LENGTH * V_R1_LENGTH * V_R1_LENGTH * V_R1_LENGTH)
+#define NUM_R2_REGIONS (NUM_R1_REGIONS * W_R2_LENGTH * W_R2_LENGTH * W_R2_LENGTH * C_R2_LENGTH * C_R2_LENGTH * C_R2_LENGTH * V_R2_LENGTH * V_R2_LENGTH * V_R2_LENGTH)
+#define NUM_R2_PER_R1 W_R2_LENGTH *W_R2_LENGTH *W_R2_LENGTH *C_R2_LENGTH *C_R2_LENGTH *C_R2_LENGTH *V_R2_LENGTH *V_R2_LENGTH *V_R2_LENGTH
 #define NUM_R1_REGIONS_KERNEL1 1024
 #define NUM_PARTIAL_SUMS 1024
 #define EPSILON 1e-2f
@@ -420,11 +441,12 @@ CONFIGEOF
 echo ""
 echo "======================================================="
 echo "  PAPER BENCHMARK V2 -- fixed 4-planner comparison, on countingstars_sweep.cu's harness"
-echo "  Model: 2 (6D Dubins Airplane) -- corrected C_DIM=2/V_DIM=1 breakdown, not paper_benchmark.cu's"
-echo "         own C_DIM=0/V_DIM=3 (yaw/pitch crammed into the velocity slot -- see file header)"
+echo "  Model: 3 (12D Non-Linear Quad) -- W_SIZE=100, obstacles/start/goal scaled x100 at load time"
+echo "         (see paper_benchmark_v2.cu); NUM_R1_REGIONS = W_R1^3 * C_R1^3 * V_R1^3 (three cubed"
+echo "         terms, not Dubins Airplane's W_R1^3 * C_R1^2 * V_R1 -- see file header)"
 echo "  Environments: ${ENV_NAMES[*]}  (separate output subfolders)"
 for i in "${!DELTA_LABELS[@]}"; do
-    R=$(( DELTA_W_R1S[i]**3 * DELTA_V_R1S[i]**3 ))
+    R=$(( DELTA_W_R1S[i]**3 * DELTA_C_R1S[i]**3 * DELTA_V_R1S[i]**3 ))
     if [ -z "${DELTA_EXTRA_ARGS[$i]}" ]; then
         WHAT="full comparison"
     else
@@ -472,7 +494,7 @@ if [ "$SKIP_BUILD" = false ]; then
         for i in "${!COST_LABELS[@]}"; do
             CL="${COST_LABELS[$i]}"
             CM="${COST_MODES[$i]}"
-            REGIONS=$(( DELTA_W_R1S[d]**3 * DELTA_V_R1S[d]**3 ))
+            REGIONS=$(( DELTA_W_R1S[d]**3 * DELTA_C_R1S[d]**3 * DELTA_V_R1S[d]**3 ))
 
             echo ""
             echo "=== BUILDING (delta=${DL}, cost=${CL}, COST_MODE=${CM}, Regions=${REGIONS}) ==="
