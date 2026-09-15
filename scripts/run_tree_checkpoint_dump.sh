@@ -56,7 +56,7 @@ DELTA_C_R1=1
 DELTA_V_R1=3
 
 # Cost metric for this build: 2 = path time, 1 = control effort, 0 = workspace path length
-COST_MODE_VAL=2
+COST_MODE_VAL=0
 
 # Single environment (obstacles already in [0,1]^3 for Model 1)
 ENV_NAME="zigzag"

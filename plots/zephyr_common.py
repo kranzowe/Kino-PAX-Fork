@@ -143,13 +143,17 @@ def load_runs(
     discretization_label: str,
     metrics: Sequence[str] = COST_METRICS,
     max_runs: int = DEFAULT_MAX_RUNS,
+    columns: Sequence[str] = ("best_cost", "elapsed_time_ms"),
 ) -> List[pd.DataFrame]:
     """Load every per-run CSV for (planner, model) in env_dir, pooled across `metrics`.
 
     Mirrors loadRuns() in process_paper_benchmark_improvement_scatter.m: missing files are
     skipped silently (a planner not swept at a given model/env legitimately has 0 runs). Pass a
     single-element `metrics` to load one cost-metric sweep only (required for cost comparisons --
-    length and effort runs are not comparable and must never be pooled together).
+    length and effort runs are not comparable and must never be pooled together). `columns`
+    defaults to just the two columns every cost/TTFS aggregation here needs, but the per-run CSVs
+    have plenty more (tree_size, frontier_size, reactivated_count, ...) -- pass a wider tuple to
+    read those too (e.g. for a tree-growth-over-time plot).
     """
     runs: List[pd.DataFrame] = []
     file_token = _discretization_file_token(discretization_label)
@@ -161,11 +165,12 @@ def load_runs(
             if not os.path.isfile(fpath):
                 continue
             try:
-                df = pd.read_csv(fpath, usecols=["best_cost", "elapsed_time_ms"])
-                # best_cost's MAX_FLOAT sentinel is written in fixed-point (~1e38 as 39 digits),
-                # which overflows pandas' fast C float tokenizer and silently yields a string
-                # (object-dtype) column instead of raising -- force it back to numeric here.
-                df["best_cost"] = pd.to_numeric(df["best_cost"], errors="coerce")
+                df = pd.read_csv(fpath, usecols=list(columns))
+                if "best_cost" in df.columns:
+                    # best_cost's MAX_FLOAT sentinel is written in fixed-point (~1e38 as 39
+                    # digits), which overflows pandas' fast C float tokenizer and silently yields
+                    # a string (object-dtype) column instead of raising -- force it back here.
+                    df["best_cost"] = pd.to_numeric(df["best_cost"], errors="coerce")
                 runs.append(df)
             except (ValueError, pd.errors.EmptyDataError) as exc:
                 warnings.warn(f"Skipping unreadable run file {fpath}: {exc}")
@@ -234,6 +239,22 @@ def _aggregate(values: Sequence[float]) -> CellStats:
 def aggregate_ttfs(runs: Sequence[pd.DataFrame]) -> CellStats:
     """Mean/std time-to-first-solution (ms) across successful runs; unsolved runs excluded."""
     values = [t if t >= 0 else math.nan for t in (first_sol_time(df) for df in runs)]
+    return _aggregate(values)
+
+
+def first_sol_time_truncated(df: pd.DataFrame, timeout_ms: float, thresh: float = MAX_FLOAT_THRESH) -> float:
+    """first_sol_time(df), but treated as unsolved (-1) if the real first-solution time exceeds
+    timeout_ms -- for comparing runs as if the benchmark had used a shorter time budget than the
+    one it actually ran with."""
+    t = first_sol_time(df, thresh)
+    return t if 0 <= t <= timeout_ms else -1.0
+
+
+def aggregate_ttfs_truncated(runs: Sequence[pd.DataFrame], timeout_ms: float) -> CellStats:
+    """Mean/std TTFS (ms) across runs that solved within timeout_ms; runs that only solved after
+    timeout_ms (or never) are excluded from the mean (still counted in n_total) -- mirrors
+    aggregate_cost_at_time's checkpoint convention, just applied to TTFS instead of cost."""
+    values = [t if t >= 0 else math.nan for t in (first_sol_time_truncated(df, timeout_ms) for df in runs)]
     return _aggregate(values)
 
 
