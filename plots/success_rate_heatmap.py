@@ -185,8 +185,8 @@ def main() -> None:
     cmap.set_bad(color="#dddddd")
 
     n_rows, n_cols = len(COST_METRICS), len(MODEL_IDS)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(17.0, 11.5),
-                              gridspec_kw={"hspace": 0.55, "wspace": 0.5})
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(17.0, 10.0),
+                              gridspec_kw={"hspace": 0.15, "wspace": 0.5})
 
     row_labels_out = []
     im = None
