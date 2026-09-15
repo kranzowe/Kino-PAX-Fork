@@ -9,14 +9,20 @@
 #
 #   KPAX              pure explorer reference
 #   KinoPaxPlus        pure optimizer reference
-#   KinoPaxSTARTrue    syclopCap 1.0 (no cap), ancestorPrune = 1
+#   CountingStars      bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15,
+#                      cost_frac 0.75, hopelessGuard ON (v3.5) -- the exact
+#                      canonical point run_paper_benchmark_v2.sh/
+#                      paper_benchmark_v2.cu use for this planner
 #
 # This is the time-checkpoint sibling of run_tree_growth_dump.sh (which dumps
 # after each of the first 8 ITERATIONS instead, with no timing/solution
 # capture) -- that script and its .cu are untouched; this is separate.
 #
 # 3 planners x 5 checkpoints x 2 files (tree + trajectory) = 30 CSVs + meta.csv,
-# rendered by scripts/plot_tree_checkpoint.m.
+# rendered by scripts/plot_tree_checkpoint.m. Tree CSVs keep only 10% of each
+# tree's leaf-rooted trajectories (see tree_checkpoint_dump.cu's writeTreeCSV) --
+# full trees can reach millions of nodes, so this keeps the CSVs and the MATLAB
+# render tractable while still showing complete, connected paths.
 #
 # The config.h rewrite is NOT optional: the checked-in config.h is a MODEL 3
 # (12D quad, W_MAX 100) config, while the zigzag obstacles and every MATLAB
@@ -191,8 +197,9 @@ echo "  Model: 1 (6D Double Integrator)"
 echo "  Environment: ${ENV_NAME}"
 echo "  Delta: ${DELTA_LABEL} | W_R1=${DELTA_W_R1} C_R1=${DELTA_C_R1} V_R1=${DELTA_V_R1} | Regions=${REGIONS}"
 echo "  Cost metric: path time (COST_MODE=${COST_MODE_VAL})"
-echo "  Planners: KPAX, KinoPaxPlus, KinoPaxSTARTrue"
+echo "  Planners: KPAX, KinoPaxPlus, CountingStars"
 echo "  Checkpoints: 50ms, 100ms, 150ms, 1000ms, 4000ms"
+echo "  Tree CSVs: 10% of leaf trajectories per checkpoint"
 echo "======================================================="
 
 # =============================================================================

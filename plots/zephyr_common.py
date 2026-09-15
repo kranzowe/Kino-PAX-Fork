@@ -31,7 +31,7 @@ BASE_DISPLAY = {
     KPAX: "Kino-PAX",
     KINOPAX_PLUS: "Kino-PAX+",
     SIMPLECOMBO: "SimpleCombo",
-    KINOPAX_STAR: "KinoPax*",
+    KINOPAX_STAR: "KinoPax#",
 }
 
 BASE_COLORS = {
@@ -200,6 +200,21 @@ def first_sol_cost(df: pd.DataFrame, thresh: float = MAX_FLOAT_THRESH) -> float:
     return float(df.loc[solved[0], "best_cost"])
 
 
+def cost_at_time(df: pd.DataFrame, target_ms: float, thresh: float = MAX_FLOAT_THRESH) -> float:
+    """best_cost as of the last row logged at or before `target_ms` elapsed -- the anytime
+    "best cost achieved so far" checkpoint value, not each run's own final cost. best_cost is
+    monotonically non-increasing over elapsed_time_ms in these logs (an anytime algorithm never
+    un-finds a better solution), so the last row <= target_ms IS that checkpoint's value, no
+    interpolation needed. NaN if best_cost at that checkpoint is still the unsolved sentinel
+    (not solved yet as of target_ms, even if it solves later), or if no row was logged that early
+    at all (target_ms before the run's very first logged iteration)."""
+    at_or_before = df[df["elapsed_time_ms"] <= target_ms]
+    if at_or_before.empty:
+        return math.nan
+    cost = at_or_before["best_cost"].iloc[-1]
+    return float(cost) if cost < thresh else math.nan
+
+
 @dataclass
 class CellStats:
     mean: float
@@ -230,6 +245,14 @@ def aggregate_final_cost(runs: Sequence[pd.DataFrame]) -> CellStats:
 def aggregate_first_sol_cost(runs: Sequence[pd.DataFrame]) -> CellStats:
     """Mean/std cost-of-first-solution across successful runs; unsolved runs excluded."""
     return _aggregate([first_sol_cost(df) for df in runs])
+
+
+def aggregate_cost_at_time(runs: Sequence[pd.DataFrame], target_ms: float) -> CellStats:
+    """Mean/std best-cost-as-of-target_ms across runs that had solved by then; runs still
+    unsolved at that checkpoint are excluded from the mean (same convention as every other
+    aggregate_* here), but still counted in n_total, so a run that eventually solves after
+    target_ms correctly still counts as an attempt, just not a success at THIS checkpoint."""
+    return _aggregate([cost_at_time(df, target_ms) for df in runs])
 
 
 def style_log_axis(ax) -> None:

@@ -1,52 +1,43 @@
-"""LINEAR-SCALE variant of cost_big_panel.py -- same data, same six-cell (metric x model) layout,
-same per-cell design (Kino-PAX+ on y, the other three algorithms on x, color = algorithm, shape =
-discretization, y=x "as good as Kino-PAX+" line, red note for any discretization Kino-PAX+ itself
-never solved) -- the axes are linear instead of log-log, tightly fit to each cell's own data
-(min/max plus a small fixed margin) rather than snapped to a "nice"/power-of-10 bound, and there
-are no per-point environment-name labels.
+"""LINEAR-SCALE cost ratio panel -- Kino-PAX (not Kino-PAX+!) on y, the other algorithms on x,
+color = algorithm, shape = discretization, y=x "as good as Kino-PAX" line, tight-to-data linear
+axes (min/max plus a small fixed margin, not snapped to a "nice"/power-of-10 bound), no per-point
+environment-name labels.
 
-Both of those are deliberate departures from cost_big_panel.py, not oversights:
-- Nice-bound snapping (the log version's tightest-enclosing-power-of-ten trick) makes sense on a
-  log axis, where tick spacing is inherently uneven and a snapped edge lines up with a labeled
-  tick. On a linear axis the "nice number" steps (1/2/2.5/5/10 x 10^k) are coarse enough that data
-  topping out just past 0.5 rounds all the way up to 1.0 -- a big, arbitrary-looking jump that
-  wastes axis space the data never uses. Fitting tightly to the data's own extent (see
-  AXIS_MARGIN_FRACTION below) keeps every cell's frame matched to what's actually plotted.
-- The env-name labels (with leader lines to a decluttered y-position) were carried over from the
-  log version's design, but the label-decluttering logic measures available room in RENDERED
-  space -- and once one cell's data clustered near the bottom of a tall, coarsely-snapped linear
-  axis (Double Integrator / Control Effort, when this still had nice-bound snapping), there wasn't
-  enough vertical room left for 9 labels and they collapsed into an unreadable pile. Rather than
-  patch that one cell, the labels are dropped from this version entirely -- the color (algorithm)
-  + shape (discretization) encoding is still there, just without a text tag identifying which
-  environment each point came from. This and every future panel plot in this folder default to
-  leaving off env-name labels unless specifically asked for.
+TWO ROWS, TWO DIFFERENT DATASETS, BOTH READ AT THE SAME 4s CHECKPOINT (see ROWS / TARGET_TIME_MS
+below), not each run's own final cost:
+- Row 1, Control Effort: plots/DATA/ZEPHYR_30_runs, metric "effort". Those runs go all the way to
+  ~10s, but the comparison here is deliberately the cost already achieved by the 4s mark (best_cost
+  is monotonically non-increasing over elapsed_time_ms -- an anytime algorithm never un-finds a
+  better solution -- so "the last logged row at or before 4000ms" IS that checkpoint's value, no
+  interpolation needed; see zephyr_common.cost_at_time).
+- Row 2, Elapsed Time: plots/DATA/ZEPHYR_30_RUNS_3M_4s_TIME, metric "time" (a genuinely different
+  cost function -- it minimizes elapsed time itself -- not a relabeling of length/effort). These
+  runs are already capped at 4s max, so "cost @ 4s" and "final cost" coincide here; it still goes
+  through the same cost_at_time checkpoint lookup as row 1 for consistency (and correctness, in
+  case a run's very last logged row lands a hair past 4000ms).
 
-Every algorithm compared within one (environment, discretization) cell still shares Kino-PAX+'s
-own mean cost as its y-value, so they land on a shared horizontal line -- that dotted guide line
-(and Kino-PAX+'s own small marker on it, exactly where the row crosses y=x) IS still drawn even
-without the text label, unlike an earlier version of this file which dropped the line along with
-the labels since it was only ever built as part of the same per-row loop. The line's x-span always
-includes Kino-PAX+'s own x (which equals y, since it's on the diagonal) even when only one other
-algorithm has a data point for that row -- otherwise the line can shrink to a tiny stub around a
-single far-off point that never visually reaches back to the diagonal marker, which can look like
-the line was simply missing.
+REFERENCE_PLANNER IS KINO-PAX, NOT KINO-PAX+ (unlike every earlier version of this panel): Kino-PAX+
+solves the Elapsed-Time-objective sweep (row 2) so rarely that it would be a useless, mostly-"--"
+denominator for that whole row. Rather than mix reference algorithms between rows in one figure
+(confusing -- the two rows would mean different things on the same-looking y-axis), BOTH rows are
+relative to Kino-PAX. Kino-PAX+ is simply one of the "other algorithms" plotted on the x-axis now.
 
-AXES ARE STILL NOT SHARED ACROSS COLUMNS, for the same reason as cost_big_panel.py: final path
-cost is not comparable across models (Quad's [0,100]^3 workspace vs. the other two's [0,1]^3), and
-on a LINEAR scale that mismatch would be even more punishing than on log -- there's no log
-compression left to keep a shared range from squashing the smaller models flat. Each panel keeps
-auto-scaling to its own (model, metric) data.
+NO ENV-NAME LABELS, DISCRETIZATION-SHAPE LEGEND IS THE UNION ACROSS BOTH ROWS' DATASETS (row 1's
+ZEPHYR_30_runs has coarse/fine/tiny; row 2's ZEPHYR_30_RUNS_3M_4s_TIME only has tiny so far) -- and
+AXES ARE NOT SHARED ACROSS COLUMNS (Quad's [0,100]^3 workspace vs. the other two's [0,1]^3) or
+ROWS (control effort and elapsed-time are different units entirely) -- same reasoning as every
+earlier version of this panel and cost_big_panel.py.
 
-PLOT_METRICS (not zephyr_common's COST_METRICS) drives the row loop, since not every dataset
-sweeps the same cost metrics: the main ZEPHYR_30_runs dataset has "length"/"effort" (2 rows), but
-ZEPHYR_30_RUNS_3M_4s_TIME (currently plotted -- see DATASET_DIR) only has one, "time" (a genuinely
-different cost function -- it minimizes elapsed time itself -- not a relabeling of the other two),
-so this renders as a single-row panel instead. `squeeze=False` on plt.subplots keeps `axes`
-2-D (so `axes[row][col]` keeps working) regardless of how many rows that turns out to be.
+Every algorithm compared within one (environment, discretization) cell still shares Kino-PAX's own
+checkpoint cost as its y-value, so they land on a shared horizontal line -- that dotted guide line
+(and Kino-PAX's own small marker on it, exactly where the row crosses y=x) is drawn even without
+the text label. The line's x-span always includes Kino-PAX's own x (which equals y, since it's on
+the diagonal) even when only one other algorithm has a data point for that row -- otherwise the
+line can shrink to a tiny stub around a single far-off point that never visually reaches back to
+the diagonal marker, which can look like the line was simply missing.
 
-Edit DATASET_DIR / OUT_DIR / PLOT_METRICS below to point at the dataset you want to plot, then
-run:
+Edit ROWS / TARGET_TIME_MS / OUT_DIR below to change the datasets, checkpoint time, or output
+location, then run:
     python plots/cost_big_panel_linear.py
 """
 from __future__ import annotations
@@ -65,13 +56,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zephyr_common import (  # noqa: E402
     BASE_COLORS,
     BASE_DISPLAY,
+    BASE_NAMES,
     COST_METRIC_LABELS,
-    KINOPAX_PLUS,
+    KPAX,
     MODEL_IDS,
     MODEL_NAMES,
-    OTHER_PLANNERS,
     SIMPLECOMBO,
-    aggregate_final_cost,
+    aggregate_cost_at_time,
     discover_discretization_dirs,
     discover_environments,
     discretization_display,
@@ -85,19 +76,26 @@ from zephyr_common import (  # noqa: E402
 PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ================================================================================================
-# EDIT THESE to point at the dataset and output location you want.
-# DATASET_DIR must directly contain one or more "discretization<LABEL>" folders (tiny/fine/coarse),
-# each of which directly contains the empty/house/narrowPassage/zigzag subfolders. PLOT_METRICS is
-# that dataset's own cost-metric sweep(s) -- see the module docstring.
+# EDIT THESE to change the datasets, checkpoint time, or output location -- see module docstring
+# for why each row reads a different dataset/metric.
 # ================================================================================================
-DATASET_DIR = os.path.join(PLOTS_DIR, "DATA", "ZEPHYR_30_RUNS_3M_4s_TIME")
-OUT_DIR = os.path.join(PLOTS_DIR, "output_ZEPHYR_30_RUNS_3M_4s_TIME", "cost_ratio")
-PLOT_METRICS = ("time",)
+ROWS = [
+    {"label": "Control Effort", "dataset_dir": os.path.join(PLOTS_DIR, "DATA", "ZEPHYR_30_runs"),
+     "metric": "effort"},
+    {"label": "Elapsed Time", "dataset_dir": os.path.join(PLOTS_DIR, "DATA", "ZEPHYR_30_RUNS_3M_4s_TIME"),
+     "metric": "time"},
+]
+TARGET_TIME_MS = 4000.0
+OUT_DIR = os.path.join(PLOTS_DIR, "output", "cost_ratio")
 
+REFERENCE_PLANNER = KPAX  # <-- Kino-PAX, not Kino-PAX+ -- see module docstring.
 EXCLUDED_ENVIRONMENTS = {"empty"}  # trivially solved by everyone -- not an interesting comparison
 
 INCLUDE_SIMPLECOMBO = False  # <-- TOGGLE. Flip to True to bring SimpleCombo back into this panel.
-PLOTTED_OTHER_PLANNERS = OTHER_PLANNERS if INCLUDE_SIMPLECOMBO else [p for p in OTHER_PLANNERS if p != SIMPLECOMBO]
+PLOTTED_OTHER_PLANNERS = [
+    p for p in BASE_NAMES
+    if p != REFERENCE_PLANNER and (INCLUDE_SIMPLECOMBO or p != SIMPLECOMBO)
+]
 
 PANEL_SUBTITLES = {
     1: "6D Double Integrator",
@@ -111,7 +109,8 @@ PANEL_SUBTITLES = {
 AXIS_MARGIN_FRACTION = 0.08
 
 
-def build_model_cost_table(model_id: int, metric: str, discretization_dirs: list[str]) -> pd.DataFrame:
+def build_model_cost_table(model_id: int, row_cfg: dict, discretization_dirs: list) -> pd.DataFrame:
+    metric = row_cfg["metric"]
     rows = []
     for disc_dir in discretization_dirs:
         discretization_label = discretization_label_from_dir(disc_dir)
@@ -119,29 +118,31 @@ def build_model_cost_table(model_id: int, metric: str, discretization_dirs: list
         for env in environments:
             env_dir = os.path.join(disc_dir, env)
             warn_on_unexpected_star_suffixes(env_dir)
-            plus_stats = aggregate_final_cost(
-                load_runs(env_dir, env, KINOPAX_PLUS, model_id, discretization_label, metrics=(metric,))
+            ref_stats = aggregate_cost_at_time(
+                load_runs(env_dir, env, REFERENCE_PLANNER, model_id, discretization_label, metrics=(metric,)),
+                TARGET_TIME_MS,
             )
             rows.append({
                 "Discretization": discretization_label,
                 "Environment": env,
                 "Model": MODEL_NAMES[model_id],
                 "CostMetric": metric,
-                "Algorithm": BASE_DISPLAY[KINOPAX_PLUS],
-                "N_Success": plus_stats.n_success,
-                "N_Total": plus_stats.n_total,
-                "Mean_Cost": plus_stats.mean,
-                "Std_Cost": plus_stats.std,
-                "KinoPaxPlus_Mean_Cost": plus_stats.mean,
-                "Ratio_to_KinoPaxPlus": 1.0 if not math.isnan(plus_stats.mean) else math.nan,
+                "Algorithm": BASE_DISPLAY[REFERENCE_PLANNER],
+                "N_Success": ref_stats.n_success,
+                "N_Total": ref_stats.n_total,
+                "Mean_Cost": ref_stats.mean,
+                "Std_Cost": ref_stats.std,
+                "Reference_Mean_Cost": ref_stats.mean,
+                "Ratio_to_Reference": 1.0 if not math.isnan(ref_stats.mean) else math.nan,
             })
             for planner in PLOTTED_OTHER_PLANNERS:
-                stats = aggregate_final_cost(
-                    load_runs(env_dir, env, planner, model_id, discretization_label, metrics=(metric,))
+                stats = aggregate_cost_at_time(
+                    load_runs(env_dir, env, planner, model_id, discretization_label, metrics=(metric,)),
+                    TARGET_TIME_MS,
                 )
                 ratio = math.nan
-                if not math.isnan(stats.mean) and not math.isnan(plus_stats.mean) and plus_stats.mean > 0:
-                    ratio = stats.mean / plus_stats.mean
+                if not math.isnan(stats.mean) and not math.isnan(ref_stats.mean) and ref_stats.mean > 0:
+                    ratio = stats.mean / ref_stats.mean
                 rows.append({
                     "Discretization": discretization_label,
                     "Environment": env,
@@ -152,29 +153,19 @@ def build_model_cost_table(model_id: int, metric: str, discretization_dirs: list
                     "N_Total": stats.n_total,
                     "Mean_Cost": stats.mean,
                     "Std_Cost": stats.std,
-                    "KinoPaxPlus_Mean_Cost": plus_stats.mean,
-                    "Ratio_to_KinoPaxPlus": ratio,
+                    "Reference_Mean_Cost": ref_stats.mean,
+                    "Ratio_to_Reference": ratio,
                 })
     return pd.DataFrame(rows)
 
 
-def zero_success_discretizations(table: pd.DataFrame) -> list[tuple[str, int]]:
-    """Discretizations where Kino-PAX+ itself found zero solutions across every environment --
-    see cost_big_panel.py's module docstring for why that removes the WHOLE discretization from
-    the scatter, not just Kino-PAX+'s own point. Returns [(discretization_label, total_runs), ...]."""
-    kpp_rows = table[table["Algorithm"] == BASE_DISPLAY[KINOPAX_PLUS]]
-    by_disc = kpp_rows.groupby("Discretization")[["N_Success", "N_Total"]].sum()
-    zeroed = by_disc[(by_disc["N_Success"] == 0) & (by_disc["N_Total"] > 0)]
-    return list(zeroed["N_Total"].items())
-
-
-def plot_cell(ax, table: pd.DataFrame, model_id: int, metric: str, is_top_row: bool) -> None:
-    """Draw one (model, metric) cell: tight-to-data linear axes, y=x reference line, and a plain
+def plot_cell(ax, table: pd.DataFrame, model_id: int, is_top_row: bool) -> None:
+    """Draw one (model, row) cell: tight-to-data linear axes, y=x reference line, and a plain
     color/shape-coded scatter -- no env-name labels (see module docstring)."""
     plotted = table[
-        (table["Algorithm"] != BASE_DISPLAY[KINOPAX_PLUS])
+        (table["Algorithm"] != BASE_DISPLAY[REFERENCE_PLANNER])
         & table["Mean_Cost"].notna()
-        & table["KinoPaxPlus_Mean_Cost"].notna()
+        & table["Reference_Mean_Cost"].notna()
     ]
 
     if plotted.empty:
@@ -184,7 +175,7 @@ def plot_cell(ax, table: pd.DataFrame, model_id: int, metric: str, is_top_row: b
         ax.set_yticks([])
     else:
         xs = plotted["Mean_Cost"].to_numpy()
-        ys = plotted["KinoPaxPlus_Mean_Cost"].to_numpy()
+        ys = plotted["Reference_Mean_Cost"].to_numpy()
 
         # Tight fit to the data's own extent, plus a small fixed-fraction margin -- no snapping to
         # a "nice"/power-of-ten bound (see AXIS_MARGIN_FRACTION and the module docstring).
@@ -199,45 +190,36 @@ def plot_cell(ax, table: pd.DataFrame, model_id: int, metric: str, is_top_row: b
         ax.set_ylim(lo, hi)
         ax.set_aspect("equal", adjustable="box")
 
-        ax.plot([lo, hi], [lo, hi], linestyle="--", color=BASE_COLORS[KINOPAX_PLUS], linewidth=1.4, zorder=1)
+        ax.plot([lo, hi], [lo, hi], linestyle="--", color=BASE_COLORS[REFERENCE_PLANNER], linewidth=1.4, zorder=1)
 
         display_to_token = {v: k for k, v in BASE_DISPLAY.items()}
         for _, row in plotted.iterrows():
             planner_token = display_to_token[row["Algorithm"]]
             ax.scatter(
-                row["Mean_Cost"], row["KinoPaxPlus_Mean_Cost"],
+                row["Mean_Cost"], row["Reference_Mean_Cost"],
                 s=110, marker=discretization_marker(row["Discretization"]),
                 facecolors=BASE_COLORS[planner_token], edgecolors="black", linewidths=0.7,
                 zorder=3,
             )
 
         # Every algorithm compared within one (environment, discretization) cell shares that
-        # cell's Kino-PAX+ mean as its y-value -- draw that shared row explicitly as a dotted
-        # guide line, with Kino-PAX+'s own position on it (exactly where the row crosses y=x)
-        # marked in its own color. Line span always includes Kino-PAX+'s own x (== y, on the
+        # cell's Kino-PAX mean as its y-value -- draw that shared row explicitly as a dotted
+        # guide line, with Kino-PAX's own position on it (exactly where the row crosses y=x)
+        # marked in its own color. Line span always includes Kino-PAX's own x (== y, on the
         # diagonal) even when only one other algorithm has a point for this row, so it never
         # shrinks to a stub that doesn't visibly reach the diagonal marker.
         span = hi - lo
         line_pad = span * 0.015
         for (_env, disc), group in plotted.groupby(["Environment", "Discretization"]):
-            y = group["KinoPaxPlus_Mean_Cost"].iloc[0]
+            y = group["Reference_Mean_Cost"].iloc[0]
             x_min = min(group["Mean_Cost"].min(), y)
             x_max = max(group["Mean_Cost"].max(), y)
             ax.plot([x_min - line_pad, x_max + line_pad], [y, y], color="#999999", linestyle=":",
                      linewidth=1.0, zorder=0)
             ax.scatter(y, y, s=38, marker=discretization_marker(disc),
-                       facecolors=BASE_COLORS[KINOPAX_PLUS], edgecolors="black", linewidths=0.7, zorder=6)
+                       facecolors=BASE_COLORS[REFERENCE_PLANNER], edgecolors="black", linewidths=0.7, zorder=6)
 
         style_linear_axis(ax)
-
-    # Flag any discretization Kino-PAX+ never solved at all -- see zero_success_discretizations().
-    zeroed = zero_success_discretizations(table)
-    # if zeroed:
-    #     note = "\n".join(
-    #         f"{discretization_display(d)}: Kino-PAX+ 0/{n} successful runs" for d, n in zeroed
-    #     )
-    #     ax.text(0.03, 0.03, note, transform=ax.transAxes, fontsize=6.5, color="#aa0000",
-    #             ha="left", va="bottom")
 
     if is_top_row:
         ax.set_title(PANEL_SUBTITLES[model_id], fontsize=12, fontweight="bold")
@@ -245,20 +227,25 @@ def plot_cell(ax, table: pd.DataFrame, model_id: int, metric: str, is_top_row: b
 
 
 def main() -> None:
-    if not os.path.isdir(DATASET_DIR):
-        raise SystemExit(f"DATASET_DIR does not exist: {DATASET_DIR!r} -- edit it at the top of this file.")
-    discretization_dirs = discover_discretization_dirs(DATASET_DIR)
-    if not discretization_dirs:
-        raise SystemExit(f"No 'discretization<LABEL>' folders found under {DATASET_DIR!r}.")
-    discretization_labels = [discretization_label_from_dir(d) for d in discretization_dirs]
+    for row_cfg in ROWS:
+        if not os.path.isdir(row_cfg["dataset_dir"]):
+            raise SystemExit(f"Dataset does not exist: {row_cfg['dataset_dir']!r} -- edit ROWS at the "
+                              "top of this file.")
+
+    discretization_dirs_by_row = {}
+    all_discretization_labels = set()
+    for row_cfg in ROWS:
+        dirs = discover_discretization_dirs(row_cfg["dataset_dir"])
+        if not dirs:
+            raise SystemExit(f"No discretization folders found under {row_cfg['dataset_dir']!r}.")
+        discretization_dirs_by_row[row_cfg["label"]] = dirs
+        all_discretization_labels.update(discretization_label_from_dir(d) for d in dirs)
+        print(f"{row_cfg['label']}: {row_cfg['dataset_dir']} -- "
+              f"{[discretization_label_from_dir(d) for d in dirs]}")
 
     os.makedirs(OUT_DIR, exist_ok=True)
-    print(f"Dataset: {DATASET_DIR}")
-    print(f"Discretizations found: {discretization_labels}")
 
-    n_rows, n_cols = len(PLOT_METRICS), len(MODEL_IDS)
-    # 4.5in/row (matches the original 2-row panel's 9.3in at n_rows=2) + a fixed 0.5in for the
-    # x-axis label/margins regardless of row count. squeeze=False keeps axes 2-D even at n_rows=1.
+    n_rows, n_cols = len(ROWS), len(MODEL_IDS)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(14.5, 4.5 * n_rows + 0.5), squeeze=False,
                               gridspec_kw={"hspace": 0.16, "wspace": 0.16})
 
@@ -267,27 +254,29 @@ def main() -> None:
                markeredgecolor="black", markersize=9, label=BASE_DISPLAY[p])
         for p in PLOTTED_OTHER_PLANNERS
     ]
+    ref_display = BASE_DISPLAY[REFERENCE_PLANNER]
     algo_handles.append(
-        Line2D([0], [0], color=BASE_COLORS[KINOPAX_PLUS], linestyle="--", linewidth=1.4,
-               marker="o", markersize=6, markeredgecolor="black", label="Kino-PAX+ (y = x)")
+        Line2D([0], [0], color=BASE_COLORS[REFERENCE_PLANNER], linestyle="--", linewidth=1.4,
+               marker="o", markersize=6, markeredgecolor="black", label=f"{ref_display} (y = x)")
     )
     disc_handles = [
         Line2D([0], [0], marker=discretization_marker(d), linestyle="", markerfacecolor="#888888",
                markeredgecolor="black", markersize=9, label=discretization_display(d))
-        for d in discretization_labels
+        for d in sorted(all_discretization_labels)
     ]
 
     all_tables = []
     row_labels = []
     n_total_runs = 0
     drone_col = MODEL_IDS.index(3)
-    for row, metric in enumerate(PLOT_METRICS):
+    for row, row_cfg in enumerate(ROWS):
+        discretization_dirs = discretization_dirs_by_row[row_cfg["label"]]
         for col, model_id in enumerate(MODEL_IDS):
-            table = build_model_cost_table(model_id, metric, discretization_dirs)
+            table = build_model_cost_table(model_id, row_cfg, discretization_dirs)
             all_tables.append(table)
             n_total_runs += int(table["N_Total"].sum())
             ax = axes[row][col]
-            plot_cell(ax, table, model_id, metric, is_top_row=(row == 0))
+            plot_cell(ax, table, model_id, is_top_row=(row == 0))
 
             if col == drone_col:
                 # Both 12D-Drone cells get their own copy of both legends, top-left -- that
@@ -304,13 +293,15 @@ def main() -> None:
 
         # Row label -- the cost metric, rotated in the left margin -- read AFTER this row's three
         # cells are drawn so get_position() reflects their final (post-aspect-lock) layout.
-        axes[row][0].set_ylabel("Kino-PAX+ — Final Cost (linear scale)", fontsize=10)
+        axes[row][0].set_ylabel(f"{ref_display} Final Cost (linear scale)",
+                                 fontsize=10)
         pos_left = axes[row][0].get_position()
         y_mid = (pos_left.y0 + pos_left.y1) / 2.0
-        row_labels.append(fig.text(0.012, y_mid, COST_METRIC_LABELS[metric], rotation=90,
+        row_labels.append(fig.text(0.018, y_mid, row_cfg["label"], rotation=90,
                                     ha="center", va="center", fontsize=13, fontweight="bold"))
 
-    supxlabel = fig.supxlabel("Final Cost — other algorithms (linear scale)", fontsize=11, x=0.53, y=0.015)
+    supxlabel = fig.supxlabel(f"Kino-PAX+ and Kino-PAX# Final Cost (linear scale)",
+                               fontsize=11, x=0.53, y=0.015)
     fig.subplots_adjust(left=0.09, right=0.985, top=0.94, bottom=0.08)
 
     base_name = "cost_ratio_big_panel_all_models_linear"
@@ -326,7 +317,7 @@ def main() -> None:
 
     if n_total_runs == 0:
         print(
-            "\nNo run CSVs were found anywhere under this dataset -- all six panels are empty "
+            "\nNo run CSVs were found anywhere under either dataset -- all six panels are empty "
             "placeholders. Drop the archived per-run CSVs into the environment folders and rerun "
             "this script."
         )

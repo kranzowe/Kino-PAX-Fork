@@ -7,8 +7,9 @@
 //
 //   KPAX             pure explorer reference
 //   KinoPaxPlus       pure optimizer reference
-//   KinoPaxSTARTrue   syclopCap 1.0 (no cap), ancestorPrune = 1 -- same canonical
-//                     point paper_benchmark_v2.cu uses for this planner
+//   CountingStars     bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15,
+//                     cost_frac 0.75, hopelessGuard ON (v3.5) -- the exact
+//                     canonical point paper_benchmark_v2.cu uses for this planner
 //
 // This is the time-checkpoint sibling of tree_growth_dump.cu (which dumps after
 // each of the first 8 ITERATIONS, with no timing and no solution capture). That
@@ -17,11 +18,21 @@
 // Per-iteration timing uses the same cudaEvent_t/plannerMs pattern as
 // paper_benchmark_v2.cu's benchmark*() functions (propagate+update only inside
 // the timed window). "Solution found?" differs by planner family:
-//   KPAX: h_pathToGoal_ IS the goal tree index directly once non-zero (reset to
-//     0 every iteration so a later, different solution isn't missed).
-//   KinoPaxPlus / KinoPaxSTARTrue: h_pathToGoal_ is not wired up for these; the
-//     real signal is h_minCost_ (< MAX_FLOAT). Neither exposes a host-side goal
-//     index directly, so one is recovered by scanning d_goalSet_/
+//   KPAX: h_pathToGoal_ is the goal tree index directly once non-zero, but it is
+//     RESET TO 0 EVERY ITERATION (so a later, different solution isn't missed) --
+//     since checkpoints are only inspected every so many iterations, the raw flag
+//     alone would silently lose a solution found between checkpoints the moment
+//     the next iteration's reset zeroes it again. A persistent best-known
+//     (bestGoalIdx/bestCost, ratcheted every iteration h_pathToGoal_ is non-zero)
+//     is tracked across the whole run instead, and THAT is what gets checked at
+//     each checkpoint.
+//   KinoPaxPlus / CountingStars: h_pathToGoal_ is not wired up for these; the
+//     real signal is h_minCost_ (< MAX_FLOAT), which the planner itself
+//     maintains as a genuine running minimum across the whole run (monotonic,
+//     never reset by this tool) -- so, unlike KPAX, no separate persistent
+//     tracking is needed here; h_minCost_ at checkpoint time already reflects
+//     the best-ever-found cost. Neither planner exposes a host-side goal index
+//     directly though, so one is recovered by scanning d_goalSet_/
 //     d_treeSampleCosts_ on the host for the node where goalSet[i] &&
 //     costs[i] == h_minCost_ -- the same cost-equality semantics their own
 //     internal getControlPathToGoal() kernels use, just done host-side instead
@@ -29,6 +40,14 @@
 //     entries it validly wrote). d_goalSet_ is only ever reset once, at
 //     resetPlanner(), and minCost only ever decreases (atomicMinFloat), so a
 //     stale `true` flag can never false-match a later, lower h_minCost_.
+//
+// Tree CSVs are SPARSIFIED: a full tree can reach millions of nodes (COST_MODE 2
+// / TIME's weak per-region cost signal lets KinoPaxPlus/CountingStars admit far
+// more nodes per R1 region than effort/distance cost did), so only
+// TREE_LEAF_SAMPLE_FRAC (10%) of the tree's LEAF nodes are kept, each together
+// with its FULL ancestor chain back to root -- every retained path is complete
+// and connected (a meaningful "10% of the possible trajectories through the
+// tree"), not a random scatter of disconnected dots. See writeTreeCSV().
 //
 // Render the output with scripts/plot_tree_checkpoint.m.
 // ========================================================================
@@ -41,9 +60,23 @@
 #include <string>
 #include <cmath>
 #include <cstdint>
+#include <algorithm>
 #include "planners/KPAX.cuh"
 #include "planners/KinoPaxPlus.cuh"
-#include "planners/KinoPaxSTARTrue.cuh"
+#include "planners/CountingStars.cuh"
+
+// CountingStars' canonical operating point -- exact same values as
+// paper_benchmark_v2.cu's CS_BUFFER_SLOPE/CS_BUFFER_FLOOR/CS_EXPLORE_FRAC/
+// CS_COST_FRAC/CS_HOPELESS_GUARD/CS_RAMP_FILL_ITERS.
+static const float CS_BUFFER_SLOPE   = 1.2f;
+static const float CS_BUFFER_FLOOR   = 0.4f;
+static const float CS_EXPLORE_FRAC   = 0.15f;
+static const float CS_COST_FRAC      = 0.75f;
+static const bool  CS_HOPELESS_GUARD = true;
+static const int   CS_RAMP_FILL_ITERS = 700;
+
+// Fraction of each tree's LEAF nodes (see writeTreeCSV) kept in the tree CSVs.
+static const float TREE_LEAF_SAMPLE_FRAC = 0.10f;
 
 // ========================================================================
 // One host-side snapshot of a planner's tree, copied once per checkpoint and
@@ -73,19 +106,77 @@ TreeSnapshot copyTreeToHost(float* d_treeSamples_ptr, int* d_parents_ptr,
     return snap;
 }
 
-// One row per node: idx,x,y,z,vx,vy,vz,parent,cost (Model-1-shaped state columns,
-// same format as tree_growth_dump.cu's dumpTreeCSV). Node idx == insertion order.
-void writeTreeCSV(const TreeSnapshot& snap, const std::string& path)
+// One row per KEPT node: idx,x,y,z,vx,vy,vz,parent,cost (Model-1-shaped state
+// columns). Only leafSampleFrac of the tree's LEAF nodes (nodes no other node
+// names as parent) are kept, each with its FULL ancestor chain back to root --
+// this keeps every retained path complete/connected rather than a random
+// scatter of disconnected dots. Kept nodes are renumbered densely (0..K-1),
+// preserving relative insertion order, with parent references remapped to
+// match -- the CSV's idx/parent contract is therefore unchanged either way, so
+// plot_tree_checkpoint.m needs no changes. leafSampleFrac >= 1.0 keeps
+// everything (no sparsification).
+void writeTreeCSV(const TreeSnapshot& snap, const std::string& path, float leafSampleFrac)
 {
+    int n = snap.treeSize;
+    std::vector<uint8_t> keep(n, 1);   // default: keep everything
+
+    if(leafSampleFrac < 1.0f && n > 0)
+    {
+        std::vector<uint8_t> hasChild(n, 0);
+        for(int i = 0; i < n; i++)
+        {
+            int p = snap.parents[i];
+            if(p >= 0) hasChild[p] = 1;
+        }
+        std::vector<int> leaves;
+        for(int i = 0; i < n; i++)
+            if(!hasChild[i]) leaves.push_back(i);
+
+        int nSample = std::max(1, (int)std::round(leafSampleFrac * (double)leaves.size()));
+        std::fill(keep.begin(), keep.end(), 0);
+
+        if(nSample >= (int)leaves.size())
+        {
+            std::fill(keep.begin(), keep.end(), 1);   // sampling everything anyway
+        }
+        else
+        {
+            // Evenly spaced over the leaf list (leaves is built by a forward scan, so it is
+            // already in ascending idx/insertion order) -- matches this repo's established
+            // "evenly spaced, not random" subsampling convention (plot_tree_growth_iters.m's
+            // drawTree, etc.). Early-exit once a chain hits an already-kept node: everything
+            // above it was already marked by a previous leaf's walk, so this both saves work and
+            // deduplicates automatically -- no separate "skip duplicates" pass needed.
+            for(int k = 0; k < nSample; k++)
+            {
+                size_t li = (nSample == 1) ? 0
+                          : (size_t)std::llround((double)k * (double)(leaves.size() - 1) / (double)(nSample - 1));
+                int cur = leaves[li];
+                while(cur >= 0 && !keep[cur])
+                {
+                    keep[cur] = 1;
+                    cur = snap.parents[cur];
+                }
+            }
+        }
+    }
+
+    std::vector<int> remap(n, -1);
+    int newIdx = 0;
+    for(int i = 0; i < n; i++)
+        if(keep[i]) remap[i] = newIdx++;
+
     std::ofstream file(path);
     file << "idx,x,y,z,vx,vy,vz,parent,cost\n";
     file << std::fixed << std::setprecision(6);
-    for(int i = 0; i < snap.treeSize; i++)
+    for(int i = 0; i < n; i++)
     {
+        if(!keep[i]) continue;
         const float* s = &snap.samples[(size_t)i * SAMPLE_DIM];
-        file << i;
-        for(int d = 0; d < 6; d++) file << "," << s[d];   // x,y,z,vx,vy,vz
-        file << "," << snap.parents[i] << "," << snap.costs[i] << "\n";
+        int newParent = (snap.parents[i] >= 0) ? remap[snap.parents[i]] : -1;
+        file << remap[i];
+        for(int d = 0; d < 6; d++) file << "," << s[d];
+        file << "," << newParent << "," << snap.costs[i] << "\n";
     }
     file.close();
 }
@@ -94,7 +185,8 @@ void writeTreeCSV(const TreeSnapshot& snap, const std::string& path)
 // already-cumulative-from-root cost (snap.costs -- no need to re-sum edgeCost()),
 // then reverses so the CSV reads root-first/goal-last. Writes a header-only (0
 // row) CSV when goalIdx < 0 (no solution yet at this checkpoint), so every
-// (planner, checkpoint) pair always produces exactly one traj file.
+// (planner, checkpoint) pair always produces exactly one traj file. NOT
+// sparsified -- a single solution path is already small.
 void writeTrajectoryCSV(const TreeSnapshot& snap, int goalIdx, const std::string& path)
 {
     std::ofstream file(path);
@@ -127,7 +219,7 @@ void writeTrajectoryCSV(const TreeSnapshot& snap, int goalIdx, const std::string
     file.close();
 }
 
-// Host-side rescan for KinoPaxPlus/KinoPaxSTARTrue: neither exposes a goal tree
+// Host-side rescan for KinoPaxPlus/CountingStars: neither exposes a goal tree
 // index directly (h_pathToGoal_ is dead for both), only a best-cost scalar
 // (h_minCost_). Mirrors their own internal getControlPathToGoal() kernels' own
 // cost-equality filter, done host-side so we get a clean int back instead of an
@@ -182,7 +274,9 @@ static const float CHECKPOINTS_MS[NUM_CHECKPOINTS] = {50.0f, 100.0f, 150.0f, 100
 static const int   MAX_LOOP_ITERATIONS     = 100000;   // generous safety cap, not the stopping criterion
 
 // ========================================================================
-// KPAX: has graph_, goal signal is h_pathToGoal_ (direct tree index).
+// KPAX: has graph_, goal signal is h_pathToGoal_ (direct tree index), tracked
+// into a persistent best-known (bestGoalIdx/bestCost) across iterations -- see
+// the file header comment for why the raw per-iteration flag alone isn't enough.
 // ========================================================================
 void runKPAXCheckpoints(KPAX& planner, const std::string& token, const std::string& env,
                         const std::string& vizDir, float* h_initial, float* h_goal,
@@ -199,6 +293,9 @@ void runKPAXCheckpoints(KPAX& planner, const std::string& token, const std::stri
     int zero = 0;
     size_t nextCheckpoint = 0;
     int itr = 0;
+
+    int   bestGoalIdx = -1;
+    float bestCost    = MAX_FLOAT;
 
     while(itr < MAX_LOOP_ITERATIONS && nextCheckpoint < NUM_CHECKPOINTS)
     {
@@ -219,17 +316,28 @@ void runKPAXCheckpoints(KPAX& planner, const std::string& token, const std::stri
         cudaEventElapsedTime(&iterMs, iterStart, iterStop);
         plannerMs += iterMs;
 
+        if(planner.h_pathToGoal_ != 0)
+        {
+            float pathCost;
+            cudaMemcpy(&pathCost, &planner.d_treeSampleCosts_ptr_[planner.h_pathToGoal_],
+                       sizeof(float), cudaMemcpyDeviceToHost);
+            if(pathCost < bestCost)
+            {
+                bestCost    = pathCost;
+                bestGoalIdx = planner.h_pathToGoal_;
+            }
+        }
+
         while(nextCheckpoint < NUM_CHECKPOINTS && plannerMs >= CHECKPOINTS_MS[nextCheckpoint])
         {
             int ms = (int)CHECKPOINTS_MS[nextCheckpoint];
             TreeSnapshot snap = copyTreeToHost(planner.d_treeSamples_ptr_,
                                                planner.d_treeSamplesParentIdxs_ptr_,
                                                planner.d_treeSampleCosts_ptr_, planner.h_treeSize_);
-            writeTreeCSV(snap, checkpointTreePath(vizDir, env, token, ms));
-            int goalIdx = (planner.h_pathToGoal_ != 0) ? planner.h_pathToGoal_ : -1;
-            writeTrajectoryCSV(snap, goalIdx, checkpointTrajPath(vizDir, env, token, ms));
+            writeTreeCSV(snap, checkpointTreePath(vizDir, env, token, ms), TREE_LEAF_SAMPLE_FRAC);
+            writeTrajectoryCSV(snap, bestGoalIdx, checkpointTrajPath(vizDir, env, token, ms));
             printf("  t=%dms: itr=%d tree=%u %s\n", ms, itr, planner.h_treeSize_,
-                   goalIdx >= 0 ? "SOLVED" : "no solution yet");
+                   bestGoalIdx >= 0 ? "SOLVED" : "no solution yet");
             nextCheckpoint++;
         }
 
@@ -242,7 +350,8 @@ void runKPAXCheckpoints(KPAX& planner, const std::string& token, const std::stri
 }
 
 // ========================================================================
-// KinoPaxPlus: no graph_. Goal signal is h_minCost_ (< MAX_FLOAT); goalIdx
+// KinoPaxPlus: no graph_. Goal signal is h_minCost_ (< MAX_FLOAT, planner-
+// maintained running minimum -- no persistent tracking needed here); goalIdx
 // recovered via findGoalIdxByScan.
 // ========================================================================
 void runKinoPaxPlusCheckpoints(KinoPaxPlus& planner, const std::string& token, const std::string& env,
@@ -282,7 +391,7 @@ void runKinoPaxPlusCheckpoints(KinoPaxPlus& planner, const std::string& token, c
             TreeSnapshot snap = copyTreeToHost(planner.d_treeSamples_ptr_,
                                                planner.d_treeSamplesParentIdxs_ptr_,
                                                planner.d_treeSampleCosts_ptr_, planner.h_treeSize_);
-            writeTreeCSV(snap, checkpointTreePath(vizDir, env, token, ms));
+            writeTreeCSV(snap, checkpointTreePath(vizDir, env, token, ms), TREE_LEAF_SAMPLE_FRAC);
             int goalIdx = findGoalIdxByScan(planner.d_goalSet_ptr_, snap, planner.h_minCost_);
             writeTrajectoryCSV(snap, goalIdx, checkpointTrajPath(vizDir, env, token, ms));
             printf("  t=%dms: itr=%d tree=%u %s\n", ms, itr, planner.h_treeSize_,
@@ -298,18 +407,24 @@ void runKinoPaxPlusCheckpoints(KinoPaxPlus& planner, const std::string& token, c
 }
 
 // ========================================================================
-// KinoPaxSTARTrue: has graph_. Same h_minCost_/findGoalIdxByScan mechanism as
-// KinoPaxPlus. Fixed canonical config: syclopCap 1.0 (no cap), ancestorPrune 1
-// -- matching paper_benchmark_v2.cu's own ANCESTOR_PRUNE/SYCLOP_CAP constants.
+// CountingStars: has graph_ but NEVER calls graph_.updateVertices() -- it
+// consumes nothing Graph produces, and that kernel is not cheap (matches
+// paper_benchmark_v2.cu's benchmarkCountingStars exactly). Same h_minCost_/
+// findGoalIdxByScan mechanism as KinoPaxPlus. Fixed canonical tunables set
+// before resetPlanner() (which does not touch them): CS_BUFFER_SLOPE/
+// CS_BUFFER_FLOOR/CS_EXPLORE_FRAC/CS_COST_FRAC/CS_HOPELESS_GUARD/
+// CS_RAMP_FILL_ITERS, all matching paper_benchmark_v2.cu's own constants.
 // ========================================================================
-void runKinoPaxSTARTrueCheckpoints(KinoPaxSTARTrue& planner, const std::string& token, const std::string& env,
-                                   const std::string& vizDir, float* h_initial, float* h_goal,
-                                   float* d_obstacles, uint numObstacles)
+void runCountingStarsCheckpoints(CountingStars& planner, const std::string& token, const std::string& env,
+                                 const std::string& vizDir, float* h_initial, float* h_goal,
+                                 float* d_obstacles, uint numObstacles)
 {
-    // resetPlanner does not touch h_syclopCap_/h_ancestorPrune_, so setting them
-    // at entry holds for the whole run (same note as paper_benchmark_v2.cu).
-    planner.h_syclopCap_     = 1.0f;
-    planner.h_ancestorPrune_ = 1;
+    planner.h_fillIters_     = CS_RAMP_FILL_ITERS;
+    planner.h_bufferSlope_   = CS_BUFFER_SLOPE;
+    planner.h_bufferFloor_   = CS_BUFFER_FLOOR;
+    planner.h_exploreFrac_   = CS_EXPLORE_FRAC;
+    planner.h_costFrac_      = CS_COST_FRAC;
+    planner.h_hopelessGuard_ = CS_HOPELESS_GUARD;
 
     printf("\n--- %s ---\n", token.c_str());
     planner.resetPlanner(h_initial, h_goal);
@@ -329,7 +444,7 @@ void runKinoPaxSTARTrueCheckpoints(KinoPaxSTARTrue& planner, const std::string& 
 
         cudaEventRecord(iterStart);
         planner.propagateFrontier(d_obstacles, numObstacles);
-        planner.graph_.updateVertices();
+        // NO graph_.updateVertices() -- see header comment above.
         planner.updateFrontier();
         cudaEventRecord(iterStop);
         cudaEventSynchronize(iterStop);
@@ -344,7 +459,7 @@ void runKinoPaxSTARTrueCheckpoints(KinoPaxSTARTrue& planner, const std::string& 
             TreeSnapshot snap = copyTreeToHost(planner.d_treeSamples_ptr_,
                                                planner.d_treeSamplesParentIdxs_ptr_,
                                                planner.d_treeSampleCosts_ptr_, planner.h_treeSize_);
-            writeTreeCSV(snap, checkpointTreePath(vizDir, env, token, ms));
+            writeTreeCSV(snap, checkpointTreePath(vizDir, env, token, ms), TREE_LEAF_SAMPLE_FRAC);
             int goalIdx = findGoalIdxByScan(planner.d_goalSet_ptr_, snap, planner.h_minCost_);
             writeTrajectoryCSV(snap, goalIdx, checkpointTrajPath(vizDir, env, token, ms));
             printf("  t=%dms: itr=%d tree=%u %s\n", ms, itr, planner.h_treeSize_,
@@ -389,6 +504,7 @@ int main(int argc, char* argv[])
     printf("Obstacle file:  %s\n", obstaclePath.c_str());
     printf("Environment:    %s\n", envName.c_str());
     printf("Checkpoints:    50ms, 100ms, 150ms, 1000ms, 4000ms\n");
+    printf("Tree sampling:  %.0f%% of leaf trajectories per checkpoint\n", 100.0f * TREE_LEAF_SAMPLE_FRAC);
     printf("Output:         %s\n", vizDir.c_str());
     printf("=======================================================\n");
 
@@ -410,8 +526,8 @@ int main(int argc, char* argv[])
         runKinoPaxPlusCheckpoints(planner, "KinoPaxPlus", envName, vizDir, h_initial, h_goal, d_obstacles, numObstacles);
     }
     {
-        KinoPaxSTARTrue planner;
-        runKinoPaxSTARTrueCheckpoints(planner, "KinoPaxSTARTrue", envName, vizDir, h_initial, h_goal, d_obstacles, numObstacles);
+        CountingStars planner;
+        runCountingStarsCheckpoints(planner, "CountingStars", envName, vizDir, h_initial, h_goal, d_obstacles, numObstacles);
     }
 
     cudaFree(d_obstacles);

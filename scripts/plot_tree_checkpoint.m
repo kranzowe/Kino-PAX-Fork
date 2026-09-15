@@ -3,9 +3,12 @@
 % examples/gpu/tree_checkpoint_dump.cu (run via scripts/run_tree_checkpoint_dump.sh)
 % on the zigzag corridor, Model 1, V2's canonical "large"/coarse discretization.
 %
-% Panels (left to right): KPAX, KinoPaxPlus, KinoPaxSTARTrue -- each showing that
+% Panels (left to right): KPAX, KinoPaxPlus, CountingStars -- each showing that
 % planner's tree at the SAME chosen checkpoint, top-down (X-Y), with its solution
-% trajectory overlaid (if one existed yet at that checkpoint).
+% trajectory overlaid (if one existed yet at that checkpoint). Tree CSVs already
+% contain only 10% of leaf trajectories (see tree_checkpoint_dump.cu), so
+% NODE_FRACTION/EDGE_FRACTION below are a further, purely cosmetic render-time
+% subsample on top of that.
 %
 % Input (in dataDir):
 %   {env}_{token}_t{ms}ms_tree.csv   columns idx,x,y,z,vx,vy,vz,parent,cost
@@ -41,8 +44,8 @@ obstacleCandidates = { ...
     fullfile('include', 'config', 'obstacles', 'zigzag', 'obstacles.csv'), ...
     'obstacles.csv'};
 
-tokens      = {'KPAX', 'KinoPaxPlus', 'KinoPaxSTARTrue'};
-tokenLabels = {'KPAX', 'KinoPaxPlus', 'KinoPaxSTARTrue'};
+tokens      = {'KPAX', 'KinoPaxPlus', 'CountingStars'};
+tokenLabels = {'KPAX', 'KinoPaxPlus', 'CountingStars'};
 
 NODE_FRACTION  = 0.15;    % fraction of nodes drawn per panel
 EDGE_FRACTION  = 0.15;    % fraction of parent edges drawn per panel
