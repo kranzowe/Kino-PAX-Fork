@@ -100,6 +100,8 @@ NODATA_COLOR = "#808080"
 GOAL_COLOR = "#00a51e"
 
 FRAME_CHECKPOINTS_MS = (100, 1000)  # which checkpoints also get standalone per-panel frame exports
+COLOR_SCALE_CHECKPOINT_MS = 1000    # which checkpoint each token's own node-color scale is
+                                     # anchored to -- see compute_color_vmax
 
 
 def discover_checkpoints(data_dir: str, env: str, tokens: list) -> list:
@@ -139,11 +141,17 @@ def draw_workspace_square(ax, meta: dict) -> None:
                             facecolor="none", linewidth=0.6, zorder=1))
 
 
-def draw_tree(ax, tree: pd.DataFrame) -> None:
+def draw_tree(ax, tree: pd.DataFrame, color_vmax: float) -> None:
     """Top-down (X-Y) nodes colored by insertion order (idx), subsampled evenly over insertion
     order (NODE_FRACTION), plus parent edges for that SAME shown-node set (never an independently
     subsampled domain -- see module docstring for why that used to make connected nodes look
-    like they were floating with no parent)."""
+    like they were floating with no parent). `color_vmax` is this TOKEN's own color-scale
+    ceiling, held constant across every checkpoint it's rendered at (see compute_color_vmax) --
+    without it, matplotlib auto-scales each scatter call to that call's OWN max idx, so a 100ms
+    tree's last node (idx maybe ~5,000) gets mapped to the exact same "dark red" as that same
+    token's 4000ms tree's last node (idx maybe ~300,000), even though it's nowhere near as far
+    along -- every early checkpoint would misleadingly show its reddest color regardless of how
+    little it had actually grown."""
     n = len(tree)
     if n == 0:
         return
@@ -168,7 +176,7 @@ def draw_tree(ax, tree: pd.DataFrame) -> None:
         ax.plot(xs, ys, "-", color="#b8b8bf", linewidth=0.3, zorder=2)
 
     ax.scatter(tree_x[ridx], tree_y[ridx], s=NODE_SIZE, c=tree["idx"].to_numpy()[ridx],
-               cmap="turbo", alpha=0.8, zorder=3)
+               cmap="turbo", vmin=0, vmax=color_vmax, alpha=0.8, zorder=3)
 
 
 def draw_trajectory(ax, traj: pd.DataFrame) -> None:
@@ -207,7 +215,7 @@ def finish_axes(ax, meta: dict) -> None:
     ax.tick_params(labelsize=7)
 
 
-def draw_panel(ax, token: str, checkpoint_ms: int, meta: dict, obstacles) -> tuple:
+def draw_panel(ax, token: str, checkpoint_ms: int, meta: dict, obstacles, color_vmax_by_token: dict) -> tuple:
     """Draws obstacles/workspace/tree/trajectory/start-goal for one token at one checkpoint onto
     `ax`. Returns (title_text, title_color) describing solve status, for callers that want a
     title -- the standalone frame exporter doesn't."""
@@ -223,7 +231,7 @@ def draw_panel(ax, token: str, checkpoint_ms: int, meta: dict, obstacles) -> tup
         title_text, title_color = "no data", NODATA_COLOR
     else:
         tree = pd.read_csv(tree_path)
-        draw_tree(ax, tree)
+        draw_tree(ax, tree, color_vmax_by_token[token])
         if os.path.isfile(traj_path):
             traj = pd.read_csv(traj_path)
         else:
@@ -241,10 +249,10 @@ def draw_panel(ax, token: str, checkpoint_ms: int, meta: dict, obstacles) -> tup
     return title_text, title_color
 
 
-def plot_checkpoint(checkpoint_ms: int, meta: dict, obstacles) -> plt.Figure:
+def plot_checkpoint(checkpoint_ms: int, meta: dict, obstacles, color_vmax_by_token: dict) -> plt.Figure:
     fig, axes = plt.subplots(1, len(TOKENS), figsize=(15.0, 5.6))
     for ax, token in zip(axes, TOKENS):
-        title_text, title_color = draw_panel(ax, token, checkpoint_ms, meta, obstacles)
+        title_text, title_color = draw_panel(ax, token, checkpoint_ms, meta, obstacles, color_vmax_by_token)
         finish_axes(ax, meta)
         ax.set_title(f"{TOKEN_LABELS.get(token, token)}\n{title_text}", fontsize=9, color=title_color)
 
@@ -254,11 +262,12 @@ def plot_checkpoint(checkpoint_ms: int, meta: dict, obstacles) -> plt.Figure:
     return fig
 
 
-def save_frame(token: str, checkpoint_ms: int, meta: dict, obstacles, frames_dir: str) -> str:
+def save_frame(token: str, checkpoint_ms: int, meta: dict, obstacles, frames_dir: str,
+               color_vmax_by_token: dict) -> str:
     """One panel, standalone -- no title, axis labels, ticks, or grid, just the workspace square
     with its content, cropped tight so the saved image is exactly that square."""
     fig, ax = plt.subplots(figsize=(6.0, 6.0))
-    draw_panel(ax, token, checkpoint_ms, meta, obstacles)
+    draw_panel(ax, token, checkpoint_ms, meta, obstacles, color_vmax_by_token)
     ax.set_xlim(meta["W_MIN"], meta["W_MAX"])
     ax.set_ylim(meta["W_MIN"], meta["W_MAX"])
     ax.set_aspect("equal", adjustable="box")
@@ -273,6 +282,31 @@ def save_frame(token: str, checkpoint_ms: int, meta: dict, obstacles, frames_dir
     fig.savefig(path, dpi=200, bbox_inches="tight", pad_inches=0)
     plt.close(fig)
     return path
+
+
+def compute_color_vmax(data_dir: str, env: str, tokens: list, checkpoint_ms: int) -> dict:
+    """{token: largest idx (tree size - 1) in THAT token's own tree file AT
+    COLOR_SCALE_CHECKPOINT_MS} -- a PER-TOKEN color-scale ceiling (see draw_tree), so a token's
+    color always means the same absolute insertion order across every checkpoint IT'S rendered
+    at, anchored to how far that same token itself had gotten by COLOR_SCALE_CHECKPOINT_MS.
+    Deliberately NOT one ceiling shared across all three tokens: they grow at very different
+    rates (e.g. one token's tree can be 50% bigger than another's at the same wall-clock time),
+    so a single shared max would leave the slower tokens' colors never reaching the red end of
+    the scale even at their OWN 1000ms checkpoint -- each token now gets to use its own full
+    gradient. Missing/never-produced files fall back to 1 (a token that never got a tree file at
+    the anchor checkpoint has no meaningful scale to anchor to; its scatter will just auto-fail
+    gracefully to a single color). Counts lines instead of loading each file into pandas -- cheap,
+    and all that's needed here is the row count."""
+    vmax_by_token = {}
+    for token in tokens:
+        path = os.path.join(data_dir, f"{env}_{token}_t{checkpoint_ms}ms_tree.csv")
+        if not os.path.isfile(path):
+            vmax_by_token[token] = 1.0
+            continue
+        with open(path, encoding="utf-8") as f:
+            n_rows = sum(1 for _ in f) - 1  # minus header
+        vmax_by_token[token] = float(max(n_rows - 1, 1))
+    return vmax_by_token
 
 
 def main() -> None:
@@ -290,6 +324,11 @@ def main() -> None:
         raise SystemExit(f"No checkpoint tree files found under {DATA_DIR!r} for env={ENV_NAME!r}.")
     print(f"Checkpoints found: {checkpoints} ms")
 
+    color_vmax_by_token = compute_color_vmax(DATA_DIR, ENV_NAME, TOKENS, COLOR_SCALE_CHECKPOINT_MS)
+    print(f"Node color scale (each token's own idx 0 -> its size at t={COLOR_SCALE_CHECKPOINT_MS}ms):")
+    for token in TOKENS:
+        print(f"  {TOKEN_LABELS.get(token, token)}: 0 -> {color_vmax_by_token[token]:.0f}")
+
     os.makedirs(OUT_DIR, exist_ok=True)
     frames_dir = os.path.join(OUT_DIR, "frames")
     frame_checkpoints = [c for c in FRAME_CHECKPOINTS_MS if c in checkpoints]
@@ -301,7 +340,7 @@ def main() -> None:
 
     for checkpoint_ms in checkpoints:
         print(f"\nRendering checkpoint t={checkpoint_ms}ms...")
-        fig = plot_checkpoint(checkpoint_ms, meta, obstacles)
+        fig = plot_checkpoint(checkpoint_ms, meta, obstacles, color_vmax_by_token)
         base_name = f"tree_checkpoint_{ENV_NAME}_t{checkpoint_ms}ms"
         png_path = os.path.join(OUT_DIR, f"{base_name}.png")
         svg_path = os.path.join(OUT_DIR, f"{base_name}.svg")
@@ -312,7 +351,7 @@ def main() -> None:
 
         if checkpoint_ms in frame_checkpoints:
             for token in TOKENS:
-                frame_path = save_frame(token, checkpoint_ms, meta, obstacles, frames_dir)
+                frame_path = save_frame(token, checkpoint_ms, meta, obstacles, frames_dir, color_vmax_by_token)
                 print(f"  Wrote frame {frame_path}")
 
 
