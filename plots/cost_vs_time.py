@@ -191,13 +191,13 @@ def plot_cost_vs_time(model_id: int, env: str, metric: str, discretization_dirs:
                     "N_Runs": agg["n_runs"],
                 }))
 
-                # p_idx = agg["plateau_idx"]
-                # if p_idx is not None and not np.isnan(agg["mean"][p_idx]):
-                #     p_time = common_time[p_idx]
-                #     if p_time < EARLY_STOP_MARGIN * global_t_max:
-                #         ax.scatter(p_time, agg["mean"][p_idx], marker="v", s=70,
-                #                    facecolors=color, edgecolors="black", linewidths=0.8, zorder=5)
-                #         plateau_marker_used = True
+                p_idx = agg["plateau_idx"]
+                if p_idx is not None and not np.isnan(agg["mean"][p_idx]):
+                    p_time = common_time[p_idx]
+                    if p_time < EARLY_STOP_MARGIN * global_t_max:
+                        ax.scatter(p_time, agg["mean"][p_idx], marker="v", s=70,
+                                   facecolors=color, edgecolors="black", linewidths=0.8, zorder=5)
+                        plateau_marker_used = True
 
         style_linear_axis(ax)
         ax.set_xlim(0, plot_t_max)
