@@ -24,12 +24,26 @@ run. A token with no tree file at all for a given checkpoint (e.g. Kino-PAX+ oft
 the earliest checkpoints) gets a "no data" placeholder tile instead of erroring, same as the
 original.
 
-Node color = insertion order (idx, turbo colormap); both nodes and parent-edges are subsampled
-evenly over insertion order (NODE_FRACTION / EDGE_FRACTION below) so early- and late-tree
-structure both survive without rendering hundreds of thousands of points.
+Node color = insertion order (idx, turbo colormap), subsampled evenly over insertion order
+(NODE_FRACTION below) so early- and late-tree structure both survive without rendering hundreds
+of thousands of points. Edges are drawn for that SAME subsampled node set (never an independently
+chosen domain) -- an earlier version of this script picked the rendered nodes and the rendered
+edges as two separate evenly-spaced subsamples, which could each land on different rows, so a
+displayed node's one edge back to its parent often just wasn't in the edge subsample -- it looked
+exactly like a bug where nodes have no parent, but checking the dumped tree CSVs directly (every
+`parent` value is either -1 or a valid, in-range row) confirms every node genuinely does have one;
+examples/gpu/tree_checkpoint_dump.cu's leaf-sampling + full-ancestor-chain-preservation logic is
+correct as written. EDGE_FRACTION now only trims which of the shown nodes' own edges get drawn
+(a subset of the node subsample itself), not a second independent domain.
 
-Edit DATA_DIR / OUT_DIR / OBSTACLES_PATH / ENV_NAME below if your data/output folders or the
-environment being plotted move, then run:
+FRAME_CHECKPOINTS_MS additionally exports each panel of those checkpoints as its own standalone
+square image (no title/axis labels/ticks/grid -- just the workspace square, obstacles, tree,
+trajectory, and start/goal) into OUT_DIR/frames/, alongside the normal combined multi-panel figure
+every checkpoint still gets.
+
+Edit DATA_DIR / OUT_DIR / OBSTACLES_PATH / ENV_NAME / FRAME_CHECKPOINTS_MS below if your
+data/output folders, the environment being plotted, or which checkpoints get frame exports move,
+then run:
     python plots/tree_checkpoint.py
 """
 from __future__ import annotations
@@ -63,8 +77,19 @@ ENV_NAME = "zigzag"
 TOKEN_LABELS = {"KPAX": "Kino-PAX", "KinoPaxPlus": "Kino-PAX+", "CountingStars": "KinoPax*"}
 TOKENS = list(TOKEN_LABELS)
 
-NODE_FRACTION = 0.15    # fraction of nodes drawn per panel
-EDGE_FRACTION = 0.15    # fraction of parent edges drawn per panel
+NODE_FRACTION = 1.0    # fraction of nodes drawn per panel -- 0.15 was fine for KPAX/CountingStars
+                        # (already dense enough to look like a solid mass either way) but made
+                        # Kino-PAX+ look poorly connected: at some checkpoints its ~300k nodes are
+                        # heavily concentrated in tight clusters rather than spread evenly (a real
+                        # search-behavior difference, confirmed directly against the dumped CSVs --
+                        # not a rendering or data bug), so a fixed 15% sample left its already-thin
+                        # open-corridor coverage looking like scattered, disconnected-looking long
+                        # strands. Bumping this doesn't meaningfully change how the already-dense
+                        # trees look, but fills in enough of Kino-PAX+'s sparser regions to read as
+                        # connected structure instead.
+EDGE_FRACTION = 1.0     # fraction of the SHOWN nodes' own edges drawn -- see module docstring;
+                        # 1.0 means every shown node's edge to its parent is drawn, so nothing
+                        # ever appears to float disconnected.
 OBSTACLE_ALPHA = 0.35   # top-down = obstacles don't stack along the view axis like 3D does
 NODE_SIZE = 6
 TRAJ_LINEWIDTH = 2.2
@@ -72,6 +97,9 @@ TRAJ_COLOR = "#1a59f2"
 SOLVED_COLOR = "#0d7a1a"
 UNSOLVED_COLOR = "#991414"
 NODATA_COLOR = "#808080"
+GOAL_COLOR = "#26b33f"
+
+FRAME_CHECKPOINTS_MS = (100, 1000)  # which checkpoints also get standalone per-panel frame exports
 
 
 def discover_checkpoints(data_dir: str, env: str, tokens: list) -> list:
@@ -112,29 +140,33 @@ def draw_workspace_square(ax, meta: dict) -> None:
 
 
 def draw_tree(ax, tree: pd.DataFrame) -> None:
-    """Top-down (X-Y) parent edges (NaN-separated segments) + nodes colored by insertion order
-    (idx), both subsampled evenly over insertion order -- direct port of the .m original's
-    drawTree2D."""
+    """Top-down (X-Y) nodes colored by insertion order (idx), subsampled evenly over insertion
+    order (NODE_FRACTION), plus parent edges for that SAME shown-node set (never an independently
+    subsampled domain -- see module docstring for why that used to make connected nodes look
+    like they were floating with no parent)."""
     n = len(tree)
     if n == 0:
         return
 
     parent = tree["parent"].to_numpy()
     tree_x, tree_y = tree["x"].to_numpy(), tree["y"].to_numpy()
-    child_rows = np.flatnonzero(parent >= 0)
-    if EDGE_FRACTION > 0 and len(child_rows) > 0:
-        n_edge = max(1, round(EDGE_FRACTION * len(child_rows)))
-        if n_edge < len(child_rows):
-            pick = np.unique(np.round(np.linspace(0, len(child_rows) - 1, n_edge)).astype(int))
-            child_rows = child_rows[pick]
-        parent_rows = parent[child_rows]  # 0-indexed; rows are already in idx order
-        nan_col = np.full(len(child_rows), np.nan)
-        xs = np.stack([tree_x[child_rows], tree_x[parent_rows], nan_col], axis=1).ravel()
-        ys = np.stack([tree_y[child_rows], tree_y[parent_rows], nan_col], axis=1).ravel()
-        ax.plot(xs, ys, "-", color="#b8b8bf", linewidth=0.3, zorder=2)
 
     n_node = max(1, round(NODE_FRACTION * n))
     ridx = np.unique(np.round(np.linspace(0, n - 1, min(n_node, n))).astype(int))
+
+    edge_src = ridx[parent[ridx] >= 0]
+    if EDGE_FRACTION < 1.0 and len(edge_src) > 0:
+        n_edge = max(1, round(EDGE_FRACTION * len(edge_src)))
+        if n_edge < len(edge_src):
+            pick = np.unique(np.round(np.linspace(0, len(edge_src) - 1, n_edge)).astype(int))
+            edge_src = edge_src[pick]
+    if len(edge_src) > 0:
+        parent_rows = parent[edge_src]
+        nan_col = np.full(len(edge_src), np.nan)
+        xs = np.stack([tree_x[edge_src], tree_x[parent_rows], nan_col], axis=1).ravel()
+        ys = np.stack([tree_y[edge_src], tree_y[parent_rows], nan_col], axis=1).ravel()
+        ax.plot(xs, ys, "-", color="#b8b8bf", linewidth=0.3, zorder=2)
+
     ax.scatter(tree_x[ridx], tree_y[ridx], s=NODE_SIZE, c=tree["idx"].to_numpy()[ridx],
                cmap="turbo", alpha=0.8, zorder=3)
 
@@ -145,9 +177,9 @@ def draw_trajectory(ax, traj: pd.DataFrame) -> None:
 
 def draw_start_goal(ax, meta: dict) -> None:
     ax.scatter([meta["start_x"]], [meta["start_y"]], s=55, marker="o",
-               facecolors="#26b33f", edgecolors="black", linewidths=0.8, zorder=5)
-    ax.scatter([meta["goal_x"]], [meta["goal_y"]], s=130, marker="*",
-               facecolors="#d92626", edgecolors="black", linewidths=0.8, zorder=5)
+               facecolors=GOAL_COLOR, edgecolors="black", linewidths=0.8, zorder=5)
+    ax.scatter([meta["goal_x"]], [meta["goal_y"]], s=220, marker="o",
+               facecolors=GOAL_COLOR, edgecolors="black", linewidths=0.8, zorder=5)
 
 
 def finish_axes(ax, meta: dict) -> None:
@@ -160,36 +192,44 @@ def finish_axes(ax, meta: dict) -> None:
     ax.tick_params(labelsize=7)
 
 
+def draw_panel(ax, token: str, checkpoint_ms: int, meta: dict, obstacles) -> tuple:
+    """Draws obstacles/workspace/tree/trajectory/start-goal for one token at one checkpoint onto
+    `ax`. Returns (title_text, title_color) describing solve status, for callers that want a
+    title -- the standalone frame exporter doesn't."""
+    tree_path = os.path.join(DATA_DIR, f"{ENV_NAME}_{token}_t{checkpoint_ms}ms_tree.csv")
+    traj_path = os.path.join(DATA_DIR, f"{ENV_NAME}_{token}_t{checkpoint_ms}ms_traj.csv")
+
+    if obstacles is not None:
+        draw_obstacles(ax, obstacles)
+    draw_workspace_square(ax, meta)
+
+    if not os.path.isfile(tree_path):
+        print(f"  [warn] missing tree file: {tree_path}")
+        title_text, title_color = "no data", NODATA_COLOR
+    else:
+        tree = pd.read_csv(tree_path)
+        draw_tree(ax, tree)
+        if os.path.isfile(traj_path):
+            traj = pd.read_csv(traj_path)
+        else:
+            print(f"  [warn] missing trajectory file: {traj_path}")
+            traj = pd.DataFrame()
+        if len(traj) > 0:
+            draw_trajectory(ax, traj)
+            title_text = f"N={len(tree)} nodes | SOLVED, cost={traj['cost'].iloc[-1]:.4f}"
+            title_color = SOLVED_COLOR
+        else:
+            title_text = f"N={len(tree)} nodes | no solution yet"
+            title_color = UNSOLVED_COLOR
+
+    draw_start_goal(ax, meta)
+    return title_text, title_color
+
+
 def plot_checkpoint(checkpoint_ms: int, meta: dict, obstacles) -> plt.Figure:
     fig, axes = plt.subplots(1, len(TOKENS), figsize=(15.0, 5.6))
     for ax, token in zip(axes, TOKENS):
-        tree_path = os.path.join(DATA_DIR, f"{ENV_NAME}_{token}_t{checkpoint_ms}ms_tree.csv")
-        traj_path = os.path.join(DATA_DIR, f"{ENV_NAME}_{token}_t{checkpoint_ms}ms_traj.csv")
-
-        if obstacles is not None:
-            draw_obstacles(ax, obstacles)
-        draw_workspace_square(ax, meta)
-
-        if not os.path.isfile(tree_path):
-            print(f"  [warn] missing tree file: {tree_path}")
-            title_text, title_color = "no data", NODATA_COLOR
-        else:
-            tree = pd.read_csv(tree_path)
-            draw_tree(ax, tree)
-            if os.path.isfile(traj_path):
-                traj = pd.read_csv(traj_path)
-            else:
-                print(f"  [warn] missing trajectory file: {traj_path}")
-                traj = pd.DataFrame()
-            if len(traj) > 0:
-                draw_trajectory(ax, traj)
-                title_text = f"N={len(tree)} nodes | SOLVED, cost={traj['cost'].iloc[-1]:.4f}"
-                title_color = SOLVED_COLOR
-            else:
-                title_text = f"N={len(tree)} nodes | no solution yet"
-                title_color = UNSOLVED_COLOR
-
-        draw_start_goal(ax, meta)
+        title_text, title_color = draw_panel(ax, token, checkpoint_ms, meta, obstacles)
         finish_axes(ax, meta)
         ax.set_title(f"{TOKEN_LABELS.get(token, token)}\n{title_text}", fontsize=9, color=title_color)
 
@@ -197,6 +237,27 @@ def plot_checkpoint(checkpoint_ms: int, meta: dict, obstacles) -> plt.Figure:
                  fontsize=12, fontweight="bold")
     fig.tight_layout()
     return fig
+
+
+def save_frame(token: str, checkpoint_ms: int, meta: dict, obstacles, frames_dir: str) -> str:
+    """One panel, standalone -- no title, axis labels, ticks, or grid, just the workspace square
+    with its content, cropped tight so the saved image is exactly that square."""
+    fig, ax = plt.subplots(figsize=(6.0, 6.0))
+    draw_panel(ax, token, checkpoint_ms, meta, obstacles)
+    ax.set_xlim(meta["W_MIN"], meta["W_MAX"])
+    ax.set_ylim(meta["W_MIN"], meta["W_MAX"])
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    path = os.path.join(frames_dir, f"{ENV_NAME}_{token}_t{checkpoint_ms}ms.png")
+    fig.savefig(path, dpi=200, bbox_inches="tight", pad_inches=0)
+    plt.close(fig)
+    return path
 
 
 def main() -> None:
@@ -215,6 +276,14 @@ def main() -> None:
     print(f"Checkpoints found: {checkpoints} ms")
 
     os.makedirs(OUT_DIR, exist_ok=True)
+    frames_dir = os.path.join(OUT_DIR, "frames")
+    frame_checkpoints = [c for c in FRAME_CHECKPOINTS_MS if c in checkpoints]
+    missing_frame_checkpoints = [c for c in FRAME_CHECKPOINTS_MS if c not in checkpoints]
+    if missing_frame_checkpoints:
+        print(f"[warn] FRAME_CHECKPOINTS_MS {missing_frame_checkpoints} not found on disk -- skipping those.")
+    if frame_checkpoints:
+        os.makedirs(frames_dir, exist_ok=True)
+
     for checkpoint_ms in checkpoints:
         print(f"\nRendering checkpoint t={checkpoint_ms}ms...")
         fig = plot_checkpoint(checkpoint_ms, meta, obstacles)
@@ -225,6 +294,11 @@ def main() -> None:
         fig.savefig(svg_path, bbox_inches="tight")
         plt.close(fig)
         print(f"  Wrote {png_path} + .svg")
+
+        if checkpoint_ms in frame_checkpoints:
+            for token in TOKENS:
+                frame_path = save_frame(token, checkpoint_ms, meta, obstacles, frames_dir)
+                print(f"  Wrote frame {frame_path}")
 
 
 if __name__ == "__main__":
