@@ -14,6 +14,7 @@ viz/figs/*
 plots/DATA/*
 plots/output/*
 !plots/output/.gitkeep
+plots/output_*/
 __pycache__/
 # NSIGHT
 NSight/*

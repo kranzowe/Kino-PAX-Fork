@@ -188,7 +188,7 @@
 # edgeCost), so none can vary within one binary. This script therefore borrows
 # run_delta_benchmark.sh's build-cache pattern: write config.h and build once per (model, cost
 # metric), caching each binary under a suffixed name, then run them in a second pass. Both labels
-# ride into every output filename via the argv[1] TAG (m1_fine_time / m2_fine_time / ... -- see
+# ride into every output filename via the argv[1] TAG (m1_large_time / m2_large_time / ... -- see
 # the model axis further below), which is what keeps different models' per-run CSVs from colliding
 # (see the BUILD phase's own comment for why that matters).
 #
@@ -197,7 +197,7 @@
 # (ReKino and friends) scroll past on every build. They are pre-existing and unavoidable without
 # splitting the library.
 #
-# ALL THREE MODELS RUN THIS PASS, each at exactly ONE discretization ("fine") instead of a
+# ALL THREE MODELS RUN THIS PASS, each at exactly ONE discretization ("large") instead of a
 # large/fine/tiny sweep -- see the model axis (MODEL_IDS/MODEL_W_R1S/MODEL_C_R1S/MODEL_V_R1S)
 # further below for the derivation of each model's one point.
 #
@@ -208,13 +208,12 @@
 # model was active, which is why all three shapes are handled explicitly (compute_regions() below,
 # and write_config()'s three case arms) rather than one formula being re-derived per switch.
 #
-# "fine" names the CELL, not the count, and the count differs by model: 262,144 regions for Double
-# Integrator and Dubins Airplane, 216,000 for Quad (see the model axis further below for why Quad is
+# "large" names the CELL, not the count, and the count differs by model: 9,261 regions for Double
+# Integrator and Dubins Airplane, 8,000 for Quad (see the model axis further below for why Quad is
 # deliberately kept smaller). Watch it for the per-region arrays -- every NUM_R1_REGIONS allocation
 # and every full-array fill scales with this, and graph_.updateVertices() runs a kernel over all of
-# them with 64 sub-vertex reads each -- these counts are ~28x (DI/Dubins) / ~27x (Quad) larger than
-# "large"'s, so GPU memory/kernel-time pressure is real here in a way it wasn't at "large" (though
-# lighter than "tiny"'s ~65x/~47x).
+# them with 64 sub-vertex reads each -- "large" is the lightest of the three points on this axis
+# (GPU memory/kernel-time pressure is real at "fine"/"tiny", ~28x/~65x heavier for DI/Dubins).
 #
 # Original config.h is backed up and restored on exit/error.
 #
@@ -239,17 +238,17 @@ BUILD_DIR="$PROJECT_DIR/build"
 # Model axis: build and run ALL THREE vehicle models, not one at a time.
 # MODEL_IDS/MODEL_NAMES drive write_config()'s `case "$MODEL"` (see write_config() below).
 # Discretization is a single fixed point per model (MODEL_W_R1S/MODEL_C_R1S/MODEL_V_R1S), not a
-# large/fine/tiny sweep. ACTIVE THIS PASS: "fine" (moved down from "tiny", which ran previously and
+# large/fine/tiny sweep. ACTIVE THIS PASS: "large" (moved down from "fine", which ran previously and
 # completed -- see the large/fine/tiny derivation history immediately below for every point's
 # numbers per model; only the delta LABEL and the three arrays below changed, nothing else in this
 # file's structure did):
-#   Model 1 (Double Integrator): W_R1=16, V_R1=4 (C_R1 inert, C_DIM=0) -> 16^3*4^3     = 262,144
-#   Model 2 (Dubins Airplane):   W_R1=16, C_R1=4, V_R1=4               -> 16^3*4^2*4   = 262,144
-#   Model 3 (Quad):              W_R1=6,  C_R1=2, V_R1=5               -> 6^3*2^3*5^3  = 216,000
-# Models 1/2 again land on the SAME region count at "fine" (262,144), same as they did at "large"
-# (9,261) and "tiny" (592,704) -- all three points come from run_countingstars_sweep.sh's/
+#   Model 1 (Double Integrator): W_R1=7, V_R1=3 (C_R1 inert, C_DIM=0) -> 7^3*3^3      = 9,261
+#   Model 2 (Dubins Airplane):   W_R1=7, C_R1=3, V_R1=3               -> 7^3*3^2*3    = 9,261
+#   Model 3 (Quad):              W_R1=5, C_R1=2, V_R1=2               -> 5^3*2^3*2^3  = 8,000
+# Models 1/2 again land on the SAME region count at "large" (9,261), same as they did at "fine"
+# (262,144) and "tiny" (592,704) -- all three points come from run_countingstars_sweep.sh's/
 # run_paper_benchmark.sh's own shared large/fine/tiny arrays for those two models (see the
-# derivation history below). "large" and "tiny" are NOT currently run for any model -- both kept
+# derivation history below). "fine" and "tiny" are NOT currently run for any model -- both kept
 # fully specified below (not deleted) in case a future pass wants either back.
 #
 # ALL THREE DELTAS USED TO MATCH run_paper_benchmark.sh's OWN DELTAS EXACTLY for Double
@@ -268,19 +267,20 @@ BUILD_DIR="$PROJECT_DIR/build"
 # resolution, the same role C_R1=3/4/6 played for Dubins -- just not big enough on its own here to
 # hit the exact counts, since the three-cubed-term formula grows much faster per unit of W_R1/V_R1
 # than Dubins' two-cubed-term one did):
-#   large   W_R1=5  C_R1=2  V_R1=2  ->  5^3 * 2^3 * 2^3 =   8,000   (target 9k,   -11%)  -- not currently run
-#   fine    W_R1=6  C_R1=2  V_R1=5  ->  6^3 * 2^3 * 5^3 = 216,000   (target 200k, +8%)   -- ACTIVE FOR QUAD
+#   large   W_R1=5  C_R1=2  V_R1=2  ->  5^3 * 2^3 * 2^3 =   8,000   (target 9k,   -11%)  -- ACTIVE FOR QUAD
+#   fine    W_R1=6  C_R1=2  V_R1=5  ->  6^3 * 2^3 * 5^3 = 216,000   (target 200k, +8%)   -- not currently run
 #
 # tiny WAS W_R1=7/V_R1=6 (592,704 regions) -- KPAX repeatedly hit a confirmed buffer-overshoot
 # bug at that size (h_treeSize_ exceeding MAX_TREE_SIZE via propagateFrontier()'s
 # h_propIterations_==0 edge case, KPAX.cu:254-271): a hang under Dubins Airplane, then a
 # cudaErrorIllegalAddress crash under Quad on Jetson. Reduced instead of patching that kernel
-# logic yet, to test whether staying further from MAX_TREE_SIZE avoids the trigger entirely.
-# tiny (reduced) subsequently ran a full pass (see git history around decdbd7) and is NOT active
-# this pass -- "fine" (216,000 regions) is well below both tiny points (373,248 / 592,704) and only
-# ~27x "large", so it carries markedly less of this particular risk; the per-planner `timeout`-
-# wrapped process isolation further below remains the safety net regardless (CRASHED/TIMEOUT is
-# caught, logged, and skipped past rather than hanging the whole sweep):
+# logic yet, to test whether staying further from MAX_TREE_SIZE avoids the trigger entirely --
+# tiny (reduced) has since run a full pass in this harness (see git history around decdbd7).
+# Neither tiny point is active this pass -- "large" (8,000 regions for Quad) is essentially immune
+# to this bug regardless (two full orders of magnitude below the ~592k+ trigger threshold); the
+# per-planner `timeout`-wrapped process isolation further below remains the general safety net for
+# any model/delta (CRASHED/TIMEOUT is caught, logged, and skipped past rather than hanging the
+# whole sweep):
 #   tiny (OLD)      W_R1=7  C_R1=2  V_R1=6  ->  7^3 * 2^3 * 6^3 = 592,704   (target 600k, -1%)  -- not used, confirmed buggy
 #   tiny (reduced)  W_R1=6  C_R1=2  V_R1=6  ->  6^3 * 2^3 * 6^3 = 373,248   (-37% vs old tiny)   -- not currently run
 #
@@ -308,19 +308,19 @@ BUILD_DIR="$PROJECT_DIR/build"
 
 MODEL_IDS=(1 2 3)
 MODEL_NAMES=("DoubleIntegrator" "DubinsAirplane" "Quad")
-# --- Previous discretizations this pass: "large", then "tiny" (commented out, not deleted) ---
-# MODEL_DELTA_LABELS=("large" "large" "large")
-# MODEL_W_R1S=(7  7  5)
-# MODEL_C_R1S=(1  3  2)
-# MODEL_V_R1S=(3  3  2)
+# --- Previous discretizations this pass: "tiny", then "fine" (commented out, not deleted) ---
 # MODEL_DELTA_LABELS=("tiny" "tiny" "tiny")
 # MODEL_W_R1S=(14  14  6)
 # MODEL_C_R1S=(1   6   2)
 # MODEL_V_R1S=(6   6   6)
-MODEL_DELTA_LABELS=("fine" "fine" "fine")
-MODEL_W_R1S=(16  16  6)
-MODEL_C_R1S=(1   4   2)   # placeholder/inert for Model 1 (C_DIM 0 -- see write_config())
-MODEL_V_R1S=(4   4   5)
+# MODEL_DELTA_LABELS=("fine" "fine" "fine")
+# MODEL_W_R1S=(16  16  6)
+# MODEL_C_R1S=(1   4   2)
+# MODEL_V_R1S=(4   4   5)
+MODEL_DELTA_LABELS=("large" "large" "large")
+MODEL_W_R1S=(7  7  5)
+MODEL_C_R1S=(1  3  2)   # placeholder/inert for Model 1 (C_DIM 0 -- see write_config())
+MODEL_V_R1S=(3  3  2)
 
 # Per-model NUM_R1_REGIONS formula -- shape differs by model (see write_config()'s three arms):
 #   Model 1 (C_DIM 0): W_R1^3 * V_R1^3               (no C_R1 term)

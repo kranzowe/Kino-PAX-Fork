@@ -50,7 +50,16 @@ new hardware data at a genuinely different on-disk discretization ("medium" toke
 request, is treated as equivalent to Fine for comparison purposes here (same overlay treatment,
 same color, matched onto the same Fine row) even though it isn't literally the same sweep.
 
-Edit DATASET_DIR / OUT_DIR below to point at the dataset you want to plot, then run:
+METRICS drives which cost-metric-tagged files build_model_table pools TTFS across -- not every
+dataset sweeps the same ones: the main ZEPHYR_30_runs dataset has "length"/"effort" (TTFS pools
+both, since solve timing doesn't depend on which cost is being minimized), but
+ZEPHYR_30_RUNS_3M_4s_TIME (currently plotted -- see DATASET_DIR) only has one, "time" -- pooling
+is a no-op with just one metric, but the token still has to match what's actually on disk. Only
+affects the MAIN dataset's own load_runs calls -- the Jetson proof-of-concept overlay keeps using
+its own established "length"/"effort" convention regardless (JETSON_DIR is a separate, unrelated
+dataset that hasn't changed).
+
+Edit DATASET_DIR / OUT_DIR / METRICS below to point at the dataset you want to plot, then run:
     python plots/ttfs_ratio_scatter_panel.py
 """
 from __future__ import annotations
@@ -91,11 +100,13 @@ PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
 # ================================================================================================
 # EDIT THESE to point at the dataset and output location you want.
 # DATASET_DIR must directly contain one or more "discretization<LABEL>" folders (tiny/fine/coarse),
-# each of which directly contains the empty/house/narrowPassage/zigzag subfolders.
+# each of which directly contains the empty/house/narrowPassage/zigzag subfolders. METRICS is that
+# dataset's own cost-metric sweep(s) -- see the module docstring.
 # ================================================================================================
-DATASET_DIR = os.path.join(PLOTS_DIR, "DATA", "ZEPHYR_30_runs")
+DATASET_DIR = os.path.join(PLOTS_DIR, "DATA", "ZEPHYR_30_RUNS_3M_4s_TIME")
 JETSON_DIR = os.path.join(PLOTS_DIR, "DATA", "JETSON_20_runs")
-OUT_DIR = os.path.join(PLOTS_DIR, "output", "ttfs_ratio")
+OUT_DIR = os.path.join(PLOTS_DIR, "output_ZEPHYR_30_RUNS_3M_4s_TIME", "ttfs_ratio")
+METRICS = ("time",)
 
 REFERENCE_PLANNER = KPAX     # <-- Which algorithm the whole panel is plotted relative to (y-axis).
 INCLUDE_JETSON = True        # <-- TOGGLE. Flip to False to go back to Zephyr-only, no other changes.
@@ -215,7 +226,9 @@ def build_model_table(model_id: int, discretization_dirs: list[str]) -> pd.DataF
         for env in environments:
             env_dir = os.path.join(disc_dir, env)
             warn_on_unexpected_star_suffixes(env_dir)
-            ref_stats = aggregate_ttfs(load_runs(env_dir, env, REFERENCE_PLANNER, model_id, discretization_label))
+            ref_stats = aggregate_ttfs(
+                load_runs(env_dir, env, REFERENCE_PLANNER, model_id, discretization_label, metrics=METRICS)
+            )
             rows.append({
                 "Discretization": discretization_label,
                 "Environment": env,
@@ -229,7 +242,9 @@ def build_model_table(model_id: int, discretization_dirs: list[str]) -> pd.DataF
                 "Ratio_to_Reference": 1.0 if not math.isnan(ref_stats.mean) else math.nan,
             })
             for planner in PLOTTED_OTHER_PLANNERS:
-                stats = aggregate_ttfs(load_runs(env_dir, env, planner, model_id, discretization_label))
+                stats = aggregate_ttfs(
+                    load_runs(env_dir, env, planner, model_id, discretization_label, metrics=METRICS)
+                )
                 ratio = math.nan
                 if not math.isnan(stats.mean) and not math.isnan(ref_stats.mean) and ref_stats.mean > 0:
                     ratio = stats.mean / ref_stats.mean
@@ -364,7 +379,14 @@ def main() -> None:
     tables = [build_model_table(model_id, discretization_dirs) for model_id in MODEL_IDS]
     n_total_runs = sum(int(t["N_Total"].sum()) for t in tables)
     jetson_stars = {model_id: jetson_star_x_by_env(model_id) for model_id in MODEL_IDS}
-    has_jetson = any(jetson_stars.values())
+    # Not just "does this model have Jetson data" -- the overlay only ever renders on the row
+    # matching JETSON_MATCHING_DISCRETIZATION, so if THIS dataset doesn't have that discretization
+    # at all (e.g. a Tiny-only dataset with the overlay matched to "fine"), no dot ever actually
+    # appears -- don't advertise a legend entry for a color that never renders.
+    has_jetson = any(
+        jetson_stars[model_id] and JETSON_MATCHING_DISCRETIZATION.get(model_id) in discretization_labels
+        for model_id in MODEL_IDS
+    )
 
     # Axes are NOT shared across subplots -- each model gets its own tightest-fit range (see
     # plot_model_panel), same as cost_big_panel.py, so no sharex/sharey/label_outer here.

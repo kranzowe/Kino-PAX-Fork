@@ -78,7 +78,13 @@ def discretization_display(label: str) -> str:
 
 
 COST_METRICS = ("length", "effort")
-COST_METRIC_LABELS = {"length": "Workspace Path Length", "effort": "Control Effort"}
+# "time" is a third cost-metric name, not a different kind of column -- ZEPHYR_30_RUNS_3M_4s_TIME
+# is a sweep that minimizes elapsed time itself instead of path length or control effort, and its
+# per-run CSVs are structurally identical (same best_cost/elapsed_time_ms columns), just tagged
+# "_time_" instead of "_length_"/"_effort_" in the filename. Listed here (not in COST_METRICS,
+# which stays length/effort-only for the main dataset) so any script pointed at that dataset can
+# look up its label the same way as the other two.
+COST_METRIC_LABELS = {"length": "Workspace Path Length", "effort": "Control Effort", "time": "Elapsed Time"}
 MAX_FLOAT_THRESH = 1e30
 DEFAULT_MAX_RUNS = 35  # search cap; harness writes 30 per series -- matches the .m script
 

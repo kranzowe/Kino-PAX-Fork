@@ -38,7 +38,15 @@ on a LINEAR scale that mismatch would be even more punishing than on log -- ther
 compression left to keep a shared range from squashing the smaller models flat. Each panel keeps
 auto-scaling to its own (model, metric) data.
 
-Edit DATASET_DIR / OUT_DIR below to point at the dataset you want to plot, then run:
+PLOT_METRICS (not zephyr_common's COST_METRICS) drives the row loop, since not every dataset
+sweeps the same cost metrics: the main ZEPHYR_30_runs dataset has "length"/"effort" (2 rows), but
+ZEPHYR_30_RUNS_3M_4s_TIME (currently plotted -- see DATASET_DIR) only has one, "time" (a genuinely
+different cost function -- it minimizes elapsed time itself -- not a relabeling of the other two),
+so this renders as a single-row panel instead. `squeeze=False` on plt.subplots keeps `axes`
+2-D (so `axes[row][col]` keeps working) regardless of how many rows that turns out to be.
+
+Edit DATASET_DIR / OUT_DIR / PLOT_METRICS below to point at the dataset you want to plot, then
+run:
     python plots/cost_big_panel_linear.py
 """
 from __future__ import annotations
@@ -57,7 +65,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zephyr_common import (  # noqa: E402
     BASE_COLORS,
     BASE_DISPLAY,
-    COST_METRICS,
     COST_METRIC_LABELS,
     KINOPAX_PLUS,
     MODEL_IDS,
@@ -80,10 +87,12 @@ PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
 # ================================================================================================
 # EDIT THESE to point at the dataset and output location you want.
 # DATASET_DIR must directly contain one or more "discretization<LABEL>" folders (tiny/fine/coarse),
-# each of which directly contains the empty/house/narrowPassage/zigzag subfolders.
+# each of which directly contains the empty/house/narrowPassage/zigzag subfolders. PLOT_METRICS is
+# that dataset's own cost-metric sweep(s) -- see the module docstring.
 # ================================================================================================
-DATASET_DIR = os.path.join(PLOTS_DIR, "DATA", "ZEPHYR_30_runs_3M_4s_TIME")
-OUT_DIR = os.path.join(PLOTS_DIR, "output", "cost_ratio")
+DATASET_DIR = os.path.join(PLOTS_DIR, "DATA", "ZEPHYR_30_RUNS_3M_4s_TIME")
+OUT_DIR = os.path.join(PLOTS_DIR, "output_ZEPHYR_30_RUNS_3M_4s_TIME", "cost_ratio")
+PLOT_METRICS = ("time",)
 
 EXCLUDED_ENVIRONMENTS = {"empty"}  # trivially solved by everyone -- not an interesting comparison
 
@@ -247,8 +256,10 @@ def main() -> None:
     print(f"Dataset: {DATASET_DIR}")
     print(f"Discretizations found: {discretization_labels}")
 
-    n_rows, n_cols = len(COST_METRICS), len(MODEL_IDS)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(14.5, 9.3),
+    n_rows, n_cols = len(PLOT_METRICS), len(MODEL_IDS)
+    # 4.5in/row (matches the original 2-row panel's 9.3in at n_rows=2) + a fixed 0.5in for the
+    # x-axis label/margins regardless of row count. squeeze=False keeps axes 2-D even at n_rows=1.
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(14.5, 4.5 * n_rows + 0.5), squeeze=False,
                               gridspec_kw={"hspace": 0.16, "wspace": 0.16})
 
     algo_handles = [
@@ -270,7 +281,7 @@ def main() -> None:
     row_labels = []
     n_total_runs = 0
     drone_col = MODEL_IDS.index(3)
-    for row, metric in enumerate(COST_METRICS):
+    for row, metric in enumerate(PLOT_METRICS):
         for col, model_id in enumerate(MODEL_IDS):
             table = build_model_cost_table(model_id, metric, discretization_dirs)
             all_tables.append(table)
