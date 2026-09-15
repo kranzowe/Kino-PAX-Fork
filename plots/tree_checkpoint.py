@@ -90,14 +90,14 @@ NODE_FRACTION = 1.0    # fraction of nodes drawn per panel -- 0.15 was fine for 
 EDGE_FRACTION = 1.0     # fraction of the SHOWN nodes' own edges drawn -- see module docstring;
                         # 1.0 means every shown node's edge to its parent is drawn, so nothing
                         # ever appears to float disconnected.
-OBSTACLE_ALPHA = 0.35   # top-down = obstacles don't stack along the view axis like 3D does
+OBSTACLE_ALPHA = 0.5   # top-down = obstacles don't stack along the view axis like 3D does
 NODE_SIZE = 6
 TRAJ_LINEWIDTH = 2.2
-TRAJ_COLOR = "#1a59f2"
+TRAJ_COLOR = "#008533"
 SOLVED_COLOR = "#0d7a1a"
 UNSOLVED_COLOR = "#991414"
 NODATA_COLOR = "#808080"
-GOAL_COLOR = "#26b33f"
+GOAL_COLOR = "#00a51e"
 
 FRAME_CHECKPOINTS_MS = (100, 1000)  # which checkpoints also get standalone per-panel frame exports
 
@@ -129,7 +129,7 @@ def draw_obstacles(ax, obstacles: np.ndarray) -> None:
     slice) -- same as the .m original's drawObstacles2D."""
     for xmin, ymin, _zmin, xmax, ymax, _zmax in obstacles:
         ax.add_patch(Rectangle((xmin, ymin), xmax - xmin, ymax - ymin,
-                                facecolor="#738296", edgecolor="#4d4d4d",
+                                facecolor="#000000", edgecolor="#0e0000",
                                 alpha=OBSTACLE_ALPHA, linewidth=0.5, zorder=1))
 
 
@@ -172,13 +172,28 @@ def draw_tree(ax, tree: pd.DataFrame) -> None:
 
 
 def draw_trajectory(ax, traj: pd.DataFrame) -> None:
-    ax.plot(traj["x"], traj["y"], "-", color=TRAJ_COLOR, linewidth=TRAJ_LINEWIDTH, zorder=4)
+    # Dark outline
+    ax.plot(
+        traj["x"], traj["y"],
+        "-",
+        color=TRAJ_COLOR,
+        linewidth=TRAJ_LINEWIDTH + 2,
+        zorder=4,
+    )
 
+    # Main trajectory
+    ax.plot(
+        traj["x"], traj["y"],
+        "-",
+        color="#16ff16",
+        linewidth=TRAJ_LINEWIDTH,
+        zorder=5,
+    )
 
 def draw_start_goal(ax, meta: dict) -> None:
-    ax.scatter([meta["start_x"]], [meta["start_y"]], s=55, marker="o",
-               facecolors=GOAL_COLOR, edgecolors="black", linewidths=0.8, zorder=5)
-    ax.scatter([meta["goal_x"]], [meta["goal_y"]], s=220, marker="o",
+    ax.scatter([meta["start_x"]], [meta["start_y"]], s=80, marker="o",
+               facecolors="#f716ff", edgecolors="black", linewidths=0.8, zorder=5)
+    ax.scatter([meta["goal_x"]], [meta["goal_y"]], s=400, marker="o",
                facecolors=GOAL_COLOR, edgecolors="black", linewidths=0.8, zorder=5)
 
 
