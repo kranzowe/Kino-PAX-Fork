@@ -1,14 +1,18 @@
-"""Tree checkpoint plot: top-down (X-Y), one panel per planner (Kino-PAX, Kino-PAX+, SimpleCombo),
+"""Tree checkpoint plot: top-down (X-Y), one panel per planner (Kino-PAX, Kino-PAX+, KinoPax*),
 each showing that planner's tree at a chosen wall-clock checkpoint, with its solution trajectory
 overlaid if one existed yet at that checkpoint.
 
-Python port of scripts/plot_tree_checkpoint.m (kept for reference, MATLAB-only) -- renders the
-wall-clock-checkpoint tree + solution-trajectory dumps written by
-examples/gpu/tree_checkpoint_dump.cu (via scripts/run_tree_checkpoint_dump.sh), on the zigzag
-corridor, Model 1, V2's canonical "large"/coarse discretization.
+Python port of scripts/plot_tree_checkpoint.m (kept for reference, MATLAB-only, and kept in sync
+with it -- re-check this file whenever that one changes) -- renders the wall-clock-checkpoint
+tree + solution-trajectory dumps written by examples/gpu/tree_checkpoint_dump.cu (via
+scripts/run_tree_checkpoint_dump.sh), on the zigzag corridor, Model 1, V2's canonical
+"large"/coarse discretization.
 
 Input (in DATA_DIR):
-    {env}_{token}_t{ms}ms_tree.csv   columns idx,x,y,z,vx,vy,vz,parent,cost
+    {env}_{token}_t{ms}ms_tree.csv   columns idx,x,y,z,vx,vy,vz,parent,cost -- already dumped at
+                                     only 10% of leaf trajectories (tree_checkpoint_dump.cu's own
+                                     doing); NODE_FRACTION/EDGE_FRACTION below are a further,
+                                     purely cosmetic render-time subsample on top of that.
     {env}_{token}_t{ms}ms_traj.csv   columns step,x,y,z,vx,vy,vz,cost (0 rows if unsolved yet)
     meta.csv                        workspace bounds + start/goal
 
@@ -53,10 +57,10 @@ OBSTACLES_PATH = os.path.join(REPO_ROOT, "include", "config", "obstacles", "zigz
 
 ENV_NAME = "zigzag"
 # On-disk token -> display label. These are tree_checkpoint_dump.cu's OWN token spellings
-# (e.g. "KinoPaxSTARTrue", no tuning-constant suffix) -- a different, simpler convention than
-# zephyr_common's BASE_NAMES (e.g. "KinoPaxSTARTrue_cap100_anc1"), so this script stays
-# self-contained rather than trying to force a match against those.
-TOKEN_LABELS = {"KPAX": "Kino-PAX", "KinoPaxPlus": "Kino-PAX+", "KinoPaxSTARTrue": "SimpleCombo"}
+# (e.g. "CountingStars", no tuning-constant suffix) -- a different, simpler convention than
+# zephyr_common's BASE_NAMES (e.g. "CountingStars_bs120_bf40_ef150_cf750_hg1"), so this script
+# stays self-contained rather than trying to force a match against those.
+TOKEN_LABELS = {"KPAX": "Kino-PAX", "KinoPaxPlus": "Kino-PAX+", "CountingStars": "KinoPax*"}
 TOKENS = list(TOKEN_LABELS)
 
 NODE_FRACTION = 0.15    # fraction of nodes drawn per panel

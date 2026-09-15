@@ -159,8 +159,10 @@ def _nice_log_bound(value: float, round_up: bool) -> float:
     exponent = math.floor(math.log10(value))
     candidates = sorted(c * (10.0 ** e) for e in (exponent - 1, exponent, exponent + 1) for c in NICE_COEFFS)
     if round_up:
-        return next(v for v in candidates if v >= value * (1 - 1e-9))
-    return next(v for v in reversed(candidates) if v <= value * (1 + 1e-9))
+        # return next(v for v in candidates if v >= value * (1 - 1e-9))
+        return 4 * (10.0 ** 3)
+    # return next(v for v in reversed(candidates) if v <= value * (1 + 1e-9))
+    return 3 * (10.0 ** 1)
 
 
 def _edge_tick_label(value: float, edges: tuple) -> str:
@@ -359,7 +361,7 @@ def plot_model_panel(ax, table: pd.DataFrame, subtitle: str, model_id: int, jets
         _add_edge_ticks(ax, lo, hi)
 
     ax.set_title(subtitle, fontsize=12, fontweight="bold")
-    ax.set_xlabel("Time to First Solution (ms, log scale) — other algorithms", fontsize=10)
+    ax.set_xlabel("Kino-PAX+ and Kino-PAX# Time to First Solution (ms, log scale)", fontsize=10)
     ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.5)
 
 
@@ -390,7 +392,7 @@ def main() -> None:
 
     # Axes are NOT shared across subplots -- each model gets its own tightest-fit range (see
     # plot_model_panel), same as cost_big_panel.py, so no sharex/sharey/label_outer here.
-    fig, axes = plt.subplots(1, 3, figsize=(16.5, 6.0), gridspec_kw={"wspace": 0.22})
+    fig, axes = plt.subplots(1, 3, figsize=(16.5, 6.0), gridspec_kw={"wspace": 0.18})
 
     for ax, model_id, table in zip(axes, MODEL_IDS, tables):
         plot_model_panel(ax, table, PANEL_SUBTITLES[model_id], model_id, jetson_stars[model_id])
@@ -420,7 +422,7 @@ def main() -> None:
         # they're standing in for), so this lives with the color-coded entries, not the shape ones.
         algo_handles.append(
             Line2D([0], [0], marker="o", linestyle="", markerfacecolor=JETSON_COLOR,
-                   markeredgecolor="black", markersize=9, label="Jetson KinoPax* (proof of concept)")
+                   markeredgecolor="black", markersize=9, label="Jetson KinoPax#")
         )
     disc_handles = [
         Line2D([0], [0], marker=discretization_marker(d), linestyle="", markerfacecolor="#888888",

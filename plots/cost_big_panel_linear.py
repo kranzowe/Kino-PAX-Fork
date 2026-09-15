@@ -247,7 +247,7 @@ def main() -> None:
 
     n_rows, n_cols = len(ROWS), len(MODEL_IDS)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(14.5, 4.5 * n_rows + 0.5), squeeze=False,
-                              gridspec_kw={"hspace": 0.16, "wspace": 0.16})
+                              gridspec_kw={"hspace": 0.12, "wspace": 0.12})
 
     algo_handles = [
         Line2D([0], [0], marker="o", linestyle="", markerfacecolor=BASE_COLORS[p],
@@ -297,7 +297,7 @@ def main() -> None:
                                  fontsize=10)
         pos_left = axes[row][0].get_position()
         y_mid = (pos_left.y0 + pos_left.y1) / 2.0
-        row_labels.append(fig.text(0.018, y_mid, row_cfg["label"], rotation=90,
+        row_labels.append(fig.text(0.038, y_mid, row_cfg["label"], rotation=90,
                                     ha="center", va="center", fontsize=13, fontweight="bold"))
 
     supxlabel = fig.supxlabel(f"Kino-PAX+ and Kino-PAX# Final Cost (linear scale)",

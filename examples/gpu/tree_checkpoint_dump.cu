@@ -25,7 +25,13 @@
 //     the next iteration's reset zeroes it again. A persistent best-known
 //     (bestGoalIdx/bestCost, ratcheted every iteration h_pathToGoal_ is non-zero)
 //     is tracked across the whole run instead, and THAT is what gets checked at
-//     each checkpoint.
+//     each checkpoint. Also note: KPAX's loop deliberately does NOT break on
+//     h_propIterations_==0 (unlike the other two below) -- for KPAX that field is
+//     only ever assigned inside propagateFrontier()'s near-full-tree branch
+//     (KPAX.cu:254-271) and stays stale/0 for the whole normal, plenty-of-room
+//     phase of a run, so checking it here made KPAX's loop exit on essentially
+//     iteration 1 every time. paper_benchmark_v2.cu's own benchmarkKPAX never
+//     checks it either -- only tree-full and the timeout.
 //   KinoPaxPlus / CountingStars: h_pathToGoal_ is not wired up for these; the
 //     real signal is h_minCost_ (< MAX_FLOAT), which the planner itself
 //     maintains as a genuine running minimum across the whole run (monotonic,
@@ -342,7 +348,14 @@ void runKPAXCheckpoints(KPAX& planner, const std::string& token, const std::stri
         }
 
         if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) { printf("  stopped early: tree full\n"); break; }
-        if(planner.h_propIterations_ == 0) { printf("  stopped early: h_propIterations_ == 0\n"); break; }
+        // NOTE: no h_propIterations_==0 break here, unlike the other two loops below. For KPAX
+        // this field is only ever assigned inside propagateFrontier()'s near-full-tree branch
+        // (KPAX.cu:254-271, "if(h_frontierRepeatSize_*h_activeBlockSize_ > MAX_TREE_SIZE-treeSize)")
+        // -- during the normal, plenty-of-room phase of a run it is never touched and stays at
+        // whatever stale/initial value it had (0 by default), which is NOT a "propagation
+        // stalled" signal for this planner. Checking it here previously made KPAX's loop exit on
+        // essentially iteration 1 every time. paper_benchmark_v2.cu's own benchmarkKPAX correctly
+        // never checks this field either -- only tree-full and the timeout.
     }
 
     cudaEventDestroy(iterStart);
