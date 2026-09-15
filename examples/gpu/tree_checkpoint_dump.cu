@@ -82,7 +82,7 @@ static const bool  CS_HOPELESS_GUARD = true;
 static const int   CS_RAMP_FILL_ITERS = 700;
 
 // Fraction of each tree's LEAF nodes (see writeTreeCSV) kept in the tree CSVs.
-static const float TREE_LEAF_SAMPLE_FRAC = 0.02f;
+static const float TREE_LEAF_SAMPLE_FRAC = 0.04f;
 
 // ========================================================================
 // One host-side snapshot of a planner's tree, copied once per checkpoint and
