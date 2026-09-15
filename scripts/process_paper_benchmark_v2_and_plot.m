@@ -82,25 +82,27 @@ FIG3_WIDTH = 1180; FIG3_HEIGHT = 820;   % Tradeoff Scatter
 % One environment per run -- must match the subfolder you cd'd into. Change this each time you
 % move to a different Data/Benchmarks/PaperBenchmarkV2/<env> folder.
 %
-% ALL FOUR ENVIRONMENTS ARE VALID HERE (unlike process_paper_benchmark_and_plot.m, which excludes
-% `empty` because paper_benchmark.cu hangs at tiny/empty) -- paper_benchmark_v2.cu runs on
-% countingstars_sweep.cu's harness instead, which completes every environment cleanly.
-environments = {'empty'};
-envTitles    = {'Empty'};
+% THREE ENVIRONMENTS ARE VALID HERE THIS PASS (empty excluded -- see ENV_NAMES in
+% run_paper_benchmark_v2.sh) -- paper_benchmark_v2.cu runs on countingstars_sweep.cu's harness
+% instead, which completes every environment cleanly (unlike process_paper_benchmark_and_plot.m,
+% which excludes `empty` because paper_benchmark.cu hangs at tiny/empty).
+environments = {'zigzag'};
+envTitles    = {'Zigzag Corridor (tightened)'};
 % Other environments this suite produces (uncomment the one you cd'd into):
 % environments = {'house'};          envTitles = {'House'};
 % environments = {'narrowPassage'};  envTitles = {'Narrow Passage'};
-% environments = {'zigzag'};         envTitles = {'Zigzag Corridor (tightened)'};
 
-% Cost metric axis -- one build each, so one set of figures each. BOTH THIS PASS (see
-% run_paper_benchmark_v2.sh's COST_LABELS). CAUTION under MODEL 3 (Quad): edgeCost() (helper.cuh)
-% has a real COST_MODE==1 branch for MODEL 1 and MODEL 2 (Dubins), but none for MODEL 3 -- so for
-% Quad, "effort" silently falls back to the same workspace-distance formula as "length", and the
-% two metrics' figures/table rows will be identical. Not wrong, just redundant; drop 'effort' below
-% if that's not wanted while running Quad.
-metrics       = {'length', 'effort'};
-metricTitles  = {'Workspace Path Length', 'Control Effort'};
-metricYLabels = {'Path Cost (workspace path length)', 'Path Cost (control effort)'};
+% Cost metric axis -- one build each, so one set of figures each. ONE METRIC THIS PASS (time -- see
+% run_paper_benchmark_v2.sh's COST_LABELS and helper.cuh's edgeCost() COST_MODE==2). Unlike effort
+% (COST_MODE==1, which has no branch for MODEL 3/Quad and silently falls back to workspace
+% distance), time reads the same propagator-stamped dt for every model, so it has no such gap.
+metrics       = {'time'};
+metricTitles  = {'Path Time'};
+metricYLabels = {'Path Cost (time to reach node)'};
+% --- Previous cost axis this pass: length+effort (commented out, not deleted) ---
+% metrics       = {'length', 'effort'};
+% metricTitles  = {'Workspace Path Length', 'Control Effort'};
+% metricYLabels = {'Path Cost (workspace path length)', 'Path Cost (control effort)'};
 % metrics       = {'length'};
 % metricTitles  = {'Workspace Path Length'};
 % metricYLabels = {'Path Cost (workspace path length)'};

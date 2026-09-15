@@ -389,6 +389,10 @@ __device__ __forceinline__ float distance(float* a, float* b)
 // Per-edge path cost from parent state x0 to child state x1, selected by COST_MODE (config.h).
 // Used at every cumulative-cost accumulation site (planner kernels + benchmark computePathCost),
 // so it is both host- and device-callable.
+//   COST_MODE 2: path TIME -- the edge's propagation duration, dt = x1[SAMPLE_DIM-1], already
+//     stamped by the propagator for every model (statePropagator.cu), returned directly instead of
+//     being used only as the multiplier inside COST_MODE 1's effort formula below. Model-agnostic:
+//     unlike COST_MODE 1, this has no per-model gap (see MODEL 3/Quad note under COST_MODE 1).
 //   COST_MODE 1 (default): pure control effort, one branch per model whose child state stamps its
 //     controls into the SAMPLE_DIM tail:
 //       MODEL 1 (double integrator): x1[6..8] = ax,ay,az, x1[9] = dt -> (ax^2+ay^2+az^2)*dt.
@@ -396,6 +400,8 @@ __device__ __forceinline__ float distance(float* a, float* b)
 //         propagateAndCheckDubinsAirplaneRungeKutta in statePropagator.cu for the stamp) ->
 //         (yawRate^2+pitchRate^2+a^2)*dt -- same shape, different physical controls, since both
 //         models share the SAME SAMPLE_DIM = STATE_DIM(6) + CONTROL_DIM(3) + 1 layout.
+//       MODEL 3 (Quad) has no branch here, so it silently falls through to COST_MODE 0's workspace
+//         distance below rather than being caught at compile time.
 //   COST_MODE 0: baseline workspace Euclidean distance (self-contained; host-callable). Also the
 //     fallback for any model without its own COST_MODE==1 branch above, so a model added without
 //     one here degrades to workspace distance rather than being caught at compile time -- adding a
@@ -408,7 +414,15 @@ __device__ __forceinline__ float distance(float* a, float* b)
 
 __host__ __device__ __forceinline__ float edgeCost(const float* x0, const float* x1)
 {
-#if (COST_MODE == 1) && (MODEL == 1)
+#if (COST_MODE == 2)
+    // Path TIME: each edge's propagation duration is already stamped in the last sample slot by
+    // the propagator (dt = STEP_SIZE * propagationDuration -- see statePropagator.cu), the same
+    // value the COST_MODE==1 branches below multiply into their effort formula. Model-agnostic:
+    // works for MODEL 1/2/3 without a per-model branch, unlike COST_MODE==1's effort fallback for
+    // Quad (MODEL 3), which has no branch of its own and silently degrades to distance.
+    (void)x0;
+    return x1[SAMPLE_DIM - 1];
+#elif (COST_MODE == 1) && (MODEL == 1)
     // Pure control effort: integral of ||a||^2 over the edge (no distance term).
     float ax = x1[6], ay = x1[7], az = x1[8], dt = x1[9];
     (void)x0;

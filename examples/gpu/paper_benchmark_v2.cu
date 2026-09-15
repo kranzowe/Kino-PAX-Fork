@@ -1234,7 +1234,7 @@ int main(int argc, char* argv[])
     const int NUM_TRUE_RUNS        = 30;    // drives the KinoPaxSTARTrue anc0/anc1 pair
     const int NUM_CS_RUNS          = 30;    // drives the CountingStars fixed point
     const int MAX_ITERATIONS       = 1000;
-    const float MAX_TIME_MS      = 10000.0f;  // 10 second per-run timeout
+    const float MAX_TIME_MS      = 4000.0f;  // 4 second per-run timeout
 
     // Per-environment subfolder so each environment can be plotted independently.
     std::string outputDir = "Data/Benchmarks/PaperBenchmarkV2/" + envName;
@@ -1251,7 +1251,9 @@ int main(int argc, char* argv[])
     printf("Environment:    %s\n", envName.c_str());
     printf("Mode:           %s\n", selectedName);
     printf("Baselines:      %s (KPAX, %d runs)\n", (skipBaselines || !runKPAX) ? "NO" : "YES", NUM_KPAX_RUNS);
-    printf("Cost metric:    %s (COST_MODE=%d)\n", (COST_MODE == 1) ? "control effort" : "workspace path length", COST_MODE);
+    printf("Cost metric:    %s (COST_MODE=%d)\n",
+           (COST_MODE == 2) ? "path time" : (COST_MODE == 1) ? "control effort" : "workspace path length",
+           COST_MODE);
     printf("Dump viz:       %s\n", g_dumpViz ? "YES (run 0 per variant)" : "NO");
     if(runKinoPaxPlus)
         printf("KinoPaxPlus:    %d runs\n", NUM_KINOPAXPLUS_RUNS);

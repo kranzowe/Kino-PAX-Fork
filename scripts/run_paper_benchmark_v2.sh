@@ -7,7 +7,7 @@
 # was not fully resolved despite a deep investigation. countingstars_sweep.cu (MODEL 1 / Double
 # Integrator), built from the same four planners at the same three discretizations, has completed
 # every delta including `tiny` without hanging. This file is that harness with changes from it:
-# (1) all four environments run, not just one; (2) the sweep's two exploratory grids (CountingStars
+# (1) three environments run, not just one (empty excluded -- see ENV_NAMES below); (2) the sweep's two exploratory grids (CountingStars
 # bufferSlope/bufferFloor, KinoPaxSTARTrue ancestorPrune) are collapsed to the single fixed operating
 # points paper_benchmark.cu was always meant to report; (3) MODEL, which used to name a single
 # active build (originally 1 / Double Integrator, then switched to 2 / Dubins Airplane, then to 3 /
@@ -48,10 +48,11 @@
 #   CountingStars   bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,
 #                   hopelessGuard PERMANENTLY ON (v3.5)      = 1 point  x 30 runs
 #
-# BOTH COST METRICS (length + effort), FOUR ENVIRONMENTS (empty, house, narrowPassage, zigzag --
-# see ENV_NAMES below), one build per (model, cost metric): 3 models x 4 series x 30 runs x 4
-# environments x 2 cost metrics = 2,880 runs total, from 6 compiled binaries, run as 96 separate
-# (model, cost, environment, planner) process invocations, each wrapped in its own timeout.
+# ONE COST METRIC (time -- path duration, COST_MODE==2, see helper.cuh's edgeCost()), THREE
+# ENVIRONMENTS (house, narrowPassage, zigzag -- empty excluded, see ENV_NAMES below), one build per
+# (model, cost metric): 3 models x 4 series x 30 runs x 3 environments x 1 cost metric = 1,080 runs
+# total, from 3 compiled binaries, run as 36 separate (model, cost, environment, planner) process
+# invocations, each wrapped in its own 4-second-capped timeout.
 #
 # The original grid-sweep version of this file (bufferSlope/bufferFloor grid, ancestorPrune {0,1})
 # is countingstars_sweep.cu / run_countingstars_sweep.sh, unmodified by this file's existence.
@@ -180,14 +181,14 @@
 # one model do not automatically hold at the others, so all three need the full comparison, not
 # KinoPaxPlus alone.
 #
-# Runs on all four environments (empty, house, narrowPassage, zigzag -- see ENV_NAMES below), each
-# written to its own subfolder under Data/Benchmarks/PaperBenchmarkV2/<env>/.
+# Runs on three environments (house, narrowPassage, zigzag -- empty excluded, see ENV_NAMES below),
+# each written to its own subfolder under Data/Benchmarks/PaperBenchmarkV2/<env>/.
 #
 # MODEL, NUM_R1_REGIONS, and COST_MODE are all COMPILE-TIME (config.h, and MODEL/a #if inside
 # edgeCost), so none can vary within one binary. This script therefore borrows
 # run_delta_benchmark.sh's build-cache pattern: write config.h and build once per (model, cost
 # metric), caching each binary under a suffixed name, then run them in a second pass. Both labels
-# ride into every output filename via the argv[1] TAG (m1_large_length / m2_large_effort / ... -- see
+# ride into every output filename via the argv[1] TAG (m1_tiny_time / m2_tiny_time / ... -- see
 # the model axis further below), which is what keeps different models' per-run CSVs from colliding
 # (see the BUILD phase's own comment for why that matters).
 #
@@ -196,7 +197,7 @@
 # (ReKino and friends) scroll past on every build. They are pre-existing and unavoidable without
 # splitting the library.
 #
-# ALL THREE MODELS RUN THIS PASS, each at exactly ONE discretization ("large") instead of a
+# ALL THREE MODELS RUN THIS PASS, each at exactly ONE discretization ("tiny") instead of a
 # large/fine/tiny sweep -- see the model axis (MODEL_IDS/MODEL_W_R1S/MODEL_C_R1S/MODEL_V_R1S)
 # further below for the derivation of each model's one point.
 #
@@ -207,11 +208,12 @@
 # model was active, which is why all three shapes are handled explicitly (compute_regions() below,
 # and write_config()'s three case arms) rather than one formula being re-derived per switch.
 #
-# "large" names the CELL, not the count, and the count differs by model: 9,261 regions for Double
-# Integrator and Dubins Airplane, 8,000 for Quad (see the model axis further below for why Quad is
+# "tiny" names the CELL, not the count, and the count differs by model: 592,704 regions for Double
+# Integrator and Dubins Airplane, 373,248 for Quad (see the model axis further below for why Quad is
 # deliberately kept smaller). Watch it for the per-region arrays -- every NUM_R1_REGIONS allocation
 # and every full-array fill scales with this, and graph_.updateVertices() runs a kernel over all of
-# them with 64 sub-vertex reads each.
+# them with 64 sub-vertex reads each -- these counts are ~65x (DI/Dubins) / ~47x (Quad) larger than
+# "large"'s, so GPU memory/kernel-time pressure is real here in a way it wasn't at "large".
 #
 # Original config.h is backed up and restored on exit/error.
 #
@@ -233,21 +235,22 @@ CONFIG_FILE="$PROJECT_DIR/include/config/config.h"
 CONFIG_BACKUP="$CONFIG_FILE.bak"
 BUILD_DIR="$PROJECT_DIR/build"
 
-# Model axis (NEW this pass): build and run ALL THREE vehicle models, not one at a time.
+# Model axis: build and run ALL THREE vehicle models, not one at a time.
 # MODEL_IDS/MODEL_NAMES drive write_config()'s `case "$MODEL"` (see write_config() below).
-# Discretization is ALSO no longer a 3-point (large/fine/tiny) sweep per model -- each model now
-# runs at exactly ONE fixed point (MODEL_W_R1S/MODEL_C_R1S/MODEL_V_R1S). ACTIVE THIS PASS: "large"
-# (the coarsest point -- moved down from "fine", which itself had moved up from "tiny"; see the
-# large/fine/tiny derivation history immediately below for every point's numbers per model; only
-# the delta LABEL and the three arrays below changed, nothing else in this file's structure did):
-#   Model 1 (Double Integrator): W_R1=7, V_R1=3 (C_R1 inert, C_DIM=0) -> 7^3*3^3      = 9,261
-#   Model 2 (Dubins Airplane):   W_R1=7, C_R1=3, V_R1=3               -> 7^3*3^2*3    = 9,261
-#   Model 3 (Quad):              W_R1=5, C_R1=2, V_R1=2               -> 5^3*2^3*2^3  = 8,000
-# Models 1/2 again land on the SAME region count at "large" (9,261), same as they did at "fine"
-# (262,144) and "tiny" (592,704) -- all three points come from run_countingstars_sweep.sh's/
+# Discretization is a single fixed point per model (MODEL_W_R1S/MODEL_C_R1S/MODEL_V_R1S), not a
+# large/fine/tiny sweep. ACTIVE THIS PASS: "tiny" (moved up from "large", which ran previously --
+# see the large/fine/tiny derivation history immediately below for every point's numbers per model;
+# only the delta LABEL and the three arrays below changed, nothing else in this file's structure
+# did):
+#   Model 1 (Double Integrator): W_R1=14, V_R1=6 (C_R1 inert, C_DIM=0) -> 14^3*6^3     = 592,704
+#   Model 2 (Dubins Airplane):   W_R1=14, C_R1=6, V_R1=6               -> 14^3*6^2*6   = 592,704
+#   Model 3 (Quad):              W_R1=6,  C_R1=2, V_R1=6               -> 6^3*2^3*6^3  = 373,248
+# Models 1/2 again land on the SAME region count at "tiny" (592,704), same as they did at "large"
+# (9,261) and "fine" (262,144) -- all three points come from run_countingstars_sweep.sh's/
 # run_paper_benchmark.sh's own shared large/fine/tiny arrays for those two models (see the
-# derivation history below). "fine" and "tiny" are NOT currently run for any model -- both kept
-# fully specified below (not deleted) in case a future pass wants either back.
+# derivation history below), and this sweep's own tiny for Models 1/2 previously ran clean for all
+# four planners (see that history, immediately below). "large" and "fine" are NOT currently run for
+# any model -- both kept fully specified below (not deleted) in case a future pass wants either back.
 #
 # ALL THREE DELTAS USED TO MATCH run_paper_benchmark.sh's OWN DELTAS EXACTLY for Double
 # Integrator/Dubins (kept in step by hand -- there is no cross-check between the two sweep tools).
@@ -265,22 +268,22 @@ BUILD_DIR="$PROJECT_DIR/build"
 # resolution, the same role C_R1=3/4/6 played for Dubins -- just not big enough on its own here to
 # hit the exact counts, since the three-cubed-term formula grows much faster per unit of W_R1/V_R1
 # than Dubins' two-cubed-term one did):
-#   large   W_R1=5  C_R1=2  V_R1=2  ->  5^3 * 2^3 * 2^3 =   8,000   (target 9k,   -11%)  -- ACTIVE FOR QUAD
+#   large   W_R1=5  C_R1=2  V_R1=2  ->  5^3 * 2^3 * 2^3 =   8,000   (target 9k,   -11%)  -- not currently run
 #   fine    W_R1=6  C_R1=2  V_R1=5  ->  6^3 * 2^3 * 5^3 = 216,000   (target 200k, +8%)   -- not currently run
 #
 # tiny WAS W_R1=7/V_R1=6 (592,704 regions) -- KPAX repeatedly hit a confirmed buffer-overshoot
 # bug at that size (h_treeSize_ exceeding MAX_TREE_SIZE via propagateFrontier()'s
 # h_propIterations_==0 edge case, KPAX.cu:254-271): a hang under Dubins Airplane, then a
 # cudaErrorIllegalAddress crash under Quad on Jetson. Reduced instead of patching that kernel
-# logic yet, to test whether staying further from MAX_TREE_SIZE avoids the trigger entirely
-# (paper_benchmark_v2.cu's skipKPAXThisDelta hard-skip is kept commented as the fallback if this
-# doesn't hold -- as does the NEW per-planner `timeout`-wrapped process isolation further below,
-# which would now catch and log a recurrence instead of hanging the whole sweep). NOT currently run
-# for any model (moved all the way down to "large" instead, which has a far lower region count than
-# either tiny point below, so this bug is essentially impossible to trigger here) -- kept fully
-# specified here in case of a future revert:
-#   tiny (OLD)  W_R1=7  C_R1=2  V_R1=6  ->  7^3 * 2^3 * 6^3 = 592,704   (target 600k, -1%)
-#   tiny (reduced)  W_R1=6  C_R1=2  V_R1=6  ->  6^3 * 2^3 * 6^3 = 373,248   (-37% vs old tiny)
+# logic yet, to test whether staying further from MAX_TREE_SIZE avoids the trigger entirely.
+# tiny (reduced) is ACTIVE FOR QUAD THIS PASS -- this has NOT been independently reconfirmed clean
+# (unlike Models 1/2's tiny, see the history above), so it's still a live risk, not a resolved one;
+# the per-planner `timeout`-wrapped process isolation further below is exactly the safety net for a
+# recurrence here -- it gets caught, logged as CRASHED/TIMEOUT in the failure log, and skipped past,
+# not left to hang the whole sweep (paper_benchmark_v2.cu's skipKPAXThisDelta hard-skip is kept
+# commented as a fallback if the timeout isolation isn't enough):
+#   tiny (OLD)      W_R1=7  C_R1=2  V_R1=6  ->  7^3 * 2^3 * 6^3 = 592,704   (target 600k, -1%)  -- not used, confirmed buggy
+#   tiny (reduced)  W_R1=6  C_R1=2  V_R1=6  ->  6^3 * 2^3 * 6^3 = 373,248   (-37% vs old tiny)   -- ACTIVE FOR QUAD
 #
 # --- OLD three-delta, Quad-only sweep (commented out, not deleted -- superseded by the model axis
 # below; restore by uncommenting these four lines and reverting write_config()'s call sites and the
@@ -306,10 +309,15 @@ BUILD_DIR="$PROJECT_DIR/build"
 
 MODEL_IDS=(1 2 3)
 MODEL_NAMES=("DoubleIntegrator" "DubinsAirplane" "Quad")
-MODEL_DELTA_LABELS=("large" "large" "large")
-MODEL_W_R1S=(7  7  5)
-MODEL_C_R1S=(1  3  2)   # placeholder/inert for Model 1 (C_DIM 0 -- see write_config())
-MODEL_V_R1S=(3  3  2)
+# --- Previous discretization this pass: "large" (commented out, not deleted) ---
+# MODEL_DELTA_LABELS=("large" "large" "large")
+# MODEL_W_R1S=(7  7  5)
+# MODEL_C_R1S=(1  3  2)
+# MODEL_V_R1S=(3  3  2)
+MODEL_DELTA_LABELS=("tiny" "tiny" "tiny")
+MODEL_W_R1S=(14  14  6)
+MODEL_C_R1S=(1   6   2)   # placeholder/inert for Model 1 (C_DIM 0 -- see write_config())
+MODEL_V_R1S=(6   6   6)
 
 # Per-model NUM_R1_REGIONS formula -- shape differs by model (see write_config()'s three arms):
 #   Model 1 (C_DIM 0): W_R1^3 * V_R1^3               (no C_R1 term)
@@ -332,38 +340,31 @@ compute_regions() {
 PLANNER_FLAGS=("--only-kpax" "--only-kinopaxplus" "--only-kinopaxstartrue" "--only-countingstars")
 PLANNER_NAMES=("KPAX"        "KinoPaxPlus"        "KinoPaxSTARTrue"        "CountingStars")
 
-# Cost metric axis: label + COST_MODE (0 = workspace distance, 1 = control effort). BOTH THIS
-# PASS -- doubles the build count (one binary per model x cost metric) and the run count.
-COST_LABELS=("length" "effort")
-COST_MODES=(0 1)
-# COST_LABELS=("length")
-# COST_MODES=(0)
+# Cost metric axis: label + COST_MODE (2 = path time, 1 = control effort, 0 = workspace distance).
+# ONE METRIC THIS PASS (time only) -- see helper.cuh's edgeCost() COST_MODE==2.
+# --- Previous cost axis this pass: length+effort (commented out, not deleted) ---
+# COST_LABELS=("length" "effort")
+# COST_MODES=(0 1)
+COST_LABELS=("time")
+COST_MODES=(2)
 
 # Environments -- obstacle CSVs are still authored in [0,1]^3, but Quad's W_SIZE is 100, not 1
 # (see the MODEL 3 switch above). paper_benchmark_v2.cu scales every obstacle coordinate and the
 # start/goal points by W_SIZE at load time now (a no-op for every other model, whose W_SIZE is
 # 1.0), so this still points at the same CSVs unchanged. Each environment gets its own output
 # subfolder.
-# SCOPE: empty only this pass -- CHANGED FROM zigzag. paper_benchmark.cu's tiny/empty run froze,
-# `empty` was pulled out of that suite as a diagnostic, and the freeze PERSISTED on the remaining
-# environments (house/narrowPassage/zigzag) -- so `empty` alone is not the (sole) trigger there.
-# But this harness itself has NEVER run `empty` -- every "confirmed clean at tiny" claim so far
-# (KPAX, KinoPaxPlus, CountingStars, KinoPaxSTARTrue, and now the hopeless guard) was measured on
-# zigzag only, under Model 1. Pointing this harness at `empty` instead tests the ONE combination
-# still never isolated this way: `empty` itself, on Model 1, in this simpler one-planner-at-a-time
-# harness (which paper_benchmark.cu's own five/six/eight-series-at-once run is not). If tiny stays
-# clean here, that argues against `empty` (under Model 1) as a factor at all, pointing harder at
-# Model 2 (Dubins Airplane) -- which this harness still does not run -- as the real new variable.
-# ALL FOUR ENVIRONMENTS THIS PASS -- the one deliberate axis change from countingstars_sweep.cu (see
-# file header). narrowPassage's wall sits at x in [0.3, 0.5] spanning all z, split by a gap at y in
+# SCOPE: three environments this pass -- house, narrowPassage, zigzag; `empty` excluded. `empty`
+# was previously run as a one-off diagnostic (testing whether it, under Model 1, was a factor in a
+# since-addressed tiny-discretization freeze) -- that diagnostic's purpose doesn't apply to this
+# pass, so it's dropped back out; see git history for the fuller backstory if needed.
+# narrowPassage's wall sits at x in [0.3, 0.5] spanning all z, split by a gap at y in
 # [0.49, 0.51] -- 0.02 wide against an agent diameter of 0.01 (AGENT_RADIUS 0.005). The benchmark's
 # start (0.1, 0.08, 0.05) and goal (0.8, 0.95, 0.9) are clear of every environment's obstacles and on
 # opposite sides of narrowPassage's wall, so no endpoint change is needed -- but expect low success
 # rates there, and read the success-rate subplot alongside the cost bars (unsolved runs are dropped
 # from the cost mean, so a config that solved once cheaply can look best).
-ENV_NAMES=("empty" "house" "narrowPassage" "zigzag")
+ENV_NAMES=("house" "narrowPassage" "zigzag")
 ENV_OBSTACLES=(
-    "../include/config/obstacles/empty/obstacles.csv"
     "../include/config/obstacles/house/obstacles.csv"
     "../include/config/obstacles/narrowPassage/obstacles.csv"
     "../include/config/obstacles/zigzag/obstacles.csv"
@@ -431,7 +432,7 @@ write_config() {
 /* 6D DOUBLE INTEGRATOR    */
 /***************************/
 #define MODEL 1
-#define COST_MODE ${COST_MODE}  // path cost: 1 = control effort ((ax^2+ay^2+az^2)*dt), 0 = workspace distance
+#define COST_MODE ${COST_MODE}  // path cost: 2 = path time (sum of edge dt), 1 = control effort ((ax^2+ay^2+az^2)*dt), 0 = workspace distance
 #define MAX_TREE_SIZE 3000000
 #define MAX_FLOAT 1e38f
 #define MAX_SOL_SET_SIZE 500
@@ -529,7 +530,7 @@ CONFIGEOF
 /* 6D DUBINS AIRPLANE      */
 /***************************/
 #define MODEL 2
-#define COST_MODE ${COST_MODE}  // path cost: 1 = control effort ((yawRate^2+pitchRate^2+a^2)*dt), 0 = workspace distance
+#define COST_MODE ${COST_MODE}  // path cost: 2 = path time (sum of edge dt), 1 = control effort ((yawRate^2+pitchRate^2+a^2)*dt), 0 = workspace distance
 #define MAX_TREE_SIZE 3000000
 #define MAX_FLOAT 1e38f
 #define MAX_SOL_SET_SIZE 500
@@ -634,7 +635,7 @@ CONFIGEOF
 // physically consistent with how Quad was tuned; obstacles/start/goal are scaled x100 at load
 // time in paper_benchmark_v2.cu instead (a no-op for every other model, since their W_SIZE is 1.0). ---
 #define MODEL 3
-#define COST_MODE ${COST_MODE}  // path cost: 1 = control effort, 0 = workspace distance (see edgeCost() -- Quad has no COST_MODE==1 branch of its own, so effort silently falls back to distance)
+#define COST_MODE ${COST_MODE}  // path cost: 2 = path time (sum of edge dt, model-agnostic), 1 = control effort, 0 = workspace distance (see edgeCost() -- Quad has no COST_MODE==1 branch of its own, so effort silently falls back to distance; time has no such gap)
 #define MAX_TREE_SIZE 3000000
 #define MAX_FLOAT 1e38f
 #define MAX_SOL_SET_SIZE 500
@@ -850,13 +851,13 @@ if [ "${DUMP_VIZ:-0}" != "0" ]; then
     VIZ_FLAG="--dump-viz"
 fi
 
-# RUN_TIMEOUT_S: 30 runs x up to 10s MAX_TIME_MS + 29 x 0.5s inter-run sleeps = 314.5s pure
-# planner-loop ceiling (the expected case, not a pessimistic one) + ~60s margin for CUDA context
-# init/teardown + 30 per-run CSV writes (now paid once per PLANNER instead of once per 4 planners)
-# ~= 375s "everything completes normally" ceiling, DOUBLED to 900s so a legitimately slow run is
-# never misclassified as a failure -- a real hang only costs a few extra minutes of detection
-# across 96 invocations either way.
-RUN_TIMEOUT_S=900
+# RUN_TIMEOUT_S: 30 runs x 4s MAX_TIME_MS + 29 x 0.5s inter-run sleeps = 134.5s pure planner-loop
+# ceiling + ~60s margin for CUDA context init/teardown + per-run CSV writes ~= 194.5s "everything
+# completes normally" ceiling, DOUBLED to 390s so a legitimately slow run is never misclassified as
+# a failure. (The previous 900s value, derived the same way from the old 10s MAX_TIME_MS, actually
+# didn't match its own stated formula -- 375s doubled is 750, not 900 -- recomputed cleanly here
+# rather than propagating that mismatch.)
+RUN_TIMEOUT_S=390
 KILL_AFTER_S=30   # grace period after SIGTERM before timeout escalates to SIGKILL
 
 OUTPUT_ROOT="$BUILD_DIR/Data/Benchmarks/PaperBenchmarkV2"
