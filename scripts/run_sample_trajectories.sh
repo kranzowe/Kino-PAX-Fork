@@ -3,18 +3,22 @@
 # Sample Trajectory Runner
 #
 # Builds the existing TreeCheckpointDump tool once, then runs it against EACH
-# of House, NarrowPassage, and Zigzag in turn, and pulls CountingStars's own
-# solved trajectory (whichever checkpoint file has one, preferring the latest/
-# most-refined -- 4000ms down to 50ms) out into plots/DATA/environment_trajectories/
-# as "<env>_trajectory.csv", ready for plots/view_environment.py to pick up and
-# overlay automatically.
+# of House, NarrowPassage, and Zigzag in turn, and MOVES (not copies -- nothing
+# is left duplicated in TreeCheckpoints/) CountingStars's own solved trajectory
+# (whichever checkpoint file has one, preferring the latest/most-refined --
+# 4000ms down to 50ms) into build/Data/Viz/environment_trajectories/ as
+# "<env>_trajectory.csv", a sibling of TreeCheckpointDump's own
+# build/Data/Viz/TreeCheckpoints/ output. Point plots/view_environment.py's
+# TRAJECTORY_DIR at this folder (or copy/sync it wherever that script actually
+# runs, same as you already do for build/Data/Viz/TreeCheckpoints/) to have it
+# picked up and overlaid automatically.
 #
 # TreeCheckpointDump already runs THREE planners (KPAX, KinoPaxPlus,
 # CountingStars) at five wall-clock checkpoints and dumps each one's tree +
 # trajectory -- reused as-is rather than writing a new single-planner CUDA path,
 # since it already does exactly this. This script only cares about
 # CountingStars's own output; KPAX/KinoPaxPlus's dumps for these runs are left
-# in build/Data/Viz/TreeCheckpoints/ alongside it (harmless, just unused here).
+# in build/Data/Viz/TreeCheckpoints/ untouched (harmless, just unused here).
 #
 # Model/discretization/cost-metric match scripts/run_tree_checkpoint_dump.sh's
 # own zigzag-only setup exactly (Model 1, W7/C1/V3 "large"/coarse, COST_MODE 2 =
@@ -34,7 +38,7 @@ CONFIG_FILE="$PROJECT_DIR/include/config/config.h"
 CONFIG_BACKUP="$CONFIG_FILE.bak"
 BUILD_DIR="$PROJECT_DIR/build"
 DUMP_DIR="$BUILD_DIR/Data/Viz/TreeCheckpoints"
-OUT_DIR="$PROJECT_DIR/plots/DATA/environment_trajectories"
+OUT_DIR="$BUILD_DIR/Data/Viz/environment_trajectories"
 
 # Same canonical Model-1 "large"/coarse point as run_tree_checkpoint_dump.sh.
 DELTA_W_R1=7
@@ -210,8 +214,8 @@ for ENV_NAME in "${ENV_NAMES[@]}"; do
         TRAJ_FILE="$DUMP_DIR/${ENV_NAME}_CountingStars_t${MS}ms_traj.csv"
         if [ -f "$TRAJ_FILE" ] && [ "$(wc -l < "$TRAJ_FILE")" -gt 1 ]; then
             DEST="$OUT_DIR/${ENV_NAME}_trajectory.csv"
-            cp "$TRAJ_FILE" "$DEST"
-            echo "  CountingStars solved by t=${MS}ms -- copied to ${DEST}"
+            mv "$TRAJ_FILE" "$DEST"
+            echo "  CountingStars solved by t=${MS}ms -- moved to ${DEST}"
             FOUND=1
             break
         fi
@@ -228,5 +232,6 @@ echo "======================================================="
 echo "  SAMPLE TRAJECTORIES COMPLETE"
 echo "======================================================="
 echo "Trajectory CSVs in: ${OUT_DIR}"
-echo "Plot with: python plots/view_environment.py"
+echo "Point plots/view_environment.py's TRAJECTORY_DIR at that folder (or sync it over, same as"
+echo "you already do for build/Data/Viz/TreeCheckpoints/), then: python plots/view_environment.py"
 echo "Config.h will be restored to original on exit."

@@ -18,8 +18,11 @@ environment (columns must include x,y,z -- extra columns are ignored), that path
 the boxes in the same dark-outline-plus-bright-green style as tree_checkpoint.py's own solved
 trajectories. TRAJECTORY_DIR is created (empty) on first run if it doesn't exist yet -- drop CSVs
 in by hand, or generate one per environment with scripts/run_sample_trajectories.sh (builds and
-runs the existing TreeCheckpointDump tool once per environment and pulls out CountingStars's own
-solved path). An environment with no matching CSV yet just renders without one -- not an error.
+runs the existing TreeCheckpointDump tool once per environment and MOVES CountingStars's own
+solved path into build/Data/Viz/environment_trajectories/, a sibling of TreeCheckpointDump's own
+build/Data/Viz/TreeCheckpoints/ output) -- sync that folder over to TRAJECTORY_DIR the same way
+you already do for tree_checkpoint.py's own data. An environment with no matching CSV yet just
+renders without one -- not an error.
 
 Edit ENVIRONMENTS / OBSTACLES_DIR / TRAJECTORY_DIR / OUT_DIR below, then run:
     python plots/view_environment.py
@@ -214,8 +217,11 @@ def main() -> None:
                 "  zigzag_trajectory.csv\n\n"
                 "Required columns: x,y,z (extra columns, e.g. vx,vy,vz,cost, are ignored).\n\n"
                 "Generate these with scripts/run_sample_trajectories.sh, which builds and runs the\n"
-                "existing TreeCheckpointDump tool once per environment and pulls out CountingStars's\n"
-                "own solved trajectory -- or drop in any CSV with those columns by hand.\n"
+                "existing TreeCheckpointDump tool once per environment and MOVES CountingStars's own\n"
+                "solved trajectory into build/Data/Viz/environment_trajectories/ (a sibling of\n"
+                "TreeCheckpointDump's own build/Data/Viz/TreeCheckpoints/ output) -- sync that folder\n"
+                "over to here the same way you already do for tree_checkpoint.py's own data, or drop\n"
+                "in any CSV with those columns by hand.\n"
             )
         print(f"Wrote {readme_path}")
 
