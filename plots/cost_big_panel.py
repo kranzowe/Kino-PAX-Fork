@@ -77,11 +77,15 @@ PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ================================================================================================
 # EDIT THESE to point at the dataset and output location you want.
-# DATASET_DIR must directly contain one or more "discretization<LABEL>" folders (tiny/fine/coarse),
+# DATASET_DIR must directly contain one or more discretization-level folders (tiny/fine/coarse,
+# either bare or "discretization"-prefixed -- see zephyr_common.discover_discretization_dirs),
 # each of which directly contains the empty/house/narrowPassage/zigzag subfolders.
+#
+# SHORT-TIMEOUT BRANCH: pointed at ZEPHYR_30_runs_SHORT (1M-node / 3s-timeout sweep) instead of the
+# main ZEPHYR_30_runs dataset -- own output folder/filenames so the two never overwrite each other.
 # ================================================================================================
-DATASET_DIR = os.path.join(PLOTS_DIR, "DATA", "ZEPHYR_30_runs")
-OUT_DIR = os.path.join(PLOTS_DIR, "output", "cost_ratio")
+DATASET_DIR = os.path.join(PLOTS_DIR, "DATA", "ZEPHYR_30_runs_SHORT")
+OUT_DIR = os.path.join(PLOTS_DIR, "output", "cost_ratio_short")
 
 EXCLUDED_ENVIRONMENTS = {"empty"}  # trivially solved by everyone -- not an interesting comparison
 
@@ -409,7 +413,7 @@ def main() -> None:
     supxlabel = fig.supxlabel("Final Cost — other algorithms (log scale)", fontsize=11, x=0.53, y=0.015)
     fig.subplots_adjust(left=0.09, right=0.985, top=0.94, bottom=0.08)
 
-    base_name = "cost_ratio_big_panel_all_models"
+    base_name = "cost_ratio_big_panel_all_models_short"
     csv_path = os.path.join(OUT_DIR, f"{base_name}.csv")
     pd.concat(all_tables, ignore_index=True).to_csv(csv_path, index=False)
     png_path = os.path.join(OUT_DIR, f"{base_name}.png")

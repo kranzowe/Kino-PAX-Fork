@@ -88,15 +88,21 @@ PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ================================================================================================
 # EDIT THESE to point at the dataset and output location you want.
-# DATASET_DIR must directly contain one or more "discretization<LABEL>" folders (tiny/fine/coarse),
+# DATASET_DIR must directly contain one or more discretization-level folders (tiny/fine/coarse,
+# either bare or "discretization"-prefixed -- see zephyr_common.discover_discretization_dirs),
 # each of which directly contains the empty/house/narrowPassage/zigzag subfolders.
+#
+# SHORT-TIMEOUT BRANCH: pointed at ZEPHYR_30_runs_SHORT (1M-node / 3s-timeout sweep) instead of the
+# main ZEPHYR_30_runs dataset -- own output folder/filenames so the two never overwrite each other.
+# Jetson overlay is OFF (see INCLUDE_JETSON below): JETSON_20_runs is a different, incompatible
+# sweep with no short-timeout counterpart, so overlaying it here would misleadingly mix configs.
 # ================================================================================================
-DATASET_DIR = os.path.join(PLOTS_DIR, "DATA", "ZEPHYR_30_runs")
+DATASET_DIR = os.path.join(PLOTS_DIR, "DATA", "ZEPHYR_30_runs_SHORT")
 JETSON_DIR = os.path.join(PLOTS_DIR, "DATA", "JETSON_20_runs")
-OUT_DIR = os.path.join(PLOTS_DIR, "output", "ttfs_ratio")
+OUT_DIR = os.path.join(PLOTS_DIR, "output", "ttfs_ratio_short")
 
 REFERENCE_PLANNER = KPAX     # <-- Which algorithm the whole panel is plotted relative to (y-axis).
-INCLUDE_JETSON = True        # <-- TOGGLE. Flip to False to go back to Zephyr-only, no other changes.
+INCLUDE_JETSON = False       # <-- TOGGLE. Off on this branch (see note above); flip to True to try it anyway.
 INCLUDE_SIMPLECOMBO = False  # <-- TOGGLE. Flip to True to bring SimpleCombo back into this panel.
 
 EXCLUDED_ENVIRONMENTS = {"empty"}  # trivially solved by everyone -- not an interesting comparison
@@ -500,10 +506,10 @@ def main() -> None:
 
     fig.subplots_adjust(left=0.05, right=0.99, top=0.93, bottom=0.1)
 
-    csv_path = os.path.join(OUT_DIR, "ttfs_ratio_panel_all_models.csv")
+    csv_path = os.path.join(OUT_DIR, "ttfs_ratio_panel_all_models_short.csv")
     pd.concat(tables, ignore_index=True).to_csv(csv_path, index=False)
-    png_path = os.path.join(OUT_DIR, "ttfs_ratio_panel_all_models.png")
-    svg_path = os.path.join(OUT_DIR, "ttfs_ratio_panel_all_models.svg")
+    png_path = os.path.join(OUT_DIR, "ttfs_ratio_panel_all_models_short.png")
+    svg_path = os.path.join(OUT_DIR, "ttfs_ratio_panel_all_models_short.svg")
     fig.savefig(png_path, dpi=200, bbox_inches="tight", pad_inches=0.05, bbox_extra_artists=legends)
     fig.savefig(svg_path, bbox_inches="tight", pad_inches=0.05, bbox_extra_artists=legends)
     plt.close(fig)

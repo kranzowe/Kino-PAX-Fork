@@ -16,15 +16,23 @@ model's table has two sections, one per cost metric, each showing that metric's 
 Within each row, the BEST (highest, not lowest -- success rate is the one metric in this whole
 table suite where bigger is better) value across the four algorithms is bolded.
 
-Regions are Zephyr's Coarse/Fine/Tiny plus two confirmed Jetson rows -- see ttfs_cost_table.py's
-module docstring for the full two-harness provenance story (discretizationCOARSE untagged/older
-pipeline, Model 3 only; discretizationFINE/FINE tagged/newer pipeline, Models 1 and 2 only). A
-region whose folder doesn't exist yet prints as "--" rather than erroring.
+Regions are Zephyr's Coarse/Fine/Tiny. A region whose folder doesn't exist yet prints as "--"
+rather than erroring.
 
-For each model, writes a CSV (plots/output/tables/) and prints + saves the equivalent LaTeX table
-source (as a .txt file, ready to paste into the paper).
+SHORT-TIMEOUT BRANCH: pointed at ZEPHYR_30_runs_SHORT (1M-node / 3s-timeout sweep) instead of the
+main ZEPHYR_30_runs dataset -- own output folder/filenames so the two never overwrite each other.
+Jetson rows are OMITTED here (the main-dataset version of this table adds "Jetson (Coarse)" /
+"Jetson (Fine)" rows from JETSON_20_runs): there's no short-timeout Jetson sweep, and mixing the
+old 20-run Jetson data -- a different config entirely -- into a table that's otherwise all
+1M-node/3s numbers would be misleading. ZEPHYR_30_runs_SHORT also spells its discretization
+folders WITHOUT the "discretization" prefix ("COARSE" not "discretizationCOARSE") --
+resolve_discretization_dir (zephyr_common) tries both spellings so regions_for_model below needs
+no further changes for that.
 
-Edit ZEPHYR_DIR / JETSON_DIR / OUT_DIR below if your dataset folders move.
+For each model, writes a CSV (plots/output/tables_short/) and prints + saves the equivalent LaTeX
+table source (as a .txt file, ready to paste into the paper).
+
+Edit ZEPHYR_DIR / OUT_DIR below if your dataset folders move.
 """
 from __future__ import annotations
 
@@ -40,12 +48,11 @@ from zephyr_common import (  # noqa: E402
     BASE_NAMES,
     COST_METRIC_LABELS,
     COST_METRICS,
-    DEFAULT_MAX_RUNS,
-    KPAX,
     MODEL_IDS,
     aggregate_ttfs,
     env_display_name,
     load_runs,
+    resolve_discretization_dir,
     sanitize_name,
     warn_on_unexpected_star_suffixes,
 )
@@ -54,57 +61,21 @@ PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ================================================================================================
 # EDIT THESE if your dataset folders move.
+# SHORT-TIMEOUT BRANCH: ZEPHYR_DIR points at ZEPHYR_30_runs_SHORT, own OUT_DIR -- see module
+# docstring.
 # ================================================================================================
-ZEPHYR_DIR = os.path.join(PLOTS_DIR, "DATA", "ZEPHYR_30_runs")
-JETSON_DIR = os.path.join(PLOTS_DIR, "DATA", "JETSON_20_runs")
-OUT_DIR = os.path.join(PLOTS_DIR, "output", "tables")
-
-
-def _candidate_filename_no_model_tag(env: str, planner_token: str, delta_tok: str, run: int) -> str:
-    """Filename builder for discretizationCOARSE's older, pre-v2 pipeline (no 'm<N>_' model tag)
-    -- see the module docstring's Jetson note."""
-    if planner_token == KPAX:
-        return f"{env}_KPAX_delta{delta_tok}_run{run}.csv"
-    if planner_token.startswith("CountingStars") or planner_token.startswith("KinoPaxSTAR"):
-        return f"{env}_{planner_token}_delta{delta_tok}_run{run}.csv"
-    return f"{env}_delta{delta_tok}_run{run}.csv"
-
-
-def load_runs_no_model_tag(env_dir, env, planner_token, discretization_label, metrics):
-    runs = []
-    for metric in metrics:
-        delta_tok = f"{discretization_label}_{metric}"
-        for run in range(DEFAULT_MAX_RUNS):
-            fpath = os.path.join(env_dir, _candidate_filename_no_model_tag(env, planner_token, delta_tok, run))
-            if not os.path.isfile(fpath):
-                continue
-            try:
-                df = pd.read_csv(fpath, usecols=["best_cost", "elapsed_time_ms"])
-                df["best_cost"] = pd.to_numeric(df["best_cost"], errors="coerce")
-                runs.append(df)
-            except (ValueError, pd.errors.EmptyDataError):
-                pass
-    return runs
+ZEPHYR_DIR = os.path.join(PLOTS_DIR, "DATA", "ZEPHYR_30_runs_SHORT")
+OUT_DIR = os.path.join(PLOTS_DIR, "output", "tables_short")
 
 
 def regions_for_model(model_id: int) -> list:
-    """Region rows for one model's table -- label, discretization folder, on-disk discretization
-    token, and whether that filename carries a "m<N>_" model tag. The Jetson row (if any) is
-    model-specific -- see the module docstring."""
-    regions = [{"label": "Coarse", "dir": os.path.join(ZEPHYR_DIR, "discretizationCOARSE"),
-                "token": "large", "model_tag": True}]
-    if model_id == 3:
-        regions.append({"label": "Jetson (Coarse)", "dir": os.path.join(JETSON_DIR, "discretizationCOARSE"),
-                         "token": "large", "model_tag": False})
-    regions.append({"label": "Fine", "dir": os.path.join(ZEPHYR_DIR, "discretizationFINE"),
-                     "token": "fine", "model_tag": True})
-    if model_id in (1, 2):
-        regions.append({"label": "Jetson (Fine)",
-                         "dir": os.path.join(JETSON_DIR, "discretizationFINE", "FINE"),
-                         "token": "fine", "model_tag": True})
-    regions.append({"label": "Tiny", "dir": os.path.join(ZEPHYR_DIR, "discretizationTINY"),
-                     "token": "tiny", "model_tag": True})
-    return regions
+    """Region rows for one model's table -- label, discretization folder, and on-disk
+    discretization token. No Jetson rows on this branch -- see the module docstring."""
+    return [
+        {"label": "Coarse", "dir": resolve_discretization_dir(ZEPHYR_DIR, "COARSE"), "token": "large"},
+        {"label": "Fine", "dir": resolve_discretization_dir(ZEPHYR_DIR, "FINE"), "token": "fine"},
+        {"label": "Tiny", "dir": resolve_discretization_dir(ZEPHYR_DIR, "TINY"), "token": "tiny"},
+    ]
 
 ENVIRONMENTS = ["house", "narrowPassage", "zigzag"]  # on-disk spelling; "empty" excluded
 
@@ -141,10 +112,7 @@ def region_env_values(region: dict, env: str, model_id: int, metrics) -> dict:
     warn_on_unexpected_star_suffixes(env_dir)
     values = {}
     for planner in TABLE_PLANNERS:
-        if region["model_tag"]:
-            runs = load_runs(env_dir, env, planner, model_id, region["token"], metrics=metrics)
-        else:
-            runs = load_runs_no_model_tag(env_dir, env, planner, region["token"], metrics)
+        runs = load_runs(env_dir, env, planner, model_id, region["token"], metrics=metrics)
         values[planner] = success_rate(runs)
     return values
 
@@ -197,8 +165,8 @@ def render_latex(subtitle: str, sections: dict, regions: list) -> str:
     lines = [
         r"\begin{table}[htbp]",
         r"\centering",
-        rf"\caption{{Success Rate --- {subtitle}}}",
-        rf"\label{{tab:success_rate_{sanitize_name(subtitle).lower()}}}",
+        rf"\caption{{Success Rate --- {subtitle} (Short Timeout: 1M-node / 3s)}}",
+        rf"\label{{tab:success_rate_{sanitize_name(subtitle).lower()}_short}}",
         rf"\begin{{tabular}}{{{col_spec}}}",
         r"\toprule",
         r"Region & " + " & ".join(COLUMN_LABELS[p] for p in TABLE_PLANNERS) + r" \\",
@@ -233,7 +201,7 @@ def main() -> None:
 
         sections = build_model_sections(model_id, regions)
 
-        base_name = f"success_rate_table_m{model_id}_{sanitize_name(MODEL_NAMES_LOCAL[model_id])}"
+        base_name = f"success_rate_table_m{model_id}_{sanitize_name(MODEL_NAMES_LOCAL[model_id])}_short"
         csv_path = os.path.join(OUT_DIR, f"{base_name}.csv")
         sections_to_dataframe(sections, regions).to_csv(csv_path, index=False)
 

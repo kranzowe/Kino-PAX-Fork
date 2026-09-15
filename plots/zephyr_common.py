@@ -87,14 +87,33 @@ def sanitize_name(s: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", s)
 
 
+_KNOWN_DISCRETIZATION_LABELS = {"coarse", "fine", "tiny"}
+
+
 def discover_discretization_dirs(dataset_dir: str) -> List[str]:
-    """Return every 'discretization*' subfolder of one dataset dir (e.g. TINY/FINE/COARSE)."""
-    return sorted(d for d in glob.glob(os.path.join(dataset_dir, "discretization*")) if os.path.isdir(d))
+    """Return every discretization-level subfolder of one dataset dir, however it's spelled on
+    disk -- the older harness prefixes it ("discretizationCOARSE", e.g. ZEPHYR_30_runs), a newer
+    one writes the bare label instead ("COARSE", e.g. ZEPHYR_30_runs_SHORT). Matches either, via
+    discretization_label_from_dir (which already strips an optional "discretization" prefix)
+    landing on one of coarse/fine/tiny."""
+    candidates = sorted(d for d in glob.glob(os.path.join(dataset_dir, "*")) if os.path.isdir(d))
+    return [d for d in candidates if discretization_label_from_dir(d) in _KNOWN_DISCRETIZATION_LABELS]
 
 
 def discretization_label_from_dir(discretization_dir: str) -> str:
     name = os.path.basename(discretization_dir.rstrip("/\\"))
     return re.sub("discretization", "", name, flags=re.IGNORECASE).lower()
+
+
+def resolve_discretization_dir(base_dir: str, label: str) -> str:
+    """Path to one discretization-level folder under `base_dir`, trying the older, prefixed
+    spelling first ("discretization<LABEL>", e.g. ZEPHYR_30_runs) and falling back to the bare
+    "<LABEL>" spelling a newer harness writes instead (e.g. ZEPHYR_30_runs_SHORT) -- whichever
+    actually exists on disk. `label` is case-insensitive."""
+    prefixed = os.path.join(base_dir, f"discretization{label.upper()}")
+    if os.path.isdir(prefixed):
+        return prefixed
+    return os.path.join(base_dir, label.upper())
 
 
 def discover_environments(discretization_dir: str) -> List[str]:
