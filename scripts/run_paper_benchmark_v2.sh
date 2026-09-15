@@ -188,7 +188,7 @@
 # edgeCost), so none can vary within one binary. This script therefore borrows
 # run_delta_benchmark.sh's build-cache pattern: write config.h and build once per (model, cost
 # metric), caching each binary under a suffixed name, then run them in a second pass. Both labels
-# ride into every output filename via the argv[1] TAG (m1_tiny_time / m2_tiny_time / ... -- see
+# ride into every output filename via the argv[1] TAG (m1_fine_time / m2_fine_time / ... -- see
 # the model axis further below), which is what keeps different models' per-run CSVs from colliding
 # (see the BUILD phase's own comment for why that matters).
 #
@@ -197,7 +197,7 @@
 # (ReKino and friends) scroll past on every build. They are pre-existing and unavoidable without
 # splitting the library.
 #
-# ALL THREE MODELS RUN THIS PASS, each at exactly ONE discretization ("tiny") instead of a
+# ALL THREE MODELS RUN THIS PASS, each at exactly ONE discretization ("fine") instead of a
 # large/fine/tiny sweep -- see the model axis (MODEL_IDS/MODEL_W_R1S/MODEL_C_R1S/MODEL_V_R1S)
 # further below for the derivation of each model's one point.
 #
@@ -208,12 +208,13 @@
 # model was active, which is why all three shapes are handled explicitly (compute_regions() below,
 # and write_config()'s three case arms) rather than one formula being re-derived per switch.
 #
-# "tiny" names the CELL, not the count, and the count differs by model: 592,704 regions for Double
-# Integrator and Dubins Airplane, 373,248 for Quad (see the model axis further below for why Quad is
+# "fine" names the CELL, not the count, and the count differs by model: 262,144 regions for Double
+# Integrator and Dubins Airplane, 216,000 for Quad (see the model axis further below for why Quad is
 # deliberately kept smaller). Watch it for the per-region arrays -- every NUM_R1_REGIONS allocation
 # and every full-array fill scales with this, and graph_.updateVertices() runs a kernel over all of
-# them with 64 sub-vertex reads each -- these counts are ~65x (DI/Dubins) / ~47x (Quad) larger than
-# "large"'s, so GPU memory/kernel-time pressure is real here in a way it wasn't at "large".
+# them with 64 sub-vertex reads each -- these counts are ~28x (DI/Dubins) / ~27x (Quad) larger than
+# "large"'s, so GPU memory/kernel-time pressure is real here in a way it wasn't at "large" (though
+# lighter than "tiny"'s ~65x/~47x).
 #
 # Original config.h is backed up and restored on exit/error.
 #
@@ -238,19 +239,18 @@ BUILD_DIR="$PROJECT_DIR/build"
 # Model axis: build and run ALL THREE vehicle models, not one at a time.
 # MODEL_IDS/MODEL_NAMES drive write_config()'s `case "$MODEL"` (see write_config() below).
 # Discretization is a single fixed point per model (MODEL_W_R1S/MODEL_C_R1S/MODEL_V_R1S), not a
-# large/fine/tiny sweep. ACTIVE THIS PASS: "tiny" (moved up from "large", which ran previously --
-# see the large/fine/tiny derivation history immediately below for every point's numbers per model;
-# only the delta LABEL and the three arrays below changed, nothing else in this file's structure
-# did):
-#   Model 1 (Double Integrator): W_R1=14, V_R1=6 (C_R1 inert, C_DIM=0) -> 14^3*6^3     = 592,704
-#   Model 2 (Dubins Airplane):   W_R1=14, C_R1=6, V_R1=6               -> 14^3*6^2*6   = 592,704
-#   Model 3 (Quad):              W_R1=6,  C_R1=2, V_R1=6               -> 6^3*2^3*6^3  = 373,248
-# Models 1/2 again land on the SAME region count at "tiny" (592,704), same as they did at "large"
-# (9,261) and "fine" (262,144) -- all three points come from run_countingstars_sweep.sh's/
+# large/fine/tiny sweep. ACTIVE THIS PASS: "fine" (moved down from "tiny", which ran previously and
+# completed -- see the large/fine/tiny derivation history immediately below for every point's
+# numbers per model; only the delta LABEL and the three arrays below changed, nothing else in this
+# file's structure did):
+#   Model 1 (Double Integrator): W_R1=16, V_R1=4 (C_R1 inert, C_DIM=0) -> 16^3*4^3     = 262,144
+#   Model 2 (Dubins Airplane):   W_R1=16, C_R1=4, V_R1=4               -> 16^3*4^2*4   = 262,144
+#   Model 3 (Quad):              W_R1=6,  C_R1=2, V_R1=5               -> 6^3*2^3*5^3  = 216,000
+# Models 1/2 again land on the SAME region count at "fine" (262,144), same as they did at "large"
+# (9,261) and "tiny" (592,704) -- all three points come from run_countingstars_sweep.sh's/
 # run_paper_benchmark.sh's own shared large/fine/tiny arrays for those two models (see the
-# derivation history below), and this sweep's own tiny for Models 1/2 previously ran clean for all
-# four planners (see that history, immediately below). "large" and "fine" are NOT currently run for
-# any model -- both kept fully specified below (not deleted) in case a future pass wants either back.
+# derivation history below). "large" and "tiny" are NOT currently run for any model -- both kept
+# fully specified below (not deleted) in case a future pass wants either back.
 #
 # ALL THREE DELTAS USED TO MATCH run_paper_benchmark.sh's OWN DELTAS EXACTLY for Double
 # Integrator/Dubins (kept in step by hand -- there is no cross-check between the two sweep tools).
@@ -269,21 +269,20 @@ BUILD_DIR="$PROJECT_DIR/build"
 # hit the exact counts, since the three-cubed-term formula grows much faster per unit of W_R1/V_R1
 # than Dubins' two-cubed-term one did):
 #   large   W_R1=5  C_R1=2  V_R1=2  ->  5^3 * 2^3 * 2^3 =   8,000   (target 9k,   -11%)  -- not currently run
-#   fine    W_R1=6  C_R1=2  V_R1=5  ->  6^3 * 2^3 * 5^3 = 216,000   (target 200k, +8%)   -- not currently run
+#   fine    W_R1=6  C_R1=2  V_R1=5  ->  6^3 * 2^3 * 5^3 = 216,000   (target 200k, +8%)   -- ACTIVE FOR QUAD
 #
 # tiny WAS W_R1=7/V_R1=6 (592,704 regions) -- KPAX repeatedly hit a confirmed buffer-overshoot
 # bug at that size (h_treeSize_ exceeding MAX_TREE_SIZE via propagateFrontier()'s
 # h_propIterations_==0 edge case, KPAX.cu:254-271): a hang under Dubins Airplane, then a
 # cudaErrorIllegalAddress crash under Quad on Jetson. Reduced instead of patching that kernel
 # logic yet, to test whether staying further from MAX_TREE_SIZE avoids the trigger entirely.
-# tiny (reduced) is ACTIVE FOR QUAD THIS PASS -- this has NOT been independently reconfirmed clean
-# (unlike Models 1/2's tiny, see the history above), so it's still a live risk, not a resolved one;
-# the per-planner `timeout`-wrapped process isolation further below is exactly the safety net for a
-# recurrence here -- it gets caught, logged as CRASHED/TIMEOUT in the failure log, and skipped past,
-# not left to hang the whole sweep (paper_benchmark_v2.cu's skipKPAXThisDelta hard-skip is kept
-# commented as a fallback if the timeout isolation isn't enough):
+# tiny (reduced) subsequently ran a full pass (see git history around decdbd7) and is NOT active
+# this pass -- "fine" (216,000 regions) is well below both tiny points (373,248 / 592,704) and only
+# ~27x "large", so it carries markedly less of this particular risk; the per-planner `timeout`-
+# wrapped process isolation further below remains the safety net regardless (CRASHED/TIMEOUT is
+# caught, logged, and skipped past rather than hanging the whole sweep):
 #   tiny (OLD)      W_R1=7  C_R1=2  V_R1=6  ->  7^3 * 2^3 * 6^3 = 592,704   (target 600k, -1%)  -- not used, confirmed buggy
-#   tiny (reduced)  W_R1=6  C_R1=2  V_R1=6  ->  6^3 * 2^3 * 6^3 = 373,248   (-37% vs old tiny)   -- ACTIVE FOR QUAD
+#   tiny (reduced)  W_R1=6  C_R1=2  V_R1=6  ->  6^3 * 2^3 * 6^3 = 373,248   (-37% vs old tiny)   -- not currently run
 #
 # --- OLD three-delta, Quad-only sweep (commented out, not deleted -- superseded by the model axis
 # below; restore by uncommenting these four lines and reverting write_config()'s call sites and the
@@ -309,15 +308,19 @@ BUILD_DIR="$PROJECT_DIR/build"
 
 MODEL_IDS=(1 2 3)
 MODEL_NAMES=("DoubleIntegrator" "DubinsAirplane" "Quad")
-# --- Previous discretization this pass: "large" (commented out, not deleted) ---
+# --- Previous discretizations this pass: "large", then "tiny" (commented out, not deleted) ---
 # MODEL_DELTA_LABELS=("large" "large" "large")
 # MODEL_W_R1S=(7  7  5)
 # MODEL_C_R1S=(1  3  2)
 # MODEL_V_R1S=(3  3  2)
-MODEL_DELTA_LABELS=("tiny" "tiny" "tiny")
-MODEL_W_R1S=(14  14  6)
-MODEL_C_R1S=(1   6   2)   # placeholder/inert for Model 1 (C_DIM 0 -- see write_config())
-MODEL_V_R1S=(6   6   6)
+# MODEL_DELTA_LABELS=("tiny" "tiny" "tiny")
+# MODEL_W_R1S=(14  14  6)
+# MODEL_C_R1S=(1   6   2)
+# MODEL_V_R1S=(6   6   6)
+MODEL_DELTA_LABELS=("fine" "fine" "fine")
+MODEL_W_R1S=(16  16  6)
+MODEL_C_R1S=(1   4   2)   # placeholder/inert for Model 1 (C_DIM 0 -- see write_config())
+MODEL_V_R1S=(4   4   5)
 
 # Per-model NUM_R1_REGIONS formula -- shape differs by model (see write_config()'s three arms):
 #   Model 1 (C_DIM 0): W_R1^3 * V_R1^3               (no C_R1 term)
@@ -750,10 +753,11 @@ echo "  external timeout -- a true CUDA hang has no in-process recovery, so this
 echo "  blast radius to the one planner that hung and logs it as a failure instead of freezing the"
 echo "  whole sweep (see RUN_TIMEOUT_S / FAILURE_LOG below). Series per (model, env, cost), 30 runs"
 echo "  each -- every axis below is a SINGLE FIXED POINT, not a grid:"
-echo "    KPAX             baseline -- this pass runs at 'large', far below the region count that"
-echo "                     once triggered a confirmed KPAX buffer-overshoot bug on Quad at 'tiny'"
-echo "                     (see paper_benchmark_v2.cu's skipKPAXThisDelta comment); the per-planner"
-echo "                     timeout below will still catch and log any hang regardless."
+echo "    KPAX             baseline -- historically hit a confirmed buffer-overshoot bug on Quad at"
+echo "                     high region counts (~592k+, see paper_benchmark_v2.cu's skipKPAXThisDelta"
+echo "                     comment and this file's own discretization history above); the per-planner"
+echo "                     timeout below will catch and log any recurrence regardless of the active"
+echo "                     discretization (currently Quad ${MODEL_W_R1S[2]}/${MODEL_C_R1S[2]}/${MODEL_V_R1S[2]} -- see Regions= above)."
 echo "    KinoPaxPlus"
 echo "    KinoPaxSTARTrue  syclopCap 1.0 (no cap), ancestorPrune = 1 (guarded stale-best prune on"
 echo "                     top of the naive KPAX/KinoPaxPlus fusion)."
