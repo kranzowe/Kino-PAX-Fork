@@ -16,25 +16,17 @@ Success rate sits in its OWN column per algorithm (2 columns each: TTFS (ms), Su
 than a parenthetical or footnote, on purpose -- it deserves the same horizontal weight as the TTFS
 value next to it, not a squeezed-in afterthought.
 
-Regions are Zephyr's Coarse/Fine/Tiny plus two confirmed Jetson rows (provenance confirmed by
-hand this time, not inferred from git history -- see the earlier, wrong guess this docstring used
-to describe): Jetson's discretizationCOARSE is the 12D Nonlinear Drone (Model 3) ONLY, so it adds
-a "Jetson (Coarse)" row to Model 3's table right after "Coarse"; discretizationFINE is the two 6D
-systems (Models 1 and 2), so it adds a "Jetson (Fine)" row to BOTH of their tables right after
-"Fine". Unlike the Jetson data this table showed once before, Coarse and Fine now come from two
-DIFFERENT harnesses with different filename conventions:
-  - discretizationCOARSE/<env>/ is still the OLDER, pre-v2 pipeline (examples/gpu/
-    paper_benchmark.cu) -- one hardcoded model per binary, NO "m<N>_" tag in the filename (e.g.
-    "house_KPAX_deltalarge_length_run0.csv"), loaded with load_runs_no_model_tag() below.
-  - discretizationFINE/FINE/<env>/ (note the doubled "FINE" -- the run harness's own output
-    layout, not a mistake on this table's part) is the NEWER paper_benchmark_v3 pipeline, which
-    swept all three models in one pass and DOES tag every filename with "m<N>_" (e.g.
-    "..._deltam1_fine_length_run0.csv") -- loaded with the same load_runs() the Zephyr regions
-    use, no special-casing needed, and Model 3's own (mostly-failed, per that run's
-    failures.log -- Kino-PAX+ got 0/20 successful runs in two of three environments) fine-
-    resolution attempt is deliberately NOT surfaced here, since Model 3's real fine-resolution
-    story is Zephyr's own Fine row, not this troubled Jetson attempt at it.
-A region whose folder doesn't exist yet prints as "--" rather than erroring.
+Regions are Zephyr's Coarse/Fine/Tiny plus two confirmed Jetson rows: discretizationFINE/FINE is
+the two 6D systems (Models 1 and 2), so it adds a "Jetson (Fine)" row to BOTH of their tables
+right after "Fine" (NEWER paper_benchmark_v3 pipeline, DOES tag every filename with "m<N>_", e.g.
+"..._deltam1_fine_length_run0.csv" -- loaded with the same load_runs() the Zephyr regions use, no
+special-casing needed). Model 3 (12D Nonlinear Drone) gets a "Jetson (42K)" row right after
+"Coarse": NEW hardware data at a genuinely new discretization (42K -- not one of Zephyr's own
+tiny/fine/coarse levels), from JETSON_DIR/NEWQUAD_MEDIUM, which replaced this table's earlier,
+much weaker "Jetson (Coarse)" attempt (the older, untagged pre-v2 pipeline, one hardcoded model
+per binary) -- NEWQUAD_MEDIUM uses the same tagged paper_benchmark_v3 pipeline as everything else
+("m3_medium_..." filenames), so it loads with plain load_runs() too, same as every other region
+here. A region whose folder doesn't exist yet prints as "--" rather than erroring.
 
 For each model, writes a CSV (plots/output/tables/) and prints + saves the equivalent LaTeX table
 source (as a .txt file, ready to paste into the paper) -- NOTE this table now uses \\multicolumn
@@ -57,7 +49,6 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zephyr_common import (  # noqa: E402
     COST_METRICS,
-    DEFAULT_MAX_RUNS,
     KINOPAX_PLUS,
     KINOPAX_STAR,
     KPAX,
@@ -79,50 +70,20 @@ JETSON_DIR = os.path.join(PLOTS_DIR, "DATA", "JETSON_20_runs")
 OUT_DIR = os.path.join(PLOTS_DIR, "output", "tables")
 
 
-def _candidate_filename_no_model_tag(env: str, planner_token: str, delta_tok: str, run: int) -> str:
-    """Filename builder for discretizationCOARSE's older, pre-v2 pipeline (no 'm<N>_' model tag)
-    -- see the module docstring's Jetson note."""
-    if planner_token == KPAX:
-        return f"{env}_KPAX_delta{delta_tok}_run{run}.csv"
-    if planner_token.startswith("CountingStars") or planner_token.startswith("KinoPaxSTAR"):
-        return f"{env}_{planner_token}_delta{delta_tok}_run{run}.csv"
-    return f"{env}_delta{delta_tok}_run{run}.csv"
-
-
-def load_runs_no_model_tag(env_dir, env, planner_token, discretization_label, metrics):
-    runs = []
-    for metric in metrics:
-        delta_tok = f"{discretization_label}_{metric}"
-        for run in range(DEFAULT_MAX_RUNS):
-            fpath = os.path.join(env_dir, _candidate_filename_no_model_tag(env, planner_token, delta_tok, run))
-            if not os.path.isfile(fpath):
-                continue
-            try:
-                df = pd.read_csv(fpath, usecols=["best_cost", "elapsed_time_ms"])
-                df["best_cost"] = pd.to_numeric(df["best_cost"], errors="coerce")
-                runs.append(df)
-            except (ValueError, pd.errors.EmptyDataError):
-                pass
-    return runs
-
-
 def regions_for_model(model_id: int) -> list:
-    """Region rows for one model's table -- label, discretization folder, on-disk discretization
-    token, and whether that filename carries a "m<N>_" model tag. The Jetson row (if any) is
-    model-specific -- see the module docstring."""
-    regions = [{"label": "Coarse", "dir": os.path.join(ZEPHYR_DIR, "discretizationCOARSE"),
-                "token": "large", "model_tag": True}]
+    """Region rows for one model's table -- label, discretization folder, and on-disk
+    discretization token. The Jetson row (if any) is model-specific -- see the module docstring.
+    Every region here uses the tagged pipeline (load_runs) now that Model 3's Jetson row is
+    NEWQUAD_MEDIUM instead of the old untagged discretizationCOARSE attempt."""
+    regions = [{"label": "Coarse", "dir": os.path.join(ZEPHYR_DIR, "discretizationCOARSE"), "token": "large"}]
     if model_id == 3:
-        regions.append({"label": "Jetson (Coarse)", "dir": os.path.join(JETSON_DIR, "discretizationCOARSE"),
-                         "token": "large", "model_tag": False})
-    regions.append({"label": "Fine", "dir": os.path.join(ZEPHYR_DIR, "discretizationFINE"),
-                     "token": "fine", "model_tag": True})
+        regions.append({"label": "Jetson (42K)", "dir": os.path.join(JETSON_DIR, "NEWQUAD_MEDIUM"),
+                         "token": "medium"})
+    regions.append({"label": "Fine", "dir": os.path.join(ZEPHYR_DIR, "discretizationFINE"), "token": "fine"})
     if model_id in (1, 2):
         regions.append({"label": "Jetson (Fine)",
-                         "dir": os.path.join(JETSON_DIR, "discretizationFINE", "FINE"),
-                         "token": "fine", "model_tag": True})
-    regions.append({"label": "Tiny", "dir": os.path.join(ZEPHYR_DIR, "discretizationTINY"),
-                     "token": "tiny", "model_tag": True})
+                         "dir": os.path.join(JETSON_DIR, "discretizationFINE", "FINE"), "token": "fine"})
+    regions.append({"label": "Tiny", "dir": os.path.join(ZEPHYR_DIR, "discretizationTINY"), "token": "tiny"})
     return regions
 
 ENVIRONMENTS = ["house", "narrowPassage", "zigzag"]  # on-disk spelling; "empty" excluded
@@ -155,10 +116,7 @@ def region_env_values(region: dict, env: str, model_id: int, metrics) -> dict:
     warn_on_unexpected_star_suffixes(env_dir)
     values = {}
     for planner in TABLE_PLANNERS:
-        if region["model_tag"]:
-            runs = load_runs(env_dir, env, planner, model_id, region["token"], metrics=metrics)
-        else:
-            runs = load_runs_no_model_tag(env_dir, env, planner, region["token"], metrics)
+        runs = load_runs(env_dir, env, planner, model_id, region["token"], metrics=metrics)
         stats = aggregate_ttfs(runs)
         success_rate = 100.0 * stats.n_success / stats.n_total if stats.n_total else math.nan
         values[planner] = {"TTFS": stats.mean, "SuccessRate": success_rate}

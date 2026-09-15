@@ -8,42 +8,47 @@ be dropped into LaTeX, which adds its own caption. Each subplot gets the model a
 subtitle. Color = algorithm, shape = discretization (only "tiny" exists today; "fine"/"coarse" are
 picked up automatically once those sweeps are added alongside it). Every algorithm compared
 within one (environment, discretization) cell shares REFERENCE_PLANNER's mean as its y-value, so
-they land on a shared horizontal line -- that line is labeled directly with the environment name.
-The "empty" environment is excluded (not interesting -- every planner solves it trivially). The
-y=x line marks "as fast as REFERENCE_PLANNER", drawn in that planner's own color (currently
-Kino-PAX's near-black) so it visually reads as "that algorithm's own line". See
-plots/zephyr_common.py for the on-disk naming conventions this ports from
-scripts/process_paper_benchmark_improvement_scatter.m.
+they land on a shared horizontal line, drawn as a dotted guide connecting them (see the "always
+include the reference's own y" note in plot_model_panel -- this used to occasionally look dropped
+when only one non-reference algorithm had a data point). The "empty" environment is excluded (not
+interesting -- every planner solves it trivially). The y=x line marks "as fast as
+REFERENCE_PLANNER", drawn in that planner's own color (currently Kino-PAX's near-black) so it
+visually reads as "that algorithm's own line". See plots/zephyr_common.py for the on-disk naming
+conventions this ports from scripts/process_paper_benchmark_improvement_scatter.m.
+
+NO ENV-NAME LABELS, BY DEFAULT: this and every future panel plot in this folder default to leaving
+off the per-row environment-name text/leader-lines unless specifically asked for -- they added a
+lot of layout complexity (side-picking, decluttering, per-model distance tuning) for a payoff that
+turned out not to be worth it once the plots had to also carry more rows (Jetson overlays,
+multiple discretizations). The color/shape/position encoding still tells the whole story.
 
 AXES ARE NOT SHARED ACROSS SUBPLOTS, in the same manner as cost_big_panel.py: each model's own
 data (plus its Jetson point, if any) is fitted to the TIGHTEST enclosing "nice" bound on each end
 (any integer coefficient 1-9 times a power of 10 -- see _nice_log_bound), not a decade-rounded or
-fixed range, with the side the env-name labels sit on getting extra headroom baked in first
-(LABEL_MARGIN) so the label + leader line has room to clear the data instead of being squeezed
-against the axis edge. That boundary value gets its own explicit label (_edge_tick_label) since
-it usually lands on what style_log_axis would otherwise leave as an unlabeled minor tick. How far
-each model's labels actually sit from its data is adjustable per model in LABEL_DISTANCE below.
+fixed range. That boundary value gets its own explicit label (_edge_tick_label) since it usually
+lands on what style_log_axis would otherwise leave as an unlabeled minor tick. Minor ticks are
+drawn at every integer sub-decade coefficient (2-9), not just the even ones, per request -- denser
+than style_log_axis's own shared default, so _add_edge_ticks rebuilds this subplot's own minor
+locator rather than changing that shared helper (which other scripts still use un-modified).
 
 REFERENCE_PLANNER (below) is the one knob that picks which algorithm the whole panel is plotted
 relative to -- swap it to KINOPAX_PLUS/SIMPLECOMBO/KINOPAX_STAR to change which one owns the
 y-axis and the y=x line's color; everything else (the "other algorithms" set, axis/legend text,
 Jetson overlay) follows automatically.
 
-JETSON OVERLAY (PROOF OF CONCEPT, see INCLUDE_JETSON below): when on, each subplot gets ONE extra
-point per environment -- Jetson's KinoPax*-only mean TTFS, plotted at that SAME environment's
-existing Zephyr row for whichever discretization Jetson actually matches (JETSON_MATCHING_
-DISCRETIZATION: Model 1/2 -> Fine, Model 3 -> Coarse), not as a row of its own. That is
-deliberate: the point is "how does Jetson's hardware compare to Zephyr's GPU at the same
-discretization", so it has to share that row's y (REFERENCE_PLANNER's Zephyr mean) rather than
-getting its own baseline computed from Jetson's (much smaller, partially-failed for some
-model/env combinations) run set. It's drawn with the SAME marker shape as whatever discretization
-it's standing in for (a square where that's Fine, a triangle where that's Coarse) -- only its
-color (JETSON_COLOR) sets it apart from a normal Zephyr point, so its legend entry lives with the
-other color-coded entries in "Algorithm (color)" rather than "Discretization (shape)". Model 1 and
-2 (the two 6D systems) read Jetson's discretizationFINE/FINE (tagged by model, so load_runs works
-as-is); Model 3 (the Drone) reads discretizationCOARSE (the older, untagged pipeline, hence
-load_runs_no_model_tag) -- see ttfs_cost_table.py's module docstring for the full provenance story
-and why it's split this way.
+JETSON OVERLAY (PROOF OF CONCEPT, see INCLUDE_JETSON below): each subplot gets ONE extra point per
+environment -- Jetson's KinoPax*-only mean TTFS, plotted at that SAME environment's existing
+Zephyr Fine row (JETSON_MATCHING_DISCRETIZATION), not as a row of its own. That is deliberate: the
+point is "how does Jetson's hardware compare to Zephyr's GPU at the same discretization", so it
+has to share that row's y (REFERENCE_PLANNER's Zephyr mean) rather than getting its own baseline
+computed from Jetson's (much smaller, partially-failed for some model/env combinations) run set.
+It's drawn with the SAME marker shape as Fine's own (a square) -- only its color (JETSON_COLOR)
+sets it apart from a normal Zephyr point, so its legend entry lives with the other color-coded
+entries in "Algorithm (color)" rather than "Discretization (shape)". Models 1/2 read Jetson's
+discretizationFINE/FINE (tagged by model). Model 3 reads JETSON_20_runs/NEWQUAD_MEDIUM instead --
+new hardware data at a genuinely different on-disk discretization ("medium" token) that, per
+request, is treated as equivalent to Fine for comparison purposes here (same overlay treatment,
+same color, matched onto the same Fine row) even though it isn't literally the same sweep.
 
 Edit DATASET_DIR / OUT_DIR below to point at the dataset you want to plot, then run:
     python plots/ttfs_ratio_scatter_panel.py
@@ -66,19 +71,16 @@ from zephyr_common import (  # noqa: E402
     BASE_COLORS,
     BASE_DISPLAY,
     BASE_NAMES,
-    DEFAULT_MAX_RUNS,
     KINOPAX_STAR,
     KPAX,
     MODEL_IDS,
     SIMPLECOMBO,
     aggregate_ttfs,
-    declutter_label_ys,
     discover_discretization_dirs,
     discover_environments,
     discretization_display,
     discretization_label_from_dir,
     discretization_marker,
-    env_display_name,
     load_runs,
     style_log_axis,
     warn_on_unexpected_star_suffixes,
@@ -100,41 +102,30 @@ INCLUDE_JETSON = True        # <-- TOGGLE. Flip to False to go back to Zephyr-on
 INCLUDE_SIMPLECOMBO = False  # <-- TOGGLE. Flip to True to bring SimpleCombo back into this panel.
 
 EXCLUDED_ENVIRONMENTS = {"empty"}  # trivially solved by everyone -- not an interesting comparison
-JETSON_COLOR = "#fe6100"  # the only thing that sets a Jetson point apart from a normal one
+JETSON_COLOR = "#fe6100"  # the only thing that sets a Jetson proof-of-concept point apart
 
-# Which Zephyr discretization Jetson's data actually matches, per model -- see JETSON OVERLAY note
-# in the module docstring. Models with no entry get no Jetson star at all.
-JETSON_MATCHING_DISCRETIZATION = {1: "fine", 2: "fine", 3: "coarse"}
+# Which Zephyr discretization each model's Jetson proof-of-concept data matches -- see JETSON
+# OVERLAY note in the module docstring. Models with no entry get no Jetson star at all.
+JETSON_MATCHING_DISCRETIZATION = {1: "fine", 2: "fine", 3: "fine"}
 
-# Which side of the data each model's env-name labels sit on -- Double Integrator's own data sits
-# well clear of the other panels' typical range, so its labels read fine to the right; the other
-# two crowd closer together, leaving more room on the left. Not really a per-model DATA property,
-# just a hand-picked layout choice -- flip an entry here if a future dataset change makes a
-# different side read better for that model.
-LABEL_SIDE = {1: "right"}  # anything not listed defaults to "left"
-
-# Sub-decade "nice" multipliers an axis edge is allowed to snap to -- any integer 1-9, not just
-# the coefficients style_log_axis happens to draw a tick mark at (1x major; 2x/4x/6x/8x minor).
-# An edge that lands on one of THOSE just gets a label added to the tick that's already there; an
-# edge that lands on 3x/5x/7x/9x instead needs a tick added too (see _add_edge_ticks), since
-# style_log_axis's own minor locator never draws one there.
-NICE_COEFFS = tuple(range(1, 10))
-
-# How far past the data's own extent, on the side the env-name labels sit on, to inflate BEFORE
-# rounding out to a "nice" bound -- gives the label + leader line room to sit clear of the data
-# point it's labeling instead of being squeezed right up against the axis edge.
-LABEL_MARGIN = 1.6
-
-# How far each model's env-name labels sit from its data, as a multiplicative offset in data-space
-# past that side's edge (e.g. 1.5 = 50% further out). EDIT PER-MODEL HERE: add or change a
-# model_id entry to override just that subplot; anything not listed uses DEFAULT_LABEL_DISTANCE.
-# Larger number = labels sit further away.
-DEFAULT_LABEL_DISTANCE = 1.5
-LABEL_DISTANCE = {
-    1: 1.7,
-    2: 1.45,
-    3: 1.45,
+# Where each model's Jetson KinoPax*-only overlay data actually lives on disk, and the
+# discretization token load_runs needs to find it there. Models 1/2 share Zephyr's own Fine
+# provenance (tagged pipeline, "fine" token); Model 3's NEWQUAD_MEDIUM sweep is a different
+# on-disk discretization ("medium" token) treated as Fine's equivalent for this comparison, per
+# request -- see the module docstring's JETSON OVERLAY note.
+JETSON_SOURCE_DIR = {
+    1: os.path.join(JETSON_DIR, "discretizationFINE", "FINE"),
+    2: os.path.join(JETSON_DIR, "discretizationFINE", "FINE"),
+    3: os.path.join(JETSON_DIR, "NEWQUAD_MEDIUM"),
 }
+JETSON_SOURCE_TOKEN = {1: "fine", 2: "fine", 3: "medium"}
+
+# Sub-decade multipliers an axis edge is allowed to snap to -- any integer 1-9, not just the
+# coefficients style_log_axis happens to draw a tick mark at. An edge that lands on one of THOSE
+# just gets a label added to the tick that's already there; an edge that lands elsewhere needs a
+# tick added too (see _add_edge_ticks), since the minor locator built there draws one at every
+# integer 2-9 (denser than style_log_axis's own shared default, per request).
+NICE_COEFFS = tuple(range(1, 10))
 
 PLOTTED_OTHER_PLANNERS = [
     p for p in BASE_NAMES
@@ -175,15 +166,14 @@ def _edge_tick_label(value: float, edges: tuple) -> str:
 
 
 def _add_edge_ticks(ax, lo: float, hi: float) -> None:
-    """style_log_axis's minor locator only ever draws a tick at 2x/4x/6x/8x each decade -- an
-    edge value snapped to 3x/5x/7x/9x (NICE_COEFFS allows any integer 1-9) needs a tick added at
-    that exact spot, not just a label with nothing to attach to. Rebuilds each axis's minor ticks
-    as "whatever the standard 2/4/6/8 locator would draw in [lo, hi], plus lo and hi themselves" --
-    a FixedLocator, but only for THIS subplot, so the shared style_log_axis helper (and every
-    other script using it) is untouched."""
+    """Rebuilds each axis's minor ticks as "every integer sub-decade coefficient 2-9 in [lo, hi],
+    plus lo and hi themselves" -- denser than style_log_axis's own shared minor locator (which
+    only draws 2/4/6/8), and this subplot's own FixedLocator, so the shared helper (and every
+    other script using it) is untouched. lo/hi always land on a tick this way even when they snap
+    to a coefficient (e.g. 3x, 7x) the plain every-other-integer locator wouldn't have drawn."""
     from matplotlib.ticker import FixedLocator, LogLocator
 
-    standard_minor = LogLocator(base=10, subs=(2.0, 4.0, 6.0, 8.0))
+    standard_minor = LogLocator(base=10, subs=tuple(range(2, 10)))
     edge_formatter = FuncFormatter(lambda v, _pos, edges=(lo, hi): _edge_tick_label(v, edges))
     for axis in (ax.xaxis, ax.yaxis):
         ticks = sorted({t for t in standard_minor.tick_values(lo, hi) if lo <= t <= hi} | {lo, hi})
@@ -191,55 +181,18 @@ def _add_edge_ticks(ax, lo: float, hi: float) -> None:
         axis.set_minor_formatter(edge_formatter)
 
 
-def _candidate_filename_no_model_tag(env: str, planner_token: str, delta_tok: str, run: int) -> str:
-    """Filename builder for Jetson's discretizationCOARSE -- the older, pre-v2 pipeline, no
-    'm<N>_' model tag. See JETSON OVERLAY note in the module docstring."""
-    if planner_token == KPAX:
-        return f"{env}_KPAX_delta{delta_tok}_run{run}.csv"
-    if planner_token.startswith("CountingStars") or planner_token.startswith("KinoPaxSTAR"):
-        return f"{env}_{planner_token}_delta{delta_tok}_run{run}.csv"
-    return f"{env}_delta{delta_tok}_run{run}.csv"
-
-
-def load_runs_no_model_tag(env_dir: str, env: str, planner_token: str, discretization_label: str) -> list:
-    import pandas as _pd
-    runs = []
-    for metric in ("length", "effort"):
-        delta_tok = f"{discretization_label}_{metric}"
-        for run in range(DEFAULT_MAX_RUNS):
-            fpath = os.path.join(env_dir, _candidate_filename_no_model_tag(env, planner_token, delta_tok, run))
-            if not os.path.isfile(fpath):
-                continue
-            try:
-                df = _pd.read_csv(fpath, usecols=["best_cost", "elapsed_time_ms"])
-                df["best_cost"] = _pd.to_numeric(df["best_cost"], errors="coerce")
-                runs.append(df)
-            except (ValueError, _pd.errors.EmptyDataError):
-                pass
-    return runs
-
-
 def jetson_star_x_by_env(model_id: int) -> dict:
     """Jetson's KinoPax*-only mean TTFS per environment -- see the module docstring's JETSON
     OVERLAY note for why only this one algorithm, and only as an overlay on top of the matching
-    Zephyr row rather than a row of its own. {} if this model has no Jetson data, no matching
-    discretization, or the toggle is off."""
+    Zephyr row rather than a row of its own. {} if this model has no matching entry, no Jetson
+    data, or the toggle is off."""
     if not INCLUDE_JETSON:
         return {}
-    matching_disc = JETSON_MATCHING_DISCRETIZATION.get(model_id)
-    if matching_disc is None:
+    if JETSON_MATCHING_DISCRETIZATION.get(model_id) is None:
         return {}
-    if model_id in (1, 2):
-        base_dir = os.path.join(JETSON_DIR, "discretizationFINE", "FINE")
-        def loader(env_dir, env):
-            return load_runs(env_dir, env, KINOPAX_STAR, model_id, "fine")
-    elif model_id == 3:
-        base_dir = os.path.join(JETSON_DIR, "discretizationCOARSE")
-        def loader(env_dir, env):
-            return load_runs_no_model_tag(env_dir, env, KINOPAX_STAR, "large")
-    else:
-        return {}
-    if not os.path.isdir(base_dir):
+    base_dir = JETSON_SOURCE_DIR.get(model_id)
+    file_token = JETSON_SOURCE_TOKEN.get(model_id)
+    if base_dir is None or not os.path.isdir(base_dir):
         return {}
 
     result = {}
@@ -248,7 +201,7 @@ def jetson_star_x_by_env(model_id: int) -> dict:
             continue
         env_dir = os.path.join(base_dir, env)
         warn_on_unexpected_star_suffixes(env_dir)
-        stats = aggregate_ttfs(loader(env_dir, env))
+        stats = aggregate_ttfs(load_runs(env_dir, env, KINOPAX_STAR, model_id, file_token))
         if not math.isnan(stats.mean):
             result[env] = stats.mean
     return result
@@ -311,25 +264,16 @@ def plot_model_panel(ax, table: pd.DataFrame, subtitle: str, model_id: int, jets
         ax.text(0.5, 0.5, "No successful runs found yet.",
                 ha="center", va="center", transform=ax.transAxes, fontsize=10, color="#666666")
     else:
-        label_side = LABEL_SIDE.get(model_id, "left")
-        label_distance = LABEL_DISTANCE.get(model_id, DEFAULT_LABEL_DISTANCE)
-
         jetson_xs = list(jetson_star_by_env.values())
-        all_x = pd.concat([plotted["Mean_TTFS_ms"], plotted["Reference_Mean_TTFS_ms"]] + [pd.Series(jetson_xs)])
+        non_empty = [s for s in [plotted["Mean_TTFS_ms"], plotted["Reference_Mean_TTFS_ms"], pd.Series(jetson_xs)]
+                     if not s.empty]
+        all_x = pd.concat(non_empty)
         data_min, data_max = all_x.min(), all_x.max()
-        # Tightest "nice" bound enclosing the data on each end (see _nice_log_bound) rather than
-        # a fixed or decade-rounded range. The side the env-name labels sit on gets extra headroom
-        # baked in BEFORE rounding (LABEL_MARGIN) so there's room for the label + leader line to
-        # sit clear of the data point it's labeling; the far side stays as tight as the data needs.
-        if label_side == "right":
-            lo = _nice_log_bound(data_min, round_up=False)
-            hi = _nice_log_bound(data_max * LABEL_MARGIN, round_up=True)
-        else:
-            lo = _nice_log_bound(data_min / LABEL_MARGIN, round_up=False)
-            hi = _nice_log_bound(data_max, round_up=True)
+        # Tightest "nice" bound enclosing the data on each end (see _nice_log_bound) -- no env
+        # labels on this plot, so no extra headroom needs baking in on either side.
+        lo = _nice_log_bound(data_min, round_up=False)
+        hi = _nice_log_bound(data_max, round_up=True)
 
-        # Set the final scale/limits/aspect BEFORE anything below measures pixel positions
-        # (declutter_label_ys needs ax.transData to already reflect the real rendered layout).
         ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_xlim(lo, hi)
@@ -366,41 +310,20 @@ def plot_model_panel(ax, table: pd.DataFrame, subtitle: str, model_id: int, jets
 
         # Every algorithm compared within one (environment, discretization) cell shares that
         # cell's REFERENCE_PLANNER mean as its y-value, so they land on one shared horizontal
-        # line -- draw that line explicitly, mark REFERENCE_PLANNER's own position on it (exactly
-        # where that row crosses y=x) with a small symbol in its color, and label the row with the
-        # environment name. All of one subplot's labels line up in one shared column (past that
-        # subplot's own widest row) rather than each sitting just past its own row's rightmost
-        # point -- with many rows (3 environments x 3 discretizations), per-row label columns
-        # produced crossing leader lines. Rows can still land at nearly the same y (e.g. two
-        # environments of similar difficulty), which would print two labels on top of each other
-        # -- nudge later labels down (in sorted order) to keep a minimum multiplicative gap; the
-        # guide line and REFERENCE_PLANNER marker always stay at the true y.
-        row_groups = sorted(
-            plotted.groupby(["Environment", "Discretization"]),
-            key=lambda item: item[1]["Reference_Mean_TTFS_ms"].iloc[0],
-            reverse=True,
-        )
-        # Clamped to stay a little inside [lo, hi] regardless -- the axis box is now snapped
-        # tight to the data (not a generous fixed/decade-rounded range), so label_distance's
-        # multiplicative offset can overshoot past the axis edge when the data already sits close
-        # to it.
-        if label_side == "right":
-            desired = max(group["Mean_TTFS_ms"].max() for _, group in row_groups) * label_distance
-            label_x = min(desired, hi / 1.15)
-            anchor_side, ha = "max", "left"
-        else:
-            desired = min(group["Mean_TTFS_ms"].min() for _, group in row_groups) / label_distance
-            label_x = max(desired, lo * 1.15)
-            anchor_side, ha = "min", "right"
-        label_ys = declutter_label_ys(
-            ax, [(key, group["Reference_Mean_TTFS_ms"].iloc[0]) for key, group in row_groups]
-        )
+        # line -- draw that line explicitly and mark REFERENCE_PLANNER's own position on it
+        # (exactly where that row crosses y=x) with a small symbol in its color.
+        row_groups = plotted.groupby(["Environment", "Discretization"])
 
         matching_disc = JETSON_MATCHING_DISCRETIZATION.get(model_id)
         for (env, disc), group in row_groups:
             y = group["Reference_Mean_TTFS_ms"].iloc[0]
-            x_min = group["Mean_TTFS_ms"].min()
-            x_max = group["Mean_TTFS_ms"].max()
+            # Always include the reference's own x (which is y, since it sits on the y=x
+            # diagonal) in the line's span -- otherwise, when only ONE non-reference algorithm has
+            # a data point for this row, the line was just a tiny stub around that single far-off
+            # point instead of visibly connecting back to the diagonal reference marker, which
+            # could look like the line was simply missing.
+            x_min = min(group["Mean_TTFS_ms"].min(), y)
+            x_max = max(group["Mean_TTFS_ms"].max(), y)
             # Jetson's KinoPax*-only point lands on THIS row (same y) if this is the
             # discretization Jetson matches for this model -- widen the row's line span to
             # include it so the line visually connects to it, not just the Zephyr cluster. Same
@@ -409,7 +332,6 @@ def plot_model_panel(ax, table: pd.DataFrame, subtitle: str, model_id: int, jets
             jetson_x = jetson_star_by_env.get(env) if disc == matching_disc else None
             if jetson_x is not None:
                 x_min, x_max = min(x_min, jetson_x), max(x_max, jetson_x)
-            anchor_x = x_max if anchor_side == "max" else x_min
             ax.plot([x_min / 1.08, x_max * 1.08], [y, y], color="#999999", linestyle=":",
                      linewidth=1.0, zorder=0)
             ax.scatter(y, y, s=40, marker=discretization_marker(disc),
@@ -417,12 +339,6 @@ def plot_model_panel(ax, table: pd.DataFrame, subtitle: str, model_id: int, jets
             if jetson_x is not None:
                 ax.scatter(jetson_x, y, s=130, marker=discretization_marker(disc),
                            facecolors=JETSON_COLOR, edgecolors="black", linewidths=0.8, zorder=5)
-            ax.annotate(
-                env_display_name(env), xy=(anchor_x, y), xycoords="data",
-                xytext=(label_x, label_ys[(env, disc)]), textcoords="data",
-                ha=ha, va="center", fontsize=8, color="#555555",
-                arrowprops=dict(arrowstyle="-", color="#bbbbbb", lw=0.7, shrinkA=2, shrinkB=2),
-            )
 
         style_log_axis(ax)
         _add_edge_ticks(ax, lo, hi)
@@ -458,9 +374,11 @@ def main() -> None:
         plot_model_panel(ax, table, PANEL_SUBTITLES[model_id], model_id, jetson_stars[model_id])
 
     # Y meaning (not numeric range) is identical across all three subplots -- one shared label
-    # rather than duplicating it per subplot the way the X label already is.
+    # rather than duplicating it per subplot the way the X label already is. Reference planner's
+    # name leads the label (not "... -- Kino-PAX") so it reads immediately as "this axis is
+    # Kino-PAX's own time", not a general TTFS axis with the algorithm tacked on as an afterthought.
     ref_display = BASE_DISPLAY[REFERENCE_PLANNER]
-    supylabel = fig.supylabel(f"Time to First Solution (ms, log scale) — {ref_display}", fontsize=11, x=0.01)
+    supylabel = fig.supylabel(f"{ref_display} — Time to First Solution (ms, log scale)", fontsize=11, x=0.01)
 
     algo_handles = [
         Line2D([0], [0], marker="o", linestyle="", markerfacecolor=BASE_COLORS[p],

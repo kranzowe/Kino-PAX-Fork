@@ -19,7 +19,18 @@ Both of those are deliberate departures from cost_big_panel.py, not oversights:
   enough vertical room left for 9 labels and they collapsed into an unreadable pile. Rather than
   patch that one cell, the labels are dropped from this version entirely -- the color (algorithm)
   + shape (discretization) encoding is still there, just without a text tag identifying which
-  environment each point came from.
+  environment each point came from. This and every future panel plot in this folder default to
+  leaving off env-name labels unless specifically asked for.
+
+Every algorithm compared within one (environment, discretization) cell still shares Kino-PAX+'s
+own mean cost as its y-value, so they land on a shared horizontal line -- that dotted guide line
+(and Kino-PAX+'s own small marker on it, exactly where the row crosses y=x) IS still drawn even
+without the text label, unlike an earlier version of this file which dropped the line along with
+the labels since it was only ever built as part of the same per-row loop. The line's x-span always
+includes Kino-PAX+'s own x (which equals y, since it's on the diagonal) even when only one other
+algorithm has a data point for that row -- otherwise the line can shrink to a tiny stub around a
+single far-off point that never visually reaches back to the diagonal marker, which can look like
+the line was simply missing.
 
 AXES ARE STILL NOT SHARED ACROSS COLUMNS, for the same reason as cost_big_panel.py: final path
 cost is not comparable across models (Quad's [0,100]^3 workspace vs. the other two's [0,1]^3), and
@@ -71,7 +82,7 @@ PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
 # DATASET_DIR must directly contain one or more "discretization<LABEL>" folders (tiny/fine/coarse),
 # each of which directly contains the empty/house/narrowPassage/zigzag subfolders.
 # ================================================================================================
-DATASET_DIR = os.path.join(PLOTS_DIR, "DATA", "ZEPHYR_30_runs")
+DATASET_DIR = os.path.join(PLOTS_DIR, "DATA", "ZEPHYR_30_runs_3M_4s_TIME")
 OUT_DIR = os.path.join(PLOTS_DIR, "output", "cost_ratio")
 
 EXCLUDED_ENVIRONMENTS = {"empty"}  # trivially solved by everyone -- not an interesting comparison
@@ -191,6 +202,23 @@ def plot_cell(ax, table: pd.DataFrame, model_id: int, metric: str, is_top_row: b
                 zorder=3,
             )
 
+        # Every algorithm compared within one (environment, discretization) cell shares that
+        # cell's Kino-PAX+ mean as its y-value -- draw that shared row explicitly as a dotted
+        # guide line, with Kino-PAX+'s own position on it (exactly where the row crosses y=x)
+        # marked in its own color. Line span always includes Kino-PAX+'s own x (== y, on the
+        # diagonal) even when only one other algorithm has a point for this row, so it never
+        # shrinks to a stub that doesn't visibly reach the diagonal marker.
+        span = hi - lo
+        line_pad = span * 0.015
+        for (_env, disc), group in plotted.groupby(["Environment", "Discretization"]):
+            y = group["KinoPaxPlus_Mean_Cost"].iloc[0]
+            x_min = min(group["Mean_Cost"].min(), y)
+            x_max = max(group["Mean_Cost"].max(), y)
+            ax.plot([x_min - line_pad, x_max + line_pad], [y, y], color="#999999", linestyle=":",
+                     linewidth=1.0, zorder=0)
+            ax.scatter(y, y, s=38, marker=discretization_marker(disc),
+                       facecolors=BASE_COLORS[KINOPAX_PLUS], edgecolors="black", linewidths=0.7, zorder=6)
+
         style_linear_axis(ax)
 
     # Flag any discretization Kino-PAX+ never solved at all -- see zero_success_discretizations().
@@ -265,7 +293,7 @@ def main() -> None:
 
         # Row label -- the cost metric, rotated in the left margin -- read AFTER this row's three
         # cells are drawn so get_position() reflects their final (post-aspect-lock) layout.
-        axes[row][0].set_ylabel("Final Cost — Kino-PAX+ (linear scale)", fontsize=10)
+        axes[row][0].set_ylabel("Kino-PAX+ — Final Cost (linear scale)", fontsize=10)
         pos_left = axes[row][0].get_position()
         y_mid = (pos_left.y0 + pos_left.y1) / 2.0
         row_labels.append(fig.text(0.012, y_mid, COST_METRIC_LABELS[metric], rotation=90,
