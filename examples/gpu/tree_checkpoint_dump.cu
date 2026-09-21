@@ -3,7 +3,8 @@
 //
 // Dumps the planner's full tree, AND its solution trajectory (with cost) if one
 // exists yet, at fixed WALL-CLOCK-TIME checkpoints -- 50ms, 100ms, 150ms, 1000ms,
-// 4000ms of cumulative planner-only time -- for three planners on one environment:
+// 2000ms, 4000ms of cumulative planner-only time -- for three planners on one
+// environment:
 //
 //   KPAX             pure explorer reference
 //   KinoPaxPlus       pure optimizer reference
@@ -54,6 +55,21 @@
 // with its FULL ancestor chain back to root -- every retained path is complete
 // and connected (a meaningful "10% of the possible trajectories through the
 // tree"), not a random scatter of disconnected dots. See writeTreeCSV().
+//
+// A (planner, checkpoint) pair can be MISSING from the output entirely -- no tree/traj CSV, no
+// row in the stats file below -- if that planner's own loop exits before reaching that
+// checkpoint's wall-clock threshold. There is no meaningful iteration cap here
+// (MAX_LOOP_ITERATIONS is a generous safety net, not a real stopping criterion); the two actual
+// causes are printed to the console when they happen: "stopped early: tree full" (h_treeSize_
+// hit MAX_TREE_SIZE) or "stopped early: h_propIterations_ == 0" (the planner itself decided it
+// has no room left to propagate -- for KinoPaxPlus/CountingStars this fires when tree+frontier
+// approaches MAX_TREE_SIZE; see KinoPaxPlus.cu's own propagateFrontier()). Either way the tree
+// filled its capacity before the wall-clock checkpoint was reached -- not a data/plotting bug.
+//
+// {env}_checkpoint_stats.csv (one row per (planner, checkpoint) ACTUALLY reached) records the
+// REAL, non-sparsified tree_size and its percentage of MAX_TREE_SIZE at that checkpoint -- see
+// writeCheckpointStats(). This is the only place that percentage is available: the tree CSVs
+// themselves are sparsified (see above), so their row count is not the true tree size.
 //
 // Render the output with scripts/plot_tree_checkpoint.m.
 // ========================================================================
@@ -275,9 +291,26 @@ void writeVizMeta(const std::string& path, const float* h_initial, const float* 
     printf("  [viz] meta written: %s\n", path.c_str());
 }
 
-static const int   NUM_CHECKPOINTS         = 5;
-static const float CHECKPOINTS_MS[NUM_CHECKPOINTS] = {50.0f, 100.0f, 150.0f, 1000.0f, 4000.0f};
+static const int   NUM_CHECKPOINTS         = 6;
+static const float CHECKPOINTS_MS[NUM_CHECKPOINTS] = {50.0f, 100.0f, 150.0f, 1000.0f, 2000.0f, 4000.0f};
 static const int   MAX_LOOP_ITERATIONS     = 100000;   // generous safety cap, not the stopping criterion
+
+// Appended to once per (planner, checkpoint) actually reached -- see writeCheckpointStats().
+// NOT sparsified like the tree CSVs: tree_size here is the real, full h_treeSize_, so this is
+// the only place to find out how close a planner's tree actually got to MAX_TREE_SIZE at a given
+// checkpoint (the sparsified tree CSV's row count is a fixed ~4% sample, unrelated to true size).
+// A (planner, checkpoint) pair with NO row here means that planner's loop exited (tree-full or
+// h_propIterations_==0 -- see each run*Checkpoints() function) before ever reaching that
+// checkpoint's wall-clock threshold; the console log printed at the time explains which.
+void writeCheckpointStats(std::ofstream& statsFile, const std::string& token, int checkpointMs,
+                          int iteration, unsigned int treeSize, bool solved)
+{
+    float pctFilled = 100.0f * (float)treeSize / (float)MAX_TREE_SIZE;
+    statsFile << token << "," << checkpointMs << "," << iteration << "," << treeSize << ","
+              << MAX_TREE_SIZE << "," << std::fixed << std::setprecision(4) << pctFilled << ","
+              << (solved ? 1 : 0) << "\n";
+    statsFile.flush();   // each planner's block can exit early/abnormally; don't lose prior rows
+}
 
 // ========================================================================
 // KPAX: has graph_, goal signal is h_pathToGoal_ (direct tree index), tracked
@@ -286,7 +319,7 @@ static const int   MAX_LOOP_ITERATIONS     = 100000;   // generous safety cap, n
 // ========================================================================
 void runKPAXCheckpoints(KPAX& planner, const std::string& token, const std::string& env,
                         const std::string& vizDir, float* h_initial, float* h_goal,
-                        float* d_obstacles, uint numObstacles)
+                        float* d_obstacles, uint numObstacles, std::ofstream& statsFile)
 {
     printf("\n--- %s ---\n", token.c_str());
     planner.resetPlanner(h_initial, h_goal);
@@ -342,6 +375,7 @@ void runKPAXCheckpoints(KPAX& planner, const std::string& token, const std::stri
                                                planner.d_treeSampleCosts_ptr_, planner.h_treeSize_);
             writeTreeCSV(snap, checkpointTreePath(vizDir, env, token, ms), TREE_LEAF_SAMPLE_FRAC);
             writeTrajectoryCSV(snap, bestGoalIdx, checkpointTrajPath(vizDir, env, token, ms));
+            writeCheckpointStats(statsFile, token, ms, itr, planner.h_treeSize_, bestGoalIdx >= 0);
             printf("  t=%dms: itr=%d tree=%u %s\n", ms, itr, planner.h_treeSize_,
                    bestGoalIdx >= 0 ? "SOLVED" : "no solution yet");
             nextCheckpoint++;
@@ -369,7 +403,7 @@ void runKPAXCheckpoints(KPAX& planner, const std::string& token, const std::stri
 // ========================================================================
 void runKinoPaxPlusCheckpoints(KinoPaxPlus& planner, const std::string& token, const std::string& env,
                                const std::string& vizDir, float* h_initial, float* h_goal,
-                               float* d_obstacles, uint numObstacles)
+                               float* d_obstacles, uint numObstacles, std::ofstream& statsFile)
 {
     printf("\n--- %s ---\n", token.c_str());
     planner.resetPlanner(h_initial, h_goal);
@@ -407,6 +441,7 @@ void runKinoPaxPlusCheckpoints(KinoPaxPlus& planner, const std::string& token, c
             writeTreeCSV(snap, checkpointTreePath(vizDir, env, token, ms), TREE_LEAF_SAMPLE_FRAC);
             int goalIdx = findGoalIdxByScan(planner.d_goalSet_ptr_, snap, planner.h_minCost_);
             writeTrajectoryCSV(snap, goalIdx, checkpointTrajPath(vizDir, env, token, ms));
+            writeCheckpointStats(statsFile, token, ms, itr, planner.h_treeSize_, goalIdx >= 0);
             printf("  t=%dms: itr=%d tree=%u %s\n", ms, itr, planner.h_treeSize_,
                    goalIdx >= 0 ? "SOLVED" : "no solution yet");
             nextCheckpoint++;
@@ -430,7 +465,7 @@ void runKinoPaxPlusCheckpoints(KinoPaxPlus& planner, const std::string& token, c
 // ========================================================================
 void runCountingStarsCheckpoints(CountingStars& planner, const std::string& token, const std::string& env,
                                  const std::string& vizDir, float* h_initial, float* h_goal,
-                                 float* d_obstacles, uint numObstacles)
+                                 float* d_obstacles, uint numObstacles, std::ofstream& statsFile)
 {
     planner.h_fillIters_     = CS_RAMP_FILL_ITERS;
     planner.h_bufferSlope_   = CS_BUFFER_SLOPE;
@@ -475,6 +510,7 @@ void runCountingStarsCheckpoints(CountingStars& planner, const std::string& toke
             writeTreeCSV(snap, checkpointTreePath(vizDir, env, token, ms), TREE_LEAF_SAMPLE_FRAC);
             int goalIdx = findGoalIdxByScan(planner.d_goalSet_ptr_, snap, planner.h_minCost_);
             writeTrajectoryCSV(snap, goalIdx, checkpointTrajPath(vizDir, env, token, ms));
+            writeCheckpointStats(statsFile, token, ms, itr, planner.h_treeSize_, goalIdx >= 0);
             printf("  t=%dms: itr=%d tree=%u %s\n", ms, itr, planner.h_treeSize_,
                    goalIdx >= 0 ? "SOLVED" : "no solution yet");
             nextCheckpoint++;
@@ -516,7 +552,7 @@ int main(int argc, char* argv[])
            COST_MODE);
     printf("Obstacle file:  %s\n", obstaclePath.c_str());
     printf("Environment:    %s\n", envName.c_str());
-    printf("Checkpoints:    50ms, 100ms, 150ms, 1000ms, 4000ms\n");
+    printf("Checkpoints:    50ms, 100ms, 150ms, 1000ms, 2000ms, 4000ms\n");
     printf("Tree sampling:  %.0f%% of leaf trajectories per checkpoint\n", 100.0f * TREE_LEAF_SAMPLE_FRAC);
     printf("Output:         %s\n", vizDir.c_str());
     printf("=======================================================\n");
@@ -530,18 +566,23 @@ int main(int argc, char* argv[])
 
     writeVizMeta(vizDir + "/meta.csv", h_initial, h_goal);
 
+    std::ofstream statsFile(vizDir + "/" + envName + "_checkpoint_stats.csv");
+    statsFile << "token,checkpoint_ms,iteration,tree_size,max_tree_size,pct_filled,solved\n";
+
     {
         KPAX planner;
-        runKPAXCheckpoints(planner, "KPAX", envName, vizDir, h_initial, h_goal, d_obstacles, numObstacles);
+        runKPAXCheckpoints(planner, "KPAX", envName, vizDir, h_initial, h_goal, d_obstacles, numObstacles, statsFile);
     }
     {
         KinoPaxPlus planner;
-        runKinoPaxPlusCheckpoints(planner, "KinoPaxPlus", envName, vizDir, h_initial, h_goal, d_obstacles, numObstacles);
+        runKinoPaxPlusCheckpoints(planner, "KinoPaxPlus", envName, vizDir, h_initial, h_goal, d_obstacles, numObstacles, statsFile);
     }
     {
         CountingStars planner;
-        runCountingStarsCheckpoints(planner, "CountingStars", envName, vizDir, h_initial, h_goal, d_obstacles, numObstacles);
+        runCountingStarsCheckpoints(planner, "CountingStars", envName, vizDir, h_initial, h_goal, d_obstacles, numObstacles, statsFile);
     }
+    statsFile.close();
+    printf("Checkpoint stats written: %s\n", (vizDir + "/" + envName + "_checkpoint_stats.csv").c_str());
 
     cudaFree(d_obstacles);
 

@@ -84,7 +84,7 @@ COST_METRICS = ("length", "effort")
 # "_time_" instead of "_length_"/"_effort_" in the filename. Listed here (not in COST_METRICS,
 # which stays length/effort-only for the main dataset) so any script pointed at that dataset can
 # look up its label the same way as the other two.
-COST_METRIC_LABELS = {"length": "Workspace Path Length", "effort": "Control Effort", "time": "Elapsed Time"}
+COST_METRIC_LABELS = {"length": "Path Length", "effort": "Control Effort", "time": "Elapsed Time"}
 MAX_FLOAT_THRESH = 1e30
 DEFAULT_MAX_RUNS = 35  # search cap; harness writes 30 per series -- matches the .m script
 
@@ -256,6 +256,19 @@ def aggregate_ttfs_truncated(runs: Sequence[pd.DataFrame], timeout_ms: float) ->
     aggregate_cost_at_time's checkpoint convention, just applied to TTFS instead of cost."""
     values = [t if t >= 0 else math.nan for t in (first_sol_time_truncated(df, timeout_ms) for df in runs)]
     return _aggregate(values)
+
+
+def success_rate_truncated(runs: Sequence[pd.DataFrame], timeout_ms: float) -> tuple:
+    """(n_success, n_total, rate_fraction) -- fraction of runs that found a solution WITHIN
+    timeout_ms, via first_sol_time_truncated. A run that only solved after timeout_ms (even if it
+    solved well before the run's own end) correctly counts as a failure here -- unlike checking
+    "did best_cost ever drop below the unsolved sentinel by the run's own end" (what a plain,
+    non-timed success rate would use), which would wrongly credit a late solve as a success under
+    a shorter time budget. rate_fraction is NaN if there were no runs at all (n_total == 0)."""
+    n_total = len(runs)
+    n_success = sum(1 for df in runs if first_sol_time_truncated(df, timeout_ms) >= 0)
+    rate = (n_success / n_total) if n_total else math.nan
+    return n_success, n_total, rate
 
 
 def aggregate_final_cost(runs: Sequence[pd.DataFrame]) -> CellStats:

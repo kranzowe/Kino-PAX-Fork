@@ -10,19 +10,32 @@ scripts/run_tree_checkpoint_dump.sh), on the zigzag corridor, Model 1, V2's cano
 
 Input (in DATA_DIR):
     {env}_{token}_t{ms}ms_tree.csv   columns idx,x,y,z,vx,vy,vz,parent,cost -- already dumped at
-                                     only 10% of leaf trajectories (tree_checkpoint_dump.cu's own
-                                     doing); NODE_FRACTION/EDGE_FRACTION below are a further,
-                                     purely cosmetic render-time subsample on top of that.
+                                     only a small fraction of leaf trajectories
+                                     (tree_checkpoint_dump.cu's own doing, TREE_LEAF_SAMPLE_FRAC);
+                                     NODE_FRACTION/EDGE_FRACTION below are a further, purely
+                                     cosmetic render-time subsample on top of that -- so this
+                                     file's own row count is NOT the tree's true size, see below.
     {env}_{token}_t{ms}ms_traj.csv   columns step,x,y,z,vx,vy,vz,cost (0 rows if unsolved yet)
+    {env}_checkpoint_stats.csv      one row per (token, checkpoint_ms) ACTUALLY reached, with the
+                                     REAL (non-sparsified) tree_size and its % of MAX_TREE_SIZE --
+                                     see load_checkpoint_stats(). Optional: older dumps collected
+                                     before this file existed still render, just with a fallback
+                                     node-count note instead of the real size/% figure.
     meta.csv                        workspace bounds + start/goal
 
 UNLIKE THE MATLAB ORIGINAL (pick ONE checkpoint by uncommenting a line, then rerun by hand), this
 auto-discovers every checkpoint actually dumped in DATA_DIR (from the tree-file names themselves)
 and renders one figure per checkpoint in a single run -- consistent with every other script in
 this folder, which all loop over whatever's actually on disk rather than needing hand-editing per
-run. A token with no tree file at all for a given checkpoint (e.g. Kino-PAX+ often never reaches
-the earliest checkpoints) gets a "no data" placeholder tile instead of erroring, same as the
-original.
+run. A token with no tree file at all for a given checkpoint gets a "no data" placeholder tile
+instead of erroring, same as the original -- labeled "stopped early, after t=Xms" (from
+checkpoint_stats.csv) when that token DOES have data at an earlier checkpoint, since that's
+exactly what it means: the planner's own tree filled up (or it decided it had no room left to
+propagate -- see tree_checkpoint_dump.cu's header comment for the two exact conditions) before
+reaching that later checkpoint's wall-clock threshold, not a plotting/data bug. This has been
+observed for Kino-PAX+ and KinoPax* specifically at the later checkpoints (e.g. 4000ms) -- both
+build trees fast enough, relative to KPAX, to hit MAX_TREE_SIZE well before that much wall-clock
+time elapses in some runs.
 
 Node color = insertion order (idx, turbo colormap), subsampled evenly over insertion order
 (NODE_FRACTION below) so early- and late-tree structure both survive without rendering hundreds
@@ -65,7 +78,7 @@ REPO_ROOT = os.path.dirname(PLOTS_DIR)
 # ================================================================================================
 # EDIT THESE if your data/output folders or the environment being plotted move.
 # ================================================================================================
-DATA_DIR = os.path.join(PLOTS_DIR, "DATA", "tree_checkpoint", "TreeCheckpoints")
+DATA_DIR = os.path.join(PLOTS_DIR, "DATA", "tree_checkpoint", "TreeCheckpoints4BEST")
 OUT_DIR = os.path.join(PLOTS_DIR, "output", "tree_checkpoint")
 OBSTACLES_PATH = os.path.join(REPO_ROOT, "include", "config", "obstacles", "zigzag", "obstacles.csv")
 
@@ -93,7 +106,7 @@ EDGE_FRACTION = 1.0     # fraction of the SHOWN nodes' own edges drawn -- see mo
 OBSTACLE_ALPHA = 0.5   # top-down = obstacles don't stack along the view axis like 3D does
 NODE_SIZE = 6
 TRAJ_LINEWIDTH = 2.2
-TRAJ_COLOR = "#008533"
+TRAJ_COLOR = "#000000"
 SOLVED_COLOR = "#0d7a1a"
 UNSOLVED_COLOR = "#991414"
 NODATA_COLOR = "#808080"
@@ -118,6 +131,25 @@ def discover_checkpoints(data_dir: str, env: str, tokens: list) -> list:
 
 def load_meta(data_dir: str) -> dict:
     return pd.read_csv(os.path.join(data_dir, "meta.csv")).iloc[0].to_dict()
+
+
+def load_checkpoint_stats(data_dir: str, env: str) -> dict:
+    """{(token, checkpoint_ms): {tree_size, max_tree_size, pct_filled, solved}} from
+    "<env>_checkpoint_stats.csv" -- written by tree_checkpoint_dump.cu's writeCheckpointStats(),
+    the REAL (non-sparsified) tree size and its percent of MAX_TREE_SIZE at each (planner,
+    checkpoint) actually reached; a pair with no data dumped that checkpoint (see module
+    docstring: the planner's own loop can exit before reaching it) simply has no entry here
+    either. {} if the file doesn't exist yet -- older dumps, from before this stats file existed,
+    still render fine; draw_panel() falls back to the sparsified tree CSV's own row count with a
+    note when a given (token, checkpoint_ms) has no stats entry."""
+    path = os.path.join(data_dir, f"{env}_checkpoint_stats.csv")
+    if not os.path.isfile(path):
+        return {}
+    stats = pd.read_csv(path)
+    return {
+        (row["token"], int(row["checkpoint_ms"])): row.to_dict()
+        for _, row in stats.iterrows()
+    }
 
 
 def load_obstacles(path: str):
@@ -185,7 +217,7 @@ def draw_trajectory(ax, traj: pd.DataFrame) -> None:
         traj["x"], traj["y"],
         "-",
         color=TRAJ_COLOR,
-        linewidth=TRAJ_LINEWIDTH + 2,
+        linewidth=TRAJ_LINEWIDTH + 8,
         zorder=4,
     )
 
@@ -193,15 +225,15 @@ def draw_trajectory(ax, traj: pd.DataFrame) -> None:
     ax.plot(
         traj["x"], traj["y"],
         "-",
-        color="#16ff16",
+        color="#4cff46",
         linewidth=TRAJ_LINEWIDTH,
-        zorder=5,
+        zorder=6,
     )
 
 def draw_start_goal(ax, meta: dict) -> None:
     ax.scatter([meta["start_x"]], [meta["start_y"]], s=80, marker="o",
                facecolors="#f716ff", edgecolors="black", linewidths=0.8, zorder=5)
-    ax.scatter([meta["goal_x"]], [meta["goal_y"]], s=400, marker="o",
+    ax.scatter([meta["goal_x"]], [meta["goal_y"]], s=600, marker="o",
                facecolors=GOAL_COLOR, edgecolors="black", linewidths=0.8, zorder=5)
 
 
@@ -215,7 +247,25 @@ def finish_axes(ax, meta: dict) -> None:
     ax.tick_params(labelsize=7)
 
 
-def draw_panel(ax, token: str, checkpoint_ms: int, meta: dict, obstacles, color_vmax_by_token: dict) -> tuple:
+def _node_count_text(stats: dict, token: str, checkpoint_ms: int, tree: pd.DataFrame) -> str:
+    """Real tree size + % of MAX_TREE_SIZE from the checkpoint-stats file when available
+    (non-sparsified -- see load_checkpoint_stats); falls back to the sparsified tree CSV's own
+    row count, clearly flagged as such, for older dumps collected before that file existed."""
+    entry = stats.get((token, checkpoint_ms))
+    if entry is not None:
+        return f"N={int(entry['tree_size']):,} nodes ({entry['pct_filled']:.1f}% of capacity)"
+    return f"N≈{len(tree)} nodes (sparsified)"
+
+
+def _last_reached_checkpoint(stats: dict, token: str) -> int:
+    """Highest checkpoint_ms this token has ANY stats entry for -- used to explain a "no data"
+    panel as "planner stopped early" rather than a bare, unexplained gap. -1 if none at all."""
+    reached = [ms for (tok, ms) in stats if tok == token]
+    return max(reached) if reached else -1
+
+
+def draw_panel(ax, token: str, checkpoint_ms: int, meta: dict, obstacles, color_vmax_by_token: dict,
+               stats: dict) -> tuple:
     """Draws obstacles/workspace/tree/trajectory/start-goal for one token at one checkpoint onto
     `ax`. Returns (title_text, title_color) describing solve status, for callers that want a
     title -- the standalone frame exporter doesn't."""
@@ -228,10 +278,19 @@ def draw_panel(ax, token: str, checkpoint_ms: int, meta: dict, obstacles, color_
 
     if not os.path.isfile(tree_path):
         print(f"  [warn] missing tree file: {tree_path}")
-        title_text, title_color = "no data", NODATA_COLOR
+        last_reached = _last_reached_checkpoint(stats, token)
+        if last_reached >= 0 and last_reached < checkpoint_ms:
+            # See tree_checkpoint_dump.cu's own header comment: a planner's loop can exit (tree
+            # full, or it decides it has no room left to propagate) before reaching a later
+            # checkpoint's wall-clock threshold -- not a data/plotting bug.
+            title_text = f"no data (stopped early, after t={last_reached}ms)"
+        else:
+            title_text = "no data"
+        title_color = NODATA_COLOR
     else:
         tree = pd.read_csv(tree_path)
         draw_tree(ax, tree, color_vmax_by_token[token])
+        node_count_text = _node_count_text(stats, token, checkpoint_ms, tree)
         if os.path.isfile(traj_path):
             traj = pd.read_csv(traj_path)
         else:
@@ -239,20 +298,20 @@ def draw_panel(ax, token: str, checkpoint_ms: int, meta: dict, obstacles, color_
             traj = pd.DataFrame()
         if len(traj) > 0:
             draw_trajectory(ax, traj)
-            title_text = f"N={len(tree)} nodes | SOLVED, cost={traj['cost'].iloc[-1]:.4f}"
+            title_text = f"{node_count_text} | SOLVED, cost={traj['cost'].iloc[-1]:.4f}"
             title_color = SOLVED_COLOR
         else:
-            title_text = f"N={len(tree)} nodes | no solution yet"
+            title_text = f"{node_count_text} | no solution yet"
             title_color = UNSOLVED_COLOR
 
     draw_start_goal(ax, meta)
     return title_text, title_color
 
 
-def plot_checkpoint(checkpoint_ms: int, meta: dict, obstacles, color_vmax_by_token: dict) -> plt.Figure:
+def plot_checkpoint(checkpoint_ms: int, meta: dict, obstacles, color_vmax_by_token: dict, stats: dict) -> plt.Figure:
     fig, axes = plt.subplots(1, len(TOKENS), figsize=(15.0, 5.6))
     for ax, token in zip(axes, TOKENS):
-        title_text, title_color = draw_panel(ax, token, checkpoint_ms, meta, obstacles, color_vmax_by_token)
+        title_text, title_color = draw_panel(ax, token, checkpoint_ms, meta, obstacles, color_vmax_by_token, stats)
         finish_axes(ax, meta)
         ax.set_title(f"{TOKEN_LABELS.get(token, token)}\n{title_text}", fontsize=9, color=title_color)
 
@@ -263,11 +322,11 @@ def plot_checkpoint(checkpoint_ms: int, meta: dict, obstacles, color_vmax_by_tok
 
 
 def save_frame(token: str, checkpoint_ms: int, meta: dict, obstacles, frames_dir: str,
-               color_vmax_by_token: dict) -> str:
+               color_vmax_by_token: dict, stats: dict) -> str:
     """One panel, standalone -- no title, axis labels, ticks, or grid, just the workspace square
     with its content, cropped tight so the saved image is exactly that square."""
     fig, ax = plt.subplots(figsize=(6.0, 6.0))
-    draw_panel(ax, token, checkpoint_ms, meta, obstacles, color_vmax_by_token)
+    draw_panel(ax, token, checkpoint_ms, meta, obstacles, color_vmax_by_token, stats)
     ax.set_xlim(meta["W_MIN"], meta["W_MAX"])
     ax.set_ylim(meta["W_MIN"], meta["W_MAX"])
     ax.set_aspect("equal", adjustable="box")
@@ -319,6 +378,12 @@ def main() -> None:
     else:
         print(f"Obstacles: {OBSTACLES_PATH} ({len(obstacles)} boxes)")
 
+    stats = load_checkpoint_stats(DATA_DIR, ENV_NAME)
+    if not stats:
+        print(f"[warn] no {ENV_NAME}_checkpoint_stats.csv found in {DATA_DIR!r} -- true tree "
+              "size/% of capacity won't be shown (rerun scripts/run_tree_checkpoint_dump.sh to "
+              "get it). Falling back to each sparsified tree CSV's own row count.")
+
     checkpoints = discover_checkpoints(DATA_DIR, ENV_NAME, TOKENS)
     if not checkpoints:
         raise SystemExit(f"No checkpoint tree files found under {DATA_DIR!r} for env={ENV_NAME!r}.")
@@ -340,7 +405,7 @@ def main() -> None:
 
     for checkpoint_ms in checkpoints:
         print(f"\nRendering checkpoint t={checkpoint_ms}ms...")
-        fig = plot_checkpoint(checkpoint_ms, meta, obstacles, color_vmax_by_token)
+        fig = plot_checkpoint(checkpoint_ms, meta, obstacles, color_vmax_by_token, stats)
         base_name = f"tree_checkpoint_{ENV_NAME}_t{checkpoint_ms}ms"
         png_path = os.path.join(OUT_DIR, f"{base_name}.png")
         svg_path = os.path.join(OUT_DIR, f"{base_name}.svg")
@@ -351,7 +416,7 @@ def main() -> None:
 
         if checkpoint_ms in frame_checkpoints:
             for token in TOKENS:
-                frame_path = save_frame(token, checkpoint_ms, meta, obstacles, frames_dir, color_vmax_by_token)
+                frame_path = save_frame(token, checkpoint_ms, meta, obstacles, frames_dir, color_vmax_by_token, stats)
                 print(f"  Wrote frame {frame_path}")
 
 

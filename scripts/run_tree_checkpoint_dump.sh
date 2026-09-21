@@ -4,8 +4,8 @@
 #
 # Builds and runs TreeCheckpointDump, which dumps each planner's full tree --
 # AND its solution trajectory with cost, if one exists yet -- at fixed
-# WALL-CLOCK checkpoints (50ms, 100ms, 150ms, 1000ms, 4000ms of cumulative
-# planner-only time) for three planners on the zigzag corridor:
+# WALL-CLOCK checkpoints (50ms, 100ms, 150ms, 1000ms, 2000ms, 4000ms of
+# cumulative planner-only time) for three planners on the zigzag corridor:
 #
 #   KPAX              pure explorer reference
 #   KinoPaxPlus        pure optimizer reference
@@ -18,11 +18,19 @@
 # after each of the first 8 ITERATIONS instead, with no timing/solution
 # capture) -- that script and its .cu are untouched; this is separate.
 #
-# 3 planners x 5 checkpoints x 2 files (tree + trajectory) = 30 CSVs + meta.csv,
-# rendered by scripts/plot_tree_checkpoint.m. Tree CSVs keep only 10% of each
+# 3 planners x 6 checkpoints x 2 files (tree + trajectory) = 36 CSVs + meta.csv +
+# a checkpoint_stats.csv (one row per (planner, checkpoint) actually reached,
+# with the REAL, non-sparsified tree_size and its % of MAX_TREE_SIZE -- see
+# tree_checkpoint_dump.cu's writeCheckpointStats), rendered by
+# scripts/plot_tree_checkpoint.m. Tree CSVs keep only a small fraction of each
 # tree's leaf-rooted trajectories (see tree_checkpoint_dump.cu's writeTreeCSV) --
 # full trees can reach millions of nodes, so this keeps the CSVs and the MATLAB
 # render tractable while still showing complete, connected paths.
+#
+# A (planner, checkpoint) pair can be missing entirely if that planner's tree
+# fills MAX_TREE_SIZE (or otherwise runs out of room to propagate) before that
+# checkpoint's wall-clock threshold is reached -- see tree_checkpoint_dump.cu's
+# own header comment for the two exact conditions and their console messages.
 #
 # The config.h rewrite is NOT optional: the checked-in config.h is a MODEL 3
 # (12D quad, W_MAX 100) config, while the zigzag obstacles and every MATLAB
@@ -198,7 +206,7 @@ echo "  Environment: ${ENV_NAME}"
 echo "  Delta: ${DELTA_LABEL} | W_R1=${DELTA_W_R1} C_R1=${DELTA_C_R1} V_R1=${DELTA_V_R1} | Regions=${REGIONS}"
 echo "  Cost metric: path time (COST_MODE=${COST_MODE_VAL})"
 echo "  Planners: KPAX, KinoPaxPlus, CountingStars"
-echo "  Checkpoints: 50ms, 100ms, 150ms, 1000ms, 4000ms"
+echo "  Checkpoints: 50ms, 100ms, 150ms, 1000ms, 2000ms, 4000ms"
 echo "  Tree CSVs: 10% of leaf trajectories per checkpoint"
 echo "======================================================="
 

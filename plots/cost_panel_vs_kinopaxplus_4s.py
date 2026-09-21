@@ -6,13 +6,16 @@ discretization, LINEAR (not log) tight-to-data axes, y=x "as good as Kino-PAX+" 
 per-point environment-name labels.
 
 Design lineage: direct adaptation of cost_big_panel_linear.py -- same linear-axis/no-env-label/
-tight-fit/legend-on-drone-column design -- with three changes: (1) BOTH rows now read
-plots/DATA/ZEPHYR_30_runs (that file's two rows pulled from two different datasets/metrics for an
-unrelated reason -- see its own docstring); here row 1 = effort, row 2 = length, both from the
-same dataset, (2) REFERENCE_PLANNER is Kino-PAX+ again (that file switched it to Kino-PAX for a
-reason specific to its Elapsed-Time row, which doesn't apply here), and (3) no per-panel
-model-name title, and axis label TEXT (not tick labels, already bold via style_linear_axis) is
-bold.
+tight-fit design -- with these changes: (1) BOTH rows now read plots/DATA/ZEPHYR_30_runs (that
+file's two rows pulled from two different datasets/metrics for an unrelated reason -- see its own
+docstring); here row 1 = effort, row 2 = length, both from the same dataset, (2) REFERENCE_PLANNER
+is Kino-PAX+ again (that file switched it to Kino-PAX for a reason specific to its Elapsed-Time
+row, which doesn't apply here), (3) no per-panel model-name title, and axis label TEXT (not tick
+labels, already bold via style_linear_axis) is bold, and (4) the legend is kept ONLY on the two
+Quad (model 3) panels -- Control Effort and Path Length -- bottom-right, the only legend kept
+anywhere across the whole TTFS/Cost pair (ttfs_panel_vs_kpax_4s.py now carries none). Every
+individual saved cell carries its OWN x AND y axis labels (not just DoubleIntegrator), since the
+figures are composed into LaTeX and each saved image has to stand alone.
 
 TRUNCATION: cost is read at the SAME 4000ms checkpoint used throughout this dataset elsewhere in
 the suite (zephyr_common.cost_at_time / aggregate_cost_at_time) -- "the best cost achieved by the
@@ -75,10 +78,16 @@ TARGET_TIME_MS = 4000.0
 OUT_DIR = os.path.join(PLOTS_DIR, "output", "scatter_panels_4s")
 INDIVIDUAL_OUT_DIR = os.path.join(OUT_DIR, "individual")
 
+# Reference-only swatch: Jetson hardware data isn't plotted on this (Cost) figure at all -- it
+# only appears on ttfs_panel_vs_kpax_4s.py's TTFS panels -- but that figure carries no legend of
+# its own anymore, so this entry is added here purely as a color key, matching that other
+# script's JETSON_COLOR value.
+JETSON_COLOR = "#fe6100"
+
 REFERENCE_PLANNER = KINOPAX_PLUS  # <-- Kino-PAX+.
 EXCLUDED_ENVIRONMENTS = {"empty"}  # trivially solved by everyone -- not an interesting comparison
 
-INCLUDE_SIMPLECOMBO = False  # <-- TOGGLE. Flip to True to bring SimpleCombo back into this panel.
+INCLUDE_SIMPLECOMBO = True  # <-- TOGGLE. Flip to False to drop SimpleCombo from this panel.
 PLOTTED_OTHER_PLANNERS = [
     p for p in BASE_NAMES
     if p != REFERENCE_PLANNER and (INCLUDE_SIMPLECOMBO or p != SIMPLECOMBO)
@@ -207,28 +216,42 @@ def plot_cell(ax, table: pd.DataFrame) -> None:
 
 def save_individual_cell(table: pd.DataFrame, metric: str, model_id: int,
                           algo_handles: list, disc_handles: list) -> None:
-    """Standalone single-panel version of one (row, model) cell -- same plot_cell() drawing, but
-    with its own axis labels (bold, matching the combined panel's wording) and its own copy of
-    both legends, since a standalone image can't rely on a shared row/figure label or a
-    neighboring panel's legend the way a cell inside the combined 2x3 figure can."""
+    """Standalone single-panel version of one (row, model) cell -- same plot_cell() drawing.
+    Every cell gets its own x AND y axis labels now (the figures are composed in LaTeX, so each
+    saved image has to stand alone). Legend is kept ONLY on the two Quad (model_id 3) cells --
+    Control Effort and Path Length -- bottom-right, the only legend kept anywhere across the
+    whole TTFS/Cost pair (see ttfs_panel_vs_kpax_4s.py, which now carries none)."""
     fig, ax = plt.subplots(figsize=(6.0, 6.0))
     plot_cell(ax, table)
 
     ref_display = BASE_DISPLAY[REFERENCE_PLANNER]
-    ax.set_xlabel("Other algorithms' Cost @ 4s (linear scale)", fontsize=11, fontweight="bold")
-    ax.set_ylabel(f"{ref_display} Cost @ 4s (linear scale)", fontsize=11, fontweight="bold")
+    label_artists = [
+        ax.set_xlabel("COST of All Algorithms (linear scale)", fontsize=15, fontweight="bold"),
+        ax.set_ylabel("COST of Kino-PAX+ (linear scale)", fontsize=15, fontweight="bold"),
+    ]
 
-    legend_kwargs = dict(fontsize=8, title_fontsize=8, markerscale=0.9,
-                          handletextpad=0.35, borderpad=0.35, labelspacing=0.3, frameon=True)
-    leg_a = ax.legend(handles=algo_handles, title="Algorithm (color)", loc="upper left",
-                       bbox_to_anchor=(0.02, 0.98), **legend_kwargs)
-    ax.add_artist(leg_a)
-    ax.legend(handles=disc_handles, title="Discretization (shape)", loc="upper left",
-              bbox_to_anchor=(0.02, 0.80), **legend_kwargs)
+    if model_id == 3:
+        legend2 = ax.legend(handles=disc_handles, title="Discretization (shape)", loc="lower right",
+                             bbox_to_anchor=(0.99, 0.02), fontsize=11, title_fontsize=11, frameon=True)
+        ax.add_artist(legend2)
+        legend1 = ax.legend(handles=algo_handles, title="Algorithm (color)", loc="lower right",
+                             bbox_to_anchor=(0.99, 0.26), fontsize=11, title_fontsize=11, frameon=True)
+        label_artists += [legend1, legend2]
 
+    # Every cell now carries both a long bold x-label AND y-label -- tight_layout() recomputes
+    # subplot margins so they don't collide in the bottom-left corner (see
+    # ttfs_panel_vs_kpax_4s.py's save_individual_cell for the same fix and full rationale).
+    fig.tight_layout()
+
+    # bbox_inches="tight" alone under-crops large bold axis-label text (it's clipped a hair short
+    # at the edge otherwise) -- passing the label Text artists explicitly through
+    # bbox_extra_artists forces the tight-bbox calculation to actually include their full extent,
+    # same fix as the combined panel's fig-level supxlabel/row-label artists need.
     base = f"cost_vs_kinopaxplus_4s_{metric}_{MODEL_NAMES[model_id]}"
-    fig.savefig(os.path.join(INDIVIDUAL_OUT_DIR, f"{base}.png"), dpi=200, bbox_inches="tight", pad_inches=0.05)
-    fig.savefig(os.path.join(INDIVIDUAL_OUT_DIR, f"{base}.svg"), bbox_inches="tight", pad_inches=0.05)
+    fig.savefig(os.path.join(INDIVIDUAL_OUT_DIR, f"{base}.png"), dpi=200, bbox_inches="tight",
+                pad_inches=0.08, bbox_extra_artists=label_artists)
+    fig.savefig(os.path.join(INDIVIDUAL_OUT_DIR, f"{base}.svg"), bbox_inches="tight",
+                pad_inches=0.08, bbox_extra_artists=label_artists)
     plt.close(fig)
 
 
@@ -239,13 +262,11 @@ def main() -> None:
                               "top of this file.")
 
     discretization_dirs_by_row = {}
-    all_discretization_labels = set()
     for row_cfg in ROWS:
         dirs = discover_discretization_dirs(row_cfg["dataset_dir"])
         if not dirs:
             raise SystemExit(f"No discretization folders found under {row_cfg['dataset_dir']!r}.")
         discretization_dirs_by_row[row_cfg["label"]] = dirs
-        all_discretization_labels.update(discretization_label_from_dir(d) for d in dirs)
         print(f"{row_cfg['label']}: {row_cfg['dataset_dir']} -- "
               f"{[discretization_label_from_dir(d) for d in dirs]}")
 
@@ -266,10 +287,17 @@ def main() -> None:
         Line2D([0], [0], color=BASE_COLORS[REFERENCE_PLANNER], linestyle="--", linewidth=1.4,
                marker="o", markersize=6, markeredgecolor="black", label=f"{ref_display} (y = x)")
     )
+    algo_handles.append(
+        Line2D([0], [0], marker="o", linestyle="", markerfacecolor=JETSON_COLOR,
+               markeredgecolor="black", markersize=9, label="Jetson Kino-PAX#")
+    )
+    all_discretization_labels = sorted({
+        discretization_label_from_dir(d) for dirs in discretization_dirs_by_row.values() for d in dirs
+    })
     disc_handles = [
         Line2D([0], [0], marker=discretization_marker(d), linestyle="", markerfacecolor="#888888",
                markeredgecolor="black", markersize=9, label=discretization_display(d))
-        for d in sorted(all_discretization_labels)
+        for d in all_discretization_labels
     ]
 
     all_tables = []
@@ -287,29 +315,25 @@ def main() -> None:
             save_individual_cell(table, row_cfg["metric"], model_id, algo_handles, disc_handles)
 
             if col == drone_col:
-                # Both Drone cells get their own copy of both legends, top-left -- that corner
-                # sits clear of this model's data (which clusters along the diagonal toward the
-                # upper-right).
-                legend_kwargs = dict(fontsize=6.5, title_fontsize=6.5, markerscale=0.75,
-                                      handletextpad=0.35, borderpad=0.35, labelspacing=0.3,
-                                      frameon=True)
-                leg_a = ax.legend(handles=algo_handles, title="Algorithm (color)", loc="upper left",
-                                   bbox_to_anchor=(0.02, 0.98), **legend_kwargs)
-                ax.add_artist(leg_a)
-                ax.legend(handles=disc_handles, title="Discretization (shape)", loc="upper left",
-                          bbox_to_anchor=(0.37, 0.98), **legend_kwargs)
+                # Both Drone cells get their own copy of both legends, bottom-right -- the only
+                # legend kept anywhere across the whole TTFS/Cost pair.
+                legend2 = ax.legend(handles=disc_handles, title="Discretization (shape)", loc="lower right",
+                                     bbox_to_anchor=(0.99, 0.02), fontsize=11, title_fontsize=11, frameon=True)
+                ax.add_artist(legend2)
+                ax.legend(handles=algo_handles, title="Algorithm (color)", loc="lower right",
+                          bbox_to_anchor=(0.99, 0.26), fontsize=11, title_fontsize=11, frameon=True)
 
         # Row label -- the cost metric, rotated in the left margin -- read AFTER this row's three
         # cells are drawn so get_position() reflects their final (post-aspect-lock) layout.
-        axes[row][0].set_ylabel(f"{ref_display} Cost @ 4s (linear scale)",
-                                 fontsize=10, fontweight="bold")
+        row_labels.append(axes[row][0].set_ylabel(f"{ref_display} Cost @ 4s (linear scale)",
+                                                    fontsize=14, fontweight="bold"))
         pos_left = axes[row][0].get_position()
         y_mid = (pos_left.y0 + pos_left.y1) / 2.0
         row_labels.append(fig.text(0.038, y_mid, row_cfg["label"], rotation=90,
-                                    ha="center", va="center", fontsize=13, fontweight="bold"))
+                                    ha="center", va="center", fontsize=16, fontweight="bold"))
 
     supxlabel = fig.supxlabel("Other algorithms' Cost @ 4s (linear scale)",
-                               fontsize=11, fontweight="bold", x=0.53, y=0.015)
+                               fontsize=15, fontweight="bold", x=0.53, y=0.015)
     fig.subplots_adjust(left=0.09, right=0.985, top=0.94, bottom=0.08)
 
     base_name = "cost_vs_kinopaxplus_4s"
@@ -318,8 +342,8 @@ def main() -> None:
     png_path = os.path.join(OUT_DIR, f"{base_name}.png")
     svg_path = os.path.join(OUT_DIR, f"{base_name}.svg")
     legends = [supxlabel, *row_labels]
-    fig.savefig(png_path, dpi=200, bbox_inches="tight", pad_inches=0.03, bbox_extra_artists=legends)
-    fig.savefig(svg_path, bbox_inches="tight", pad_inches=0.03, bbox_extra_artists=legends)
+    fig.savefig(png_path, dpi=200, bbox_inches="tight", pad_inches=0.06, bbox_extra_artists=legends)
+    fig.savefig(svg_path, bbox_inches="tight", pad_inches=0.06, bbox_extra_artists=legends)
     plt.close(fig)
     print(f"Wrote {csv_path}, {png_path} + .svg ({n_total_runs} runs across all six panels)")
     print(f"Wrote 6 standalone per-cell PNG+SVG pairs to {INDIVIDUAL_OUT_DIR}")

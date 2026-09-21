@@ -81,7 +81,7 @@ CANONICAL_ENV_ORDER = ["house", "narrowPassage", "zigzag"]
 # SimpleCombo left out of this plot specifically -- everything else in plots/*.py still shows it.
 PLOTTED_PLANNERS = [p for p in BASE_NAMES if p != SIMPLECOMBO]
 
-PLOT_TIME_LIMIT_MS = 5000.0     # cut the x-axis (and everything computed for it) off at 5s
+PLOT_TIME_LIMIT_MS = 4000.0     # cut the x-axis (and everything computed for it) off at 5s
 NUM_TIME_SAMPLES = 400
 LIVE_FRACTION_THRESHOLD = 0.5   # a line "plateaus" once fewer than this fraction of its runs are still live
 EARLY_STOP_MARGIN = 0.95        # only mark a plateau if it lands before this fraction of the shared ceiling
@@ -150,7 +150,7 @@ def plot_cost_vs_time(model_id: int, env: str, metric: str, discretization_dirs:
                 if not df.empty:
                     global_t_max = max(global_t_max, float(df["elapsed_time_ms"].max()))
 
-    fig, ax = plt.subplots(figsize=(9.5, 6.2))
+    fig, ax = plt.subplots(figsize=(8.0, 8.0))
     legends = []
     curve_rows = []
     plateau_marker_used = False
@@ -191,51 +191,108 @@ def plot_cost_vs_time(model_id: int, env: str, metric: str, discretization_dirs:
                     "N_Runs": agg["n_runs"],
                 }))
 
-                p_idx = agg["plateau_idx"]
-                if p_idx is not None and not np.isnan(agg["mean"][p_idx]):
-                    p_time = common_time[p_idx]
-                    if p_time < EARLY_STOP_MARGIN * global_t_max:
-                        ax.scatter(p_time, agg["mean"][p_idx], marker="v", s=70,
-                                   facecolors=color, edgecolors="black", linewidths=0.8, zorder=5)
-                        plateau_marker_used = True
+                # p_idx = agg["plateau_idx"]
+                # if p_idx is not None and not np.isnan(agg["mean"][p_idx]):
+                #     p_time = common_time[p_idx]
+                #     if p_time < EARLY_STOP_MARGIN * global_t_max:
+                #         ax.scatter(p_time, agg["mean"][p_idx], marker="v", s=70,
+                #                    facecolors=color, edgecolors="black", linewidths=0.8, zorder=5)
+                #         plateau_marker_used = True
 
         style_linear_axis(ax)
         ax.set_xlim(0, plot_t_max)
 
         algo_handles = [
-            Line2D([0], [0], color=BASE_COLORS[p], linewidth=2.2, label=BASE_DISPLAY[p])
-            for p in PLOTTED_PLANNERS
-        ]
-        disc_handles = [
-            Line2D([0], [0], color="#555555", linewidth=2.0, linestyle=discretization_linestyle(d),
-                   label=discretization_display(d))
-            for d in discretization_labels
-        ]
-        if plateau_marker_used:
-            disc_handles.append(Line2D(
-                [0], [0], marker="v", linestyle="", markerfacecolor="#888888",
-                markeredgecolor="black", markersize=8,
-                label="Majority of runs stopped\nimproving (tree/frontier\nexhausted)",
-            ))
-        legend1 = ax.legend(handles=algo_handles, title="Algorithm (color)", loc="upper left",
-                             bbox_to_anchor=(1.02, 1.0), fontsize=9, title_fontsize=9, frameon=True)
-        ax.add_artist(legend1)
-        legend2 = ax.legend(handles=disc_handles, title="Discretization (line style)", loc="upper left",
-                             bbox_to_anchor=(1.02, 0.5), fontsize=9, title_fontsize=9, frameon=True)
-        legends = [legend1, legend2]
+        Line2D(
+            [0], [0],
+            color=BASE_COLORS[p],
+            linewidth=2.5,
+            label=BASE_DISPLAY[p],
+        )
+        for p in PLOTTED_PLANNERS
+    ]
+
+    disc_handles = [
+        Line2D(
+            [0], [0],
+            color="#555555",
+            linewidth=2.3,
+            linestyle=discretization_linestyle(d),
+            label=discretization_display(d),
+        )
+        for d in discretization_labels
+    ]
+
+    legend1 = ax.legend(
+        handles=algo_handles,
+        title="Algorithm",
+        loc="upper right",
+        bbox_to_anchor=(0.98, 0.98),
+        fontsize=15,
+        title_fontsize=15,
+        frameon=True,
+        framealpha=0.90,
+    )
+
+    ax.add_artist(legend1)
+
+    legend2 = ax.legend(
+        handles=disc_handles,
+        title="Discretization",
+        loc="upper right",
+        bbox_to_anchor=(0.65, 0.98),
+        fontsize=15,
+        title_fontsize=15,
+        frameon=True,
+        framealpha=0.90,
+    )
+    legends = [legend1, legend2]
 
     metric_title = COST_METRIC_LABELS[metric]
-    ax.set_xlabel("Elapsed Time (ms)")
-    ax.set_ylabel(f"Best Cost So Far ({metric_title})")
-    ax.set_title(
-        f"Cost vs Time — {env_display_name(env)}, {MODEL_NAMES[model_id]} (m{model_id}), {metric_title}\n"
-        "(mean ± 1 std across runs)",
-        fontsize=11, fontweight="bold",
-    )
-    ax.grid(True, linestyle=":", linewidth=0.5, alpha=0.5)
 
-    fig.savefig(out_path, dpi=200, bbox_inches="tight", bbox_extra_artists=legends)
-    fig.savefig(os.path.splitext(out_path)[0] + ".svg", bbox_inches="tight", bbox_extra_artists=legends)
+    ax.set_xlabel(
+        "Elapsed Time (ms)",
+        fontsize=15,
+        fontweight="bold",
+    )
+
+    ax.set_ylabel(
+        f"Cost ({metric_title})",
+        fontsize=15,
+        fontweight="bold",
+    )
+
+    # Larger, more legible tick labels.
+    ax.tick_params(
+        axis="both",
+        which="major",
+        labelsize=13,
+        width=1.2,
+        length=5,
+    )
+
+    # No plot title.
+    ax.grid(
+        True,
+        linestyle=":",
+        linewidth=0.7,
+        alpha=0.5,
+    )
+
+    # Keep the actual axes region comfortably sized within the square figure.
+    fig.tight_layout()
+
+    fig.savefig(
+        out_path,
+        dpi=300,
+        bbox_inches="tight",
+    )
+
+    fig.savefig(
+        os.path.splitext(out_path)[0] + ".svg",
+        bbox_inches="tight",
+    )
+  
     plt.close(fig)
 
     curves = pd.concat(curve_rows, ignore_index=True) if curve_rows else pd.DataFrame()

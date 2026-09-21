@@ -4,10 +4,12 @@ marked and (if one has been dropped in) a sample solved trajectory overlaid.
 Python port of scripts/view_environment.m (kept for reference, MATLAB-only) -- renders House,
 Narrow(Passage), and Windows (zigzag)'s obstacle CSV as translucent 3D boxes, one color per
 "wall" (grouped by y-extent, so distinct walls read as distinct colors instead of all obstacles
-blurring into one tint), true isometric projection (orthographic, elev/azim below), with a dashed
-straight start->goal line for scale. The .m original's second figure (per-wall 2D face slices,
-for checking exactly where a narrow passage's opening is) is NOT ported here -- this script's
-whole job, per request, is the isometric view; that diagnostic is still MATLAB-only if needed.
+blurring into one tint), true isometric projection (orthographic, elev/azim below). No legend, no
+straight start->goal reference line, no tick marks, no axis labels -- just the boxes, obstacles,
+and (if dropped in) the sample trajectory, deliberately bare for a paper figure. The .m original's
+second figure (per-wall 2D face slices, for checking exactly where a narrow passage's opening is)
+is NOT ported here -- this script's whole job, per request, is the isometric view; that
+diagnostic is still MATLAB-only if needed.
 
 Start/goal marker styling matches plots/tree_checkpoint.py's own convention (start = magenta/pink
 circle, goal = a larger green circle) instead of the .m original's green circle / red star --
@@ -24,7 +26,16 @@ build/Data/Viz/TreeCheckpoints/ output) -- sync that folder over to TRAJECTORY_D
 you already do for tree_checkpoint.py's own data. An environment with no matching CSV yet just
 renders without one -- not an error.
 
-Edit ENVIRONMENTS / OBSTACLES_DIR / TRAJECTORY_DIR / OUT_DIR below, then run:
+INTERACTIVE MODE (INTERACTIVE = True below, the default): opens one rotatable window per
+environment instead of silently batch-saving -- drag to orbit, scroll or right-drag to zoom,
+exactly matplotlib's normal 3D navigation. Close the window (or press 'q' while it's focused) to
+move to the next environment. Whatever orientation it's at when you close it gets saved
+automatically too (as "<env>_custom_view.png"/.svg, alongside the standard isometric ones, never
+overwriting them) -- so you don't strictly need your own OS-level screenshot, though nothing stops
+you from taking one instead if you'd rather. Set INTERACTIVE = False to go back to silently
+batch-saving just the fixed isometric view for every environment, no windows opened at all.
+
+Edit ENVIRONMENTS / OBSTACLES_DIR / TRAJECTORY_DIR / OUT_DIR / INTERACTIVE below, then run:
     python plots/view_environment.py
 """
 from __future__ import annotations
@@ -70,9 +81,21 @@ def _ensure_working_mpl_toolkits() -> None:
 
 _ensure_working_mpl_toolkits()
 
-matplotlib.use("Agg")
+# INTERACTIVE below decides the backend: Agg (batch, non-interactive) can't open a window at all,
+# so the backend choice has to happen before pyplot's own import, same ordering requirement as
+# _ensure_working_mpl_toolkits() above.
+INTERACTIVE = True  # <-- TOGGLE. See INTERACTIVE's own comment further down for what each does.
+if INTERACTIVE:
+    try:
+        matplotlib.use("TkAgg")
+    except Exception as exc:
+        print(f"[warn] Could not select the TkAgg backend ({exc}); falling back to whatever "
+              "interactive backend matplotlib finds on its own. If no window appears, install "
+              "Tkinter (usually bundled with Python) or PyQt5, or set INTERACTIVE = False.")
+else:
+    matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection  # noqa: E402
+from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
@@ -143,11 +166,27 @@ def draw_box(ax, lo: tuple, hi: tuple, color, alpha: float) -> None:
     ax.add_collection3d(poly)
 
 
-def draw_trajectory(ax, traj: pd.DataFrame) -> None:
-    ax.plot3D(traj["x"], traj["y"], traj["z"], "-", color=TRAJ_OUTLINE_COLOR,
-               linewidth=TRAJ_LINEWIDTH + 2, zorder=4)
-    ax.plot3D(traj["x"], traj["y"], traj["z"], "-", color=TRAJ_COLOR,
-               linewidth=TRAJ_LINEWIDTH, zorder=5)
+def draw_trajectory(ax, traj):
+    points = traj[["x", "y", "z"]].to_numpy()
+
+    for p0, p1 in zip(points[:-1], points[1:]):
+        xyz = np.vstack([p0, p1])
+
+        # Outline
+        ax.plot(
+            xyz[:, 0], xyz[:, 1], xyz[:, 2],
+            color=TRAJ_OUTLINE_COLOR,
+            linewidth=TRAJ_LINEWIDTH + 2,
+            solid_capstyle="round",
+        )
+
+        # Bright center
+        ax.plot(
+            xyz[:, 0], xyz[:, 1], xyz[:, 2],
+            color=TRAJ_COLOR,
+            linewidth=TRAJ_LINEWIDTH,
+            solid_capstyle="round",
+        )
 
 
 def draw_start_goal(ax) -> None:
@@ -155,14 +194,17 @@ def draw_start_goal(ax) -> None:
                facecolors=START_COLOR, edgecolors="black", linewidths=0.8, depthshade=False, zorder=6)
     ax.scatter([GOAL_PT[0]], [GOAL_PT[1]], [GOAL_PT[2]], s=400, marker="o",
                facecolors=GOAL_COLOR, edgecolors="black", linewidths=0.8, depthshade=False, zorder=6)
-    ax.plot3D([START_PT[0], GOAL_PT[0]], [START_PT[1], GOAL_PT[1]], [START_PT[2], GOAL_PT[2]],
-               "k--", linewidth=1.0, zorder=3)
 
 
 def plot_environment(env: str, obstacles: np.ndarray, traj: pd.DataFrame) -> plt.Figure:
     fig = plt.figure(figsize=(9.0, 7.5))
     ax = fig.add_subplot(111, projection="3d")
     ax.set_proj_type("ortho")
+    # computed_zorder stays at its default (True): that's what makes mplot3d actually sort every
+    # face/segment by true 3D depth against every other one, instead of the manually-controlled
+    # zorder= a False setting would use -- see draw_trajectory's own comment for why the
+    # trajectory is split into short segments so that per-artist sort is granular enough to be
+    # correct along its whole length, rather than one coarse answer for the entire line.
 
     groups = group_walls(obstacles)
     n_wall = int(groups.max()) + 1 if len(groups) else 0
@@ -179,23 +221,10 @@ def plot_environment(env: str, obstacles: np.ndarray, traj: pd.DataFrame) -> plt
     ax.set_ylim(WS_MIN, WS_MAX)
     ax.set_zlim(WS_MIN, WS_MAX)
     ax.set_box_aspect((1, 1, 1))
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    ax.set_zlabel("z")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_zticks([])
     ax.view_init(elev=ISO_ELEV, azim=ISO_AZIM)
-
-    from matplotlib.lines import Line2D
-    handles = [
-        Line2D([0], [0], marker="o", linestyle="", markerfacecolor=START_COLOR,
-               markeredgecolor="black", markersize=8, label="start"),
-        Line2D([0], [0], marker="o", linestyle="", markerfacecolor=GOAL_COLOR,
-               markeredgecolor="black", markersize=13, label="goal"),
-        Line2D([0], [0], color="k", linestyle="--", linewidth=1.0, label="straight line"),
-    ]
-    if traj is not None:
-        handles.append(Line2D([0], [0], color=TRAJ_COLOR, linewidth=TRAJ_LINEWIDTH,
-                               label="sample trajectory (CountingStars)"))
-    ax.legend(handles=handles, loc="upper left", fontsize=8)
 
     ax.set_title(f"{env_display_name(env)} — {len(obstacles)} obstacles, {n_wall} walls",
                  fontweight="bold")
@@ -249,13 +278,28 @@ def main() -> None:
             print(f"  No trajectory found at {traj_path} -- drop one in to have it drawn here.")
 
         fig = plot_environment(env, obstacles, traj)
+        ax = fig.axes[0]
         base_name = f"environment_{env}"
         png_path = os.path.join(OUT_DIR, f"{base_name}.png")
         svg_path = os.path.join(OUT_DIR, f"{base_name}.svg")
         fig.savefig(png_path, dpi=200, bbox_inches="tight")
         fig.savefig(svg_path, bbox_inches="tight")
+        print(f"  Wrote {png_path} + .svg (fixed isometric view)")
+
+        if INTERACTIVE:
+            print(f"  Opening an interactive window for {env_display_name(env)} -- drag to "
+                  "orbit, scroll/right-drag to zoom. Close the window when you've got the angle "
+                  "you want.")
+            plt.show()  # blocks until the window is closed
+            custom_base = f"environment_{env}_custom_view"
+            custom_png = os.path.join(OUT_DIR, f"{custom_base}.png")
+            custom_svg = os.path.join(OUT_DIR, f"{custom_base}.svg")
+            fig.savefig(custom_png, dpi=200, bbox_inches="tight")
+            fig.savefig(custom_svg, bbox_inches="tight")
+            print(f"  Wrote {custom_png} + .svg at elev={ax.elev:.1f}, azim={ax.azim:.1f} "
+                  "(the orientation the window was left at)")
+
         plt.close(fig)
-        print(f"  Wrote {png_path} + .svg")
 
 
 if __name__ == "__main__":
