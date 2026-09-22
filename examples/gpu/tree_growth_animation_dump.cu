@@ -24,7 +24,7 @@
 // KinoPaxPlus/CountingStars's h_minCost_ + findGoalIdxByScan.
 //
 // Tree CSVs are SPARSIFIED exactly as in tree_checkpoint_dump.cu: only
-// TREE_LEAF_SAMPLE_FRAC (4%) of the tree's LEAF nodes are kept, each with its
+// TREE_LEAF_SAMPLE_FRAC (1%, see below) of the tree's LEAF nodes are kept, each with its
 // FULL ancestor chain back to root. NOT changed here -- same fraction, same
 // algorithm.
 //
@@ -69,9 +69,12 @@ static const float CS_COST_FRAC      = 0.75f;
 static const bool  CS_HOPELESS_GUARD = true;
 static const int   CS_RAMP_FILL_ITERS = 700;
 
-// Fraction of each tree's LEAF nodes (see writeTreeCSV) kept in the tree CSVs. Unchanged from
-// tree_checkpoint_dump.cu.
-static const float TREE_LEAF_SAMPLE_FRAC = 0.04f;
+// Fraction of each tree's LEAF nodes (see writeTreeCSV) kept in the tree CSVs. Lower than
+// tree_checkpoint_dump.cu's 4% (this tool's own, separate constant -- the static checkpoint dump
+// is untouched) because 100 checkpoints' worth of tree CSVs, each re-rendered as a full
+// scatter+edge plot, adds up fast; 1% keeps the animation responsive to render while still
+// preserving complete, connected leaf-to-root paths (see writeTreeCSV's ancestor-chain logic).
+static const float TREE_LEAF_SAMPLE_FRAC = 0.01f;
 
 // ========================================================================
 // One host-side snapshot of a planner's tree, copied once per checkpoint and

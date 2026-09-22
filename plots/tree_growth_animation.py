@@ -47,10 +47,17 @@ PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
 # ================================================================================================
 # EDIT THESE if your data/output folders, the environment being plotted, or playback speed move.
 # ================================================================================================
-DATA_DIR = os.path.join(PLOTS_DIR, "DATA", "tree_animation", "TreeGrowthAnimation")
+DATA_DIR = os.path.join(PLOTS_DIR, "DATA", "tree_animation_30", "TreeGrowthAnimation")
 OUT_DIR = os.path.join(PLOTS_DIR, "output", "tree_growth_animation")
 ENV_NAME = "zigzag"
 FPS = 20  # 100 checkpoints @ 20fps = 5s animation; raise/lower to change playback speed only
+SAVE_DPI = 100  # lower = faster encode; 150+ only matters if you're zooming in on a still frame
+
+# Additional, RENDER-TIME-ONLY subsample on top of whatever fraction of the tree got saved to
+# disk (see tree_growth_animation_dump.cu's TREE_LEAF_SAMPLE_FRAC) -- a free lever for animation
+# speed since it needs no GPU rerun, just a faster Python pass. 1.0 draws every node/edge that
+# was saved; lower it (e.g. 0.3-0.5) if rendering is still too slow after a leaner dump.
+RENDER_NODE_FRACTION = 1.0
 
 # Point tree_checkpoint.py's own module-level constants at THIS data/output/env -- every drawing
 # function it defines (draw_panel, finish_axes, draw_obstacles, draw_tree, draw_trajectory,
@@ -59,6 +66,7 @@ FPS = 20  # 100 checkpoints @ 20fps = 5s animation; raise/lower to change playba
 # duplicating any plotting logic here.
 tc.DATA_DIR = DATA_DIR
 tc.ENV_NAME = ENV_NAME
+tc.NODE_FRACTION = RENDER_NODE_FRACTION
 
 
 def main() -> None:
@@ -126,13 +134,13 @@ def main() -> None:
     mp4_path = os.path.join(OUT_DIR, f"{base_name}.mp4")
     try:
         writer = animation.FFMpegWriter(fps=FPS, bitrate=4000)
-        anim.save(mp4_path, writer=writer, dpi=150)
+        anim.save(mp4_path, writer=writer, dpi=SAVE_DPI)
         print(f"\nWrote {mp4_path}")
     except (FileNotFoundError, RuntimeError) as exc:
         print(f"[warn] ffmpeg unavailable ({exc}); falling back to an animated GIF (larger file, slower to open).")
         gif_path = os.path.join(OUT_DIR, f"{base_name}.gif")
         writer = animation.PillowWriter(fps=FPS)
-        anim.save(gif_path, writer=writer, dpi=150)
+        anim.save(gif_path, writer=writer, dpi=SAVE_DPI)
         print(f"\nWrote {gif_path}")
 
     plt.close(fig)

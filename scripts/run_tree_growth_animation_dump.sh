@@ -21,8 +21,9 @@
 # meta.csv + a checkpoint_stats.csv (one row per (planner, checkpoint)
 # actually reached, with the REAL, non-sparsified tree_size and its % of
 # MAX_TREE_SIZE), rendered by plots/tree_growth_animation.py. Tree CSVs keep
-# only a small fraction of each tree's leaf-rooted trajectories (same
-# TREE_LEAF_SAMPLE_FRAC as run_tree_checkpoint_dump.sh) -- full trees can
+# only a small fraction of each tree's leaf-rooted trajectories (1% here vs.
+# run_tree_checkpoint_dump.sh's 4% -- lower because this tool renders 100
+# checkpoints' worth of frames instead of 6) -- full trees can
 # reach millions of nodes, so this keeps the CSVs and the render tractable
 # while still showing complete, connected paths.
 #
@@ -205,7 +206,7 @@ echo "  Delta: ${DELTA_LABEL} | W_R1=${DELTA_W_R1} C_R1=${DELTA_C_R1} V_R1=${DEL
 echo "  Cost metric: COST_MODE=${COST_MODE_VAL}"
 echo "  Planners: KPAX, KinoPaxPlus, CountingStars"
 echo "  Checkpoints: every 30ms out to 3000ms (100 checkpoints)"
-echo "  Tree CSVs: 4% of leaf trajectories per checkpoint"
+echo "  Tree CSVs: 1% of leaf trajectories per checkpoint"
 echo "======================================================="
 
 # =============================================================================
