@@ -5,8 +5,8 @@
 # Builds and runs TreeGrowthAnimationDump -- the same tool as
 # run_tree_checkpoint_dump.sh/tree_checkpoint_dump.cu (same three planners,
 # same fixed tunables, same discretization, same cost metric, same tree
-# sparsification), just with a much finer checkpoint schedule: every 10ms out
-# to 3000ms (300 checkpoints) instead of 6 hand-picked points, so
+# sparsification), just with a much finer checkpoint schedule: every 30ms out
+# to 3000ms (100 checkpoints) instead of 6 hand-picked points, so
 # plots/tree_growth_animation.py can render an actual animation of the tree
 # filling in over time.
 #
@@ -17,7 +17,7 @@
 #                      canonical point run_paper_benchmark_v2.sh/
 #                      paper_benchmark_v2.cu use for this planner
 #
-# 3 planners x 300 checkpoints x 2 files (tree + trajectory) = 1800 CSVs +
+# 3 planners x 100 checkpoints x 2 files (tree + trajectory) = 600 CSVs +
 # meta.csv + a checkpoint_stats.csv (one row per (planner, checkpoint)
 # actually reached, with the REAL, non-sparsified tree_size and its % of
 # MAX_TREE_SIZE), rendered by plots/tree_growth_animation.py. Tree CSVs keep
@@ -204,7 +204,7 @@ echo "  Environment: ${ENV_NAME}"
 echo "  Delta: ${DELTA_LABEL} | W_R1=${DELTA_W_R1} C_R1=${DELTA_C_R1} V_R1=${DELTA_V_R1} | Regions=${REGIONS}"
 echo "  Cost metric: COST_MODE=${COST_MODE_VAL}"
 echo "  Planners: KPAX, KinoPaxPlus, CountingStars"
-echo "  Checkpoints: every 10ms out to 3000ms (300 checkpoints)"
+echo "  Checkpoints: every 30ms out to 3000ms (100 checkpoints)"
 echo "  Tree CSVs: 4% of leaf trajectories per checkpoint"
 echo "======================================================="
 

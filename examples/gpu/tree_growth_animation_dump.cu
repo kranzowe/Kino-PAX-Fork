@@ -5,8 +5,8 @@
 // tunables, same tree-CSV sparsification, same stopping conditions, same
 // wall-clock-checkpoint mechanism) -- the ONLY difference is the checkpoint
 // schedule: instead of 6 hand-picked points (50/100/150/1000/2000/4000ms),
-// this dumps a checkpoint every CHECKPOINT_STEP_MS (10ms) out to
-// CHECKPOINT_MAX_MS (3000ms), i.e. 300 checkpoints, so plots/tree_growth_animation.py
+// this dumps a checkpoint every CHECKPOINT_STEP_MS (30ms) out to
+// CHECKPOINT_MAX_MS (3000ms), i.e. 100 checkpoints, so plots/tree_growth_animation.py
 // can render an actual animation of the tree filling in over time instead of
 // a handful of static frames.
 //
@@ -258,13 +258,13 @@ void writeVizMeta(const std::string& path, const float* h_initial, const float* 
 
 // Checkpoint schedule: every CHECKPOINT_STEP_MS out to CHECKPOINT_MAX_MS (inclusive) -- this is
 // the one deliberate difference from tree_checkpoint_dump.cu's 6 hand-picked points. Built once
-// in main() into a std::vector (300 entries at the default 10/3000 split) rather than a giant
+// in main() into a std::vector (100 entries at the default 30/3000 split) rather than a giant
 // literal array.
-static const float CHECKPOINT_STEP_MS = 10.0f;
+static const float CHECKPOINT_STEP_MS = 30.0f;
 static const float CHECKPOINT_MAX_MS  = 3000.0f;
 static const int   MAX_LOOP_ITERATIONS = 200000;   // generous safety cap, not the stopping criterion --
                                                     // bumped vs. tree_checkpoint_dump.cu's 100000 only
-                                                    // because 300 fine-grained checkpoints need more
+                                                    // because 100 fine-grained checkpoints need more
                                                     // total iterations to all be reached; the two real
                                                     // stopping conditions (tree-full / propIterations==0)
                                                     // are unchanged.

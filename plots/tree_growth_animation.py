@@ -9,7 +9,7 @@ static and animated versions.
 Input (in DATA_DIR, written by examples/gpu/tree_growth_animation_dump.cu via
 scripts/run_tree_growth_animation_dump.sh -- same file formats as tree_checkpoint.py's own input,
 just many more checkpoints):
-    {env}_{token}_t{ms}ms_tree.csv   one file per (token, checkpoint_ms), every 10ms out to 3000ms
+    {env}_{token}_t{ms}ms_tree.csv   one file per (token, checkpoint_ms), every 30ms out to 3000ms
     {env}_{token}_t{ms}ms_traj.csv
     {env}_checkpoint_stats.csv
     meta.csv
@@ -31,6 +31,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
+try:
+    # imageio-ffmpeg bundles a static ffmpeg binary -- pip install imageio-ffmpeg gives MP4 output
+    # with no system ffmpeg install/PATH setup needed. Silently no-op if it isn't installed; the
+    # save step below still falls back to an animated GIF in that case.
+    import imageio_ffmpeg
+    matplotlib.rcParams["animation.ffmpeg_path"] = imageio_ffmpeg.get_ffmpeg_exe()
+except ImportError:
+    pass
+
 import tree_checkpoint as tc
 
 PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -38,10 +47,10 @@ PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
 # ================================================================================================
 # EDIT THESE if your data/output folders, the environment being plotted, or playback speed move.
 # ================================================================================================
-DATA_DIR = os.path.join(PLOTS_DIR, "DATA", "tree_checkpoint", "TreeGrowthAnimation")
+DATA_DIR = os.path.join(PLOTS_DIR, "DATA", "tree_animation", "TreeGrowthAnimation")
 OUT_DIR = os.path.join(PLOTS_DIR, "output", "tree_growth_animation")
 ENV_NAME = "zigzag"
-FPS = 20  # 300 checkpoints @ 20fps = 15s animation; raise/lower to change playback speed only
+FPS = 20  # 100 checkpoints @ 20fps = 5s animation; raise/lower to change playback speed only
 
 # Point tree_checkpoint.py's own module-level constants at THIS data/output/env -- every drawing
 # function it defines (draw_panel, finish_axes, draw_obstacles, draw_tree, draw_trajectory,
