@@ -23,10 +23,14 @@
 // explanation of KPAX's persistent bestGoalIdx/bestCost tracking vs.
 // KinoPaxPlus/CountingStars's h_minCost_ + findGoalIdxByScan.
 //
-// Tree CSVs are SPARSIFIED exactly as in tree_checkpoint_dump.cu: only
-// TREE_LEAF_SAMPLE_FRAC (1%, see below) of the tree's LEAF nodes are kept, each with its
-// FULL ancestor chain back to root. NOT changed here -- same fraction, same
-// algorithm.
+// Tree CSVs are SPARSIFIED to ~TREE_LEAF_SAMPLE_FRAC (1%, see below) of the tree's LEAF nodes,
+// each kept with its FULL ancestor chain back to root -- same idea as tree_checkpoint_dump.cu,
+// but the SELECTION of which leaves survive is deliberately different: it uses a stable,
+// absolute-index-keyed "seed lineage" scheme (see writeTreeCSV's own header comment) instead of
+// re-picking a fraction of whatever the CURRENT leaves list happens to be at each checkpoint --
+// across 100 closely-spaced checkpoints of the same growing tree, that naive re-pick would sample
+// a mostly-unrelated random 1% of paths every single frame (the tree visibly "jittering" between
+// unrelated branches instead of the same branches extending over time).
 //
 // A (planner, checkpoint) pair can be MISSING from the output entirely -- no tree/traj CSV, no
 // row in the stats file below -- if that planner's own loop exits before reaching that
@@ -54,6 +58,7 @@
 #include <cmath>
 #include <cstdint>
 #include <algorithm>
+#include <unordered_map>
 #include "planners/KPAX.cuh"
 #include "planners/KinoPaxPlus.cuh"
 #include "planners/CountingStars.cuh"
@@ -105,12 +110,32 @@ TreeSnapshot copyTreeToHost(float* d_treeSamples_ptr, int* d_parents_ptr,
 }
 
 // One row per KEPT node: idx,x,y,z,vx,vy,vz,parent,cost (Model-1-shaped state
-// columns). Only leafSampleFrac of the tree's LEAF nodes (nodes no other node
-// names as parent) are kept, each with its FULL ancestor chain back to root --
-// this keeps every retained path complete/connected rather than a random
-// scatter of disconnected dots. Kept nodes are renumbered densely (0..K-1),
-// preserving relative insertion order, with parent references remapped to
-// match. Unchanged from tree_checkpoint_dump.cu.
+// columns). Only ~leafSampleFrac of the tree's LEAF nodes (nodes no other node names as parent)
+// are kept, each with its FULL ancestor chain back to root -- this keeps every retained path
+// complete/connected rather than a random scatter of disconnected dots. Kept nodes are renumbered
+// densely (0..K-1), preserving relative insertion order, with parent references remapped to
+// match.
+//
+// UNLIKE tree_checkpoint_dump.cu's version of this function (6 checkpoints far enough apart that
+// this doesn't matter there), the LEAF SELECTION here is deliberately NOT "N% of the CURRENT
+// leaves list, evenly spaced by position in that list" -- across 100 closely-spaced checkpoints
+// of the SAME growing tree, "the leaves list" reshuffles almost completely every 30ms (most
+// checkpoint-N leaves have grown children and stopped being leaves by checkpoint N+1, while a
+// mostly-different set of newer nodes are now the leaves), so evenly-spaced-by-list-POSITION
+// picks a essentially unrelated random 1% of paths at every single frame -- which is exactly the
+// "tree jitters about each frame" symptom: the rendered subset isn't the same lineage growing,
+// it's a fresh unrelated lineage sampled from scratch each time.
+//
+// Instead, each node is assigned a stable "seedOf" identity: the nearest ancestor (or itself)
+// whose absolute creation index (idx, NOT list position) is a multiple of `stride` --
+// stride = round(1/leafSampleFrac), an ABSOLUTE, index-keyed criterion that never depends on how
+// big or how reshuffled the current leaves list is. Because parents are only ever appended (never
+// reparented to an as-yet-uncreated node, so parent idx < child idx always), seedOf is computable
+// in one forward pass. Per seed, only its CURRENT deepest-known descendant leaf (largest idx among
+// that seed's leaves -- a cheap, correct-under-append-only-growth proxy for "however far this
+// lineage has grown so far") gets its ancestor chain drawn. The same handful of seed lineages
+// therefore stay highlighted and visibly EXTEND further each checkpoint, instead of the drawn 1%
+// being resampled from scratch onto different branches every frame.
 void writeTreeCSV(const TreeSnapshot& snap, const std::string& path, float leafSampleFrac)
 {
     int n = snap.treeSize;
@@ -124,34 +149,48 @@ void writeTreeCSV(const TreeSnapshot& snap, const std::string& path, float leafS
             int p = snap.parents[i];
             if(p >= 0) hasChild[p] = 1;
         }
-        std::vector<int> leaves;
+
+        int stride = std::max(1, (int)std::llround(1.0 / (double)leafSampleFrac));
+        std::vector<int> seedOf(n, -1);
         for(int i = 0; i < n; i++)
-            if(!hasChild[i]) leaves.push_back(i);
-
-        int nSample = std::max(1, (int)std::round(leafSampleFrac * (double)leaves.size()));
-        std::fill(keep.begin(), keep.end(), 0);
-
-        if(nSample >= (int)leaves.size())
         {
-            std::fill(keep.begin(), keep.end(), 1);   // sampling everything anyway
+            if(i % stride == 0) { seedOf[i] = i; continue; }
+            int p = snap.parents[i];
+            seedOf[i] = (p >= 0) ? seedOf[p] : -1;
         }
-        else
+
+        std::unordered_map<int, int> bestLeafForSeed;   // seed idx -> largest-idx leaf under it so far
+        bestLeafForSeed.reserve((size_t)n / stride + 1);
+        for(int i = 0; i < n; i++)
         {
-            // Evenly spaced over the leaf list (leaves is built by a forward scan, so it is
-            // already in ascending idx/insertion order) -- matches this repo's established
-            // "evenly spaced, not random" subsampling convention. Early-exit once a chain hits an
-            // already-kept node: everything above it was already marked by a previous leaf's
-            // walk, so this both saves work and deduplicates automatically.
-            for(int k = 0; k < nSample; k++)
+            if(hasChild[i]) continue;   // only leaves are candidate lineage "tips"
+            int seed = seedOf[i];
+            if(seed < 0) continue;
+            auto it = bestLeafForSeed.find(seed);
+            if(it == bestLeafForSeed.end() || i > it->second)
+                bestLeafForSeed[seed] = i;
+        }
+
+        std::fill(keep.begin(), keep.end(), 0);
+        for(const auto& entry : bestLeafForSeed)
+        {
+            int cur = entry.second;
+            while(cur >= 0 && !keep[cur])
             {
-                size_t li = (nSample == 1) ? 0
-                          : (size_t)std::llround((double)k * (double)(leaves.size() - 1) / (double)(nSample - 1));
-                int cur = leaves[li];
-                while(cur >= 0 && !keep[cur])
-                {
-                    keep[cur] = 1;
-                    cur = snap.parents[cur];
-                }
+                keep[cur] = 1;
+                cur = snap.parents[cur];
+            }
+        }
+        if(bestLeafForSeed.empty())
+        {
+            // Tree too small yet for any node to have hit the stride -- fall back to the single
+            // most-recently-created leaf's chain so an early checkpoint still shows something.
+            for(int i = n - 1; i >= 0; i--)
+            {
+                if(hasChild[i]) continue;
+                int cur = i;
+                while(cur >= 0 && !keep[cur]) { keep[cur] = 1; cur = snap.parents[cur]; }
+                break;
             }
         }
     }
