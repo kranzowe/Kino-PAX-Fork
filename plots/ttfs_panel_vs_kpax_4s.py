@@ -1,9 +1,16 @@
 """Time-to-first-solution scatter, 4-SECOND-TRUNCATED, ALL SIX (cost metric x model) combinations
 in one figure: two rows (Control Effort, Workspace Path Length) x three columns (one per model,
-left to right). Reference planner is Kino-PAX (KPAX) -- every other algorithm (Kino-PAX+,
-Kino-PAX#; SimpleCombo excluded by default, see INCLUDE_SIMPLECOMBO) is plotted against it,
-color = algorithm, shape = discretization, log-log axes, y=x "as fast as Kino-PAX" line, no
-per-point environment-name labels.
+left to right). Reference planner is Kino-PAX (KPAX) -- every OTHER algorithm not listed in
+EXCLUDED_ALGORITHMS (Kino-PAX+, SimpleCombo, Kino-PAX#, by default all included) is plotted
+against it, color = algorithm, shape = discretization, log-log axes, y=x "as fast as Kino-PAX"
+line, no per-point environment-name labels.
+
+EXCLUDED_ALGORITHMS (below) is the single toggle for which algorithms appear anywhere in this
+figure -- the combined 6-panel image, every individual saved cell, and the CSV. Add a planner
+token to it to drop that algorithm entirely; REFERENCE_PLANNER (KPAX) can't be added here, since
+it's the plot's fixed y-axis baseline, not one of "the other algorithms." Excluding Kino-PAX#
+(KINOPAX_STAR) also automatically drops its Jetson-hardware overlay (see jetson_star_x_by_env),
+since that overlay is specifically Kino-PAX# run on real hardware.
 
 Design lineage: this is a (metric x model) extension of ttfs_ratio_scatter_panel_no_env_labels.py
 (same REFERENCE_PLANNER/no-env-label/5x-faster-slower-line/Jetson-overlay design, grouped exactly
@@ -49,6 +56,7 @@ from zephyr_common import (  # noqa: E402
     BASE_DISPLAY,
     BASE_NAMES,
     COST_METRIC_LABELS,
+    KINOPAX_PLUS,
     KINOPAX_STAR,
     KPAX,
     MODEL_IDS,
@@ -78,20 +86,29 @@ TIMEOUT_MS = 4000.0
 # Row order matches how the combinations were requested: Control Effort first, then Path Length.
 COST_METRIC_ROWS = ("effort", "length")
 
-REFERENCE_PLANNER = KPAX    # <-- Kino-PAX. Every other algorithm is plotted relative to it.
-INCLUDE_SIMPLECOMBO = True  # <-- TOGGLE. Flip to False to drop SimpleCombo from this panel.
+REFERENCE_PLANNER = KPAX    # <-- Kino-PAX. Every OTHER algorithm is plotted relative to it.
+
+# <-- TOGGLE which OTHER algorithms get plotted against REFERENCE_PLANNER. Add any of
+# KINOPAX_PLUS / SIMPLECOMBO / KINOPAX_STAR to exclude it from every panel (combined figure,
+# individual cells, CSV) -- e.g. {SIMPLECOMBO} or {SIMPLECOMBO, KINOPAX_STAR}. REFERENCE_PLANNER
+# itself doesn't belong in this set -- it's the fixed y-axis baseline, not one of "the others."
+EXCLUDED_ALGORITHMS = set()
 
 EXCLUDED_ENVIRONMENTS = {"empty"}  # trivially solved by everyone -- not an interesting comparison
 
 PLOTTED_OTHER_PLANNERS = [
     p for p in BASE_NAMES
-    if p != REFERENCE_PLANNER and (INCLUDE_SIMPLECOMBO or p != SIMPLECOMBO)
+    if p != REFERENCE_PLANNER and p not in EXCLUDED_ALGORITHMS
 ]
 
 # Jetson-hardware overlay (KinoPax* proof-of-concept), same grouping as
 # ttfs_ratio_scatter_panel.py -- see jetson_star_x_by_env() below.
 JETSON_DIR = os.path.join(PLOTS_DIR, "DATA", "JETSON_20_runs")
-INCLUDE_JETSON = True
+INCLUDE_JETSON_MANUAL = True  # <-- TOGGLE. Independent on/off for the Jetson overlay specifically.
+# Also auto-disabled if Kino-PAX# (KINOPAX_STAR) is excluded above, since the overlay IS Kino-PAX#
+# run on real hardware -- excluding the algorithm from the comparison shouldn't leave its hardware
+# point plotted with nothing to compare it against.
+INCLUDE_JETSON = INCLUDE_JETSON_MANUAL and KINOPAX_STAR not in EXCLUDED_ALGORITHMS
 JETSON_COLOR = "#fe6100"  # the only thing that sets a Jetson point apart from a normal one
 
 # Which Zephyr discretization Jetson's data actually matches, per model. Models with no entry get
@@ -230,14 +247,23 @@ def build_model_table(model_id: int, metric: str, discretization_dirs: list) -> 
 def plot_cell(ax, table: pd.DataFrame, model_id: int, jetson_star_by_env: dict) -> None:
     """Draw one (metric, model) cell -- KPAX-referenced log-log scatter, no env-name labels, no
     per-panel title (dropped -- see module docstring), plus the Jetson-hardware overlay (same
-    per-model/per-environment grouping as ttfs_ratio_scatter_panel.py)."""
+    per-model/per-environment grouping as ttfs_ratio_scatter_panel.py).
+
+    Grouping is driven by ref_rows (REFERENCE_PLANNER's own rows, always present in `table`
+    regardless of EXCLUDED_ALGORITHMS -- build_model_table adds them unconditionally), NOT by
+    `plotted` (the OTHER algorithms' rows): with everything in EXCLUDED_ALGORITHMS, `plotted` is
+    empty even though REFERENCE_PLANNER (and Jetson) still have real data to show -- iterating
+    ref_rows instead means the y=x line and REFERENCE_PLANNER's own points (and Jetson's, if
+    enabled) still render with no other algorithms plotted, rather than the whole cell going blank."""
+    ref_display = BASE_DISPLAY[REFERENCE_PLANNER]
+    ref_rows = table[(table["Algorithm"] == ref_display) & table["Mean_TTFS_ms"].notna()]
     plotted = table[
-        (table["Algorithm"] != BASE_DISPLAY[REFERENCE_PLANNER])
+        (table["Algorithm"] != ref_display)
         & table["Mean_TTFS_ms"].notna()
         & table["Reference_Mean_TTFS_ms"].notna()
     ]
 
-    if plotted.empty:
+    if ref_rows.empty:
         ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_xlim(1.0, 10.0)
@@ -248,7 +274,8 @@ def plot_cell(ax, table: pd.DataFrame, model_id: int, jetson_star_by_env: dict) 
         return
 
     jetson_xs = list(jetson_star_by_env.values())
-    all_x = pd.concat([plotted["Mean_TTFS_ms"], plotted["Reference_Mean_TTFS_ms"]] + [pd.Series(jetson_xs)])
+    other_vals = list(plotted["Mean_TTFS_ms"]) if not plotted.empty else []
+    all_x = pd.concat([ref_rows["Mean_TTFS_ms"], pd.Series(other_vals), pd.Series(jetson_xs)])
     lo = _nice_log_bound(all_x.min(), round_up=False)
     hi = _nice_log_bound(all_x.max(), round_up=True)
 
@@ -272,26 +299,34 @@ def plot_cell(ax, table: pd.DataFrame, model_id: int, jetson_star_by_env: dict) 
         ax.plot([slower_start, hi], [lo, hi / FACTOR], linestyle=":",
                  color="red", linewidth=1.2, alpha=0.8, zorder=1)
 
-    display_to_token = {v: k for k, v in BASE_DISPLAY.items()}
-    for _, row in plotted.iterrows():
-        planner_token = display_to_token[row["Algorithm"]]
-        ax.scatter(
-            row["Mean_TTFS_ms"], row["Reference_Mean_TTFS_ms"],
-            s=130, marker=discretization_marker(row["Discretization"]),
-            facecolors=BASE_COLORS[planner_token], edgecolors="black", linewidths=0.8,
-            zorder=3,
-        )
+    if not plotted.empty:
+        display_to_token = {v: k for k, v in BASE_DISPLAY.items()}
+        for _, row in plotted.iterrows():
+            planner_token = display_to_token[row["Algorithm"]]
+            ax.scatter(
+                row["Mean_TTFS_ms"], row["Reference_Mean_TTFS_ms"],
+                s=130, marker=discretization_marker(row["Discretization"]),
+                facecolors=BASE_COLORS[planner_token], edgecolors="black", linewidths=0.8,
+                zorder=3,
+            )
 
     # Every algorithm compared within one (environment, discretization) cell shares that cell's
     # REFERENCE_PLANNER mean as its y-value -- shared dotted guide line + REFERENCE_PLANNER's own
     # marker on it, exactly where that row crosses y=x. A Jetson point (if this env/disc matches
-    # JETSON_MATCHING_DISCRETIZATION for this model) rides the same shared line.
+    # JETSON_MATCHING_DISCRETIZATION for this model) rides the same shared line. With no OTHER
+    # algorithms plotted (empty `group` below), the guide line just collapses to a short tick at
+    # REFERENCE_PLANNER's (and Jetson's, if present) own value instead of vanishing entirely.
     matching_disc = JETSON_MATCHING_DISCRETIZATION.get(model_id)
-    for (env, disc), group in plotted.groupby(["Environment", "Discretization"]):
-        y = group["Reference_Mean_TTFS_ms"].iloc[0]
-        x_min = group["Mean_TTFS_ms"].min()
-        x_max = group["Mean_TTFS_ms"].max()
+    for _, ref_row in ref_rows.iterrows():
+        env, disc = ref_row["Environment"], ref_row["Discretization"]
+        y = ref_row["Mean_TTFS_ms"]
+        group = plotted[(plotted["Environment"] == env) & (plotted["Discretization"] == disc)]
         jetson_x = jetson_star_by_env.get(env) if disc == matching_disc else None
+        if not group.empty:
+            x_min = group["Mean_TTFS_ms"].min()
+            x_max = group["Mean_TTFS_ms"].max()
+        else:
+            x_min = x_max = y
         if jetson_x is not None:
             x_min, x_max = min(x_min, jetson_x), max(x_max, jetson_x)
         ax.plot([x_min / 1.08, x_max * 1.08], [y, y], color="#999999", linestyle=":",

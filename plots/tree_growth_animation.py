@@ -1,16 +1,17 @@
 """Tree growth ANIMATION: the same three-panel (Kino-PAX / Kino-PAX+ / KinoPax*) tree +
-solution-trajectory render as plots/tree_checkpoint.py, played back as a movie -- but in a true
-isometric 3D view (same fixed ISO_ELEV/ISO_AZIM/orthographic convention as plots/view_environment.py)
-instead of that script's top-down X-Y projection, since the tree/trajectory data already has a
-z-column that the top-down view was discarding. Node/edge/trajectory/obstacle DATA and styling
-(turbo-by-insertion-order coloring, sparsification handling, "stopped early" labeling, start/goal
-marker colors) still come from tree_checkpoint.py's own data-loading helpers (load_meta,
+solution-trajectory render as plots/tree_checkpoint.py, played back as a movie. VIEW_MODE below
+toggles between plots/tree_checkpoint.py's own top-down X-Y view (default) and a true isometric 3D
+view (same fixed ISO_ELEV/ISO_AZIM/orthographic convention as plots/view_environment.py) that uses
+the z-column the top-down view discards. Node/edge/trajectory/obstacle DATA and styling (turbo-by-
+insertion-order coloring, sparsification handling, "stopped early" labeling, start/goal marker
+colors) come from tree_checkpoint.py's own data-loading helpers either way (load_meta,
 load_checkpoint_stats, discover_checkpoints, compute_color_vmax, _node_count_text,
-_last_reached_checkpoint, TOKEN_LABELS/TOKENS/color constants) -- only the DRAWING primitives are
-3D-specific versions defined in this file (draw_obstacles_3d, draw_tree_3d, draw_trajectory_3d,
-draw_start_goal_3d, finish_axes_3d, draw_panel_3d), since tree_checkpoint.py's own draw_tree/
-draw_trajectory/draw_obstacles are hardwired to 2D (Rectangle patches, plain ax.plot/ax.scatter --
-no z at all), and this animation is the only place that needs the 3D counterparts.
+_last_reached_checkpoint, TOKEN_LABELS/TOKENS/color constants) -- for VIEW_MODE="top_down" this
+file also reuses tree_checkpoint.py's own 2D drawing functions (draw_panel, finish_axes,
+draw_obstacles, draw_workspace_square, draw_start_goal) directly; for VIEW_MODE="isometric" it
+uses this file's own 3D counterparts instead (draw_obstacles_3d, draw_tree_3d, draw_trajectory_3d,
+draw_start_goal_3d, finish_axes_3d, draw_panel_3d), since tree_checkpoint.py's own drawing
+functions are hardwired to 2D (Rectangle patches, plain ax.plot/ax.scatter -- no z at all).
 
 Input (in DATA_DIR, written by examples/gpu/tree_growth_animation_dump.cu via
 scripts/run_tree_growth_animation_dump.sh -- same file formats as tree_checkpoint.py's own input,
@@ -93,15 +94,20 @@ PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
 # EDIT THESE if your data/output folders, the environment being plotted, playback speed, or the
 # camera angle move.
 # ================================================================================================
-DATA_DIR = os.path.join(PLOTS_DIR, "DATA", "tree_animation_30_1", "TreeGrowthAnimation")
+DATA_DIR = os.path.join(PLOTS_DIR, "DATA", "tree_animation_30_2", "TreeGrowthAnimation")
 OUT_DIR = os.path.join(PLOTS_DIR, "output", "tree_growth_animation")
 ENV_NAME = "zigzag"
 FPS = 20  # 100 checkpoints @ 20fps = 5s animation; raise/lower to change playback speed only
 SAVE_DPI = 100  # lower = faster encode; 150+ only matters if you're zooming in on a still frame
 
+# "top_down" = tree_checkpoint.py's own flat X-Y view (default). "isometric" = the 3D view added
+# for this animation (see module docstring) -- also generally slower to render (3D depth-sorting
+# adds real cost on top of the point/edge count, see RENDER_NODE_FRACTION below).
+VIEW_MODE = "top_down"
+
 # True isometric projection: elev = arctan(1/sqrt(2)) so all three axes foreshorten equally --
 # identical fixed angle to plots/view_environment.py's own ISO_ELEV/ISO_AZIM, so this animation's
-# camera matches that static figure's convention.
+# camera matches that static figure's convention. Only used when VIEW_MODE == "isometric".
 ISO_ELEV = 35.264
 ISO_AZIM = -45
 
@@ -267,6 +273,16 @@ def draw_empty_panel_3d(ax, meta: dict, obstacles) -> tuple:
     return "N=0 nodes | not started", tc.NODATA_COLOR
 
 
+def draw_empty_panel_2d(ax, meta: dict, obstacles) -> tuple:
+    """Top-down counterpart of draw_empty_panel_3d, using tree_checkpoint.py's own 2D obstacle/
+    workspace/start-goal drawing functions directly."""
+    if obstacles is not None:
+        tc.draw_obstacles(ax, obstacles)
+    tc.draw_workspace_square(ax, meta)
+    tc.draw_start_goal(ax, meta)
+    return "N=0 nodes | not started", tc.NODATA_COLOR
+
+
 def main() -> None:
     if not os.path.isdir(tc.DATA_DIR):
         raise SystemExit(
@@ -306,21 +322,35 @@ def main() -> None:
     for token in tc.TOKENS:
         print(f"  {tc.TOKEN_LABELS.get(token, token)}: 0 -> {color_vmax_by_token[token]:.0f}")
 
+    if VIEW_MODE not in ("top_down", "isometric"):
+        raise SystemExit(f"VIEW_MODE must be 'top_down' or 'isometric', got {VIEW_MODE!r}.")
+    print(f"View mode: {VIEW_MODE}")
+
     os.makedirs(OUT_DIR, exist_ok=True)
 
+    is_3d = VIEW_MODE == "isometric"
     fig, axes = plt.subplots(1, len(tc.TOKENS), figsize=(15.0, 5.6),
-                              subplot_kw={"projection": "3d"})
+                              subplot_kw={"projection": "3d"} if is_3d else {})
 
     def render_frame(checkpoint_ms: int) -> None:
         for ax, token in zip(axes, tc.TOKENS):
             ax.clear()
-            if checkpoint_ms == 0:
-                title_text, title_color = draw_empty_panel_3d(ax, meta, obstacles)
+            if is_3d:
+                if checkpoint_ms == 0:
+                    title_text, title_color = draw_empty_panel_3d(ax, meta, obstacles)
+                else:
+                    title_text, title_color = draw_panel_3d(
+                        ax, token, checkpoint_ms, meta, obstacles, color_vmax_by_token, stats
+                    )
+                finish_axes_3d(ax, meta)
             else:
-                title_text, title_color = draw_panel_3d(
-                    ax, token, checkpoint_ms, meta, obstacles, color_vmax_by_token, stats
-                )
-            finish_axes_3d(ax, meta)
+                if checkpoint_ms == 0:
+                    title_text, title_color = draw_empty_panel_2d(ax, meta, obstacles)
+                else:
+                    title_text, title_color = tc.draw_panel(
+                        ax, token, checkpoint_ms, meta, obstacles, color_vmax_by_token, stats
+                    )
+                tc.finish_axes(ax, meta)
             ax.set_title(f"{tc.TOKEN_LABELS.get(token, token)}\n{title_text}", fontsize=9, color=title_color)
         fig.suptitle(
             f"Tree + solution trajectory @ {checkpoint_ms}ms — {tc.ENV_NAME} (Model 1, coarse/large)",

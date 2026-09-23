@@ -1,9 +1,17 @@
 """Cost scatter, 4-SECOND-TRUNCATED, ALL SIX (cost metric x model) combinations in one figure:
 two rows (Control Effort, Workspace Path Length) x three columns (one per model, left to right).
-Reference planner is Kino-PAX+ -- every other algorithm (Kino-PAX, Kino-PAX#; SimpleCombo
-excluded by default, see INCLUDE_SIMPLECOMBO) is plotted against it, color = algorithm, shape =
-discretization, LINEAR (not log) tight-to-data axes, y=x "as good as Kino-PAX+" line, no
-per-point environment-name labels.
+Reference planner is Kino-PAX+ -- every OTHER algorithm not listed in EXCLUDED_ALGORITHMS
+(Kino-PAX, SimpleCombo, Kino-PAX#, by default all included) is plotted against it, color =
+algorithm, shape = discretization, LINEAR (not log) tight-to-data axes, y=x "as good as Kino-PAX+"
+line, no per-point environment-name labels.
+
+EXCLUDED_ALGORITHMS (below) is the single toggle for which algorithms appear anywhere in this
+figure -- the combined 6-panel image, every individual saved cell, the legend, and the CSV. Add a
+planner token to it to drop that algorithm entirely; REFERENCE_PLANNER (Kino-PAX+) can't be added
+here, since it's the plot's fixed y-axis baseline, not one of "the other algorithms." Excluding
+Kino-PAX# (KINOPAX_STAR) also drops the "Jetson Kino-PAX#" swatch from the legend, since that
+entry is specifically a color key for Kino-PAX# run on real hardware (see ttfs_panel_vs_kpax_4s.py
+for the actual Jetson data overlay -- this figure never plots real Jetson points, just the key).
 
 Design lineage: direct adaptation of cost_big_panel_linear.py -- same linear-axis/no-env-label/
 tight-fit design -- with these changes: (1) BOTH rows now read plots/DATA/ZEPHYR_30_runs (that
@@ -49,6 +57,8 @@ from zephyr_common import (  # noqa: E402
     BASE_NAMES,
     COST_METRIC_LABELS,
     KINOPAX_PLUS,
+    KINOPAX_STAR,
+    KPAX,
     MODEL_IDS,
     MODEL_NAMES,
     SIMPLECOMBO,
@@ -84,13 +94,18 @@ INDIVIDUAL_OUT_DIR = os.path.join(OUT_DIR, "individual")
 # script's JETSON_COLOR value.
 JETSON_COLOR = "#fe6100"
 
-REFERENCE_PLANNER = KINOPAX_PLUS  # <-- Kino-PAX+.
+REFERENCE_PLANNER = KINOPAX_PLUS  # <-- Kino-PAX+. Every OTHER algorithm is plotted relative to it.
 EXCLUDED_ENVIRONMENTS = {"empty"}  # trivially solved by everyone -- not an interesting comparison
 
-INCLUDE_SIMPLECOMBO = True  # <-- TOGGLE. Flip to False to drop SimpleCombo from this panel.
+# <-- TOGGLE which OTHER algorithms get plotted against REFERENCE_PLANNER. Add any of
+# KPAX / SIMPLECOMBO / KINOPAX_STAR to exclude it from every panel (combined figure, individual
+# cells, legend, CSV) -- e.g. {SIMPLECOMBO} or {SIMPLECOMBO, KINOPAX_STAR}. REFERENCE_PLANNER
+# itself doesn't belong in this set -- it's the fixed y-axis baseline, not one of "the others."
+EXCLUDED_ALGORITHMS = {SIMPLECOMBO}
+
 PLOTTED_OTHER_PLANNERS = [
     p for p in BASE_NAMES
-    if p != REFERENCE_PLANNER and (INCLUDE_SIMPLECOMBO or p != SIMPLECOMBO)
+    if p != REFERENCE_PLANNER and p not in EXCLUDED_ALGORITHMS
 ]
 
 # How much room to pad on every side of a cell's own tight data extent, as a fraction of that
@@ -151,14 +166,23 @@ def build_model_cost_table(model_id: int, row_cfg: dict, discretization_dirs: li
 
 def plot_cell(ax, table: pd.DataFrame) -> None:
     """Draw one (row, model) cell: tight-to-data linear axes, y=x reference line, plain
-    color/shape-coded scatter -- no env-name labels, no per-panel title (dropped; see docstring)."""
+    color/shape-coded scatter -- no env-name labels, no per-panel title (dropped; see docstring).
+
+    Grouping is driven by ref_rows (REFERENCE_PLANNER's own rows, always present in `table`
+    regardless of EXCLUDED_ALGORITHMS -- build_model_cost_table adds them unconditionally), NOT by
+    `plotted` (the OTHER algorithms' rows): with everything in EXCLUDED_ALGORITHMS, `plotted` is
+    empty even though REFERENCE_PLANNER still has real data to show -- iterating ref_rows instead
+    means the y=x line and REFERENCE_PLANNER's own points still render with no other algorithms
+    plotted, rather than the whole cell going blank."""
+    ref_display = BASE_DISPLAY[REFERENCE_PLANNER]
+    ref_rows = table[(table["Algorithm"] == ref_display) & table["Mean_Cost"].notna()]
     plotted = table[
-        (table["Algorithm"] != BASE_DISPLAY[REFERENCE_PLANNER])
+        (table["Algorithm"] != ref_display)
         & table["Mean_Cost"].notna()
         & table["Reference_Mean_Cost"].notna()
     ]
 
-    if plotted.empty:
+    if ref_rows.empty:
         ax.text(0.5, 0.5, "No successful\nruns found yet.",
                 ha="center", va="center", transform=ax.transAxes, fontsize=10, color="#666666")
         ax.set_xticks([])
@@ -166,13 +190,13 @@ def plot_cell(ax, table: pd.DataFrame) -> None:
         ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.5)
         return
 
-    xs = plotted["Mean_Cost"].to_numpy()
-    ys = plotted["Reference_Mean_Cost"].to_numpy()
-
     # Tight fit to the data's own extent, plus a small fixed-fraction margin -- no snapping to a
-    # "nice"/power-of-ten bound.
-    data_lo = min(xs.min(), ys.min())
-    data_hi = max(xs.max(), ys.max())
+    # "nice"/power-of-ten bound. Includes REFERENCE_PLANNER's own values even with `plotted` empty,
+    # so the axis range is never derived from zero points.
+    other_vals = list(plotted["Mean_Cost"]) if not plotted.empty else []
+    all_vals = other_vals + list(ref_rows["Mean_Cost"])
+    data_lo = min(all_vals)
+    data_hi = max(all_vals)
     span = data_hi - data_lo
     margin = span * AXIS_MARGIN_FRACTION if span > 0 else max(data_hi, 1.0) * AXIS_MARGIN_FRACTION
     lo = max(data_lo - margin, 0.0)
@@ -184,27 +208,35 @@ def plot_cell(ax, table: pd.DataFrame) -> None:
 
     ax.plot([lo, hi], [lo, hi], linestyle="--", color=BASE_COLORS[REFERENCE_PLANNER], linewidth=1.4, zorder=1)
 
-    display_to_token = {v: k for k, v in BASE_DISPLAY.items()}
-    for _, row in plotted.iterrows():
-        planner_token = display_to_token[row["Algorithm"]]
-        ax.scatter(
-            row["Mean_Cost"], row["Reference_Mean_Cost"],
-            s=110, marker=discretization_marker(row["Discretization"]),
-            facecolors=BASE_COLORS[planner_token], edgecolors="black", linewidths=0.7,
-            zorder=3,
-        )
+    if not plotted.empty:
+        display_to_token = {v: k for k, v in BASE_DISPLAY.items()}
+        for _, row in plotted.iterrows():
+            planner_token = display_to_token[row["Algorithm"]]
+            ax.scatter(
+                row["Mean_Cost"], row["Reference_Mean_Cost"],
+                s=110, marker=discretization_marker(row["Discretization"]),
+                facecolors=BASE_COLORS[planner_token], edgecolors="black", linewidths=0.7,
+                zorder=3,
+            )
 
     # Every algorithm compared within one (environment, discretization) cell shares that cell's
     # REFERENCE_PLANNER mean as its y-value -- shared dotted guide line + REFERENCE_PLANNER's own
     # marker on it, exactly where that row crosses y=x. Line span always includes
     # REFERENCE_PLANNER's own x (== y, on the diagonal) so it never shrinks to a stub that doesn't
-    # visibly reach the diagonal marker.
+    # visibly reach the diagonal marker. With no OTHER algorithms plotted (empty `group` below),
+    # the guide line just collapses to a short tick at REFERENCE_PLANNER's own value instead of
+    # vanishing entirely.
     span = hi - lo
     line_pad = span * 0.015
-    for (_env, disc), group in plotted.groupby(["Environment", "Discretization"]):
-        y = group["Reference_Mean_Cost"].iloc[0]
-        x_min = min(group["Mean_Cost"].min(), y)
-        x_max = max(group["Mean_Cost"].max(), y)
+    for _, ref_row in ref_rows.iterrows():
+        env, disc = ref_row["Environment"], ref_row["Discretization"]
+        y = ref_row["Mean_Cost"]
+        group = plotted[(plotted["Environment"] == env) & (plotted["Discretization"] == disc)]
+        if not group.empty:
+            x_min = min(group["Mean_Cost"].min(), y)
+            x_max = max(group["Mean_Cost"].max(), y)
+        else:
+            x_min = x_max = y
         ax.plot([x_min - line_pad, x_max + line_pad], [y, y], color="#999999", linestyle=":",
                  linewidth=1.0, zorder=0)
         ax.scatter(y, y, s=38, marker=discretization_marker(disc),
@@ -287,10 +319,11 @@ def main() -> None:
         Line2D([0], [0], color=BASE_COLORS[REFERENCE_PLANNER], linestyle="--", linewidth=1.4,
                marker="o", markersize=6, markeredgecolor="black", label=f"{ref_display} (y = x)")
     )
-    algo_handles.append(
-        Line2D([0], [0], marker="o", linestyle="", markerfacecolor=JETSON_COLOR,
-               markeredgecolor="black", markersize=9, label="Jetson Kino-PAX#")
-    )
+    # if KINOPAX_STAR not in EXCLUDED_ALGORITHMS:
+    #     algo_handles.append(
+    #         Line2D([0], [0], marker="o", linestyle="", markerfacecolor=JETSON_COLOR,
+    #                markeredgecolor="black", markersize=9, label="Jetson Kino-PAX#")
+        # )
     all_discretization_labels = sorted({
         discretization_label_from_dir(d) for dirs in discretization_dirs_by_row.values() for d in dirs
     })
