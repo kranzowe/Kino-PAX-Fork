@@ -45,7 +45,7 @@ the way this summary needs to.
 Writes a CSV + LaTeX (.tex.txt) for each version to plots/output/tables/.
 
 Edit DATASET_DIR / TIMEOUT_MS / OUT_DIR below, then run:
-    python plots/success_rate_summary_4s.py
+    python plots/paper/success_rate_summary_4s.py
 """
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ import sys
 
 import pandas as pd
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # plots/, for zephyr_common
 from zephyr_common import (  # noqa: E402
     BASE_DISPLAY,
     BASE_NAMES,
@@ -70,7 +70,7 @@ from zephyr_common import (  # noqa: E402
     warn_on_unexpected_star_suffixes,
 )
 
-PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
+PLOTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # plots/ (this file lives in plots/paper/)
 
 # ================================================================================================
 # EDIT THESE to point at a different dataset, change the time budget, or move the output location.

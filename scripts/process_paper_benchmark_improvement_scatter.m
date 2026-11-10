@@ -1,6 +1,6 @@
 %% Paper Benchmark Improvement Scatter - grand-average improvement over Kino-PAX+, both axis styles
-% Reads per-iteration CSVs produced by examples/gpu/paper_benchmark_v2.cu (run via
-% scripts/run_paper_benchmark_v2.sh) -- SEPARATE from process_paper_benchmark_v2_and_plot.m, which
+% Reads per-iteration CSVs produced by examples/gpu/paper/paper_benchmark_v2.cu (run via
+% scripts/paper/run_paper_benchmark_v2.sh) -- SEPARATE from process_paper_benchmark_v2_and_plot.m, which
 % plots one vehicle model's data at a time. This script reads ALL FOUR environments AND ALL THREE
 % vehicle models in one pass (see `environments`/`models` below).
 %
@@ -117,7 +117,7 @@ models          = [1, 2, 3];
 modelNames      = {'DoubleIntegrator', 'DubinsAirplane', 'Quad'};   % short, filename-safe tokens
 modelDeltaLabel = 'tiny';    % all three models currently share this one delta label
 
-% --- The four FIXED series (not swept). Label tokens must match examples/gpu/paper_benchmark_v2.cu's
+% --- The four FIXED series (not swept). Label tokens must match examples/gpu/paper/paper_benchmark_v2.cu's
 % trueLabel() / countingStarsLabel() exactly -- copied verbatim from
 % process_paper_benchmark_v2_and_plot.m; keep both in step by hand if either changes. ---
 trueCap           = 100;   % syclopCap 1.0 (no cap)

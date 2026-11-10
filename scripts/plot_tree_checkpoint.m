@@ -1,6 +1,6 @@
 %% Tree Checkpoint — top-down, 3 panels (one per planner) at one chosen time
 % Renders the wall-clock-checkpoint tree + solution-trajectory dumps written by
-% examples/gpu/tree_checkpoint_dump.cu (run via scripts/run_tree_checkpoint_dump.sh)
+% examples/gpu/paper/tree_checkpoint_dump.cu (run via scripts/paper/run_tree_checkpoint_dump.sh)
 % on the zigzag corridor, Model 1, V2's canonical "large"/coarse discretization.
 %
 % Panels (left to right): KPAX, KinoPaxPlus, CountingStars -- each showing that
@@ -58,7 +58,7 @@ TRAJ_COLOR     = [0.10 0.35 0.95];
 %% --- Load meta + obstacles ---
 metaPath = fullfile(dataDir, 'meta.csv');
 if ~isfile(metaPath)
-    error(['meta.csv not found in "%s". Run scripts/run_tree_checkpoint_dump.sh first, ' ...
+    error(['meta.csv not found in "%s". Run scripts/paper/run_tree_checkpoint_dump.sh first, ' ...
            'then cd to build/Data/Viz/TreeCheckpoints.'], pwd);
 end
 M = table2struct(readtable(metaPath));

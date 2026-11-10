@@ -22,7 +22,7 @@ more directly ("how many seconds until N nodes"). A steeper slope at any point I
 instantaneous growth rate there -- no separate derivative plot needed to see it.
 
 Edit DATASET_DIR / OUT_DIR / ENV_NAME / MODEL_ID / METRIC below, then run:
-    python plots/tree_growth_rate.py
+    python plots/paper/tree_growth_rate.py
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # plots/, for zephyr_common
 from zephyr_common import (  # noqa: E402
     BASE_COLORS,
     BASE_DISPLAY,
@@ -51,7 +51,7 @@ from zephyr_common import (  # noqa: E402
     warn_on_unexpected_star_suffixes,
 )
 
-PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
+PLOTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # plots/ (this file lives in plots/paper/)
 
 # ================================================================================================
 # EDIT THESE to point at a different dataset/output location, or pin a specific environment,

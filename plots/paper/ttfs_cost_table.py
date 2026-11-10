@@ -8,7 +8,7 @@ affect solve timing, and a run either solved or it didn't regardless of which co
 minimizing). The "empty" environment is excluded (trivially solved by everyone). Within each row,
 the best (lowest) TTFS across the three algorithms is bolded; success rate is never bolded (it's
 informational context for the TTFS next to it, not itself a competition column) -- same convention
-as cost_table_wide.py's own SuccessRate column. See plots/cost_table_wide.py for the companion cost
+as cost_table_wide.py's own SuccessRate column. See plots/paper/cost_table_wide.py for the companion cost
 table (first-solution cost and final cost, both cost metrics) -- kept as a separate, wider table on
 purpose rather than crammed into this one.
 
@@ -46,7 +46,7 @@ import sys
 
 import pandas as pd
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # plots/, for zephyr_common
 from zephyr_common import (  # noqa: E402
     COST_METRICS,
     KINOPAX_PLUS,
@@ -60,7 +60,7 @@ from zephyr_common import (  # noqa: E402
     warn_on_unexpected_star_suffixes,
 )
 
-PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
+PLOTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # plots/ (this file lives in plots/paper/)
 
 # ================================================================================================
 # EDIT THESE if your dataset folders move.

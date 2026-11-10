@@ -15,7 +15,7 @@ first (matplotlib's default savefig background is white anyway, so this matches 
 already looks like on screen).
 
 Edit SOURCE_DIR / OUT_DIR / JPEG_QUALITY below, then run:
-    python plots/convert_to_jpg.py
+    python plots/paper/convert_to_jpg.py
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ import os
 
 from PIL import Image
 
-PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
+PLOTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # plots/ (this file lives in plots/paper/)
 
 # ================================================================================================
 # EDIT THESE to point at a different source/output location or change JPEG quality.

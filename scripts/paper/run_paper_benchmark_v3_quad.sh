@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # PAPER BENCHMARK V3 (QUAD ONLY) -- a duplicate of run_paper_benchmark_v3.sh /
-# examples/gpu/paper_benchmark_v3_quad.cu, NOT a modification of v3 (v3 is untouched), restricted
+# examples/gpu/paper/paper_benchmark_v3_quad.cu, NOT a modification of v3 (v3 is untouched), restricted
 # to a SINGLE MODEL: Model 3 (12D Non-Linear Quad). Double Integrator and Dubins Airplane are not
 # built or run by this file at all.
 #
@@ -224,7 +224,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONFIG_FILE="$PROJECT_DIR/include/config/config.h"
 CONFIG_BACKUP="$CONFIG_FILE.bak"
 BUILD_DIR="$PROJECT_DIR/build"

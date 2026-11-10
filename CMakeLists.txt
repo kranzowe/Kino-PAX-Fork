@@ -42,6 +42,7 @@ set(SOURCE_FILES
     src/planners/KinoPaxSTARCleanCost.cu
     src/planners/KinoPaxSTARCOMBO.cu
     src/planners/CountingStars.cu
+    src/planners/ChainReaction.cu
     src/planners/KinoPaxSTARTrue.cu
     src/planners/KinoPaxSTARTrueWeightedCost.cu
     src/planners/KinoPaxSTARcostprunenoseed.cu
@@ -247,7 +248,11 @@ target_link_libraries(CountingStarsSweep
     Python3::NumPy
 )
 
-add_executable(PaperBenchmarkV2 examples/gpu/paper_benchmark_v2.cu)
+# --- Paper targets (sources in examples/gpu/paper/, runners in scripts/paper/; see PAPER.md) ---
+# PaperBenchmarkV2, PaperBenchmarkV3, JetsonPaperBenchmarkV3, PaperBenchmarkV3Quad,
+# TreeCheckpointDump, TreeGrowthAnimationDump, ChainReactionBenchmark. Everything else below is
+# non-paper/legacy.
+add_executable(PaperBenchmarkV2 examples/gpu/paper/paper_benchmark_v2.cu)
 target_link_libraries(PaperBenchmarkV2
     PUBLIC KPAX_lib
     ${CUDA_LIBRARIES}
@@ -258,7 +263,7 @@ target_link_libraries(PaperBenchmarkV2
     Python3::NumPy
 )
 
-add_executable(PaperBenchmarkV3 examples/gpu/paper_benchmark_v3.cu)
+add_executable(PaperBenchmarkV3 examples/gpu/paper/paper_benchmark_v3.cu)
 target_link_libraries(PaperBenchmarkV3
     PUBLIC KPAX_lib
     ${CUDA_LIBRARIES}
@@ -269,7 +274,7 @@ target_link_libraries(PaperBenchmarkV3
     Python3::NumPy
 )
 
-add_executable(JetsonPaperBenchmarkV3 examples/gpu/jetson_paper_benchmark_v3.cu)
+add_executable(JetsonPaperBenchmarkV3 examples/gpu/paper/jetson_paper_benchmark_v3.cu)
 target_link_libraries(JetsonPaperBenchmarkV3
     PUBLIC KPAX_lib
     ${CUDA_LIBRARIES}
@@ -280,7 +285,7 @@ target_link_libraries(JetsonPaperBenchmarkV3
     Python3::NumPy
 )
 
-add_executable(PaperBenchmarkV3Quad examples/gpu/paper_benchmark_v3_quad.cu)
+add_executable(PaperBenchmarkV3Quad examples/gpu/paper/paper_benchmark_v3_quad.cu)
 target_link_libraries(PaperBenchmarkV3Quad
     PUBLIC KPAX_lib
     ${CUDA_LIBRARIES}
@@ -335,7 +340,7 @@ target_link_libraries(TreeGrowthDump
     Python3::NumPy
 )
 
-add_executable(TreeCheckpointDump examples/gpu/tree_checkpoint_dump.cu)
+add_executable(TreeCheckpointDump examples/gpu/paper/tree_checkpoint_dump.cu)
 target_link_libraries(TreeCheckpointDump
     PUBLIC KPAX_lib
     ${CUDA_LIBRARIES}
@@ -346,7 +351,18 @@ target_link_libraries(TreeCheckpointDump
     Python3::NumPy
 )
 
-add_executable(TreeGrowthAnimationDump examples/gpu/tree_growth_animation_dump.cu)
+add_executable(ChainReactionBenchmark examples/gpu/paper/chain_reaction_benchmark.cu)
+target_link_libraries(ChainReactionBenchmark
+    PUBLIC KPAX_lib
+    ${CUDA_LIBRARIES}
+    ${Boost_LIBRARIES}
+    ${EIGEN3_LIBRARIES}
+    yaml-cpp
+    Python3::Python
+    Python3::NumPy
+)
+
+add_executable(TreeGrowthAnimationDump examples/gpu/paper/tree_growth_animation_dump.cu)
 target_link_libraries(TreeGrowthAnimationDump
     PUBLIC KPAX_lib
     ${CUDA_LIBRARIES}
@@ -384,6 +400,7 @@ set_target_properties(KinoPaxStarAcceptBreakdown PROPERTIES CUDA_SEPARABLE_COMPI
 set_target_properties(TreeGrowthDump PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(TreeCheckpointDump PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(TreeGrowthAnimationDump PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(ChainReactionBenchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
 
 set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -diag-suppress=20012,20013,20014,20015 --expt-relaxed-constexpr --ptxas-options=-v")
@@ -418,6 +435,7 @@ set_property(TARGET KinoPaxStarAcceptBreakdown PROPERTY CUDA_ARCHITECTURES 61 86
 set_property(TARGET TreeGrowthDump PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET TreeCheckpointDump PROPERTY CUDA_ARCHITECTURES 61 86 87)
 set_property(TARGET TreeGrowthAnimationDump PROPERTY CUDA_ARCHITECTURES 61 86 87)
+set_property(TARGET ChainReactionBenchmark PROPERTY CUDA_ARCHITECTURES 61 86 87)
 add_definitions(-DEIGEN_NO_DEBUG)
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations -Wno-unused-function")

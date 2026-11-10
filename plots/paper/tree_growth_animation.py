@@ -1,7 +1,7 @@
 """Tree growth ANIMATION: the same three-panel (Kino-PAX / Kino-PAX+ / KinoPax*) tree +
-solution-trajectory render as plots/tree_checkpoint.py, played back as a movie. VIEW_MODE below
-toggles between plots/tree_checkpoint.py's own top-down X-Y view (default) and a true isometric 3D
-view (same fixed ISO_ELEV/ISO_AZIM/orthographic convention as plots/view_environment.py) that uses
+solution-trajectory render as plots/paper/tree_checkpoint.py, played back as a movie. VIEW_MODE below
+toggles between plots/paper/tree_checkpoint.py's own top-down X-Y view (default) and a true isometric 3D
+view (same fixed ISO_ELEV/ISO_AZIM/orthographic convention as plots/paper/view_environment.py) that uses
 the z-column the top-down view discards. Node/edge/trajectory/obstacle DATA and styling (turbo-by-
 insertion-order coloring, sparsification handling, "stopped early" labeling, start/goal marker
 colors) come from tree_checkpoint.py's own data-loading helpers either way (load_meta,
@@ -13,8 +13,8 @@ uses this file's own 3D counterparts instead (draw_obstacles_3d, draw_tree_3d, d
 draw_start_goal_3d, finish_axes_3d, draw_panel_3d), since tree_checkpoint.py's own drawing
 functions are hardwired to 2D (Rectangle patches, plain ax.plot/ax.scatter -- no z at all).
 
-Input (in DATA_DIR, written by examples/gpu/tree_growth_animation_dump.cu via
-scripts/run_tree_growth_animation_dump.sh -- same file formats as tree_checkpoint.py's own input,
+Input (in DATA_DIR, written by examples/gpu/paper/tree_growth_animation_dump.cu via
+scripts/paper/run_tree_growth_animation_dump.sh -- same file formats as tree_checkpoint.py's own input,
 just many more checkpoints):
     {env}_{token}_t{ms}ms_tree.csv   one file per (token, checkpoint_ms), every 30ms out to 3000ms
     {env}_{token}_t{ms}ms_traj.csv
@@ -32,7 +32,7 @@ package's bundled binary), otherwise falls back to an animated GIF.
 Edit DATA_DIR / OUT_DIR / OBSTACLES_PATH / ENV_NAME / FPS / ISO_ELEV / ISO_AZIM below if your
 data/output folders, the environment being plotted, the animation's playback speed, or the camera
 angle need to change, then run:
-    python plots/tree_growth_animation.py
+    python plots/paper/tree_growth_animation.py
 """
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ import sys
 
 
 def _ensure_working_mpl_toolkits() -> None:
-    """Same fix as plots/view_environment.py's own helper (copied verbatim, see its comment for
+    """Same fix as plots/paper/view_environment.py's own helper (copied verbatim, see its comment for
     the full explanation): on at least one dev machine this repo is used on, a second, broken
     mpl_toolkits install shadows the real one bundled with the matplotlib actually in use, which
     silently disables the "3d" projection ("Unable to import Axes3D" warning) the first time
@@ -88,7 +88,7 @@ except ImportError:
 
 import tree_checkpoint as tc
 
-PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
+PLOTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # plots/ (this file lives in plots/paper/)
 
 # ================================================================================================
 # EDIT THESE if your data/output folders, the environment being plotted, playback speed, or the
@@ -106,7 +106,7 @@ SAVE_DPI = 100  # lower = faster encode; 150+ only matters if you're zooming in 
 VIEW_MODE = "top_down"
 
 # True isometric projection: elev = arctan(1/sqrt(2)) so all three axes foreshorten equally --
-# identical fixed angle to plots/view_environment.py's own ISO_ELEV/ISO_AZIM, so this animation's
+# identical fixed angle to plots/paper/view_environment.py's own ISO_ELEV/ISO_AZIM, so this animation's
 # camera matches that static figure's convention. Only used when VIEW_MODE == "isometric".
 ISO_ELEV = 35.264
 ISO_AZIM = -45
@@ -286,7 +286,7 @@ def draw_empty_panel_2d(ax, meta: dict, obstacles) -> tuple:
 def main() -> None:
     if not os.path.isdir(tc.DATA_DIR):
         raise SystemExit(
-            f"DATA_DIR does not exist: {tc.DATA_DIR!r} -- run scripts/run_tree_growth_animation_dump.sh "
+            f"DATA_DIR does not exist: {tc.DATA_DIR!r} -- run scripts/paper/run_tree_growth_animation_dump.sh "
             "first, or edit DATA_DIR at the top of this file."
         )
     meta = tc.load_meta(tc.DATA_DIR)
@@ -353,7 +353,7 @@ def main() -> None:
                 tc.finish_axes(ax, meta)
             ax.set_title(f"{tc.TOKEN_LABELS.get(token, token)}\n{title_text}", fontsize=9, color=title_color)
         fig.suptitle(
-            f"Tree + solution trajectory @ {checkpoint_ms}ms — {tc.ENV_NAME} (Model 1, coarse/large)",
+            f"Tree + solution trajectory @ {checkpoint_ms}ms — {tc.ENV_NAME} ({tc.MODEL_NOTE})",
             fontsize=12, fontweight="bold",
         )
         fig.tight_layout(rect=(0, 0, 1, 0.94))

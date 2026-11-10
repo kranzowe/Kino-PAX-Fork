@@ -4,8 +4,8 @@ overlaid if one existed yet at that checkpoint.
 
 Python port of scripts/plot_tree_checkpoint.m (kept for reference, MATLAB-only, and kept in sync
 with it -- re-check this file whenever that one changes) -- renders the wall-clock-checkpoint
-tree + solution-trajectory dumps written by examples/gpu/tree_checkpoint_dump.cu (via
-scripts/run_tree_checkpoint_dump.sh), on the zigzag corridor, Model 1, V2's canonical
+tree + solution-trajectory dumps written by examples/gpu/paper/tree_checkpoint_dump.cu (via
+scripts/paper/run_tree_checkpoint_dump.sh), on the zigzag corridor, Model 1, V2's canonical
 "large"/coarse discretization.
 
 Input (in DATA_DIR):
@@ -45,7 +45,7 @@ edges as two separate evenly-spaced subsamples, which could each land on differe
 displayed node's one edge back to its parent often just wasn't in the edge subsample -- it looked
 exactly like a bug where nodes have no parent, but checking the dumped tree CSVs directly (every
 `parent` value is either -1 or a valid, in-range row) confirms every node genuinely does have one;
-examples/gpu/tree_checkpoint_dump.cu's leaf-sampling + full-ancestor-chain-preservation logic is
+examples/gpu/paper/tree_checkpoint_dump.cu's leaf-sampling + full-ancestor-chain-preservation logic is
 correct as written. EDGE_FRACTION now only trims which of the shown nodes' own edges get drawn
 (a subset of the node subsample itself), not a second independent domain.
 
@@ -57,7 +57,7 @@ every checkpoint still gets.
 Edit DATA_DIR / OUT_DIR / OBSTACLES_PATH / ENV_NAME / FRAME_CHECKPOINTS_MS below if your
 data/output folders, the environment being plotted, or which checkpoints get frame exports move,
 then run:
-    python plots/tree_checkpoint.py
+    python plots/paper/tree_checkpoint.py
 """
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ from matplotlib.patches import Rectangle
 import numpy as np
 import pandas as pd
 
-PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
+PLOTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # plots/ (this file lives in plots/paper/)
 REPO_ROOT = os.path.dirname(PLOTS_DIR)
 
 # ================================================================================================
@@ -83,6 +83,7 @@ OUT_DIR = os.path.join(PLOTS_DIR, "output", "tree_checkpoint")
 OBSTACLES_PATH = os.path.join(REPO_ROOT, "include", "config", "obstacles", "zigzag", "obstacles.csv")
 
 ENV_NAME = "zigzag"
+MODEL_NOTE = "Model 1, coarse/large"   # shown in figure titles; chain_reaction_growth_animation.py overrides it
 # On-disk token -> display label. These are tree_checkpoint_dump.cu's OWN token spellings
 # (e.g. "CountingStars", no tuning-constant suffix) -- a different, simpler convention than
 # zephyr_common's BASE_NAMES (e.g. "CountingStars_bs120_bf40_ef150_cf750_hg1"), so this script
@@ -315,7 +316,7 @@ def plot_checkpoint(checkpoint_ms: int, meta: dict, obstacles, color_vmax_by_tok
         finish_axes(ax, meta)
         ax.set_title(f"{TOKEN_LABELS.get(token, token)}\n{title_text}", fontsize=9, color=title_color)
 
-    fig.suptitle(f"Tree + solution trajectory @ {checkpoint_ms}ms — {ENV_NAME} (Model 1, coarse/large)",
+    fig.suptitle(f"Tree + solution trajectory @ {checkpoint_ms}ms — {ENV_NAME} ({MODEL_NOTE})",
                  fontsize=12, fontweight="bold")
     fig.tight_layout()
     return fig
@@ -381,7 +382,7 @@ def main() -> None:
     stats = load_checkpoint_stats(DATA_DIR, ENV_NAME)
     if not stats:
         print(f"[warn] no {ENV_NAME}_checkpoint_stats.csv found in {DATA_DIR!r} -- true tree "
-              "size/% of capacity won't be shown (rerun scripts/run_tree_checkpoint_dump.sh to "
+              "size/% of capacity won't be shown (rerun scripts/paper/run_tree_checkpoint_dump.sh to "
               "get it). Falling back to each sparsified tree CSV's own row count.")
 
     checkpoints = discover_checkpoints(DATA_DIR, ENV_NAME, TOKENS)

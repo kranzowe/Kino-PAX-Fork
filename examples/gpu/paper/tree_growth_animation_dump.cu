@@ -6,7 +6,7 @@
 // wall-clock-checkpoint mechanism) -- the ONLY difference is the checkpoint
 // schedule: instead of 6 hand-picked points (50/100/150/1000/2000/4000ms),
 // this dumps a checkpoint every CHECKPOINT_STEP_MS (30ms) out to
-// CHECKPOINT_MAX_MS (3000ms), i.e. 100 checkpoints, so plots/tree_growth_animation.py
+// CHECKPOINT_MAX_MS (3000ms), i.e. 100 checkpoints, so plots/paper/tree_growth_animation.py
 // can render an actual animation of the tree filling in over time instead of
 // a handful of static frames.
 //
@@ -46,7 +46,10 @@
 // writeCheckpointStats(). This is the only place that percentage is available: the tree CSVs
 // themselves are sparsified (see above), so their row count is not the true tree size.
 //
-// Render the output with plots/tree_growth_animation.py.
+// Render the output with plots/paper/tree_growth_animation.py.
+//
+// Optional flags (see main): --planners=... can add "ChainReaction" or drop planners; --out DIR, --cs-fill-iters N,
+// --cr-budget N. With none of them the behaviour is exactly the original three-planner dump.
 // ========================================================================
 #include <iostream>
 #include <fstream>
@@ -58,10 +61,12 @@
 #include <cmath>
 #include <cstdint>
 #include <algorithm>
+#include <cstdlib>
 #include <unordered_map>
 #include "planners/KPAX.cuh"
 #include "planners/KinoPaxPlus.cuh"
 #include "planners/CountingStars.cuh"
+#include "planners/ChainReaction.cuh"
 
 // CountingStars' canonical operating point -- exact same values as
 // paper_benchmark_v2.cu's CS_BUFFER_SLOPE/CS_BUFFER_FLOOR/CS_EXPLORE_FRAC/
@@ -72,7 +77,8 @@ static const float CS_BUFFER_FLOOR   = 0.4f;
 static const float CS_EXPLORE_FRAC   = 0.15f;
 static const float CS_COST_FRAC      = 0.75f;
 static const bool  CS_HOPELESS_GUARD = true;
-static const int   CS_RAMP_FILL_ITERS = 700;
+static int         CS_RAMP_FILL_ITERS = 700;   // --cs-fill-iters overrides (the ChainReaction runner passes 210)
+static int         CR_BUDGET          = 5000;  // ChainReaction's constant candidate budget; --cr-budget overrides
 
 // Fraction of each tree's LEAF nodes (see writeTreeCSV) kept in the tree CSVs. Lower than
 // tree_checkpoint_dump.cu's 4% (this tool's own, separate constant -- the static checkpoint dump
@@ -542,12 +548,99 @@ void runCountingStarsCheckpoints(CountingStars& planner, const std::string& toke
     cudaEventDestroy(iterStop);
 }
 
+// ========================================================================
+// ChainReaction: same checkpoint loop as CountingStars below, no tunables beyond the budget B.
+// The goal signal is the same h_minCost_ / findGoalIdxByScan mechanism. An empty frontier or a
+// full tree stops the loop (h_propIterations_ == 0), so later checkpoints are simply never written.
+// ========================================================================
+void runChainReactionCheckpoints(ChainReaction& planner, const std::string& token, const std::string& env,
+                                 const std::string& vizDir, float* h_initial, float* h_goal,
+                                 float* d_obstacles, uint numObstacles, std::ofstream& statsFile,
+                                 const std::vector<float>& checkpointsMs)
+{
+    planner.h_budget_ = CR_BUDGET;
+
+    printf("
+--- %s (B = %d) ---
+", token.c_str(), CR_BUDGET);
+    planner.resetPlanner(h_initial, h_goal);
+
+    cudaEvent_t iterStart, iterStop;
+    cudaEventCreate(&iterStart);
+    cudaEventCreate(&iterStop);
+    float plannerMs = 0.0f;
+    float iterMs    = 0.0f;
+    size_t nextCheckpoint = 0;
+    int itr = 0;
+
+    while(itr < MAX_LOOP_ITERATIONS && nextCheckpoint < checkpointsMs.size())
+    {
+        itr++;
+        planner.h_itr_++;
+
+        cudaEventRecord(iterStart);
+        planner.propagateFrontier(d_obstacles, numObstacles);
+        planner.updateFrontier();
+        cudaEventRecord(iterStop);
+        cudaEventSynchronize(iterStop);
+        cudaEventElapsedTime(&iterMs, iterStart, iterStop);
+        plannerMs += iterMs;
+
+        cudaMemcpy(&planner.h_minCost_, planner.d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
+
+        while(nextCheckpoint < checkpointsMs.size() && plannerMs >= checkpointsMs[nextCheckpoint])
+        {
+            int ms = (int)checkpointsMs[nextCheckpoint];
+            TreeSnapshot snap = copyTreeToHost(planner.d_treeSamples_ptr_,
+                                               planner.d_treeSamplesParentIdxs_ptr_,
+                                               planner.d_treeSampleCosts_ptr_, planner.h_treeSize_);
+            writeTreeCSV(snap, checkpointTreePath(vizDir, env, token, ms), TREE_LEAF_SAMPLE_FRAC);
+            int goalIdx = findGoalIdxByScan(planner.d_goalSet_ptr_, snap, planner.h_minCost_);
+            writeTrajectoryCSV(snap, goalIdx, checkpointTrajPath(vizDir, env, token, ms));
+            writeCheckpointStats(statsFile, token, ms, itr, planner.h_treeSize_, goalIdx >= 0);
+            if(ms % 500 == 0)
+                printf("  t=%dms: itr=%d tree=%u %s
+", ms, itr, planner.h_treeSize_,
+                       goalIdx >= 0 ? "SOLVED" : "no solution yet");
+            nextCheckpoint++;
+        }
+
+        if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) { printf("  stopped early: tree full
+"); break; }
+        if(planner.h_propIterations_ == 0) { printf("  stopped early: frontier empty / no capacity
+"); break; }
+    }
+
+    cudaEventDestroy(iterStart);
+    cudaEventDestroy(iterStop);
+}
+
 int main(int argc, char* argv[])
 {
     std::string obstaclePath = (argc > 1) ? argv[1] : "../include/config/obstacles/zigzag/obstacles.csv";
     std::string envName      = (argc > 2) ? argv[2] : "zigzag";
 
+    // Flags (all optional; the default planner set and output dir are the original ones):
+    //   --planners=KPAX,KinoPaxPlus,CountingStars,ChainReaction   which planners to dump
+    //   --cs-fill-iters N   CountingStars' ramp length     --cr-budget N   ChainReaction's B
+    //   --out DIR           output dir (default Data/Viz/TreeGrowthAnimation)
     std::string vizDir = "Data/Viz/TreeGrowthAnimation";
+    std::vector<std::string> planners = {"KPAX", "KinoPaxPlus", "CountingStars"};
+    for(int i = 3; i < argc; i++)
+    {
+        std::string a = argv[i];
+        if(a.rfind("--planners=", 0) == 0)
+        {
+            planners.clear();
+            std::stringstream ss(a.substr(11));
+            std::string tok;
+            while(std::getline(ss, tok, ',')) if(!tok.empty()) planners.push_back(tok);
+        }
+        else if(a == "--cs-fill-iters" && i + 1 < argc) CS_RAMP_FILL_ITERS = std::max(1, atoi(argv[++i]));
+        else if(a == "--cr-budget" && i + 1 < argc)     CR_BUDGET          = std::max(1, atoi(argv[++i]));
+        else if(a == "--out" && i + 1 < argc)           vizDir             = argv[++i];
+    }
+    auto wants = [&](const char* name) { return std::find(planners.begin(), planners.end(), name) != planners.end(); };
     std::filesystem::create_directories(vizDir);
 
     std::vector<float> checkpointsMs = buildCheckpointSchedule(CHECKPOINT_STEP_MS, CHECKPOINT_MAX_MS);
@@ -590,17 +683,25 @@ int main(int argc, char* argv[])
     std::ofstream statsFile(vizDir + "/" + envName + "_checkpoint_stats.csv");
     statsFile << "token,checkpoint_ms,iteration,tree_size,max_tree_size,pct_filled,solved\n";
 
+    if(wants("KPAX"))
     {
         KPAX planner;
         runKPAXCheckpoints(planner, "KPAX", envName, vizDir, h_initial, h_goal, d_obstacles, numObstacles, statsFile, checkpointsMs);
     }
+    if(wants("KinoPaxPlus"))
     {
         KinoPaxPlus planner;
         runKinoPaxPlusCheckpoints(planner, "KinoPaxPlus", envName, vizDir, h_initial, h_goal, d_obstacles, numObstacles, statsFile, checkpointsMs);
     }
+    if(wants("CountingStars"))
     {
         CountingStars planner;
         runCountingStarsCheckpoints(planner, "CountingStars", envName, vizDir, h_initial, h_goal, d_obstacles, numObstacles, statsFile, checkpointsMs);
+    }
+    if(wants("ChainReaction"))
+    {
+        ChainReaction planner;
+        runChainReactionCheckpoints(planner, "ChainReaction", envName, vizDir, h_initial, h_goal, d_obstacles, numObstacles, statsFile, checkpointsMs);
     }
     statsFile.close();
     printf("Checkpoint stats written: %s\n", (vizDir + "/" + envName + "_checkpoint_stats.csv").c_str());
@@ -611,7 +712,7 @@ int main(int argc, char* argv[])
     printf("    DUMP COMPLETE\n");
     printf("=======================================================\n");
     printf("Trees/trajectories in: %s\n", vizDir.c_str());
-    printf("Plot with: plots/tree_growth_animation.py\n");
+    printf("Plot with: plots/paper/tree_growth_animation.py\n");
     printf("=======================================================\n");
 
     return 0;

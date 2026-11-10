@@ -41,7 +41,7 @@ import sys
 
 import pandas as pd
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # plots/, for zephyr_common
 from zephyr_common import (  # noqa: E402
     KINOPAX_PLUS,
     KINOPAX_STAR,
@@ -55,7 +55,7 @@ from zephyr_common import (  # noqa: E402
     warn_on_unexpected_star_suffixes,
 )
 
-PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
+PLOTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # plots/ (this file lives in plots/paper/)
 
 # ================================================================================================
 # EDIT THESE if your dataset folders move.

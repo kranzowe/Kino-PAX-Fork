@@ -36,7 +36,7 @@ ROWS (control effort and path length are different units) -- same reasoning as e
 big-panel script in this suite.
 
 Edit ROWS / TARGET_TIME_MS / OUT_DIR below, then run:
-    python plots/cost_panel_vs_kinopaxplus_4s.py
+    python plots/paper/cost_panel_vs_kinopaxplus_4s.py
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import pandas as pd
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # plots/, for zephyr_common
 from zephyr_common import (  # noqa: E402
     BASE_COLORS,
     BASE_DISPLAY,
@@ -73,7 +73,7 @@ from zephyr_common import (  # noqa: E402
     warn_on_unexpected_star_suffixes,
 )
 
-PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
+PLOTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # plots/ (this file lives in plots/paper/)
 
 # ================================================================================================
 # EDIT THESE to change the datasets, checkpoint time, or output location.
@@ -108,6 +108,16 @@ PLOTTED_OTHER_PLANNERS = [
     if p != REFERENCE_PLANNER and p not in EXCLUDED_ALGORITHMS
 ]
 
+# Fixed axis-scale baseline -- Kino-PAX+ (REFERENCE_PLANNER, always present via ref_rows),
+# Kino-PAX, Kino-PAX# -- INDEPENDENT of EXCLUDED_ALGORITHMS, so a panel's axis range never shifts
+# just because you toggled one of these three off; every panel scales as if all three were
+# plotted, for consistency across different EXCLUDED_ALGORITHMS configurations. SimpleCombo is
+# deliberately left OUT of this baseline (it's the one algorithm meant to be freely toggled
+# without affecting the shared scale) -- if it IS plotted and its own values fall outside this
+# baseline, the axis still grows to fit it (see build_model_cost_table/plot_cell -- this is a
+# floor, not a cap, so an actually-drawn point never gets clipped).
+AXIS_SCALE_ALGORITHMS = [p for p in BASE_NAMES if p != REFERENCE_PLANNER and p != SIMPLECOMBO]
+
 # How much room to pad on every side of a cell's own tight data extent, as a fraction of that
 # extent's span -- NOT a snap to any "nice" number, just breathing room so points don't sit flush
 # against the axis frame or have the y=x diagonal clip a corner marker.
@@ -115,7 +125,13 @@ AXIS_MARGIN_FRACTION = 0.08
 
 
 def build_model_cost_table(model_id: int, row_cfg: dict, discretization_dirs: list) -> pd.DataFrame:
+    """Rows for REFERENCE_PLANNER plus the UNION of PLOTTED_OTHER_PLANNERS and
+    AXIS_SCALE_ALGORITHMS -- an algorithm excluded from PLOTTED_OTHER_PLANNERS but still in
+    AXIS_SCALE_ALGORITHMS gets a row (marked Plotted=False) purely so plot_cell can use its values
+    when computing the axis range, without actually drawing a marker for it."""
     metric = row_cfg["metric"]
+    axis_or_plotted = [p for p in BASE_NAMES if p != REFERENCE_PLANNER
+                        and (p in PLOTTED_OTHER_PLANNERS or p in AXIS_SCALE_ALGORITHMS)]
     rows = []
     for disc_dir in discretization_dirs:
         discretization_label = discretization_label_from_dir(disc_dir)
@@ -133,6 +149,7 @@ def build_model_cost_table(model_id: int, row_cfg: dict, discretization_dirs: li
                 "Model": MODEL_NAMES[model_id],
                 "CostMetric": metric,
                 "Algorithm": BASE_DISPLAY[REFERENCE_PLANNER],
+                "Plotted": True,
                 "N_Success": ref_stats.n_success,
                 "N_Total": ref_stats.n_total,
                 "Mean_Cost": ref_stats.mean,
@@ -140,7 +157,7 @@ def build_model_cost_table(model_id: int, row_cfg: dict, discretization_dirs: li
                 "Reference_Mean_Cost": ref_stats.mean,
                 "Ratio_to_Reference": 1.0 if not math.isnan(ref_stats.mean) else math.nan,
             })
-            for planner in PLOTTED_OTHER_PLANNERS:
+            for planner in axis_or_plotted:
                 stats = aggregate_cost_at_time(
                     load_runs(env_dir, env, planner, model_id, discretization_label, metrics=(metric,)),
                     TARGET_TIME_MS,
@@ -154,6 +171,7 @@ def build_model_cost_table(model_id: int, row_cfg: dict, discretization_dirs: li
                     "Model": MODEL_NAMES[model_id],
                     "CostMetric": metric,
                     "Algorithm": BASE_DISPLAY[planner],
+                    "Plotted": planner in PLOTTED_OTHER_PLANNERS,
                     "N_Success": stats.n_success,
                     "N_Total": stats.n_total,
                     "Mean_Cost": stats.mean,
@@ -170,17 +188,24 @@ def plot_cell(ax, table: pd.DataFrame) -> None:
 
     Grouping is driven by ref_rows (REFERENCE_PLANNER's own rows, always present in `table`
     regardless of EXCLUDED_ALGORITHMS -- build_model_cost_table adds them unconditionally), NOT by
-    `plotted` (the OTHER algorithms' rows): with everything in EXCLUDED_ALGORITHMS, `plotted` is
-    empty even though REFERENCE_PLANNER still has real data to show -- iterating ref_rows instead
-    means the y=x line and REFERENCE_PLANNER's own points still render with no other algorithms
-    plotted, rather than the whole cell going blank."""
+    `plotted` (the OTHER algorithms' rows actually drawn): with everything in EXCLUDED_ALGORITHMS,
+    `plotted` is empty even though REFERENCE_PLANNER still has real data to show -- iterating
+    ref_rows instead means the y=x line and REFERENCE_PLANNER's own points still render with no
+    other algorithms plotted, rather than the whole cell going blank.
+
+    Axis bounds come from `axis_rows` (every other-algorithm row build_model_cost_table computed --
+    AXIS_SCALE_ALGORITHMS plus whatever's actually toggled on), NOT from `plotted` alone -- so a
+    panel's scale stays the same regardless of which of AXIS_SCALE_ALGORITHMS you toggle via
+    EXCLUDED_ALGORITHMS, and only actually grows further if a non-baseline algorithm (SimpleCombo)
+    is plotted and exceeds that baseline range."""
     ref_display = BASE_DISPLAY[REFERENCE_PLANNER]
     ref_rows = table[(table["Algorithm"] == ref_display) & table["Mean_Cost"].notna()]
-    plotted = table[
+    axis_rows = table[
         (table["Algorithm"] != ref_display)
         & table["Mean_Cost"].notna()
         & table["Reference_Mean_Cost"].notna()
     ]
+    plotted = axis_rows[axis_rows["Plotted"]]
 
     if ref_rows.empty:
         ax.text(0.5, 0.5, "No successful\nruns found yet.",
@@ -191,10 +216,10 @@ def plot_cell(ax, table: pd.DataFrame) -> None:
         return
 
     # Tight fit to the data's own extent, plus a small fixed-fraction margin -- no snapping to a
-    # "nice"/power-of-ten bound. Includes REFERENCE_PLANNER's own values even with `plotted` empty,
-    # so the axis range is never derived from zero points.
-    other_vals = list(plotted["Mean_Cost"]) if not plotted.empty else []
-    all_vals = other_vals + list(ref_rows["Mean_Cost"])
+    # "nice"/power-of-ten bound. Includes REFERENCE_PLANNER's own values even with `axis_rows`
+    # empty, so the axis range is never derived from zero points.
+    axis_vals = list(axis_rows["Mean_Cost"]) if not axis_rows.empty else []
+    all_vals = axis_vals + list(ref_rows["Mean_Cost"])
     data_lo = min(all_vals)
     data_hi = max(all_vals)
     span = data_hi - data_lo

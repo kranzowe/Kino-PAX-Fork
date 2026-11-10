@@ -1,7 +1,7 @@
 """Shared data-loading utilities for Kino-PAX benchmark plots (ZEPHYR/JETSON sweeps).
 
 Ports the naming/aggregation conventions from
-scripts/process_paper_benchmark_improvement_scatter.m and examples/gpu/paper_benchmark_v2.cu
+scripts/process_paper_benchmark_improvement_scatter.m and examples/gpu/paper/paper_benchmark_v2.cu
 so every plots/*.py script stays consistent with the paper's own MATLAB pipeline.
 """
 from __future__ import annotations
@@ -40,6 +40,12 @@ BASE_COLORS = {
     SIMPLECOMBO: "#ffb000",   # teal / bluish-green
     KINOPAX_STAR: "#dc267f",  # muted magenta
 }
+
+# ChainReaction (examples/gpu/paper/chain_reaction_benchmark.cu) is deliberately NOT in BASE_NAMES: the
+# paper figures iterate that list, and only plots/paper/chain_reaction_compare.py plots this planner.
+CHAIN_REACTION = "ChainReaction"
+BASE_DISPLAY[CHAIN_REACTION] = "Chain Reaction"
+BASE_COLORS[CHAIN_REACTION] = "#009e73"  # teal, distinct from the four paper planners and the Jetson orange
 
 # Planners plotted on the x-axis of the ratio scatters (everyone but the Kino-PAX+ reference).
 OTHER_PLANNERS = [KPAX, SIMPLECOMBO, KINOPAX_STAR]
@@ -119,7 +125,7 @@ def env_display_name(env: str) -> str:
 def _candidate_filename(env: str, planner_token: str, delta_tok: str, run: int) -> str:
     if planner_token == KPAX:
         return f"{env}_KPAX_delta{delta_tok}_run{run}.csv"
-    if planner_token.startswith("CountingStars") or planner_token.startswith("KinoPaxSTAR"):
+    if planner_token.startswith(("CountingStars", "KinoPaxSTAR", CHAIN_REACTION)):
         return f"{env}_{planner_token}_delta{delta_tok}_run{run}.csv"
     return f"{env}_delta{delta_tok}_run{run}.csv"  # KinoPaxPlus: no planner token in the filename
 

@@ -38,7 +38,7 @@
 # on exit.
 #
 # Discretization: V2's canonical Model-1 "large"/coarse point (W7/C1[inert]/V3
-# -> 9,261 regions -- see scripts/run_paper_benchmark_v2.sh's own derivation),
+# -> 9,261 regions -- see scripts/paper/run_paper_benchmark_v2.sh's own derivation),
 # NOT run_tree_growth_dump.sh's own, different "Large" (W10/C1/V3 -> 27,000) --
 # confirmed with the user this tool should match V2's canonical point instead.
 #
@@ -52,7 +52,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONFIG_FILE="$PROJECT_DIR/include/config/config.h"
 CONFIG_BACKUP="$CONFIG_FILE.bak"
 BUILD_DIR="$PROJECT_DIR/build"

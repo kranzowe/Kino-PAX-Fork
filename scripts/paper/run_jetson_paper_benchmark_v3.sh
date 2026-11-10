@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # JETSON PAPER BENCHMARK V3 -- a duplicate of run_paper_benchmark_v3.sh /
-# examples/gpu/jetson_paper_benchmark_v3.cu (that latter file is its own duplicate of
+# examples/gpu/paper/jetson_paper_benchmark_v3.cu (that latter file is its own duplicate of
 # paper_benchmark_v3.cu; see its header), NOT a modification of v3 (v3 is untouched), adapted to
 # actually run on a Jetson. Four changes from v3:
 #
@@ -236,7 +236,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONFIG_FILE="$PROJECT_DIR/include/config/config.h"
 CONFIG_BACKUP="$CONFIG_FILE.bak"
 BUILD_DIR="$PROJECT_DIR/build"

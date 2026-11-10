@@ -11,7 +11,7 @@ second figure (per-wall 2D face slices, for checking exactly where a narrow pass
 is NOT ported here -- this script's whole job, per request, is the isometric view; that
 diagnostic is still MATLAB-only if needed.
 
-Start/goal marker styling matches plots/tree_checkpoint.py's own convention (start = magenta/pink
+Start/goal marker styling matches plots/paper/tree_checkpoint.py's own convention (start = magenta/pink
 circle, goal = a larger green circle) instead of the .m original's green circle / red star --
 kept in sync so the two scripts read as one consistent visual language across this whole folder.
 
@@ -19,7 +19,7 @@ TRAJECTORY OVERLAY: if TRAJECTORY_DIR (below) has a "<env>_trajectory.csv" for a
 environment (columns must include x,y,z -- extra columns are ignored), that path is drawn through
 the boxes in the same dark-outline-plus-bright-green style as tree_checkpoint.py's own solved
 trajectories. TRAJECTORY_DIR is created (empty) on first run if it doesn't exist yet -- drop CSVs
-in by hand, or generate one per environment with scripts/run_sample_trajectories.sh (builds and
+in by hand, or generate one per environment with scripts/paper/run_sample_trajectories.sh (builds and
 runs the existing TreeCheckpointDump tool once per environment and MOVES CountingStars's own
 solved path into build/Data/Viz/environment_trajectories/, a sibling of TreeCheckpointDump's own
 build/Data/Viz/TreeCheckpoints/ output) -- sync that folder over to TRAJECTORY_DIR the same way
@@ -36,7 +36,7 @@ you from taking one instead if you'd rather. Set INTERACTIVE = False to go back 
 batch-saving just the fixed isometric view for every environment, no windows opened at all.
 
 Edit ENVIRONMENTS / OBSTACLES_DIR / TRAJECTORY_DIR / OUT_DIR / INTERACTIVE below, then run:
-    python plots/view_environment.py
+    python plots/paper/view_environment.py
 """
 from __future__ import annotations
 
@@ -99,10 +99,10 @@ from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection  # noq
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # plots/, for zephyr_common
 from zephyr_common import env_display_name  # noqa: E402
 
-PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
+PLOTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # plots/ (this file lives in plots/paper/)
 REPO_ROOT = os.path.dirname(PLOTS_DIR)
 
 # ================================================================================================
@@ -114,7 +114,7 @@ OUT_DIR = os.path.join(PLOTS_DIR, "output", "environment_views")
 ENVIRONMENTS = ["house", "narrowPassage", "zigzag"]  # on-disk folder names under OBSTACLES_DIR
 
 # Model 1 start/goal, workspace [0,1]^3 -- identical across every environment (see e.g.
-# examples/gpu/paper_benchmark_v2.cu's h_initial/h_goal setup); NOT environment-specific.
+# examples/gpu/paper/paper_benchmark_v2.cu's h_initial/h_goal setup); NOT environment-specific.
 START_PT = (0.10, 0.08, 0.05)
 GOAL_PT = (0.80, 0.95, 0.90)
 WS_MIN, WS_MAX = 0.0, 1.0
@@ -238,14 +238,14 @@ def main() -> None:
         with open(readme_path, "w", encoding="utf-8") as f:
             f.write(
                 "Drop a per-environment sample trajectory CSV here to have it overlaid on that\n"
-                "environment's isometric view (plots/view_environment.py picks it up automatically\n"
+                "environment's isometric view (plots/paper/view_environment.py picks it up automatically\n"
                 "-- no code changes needed).\n\n"
                 "Expected filename: <env>_trajectory.csv, one of:\n"
                 "  house_trajectory.csv\n"
                 "  narrowPassage_trajectory.csv\n"
                 "  zigzag_trajectory.csv\n\n"
                 "Required columns: x,y,z (extra columns, e.g. vx,vy,vz,cost, are ignored).\n\n"
-                "Generate these with scripts/run_sample_trajectories.sh, which builds and runs the\n"
+                "Generate these with scripts/paper/run_sample_trajectories.sh, which builds and runs the\n"
                 "existing TreeCheckpointDump tool once per environment and MOVES CountingStars's own\n"
                 "solved trajectory into build/Data/Viz/environment_trajectories/ (a sibling of\n"
                 "TreeCheckpointDump's own build/Data/Viz/TreeCheckpoints/ output) -- sync that folder\n"

@@ -10,7 +10,7 @@ more reliable for trajectories crossing translucent obstacle geometry.
 Edit ENVIRONMENTS / OBSTACLES_DIR / TRAJECTORY_DIR / OUT_DIR / INTERACTIVE below,
 then run:
 
-    python plots/view_environment.py
+    python plots/paper/view_environment.py
 
 Static PNG/SVG export requires Kaleido:
 
@@ -30,11 +30,11 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.colors import qualitative
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # plots/, for zephyr_common
 from zephyr_common import env_display_name
 
 
-PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
+PLOTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # plots/ (this file lives in plots/paper/)
 REPO_ROOT = os.path.dirname(PLOTS_DIR)
 
 # ================================================================================================

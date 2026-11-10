@@ -7,7 +7,7 @@
 # same fixed tunables, same discretization, same cost metric, same tree
 # sparsification), just with a much finer checkpoint schedule: every 30ms out
 # to 3000ms (100 checkpoints) instead of 6 hand-picked points, so
-# plots/tree_growth_animation.py can render an actual animation of the tree
+# plots/paper/tree_growth_animation.py can render an actual animation of the tree
 # filling in over time.
 #
 #   KPAX              pure explorer reference
@@ -20,7 +20,7 @@
 # 3 planners x 100 checkpoints x 2 files (tree + trajectory) = 600 CSVs +
 # meta.csv + a checkpoint_stats.csv (one row per (planner, checkpoint)
 # actually reached, with the REAL, non-sparsified tree_size and its % of
-# MAX_TREE_SIZE), rendered by plots/tree_growth_animation.py. Tree CSVs keep
+# MAX_TREE_SIZE), rendered by plots/paper/tree_growth_animation.py. Tree CSVs keep
 # only a small fraction of each tree's leaf-rooted trajectories (1% here vs.
 # run_tree_checkpoint_dump.sh's 4% -- lower because this tool renders 100
 # checkpoints' worth of frames instead of 6) -- full trees can
@@ -49,7 +49,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONFIG_FILE="$PROJECT_DIR/include/config/config.h"
 CONFIG_BACKUP="$CONFIG_FILE.bak"
 BUILD_DIR="$PROJECT_DIR/build"
@@ -238,5 +238,5 @@ echo "======================================================="
 echo "  TREE GROWTH ANIMATION DUMP COMPLETE"
 echo "======================================================="
 echo "Trees/trajectories in:  $BUILD_DIR/Data/Viz/TreeGrowthAnimation/"
-echo "Plot with: python plots/tree_growth_animation.py"
+echo "Plot with: python plots/paper/tree_growth_animation.py"
 echo "Config.h will be restored to original on exit."

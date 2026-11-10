@@ -8,7 +8,7 @@
 # (whichever checkpoint file has one, preferring the latest/most-refined --
 # 4000ms down to 50ms) into build/Data/Viz/environment_trajectories/ as
 # "<env>_trajectory.csv", a sibling of TreeCheckpointDump's own
-# build/Data/Viz/TreeCheckpoints/ output. Point plots/view_environment.py's
+# build/Data/Viz/TreeCheckpoints/ output. Point plots/paper/view_environment.py's
 # TRAJECTORY_DIR at this folder (or copy/sync it wherever that script actually
 # runs, same as you already do for build/Data/Viz/TreeCheckpoints/) to have it
 # picked up and overlaid automatically.
@@ -20,7 +20,7 @@
 # CountingStars's own output; KPAX/KinoPaxPlus's dumps for these runs are left
 # in build/Data/Viz/TreeCheckpoints/ untouched (harmless, just unused here).
 #
-# Model/discretization/cost-metric match scripts/run_tree_checkpoint_dump.sh's
+# Model/discretization/cost-metric match scripts/paper/run_tree_checkpoint_dump.sh's
 # own zigzag-only setup exactly (Model 1, W7/C1/V3 "large"/coarse, COST_MODE 2 =
 # path time), so all three environments' sample trajectories are produced the
 # same way and are comparable. The config.h rewrite is NOT optional -- see that
@@ -33,7 +33,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONFIG_FILE="$PROJECT_DIR/include/config/config.h"
 CONFIG_BACKUP="$CONFIG_FILE.bak"
 BUILD_DIR="$PROJECT_DIR/build"
@@ -232,6 +232,6 @@ echo "======================================================="
 echo "  SAMPLE TRAJECTORIES COMPLETE"
 echo "======================================================="
 echo "Trajectory CSVs in: ${OUT_DIR}"
-echo "Point plots/view_environment.py's TRAJECTORY_DIR at that folder (or sync it over, same as"
-echo "you already do for build/Data/Viz/TreeCheckpoints/), then: python plots/view_environment.py"
+echo "Point plots/paper/view_environment.py's TRAJECTORY_DIR at that folder (or sync it over, same as"
+echo "you already do for build/Data/Viz/TreeCheckpoints/), then: python plots/paper/view_environment.py"
 echo "Config.h will be restored to original on exit."

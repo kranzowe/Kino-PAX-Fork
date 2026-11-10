@@ -1,4 +1,7 @@
 #!/bin/bash
+# Submit FROM THIS DIRECTORY (the script below is found via $SLURM_SUBMIT_DIR, since SLURM runs a
+# spooled copy of this file and BASH_SOURCE-relative lookup doesn't work here):
+#   cd scripts/paper && sbatch paper_benchmarks.sbatch
 
 #SBATCH --job-name=paper_benchmarks
 #SBATCH --ntasks=1

@@ -29,7 +29,7 @@ this folder). Only the ZEPHYR dataset is used: JETSON's older harness only ever 
 discretization, so it can never supply this figure's "3 discretizations x 1 model" requirement.
 
 Edit DATASET_DIR / OUT_DIR below, then run:
-    python plots/cost_vs_time.py
+    python plots/paper/cost_vs_time.py
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # plots/, for zephyr_common
 from zephyr_common import (  # noqa: E402
     BASE_COLORS,
     BASE_DISPLAY,
@@ -67,7 +67,7 @@ from zephyr_common import (  # noqa: E402
     warn_on_unexpected_star_suffixes,
 )
 
-PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
+PLOTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # plots/ (this file lives in plots/paper/)
 
 # ================================================================================================
 # EDIT THESE to point at the dataset and output location you want.

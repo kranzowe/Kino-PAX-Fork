@@ -1,6 +1,6 @@
 %% Paper Benchmark Plots v2 - fixed 4-planner comparison, 3 panels + summary table per (env, model)
-% Reads per-iteration CSVs produced by examples/gpu/paper_benchmark_v2.cu (run via
-% scripts/run_paper_benchmark_v2.sh) -- countingstars_sweep.cu's proven-reliable harness, minimally
+% Reads per-iteration CSVs produced by examples/gpu/paper/paper_benchmark_v2.cu (run via
+% scripts/paper/run_paper_benchmark_v2.sh) -- countingstars_sweep.cu's proven-reliable harness, minimally
 % adapted (all four environments, single fixed operating points) to reproduce
 % paper_benchmark.cu's own headline comparison without paper_benchmark.cu's unresolved hang at
 % `tiny`. run_paper_benchmark_v2.sh now builds and runs ALL THREE vehicle models in one sweep
@@ -135,7 +135,7 @@ deltaLabel = 'tiny';
 
 maxTreeSize = 3000000;   % MAX_TREE_SIZE in config.h -- denominator for the table's Final Tree (%)
 
-% --- The four FIXED series (not swept). Label tokens must match examples/gpu/paper_benchmark_v2.cu's
+% --- The four FIXED series (not swept). Label tokens must match examples/gpu/paper/paper_benchmark_v2.cu's
 % trueLabel() / countingStarsLabel() exactly: round(100 x float) for cap/bs/bf, round(1000 x
 % float) for ef/cf, plain int for hopelessGuard. ---
 trueCap          = 100;   % syclopCap 1.0 (no cap)
