@@ -50,6 +50,26 @@ sampling (stable across frames). The animation is rendered by `plots/paper/tree_
 `ttfs_cost_table.py`, `cost_table_wide.py`, `cost_vs_time.py`, `tree_growth_rate.py`.
 `convert_to_jpg.py` converts everything in `plots/output/` to `plots/output_jpg/`.
 
+## Chain Reaction: what to run
+
+```bash
+bash scripts/paper/run_chain_reaction_benchmark.sh            # benchmark only (no tree dumps)
+bash scripts/paper/run_chain_reaction_benchmark.sh --viz      # also dump tree growth (slow: copies the tree each 30 ms checkpoint)
+```
+
+Console output per run: `TTFS` (planner time + iteration of the first solution, or `none`), total planner time, iterations and
+average ms/iteration, final tree size, cost, and why the run stopped (`tree_full`, `planner_stopped`, `time_cap`,
+`max_iterations`). After each planner/environment a `>>` line gives solved k/n, mean TTFS (solved runs), mean total time and
+mean ms/iteration. Both planners run up to 3000 iterations, 4 s, 3M-node tree.
+
+| Script | Reads | Produces (`plots/output/...`) |
+|---|---|---|
+| `plots/paper/chain_reaction_compare.py` | `plots/DATA/CHAIN_REACTION_runs/discretizationCOARSE/<env>/` | `chain_reaction/chain_reaction_vs_countingstars_DubinsAirplane_coarse.{png,svg}`: per environment, best cost vs time, tree size vs time, time per iteration vs time (legend shows each planner's average ms/iter). `chain_reaction/chain_reaction_summary.csv`: n_runs, success_rate, mean/std TTFS, mean final cost, final tree size, run time, iterations, mean ms/iter. |
+| `plots/paper/chain_reaction_growth_animation.py` (needs `--viz` data) | `plots/DATA/tree_animation_chain_reaction/TreeGrowthAnimation/` | `chain_reaction_animation/tree_growth_animation_zigzag.mp4` (or `.gif`); `--static` gives per-checkpoint panels in `chain_reaction_animation/static/`. |
+
+The other paper plots (`ttfs_panel_vs_kpax_4s.py`, `cost_vs_time.py`, `tree_growth_rate.py`, ...) iterate `zephyr_common.BASE_NAMES`, which does
+not include Chain Reaction, so they do not plot it.
+
 ## Running
 
 ```bash

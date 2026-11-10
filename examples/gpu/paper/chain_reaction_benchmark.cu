@@ -38,7 +38,7 @@ static const int   CS_RAMP_FILL_ITERS = 700;
 // CountingStars' B ramp at this tree size (1.7k -> 6.9k).
 static const int CR_BUDGET_DEFAULT = 5000;
 
-static const int   MAX_ITERATIONS = 1000;
+static const int   MAX_ITERATIONS = 3000;
 static const float MAX_TIME_MS    = 4000.0f;
 
 static const char* CR_LABEL = "ChainReaction";
@@ -74,6 +74,7 @@ struct RunResult
     int run_number;
     std::vector<IterRow> rows;
     int first_solution_iteration;
+    float first_solution_time_ms;   // planner time at the first solution (time to first solution); -1 if never solved
     float first_solution_cost;
     float final_best_cost;
     int final_tree_size;
@@ -111,6 +112,7 @@ static RunResult runOne(P& planner, const std::string& label, const std::string&
     result.environment              = env;
     result.run_number               = runNumber;
     result.first_solution_iteration = -1;
+    result.first_solution_time_ms   = -1.0f;
     result.first_solution_cost      = INFINITY;
     result.final_best_cost          = INFINITY;
     result.stop_reason              = "max_iterations";
@@ -142,6 +144,7 @@ static RunResult runOne(P& planner, const std::string& label, const std::string&
         if(planner.h_minCost_ < MAX_FLOAT && result.first_solution_iteration == -1)
         {
             result.first_solution_iteration = itr;
+            result.first_solution_time_ms   = plannerMs;
             result.first_solution_cost      = planner.h_minCost_;
         }
         if(planner.h_minCost_ < result.final_best_cost)
@@ -177,10 +180,36 @@ static RunResult runOne(P& planner, const std::string& label, const std::string&
 
 static void report(const RunResult& r, int run, int numRuns)
 {
-    printf("  Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f, stop=%s%s\n",
-           run + 1, numRuns, r.total_time_seconds, r.total_iterations, r.final_tree_size,
-           r.first_solution_iteration, r.first_solution_cost, r.final_best_cost, r.stop_reason.c_str(),
+    char ttfs[48];
+    if(r.first_solution_time_ms >= 0.0f) snprintf(ttfs, sizeof(ttfs), "%.1f ms (itr %d)", r.first_solution_time_ms, r.first_solution_iteration);
+    else                                 snprintf(ttfs, sizeof(ttfs), "none");
+    printf("  Run %d/%d: TTFS=%s | total=%.3fs, %d itr (%.2f ms/itr), tree=%d, cost=%.3f -> %.3f, stop=%s%s
+",
+           run + 1, numRuns, ttfs, r.total_time_seconds, r.total_iterations,
+           r.total_iterations > 0 ? 1000.0 * r.total_time_seconds / r.total_iterations : 0.0,
+           r.final_tree_size, r.first_solution_cost, r.final_best_cost, r.stop_reason.c_str(),
            r.invariant_violations ? "  ** tree-growth invariant violated **" : "");
+}
+
+static void reportSummary(const char* name, const std::vector<RunResult>& results)
+{
+    int solved = 0;
+    double ttfsSum = 0.0, totalSum = 0.0, perIterSum = 0.0;
+    for(const auto& r : results)
+    {
+        if(r.first_solution_time_ms >= 0.0f) { solved++; ttfsSum += r.first_solution_time_ms; }
+        totalSum += r.total_time_seconds;
+        if(r.total_iterations > 0) perIterSum += 1000.0 * r.total_time_seconds / r.total_iterations;
+    }
+    int n = (int)results.size();
+    if(n == 0) return;
+    if(solved > 0)
+        printf("  >> %s: solved %d/%d | mean TTFS %.1f ms (solved runs) | mean total %.3fs | mean %.2f ms/itr
+",
+               name, solved, n, ttfsSum / solved, totalSum / n, perIterSum / n);
+    else
+        printf("  >> %s: solved 0/%d | mean total %.3fs | mean %.2f ms/itr
+", name, n, totalSum / n, perIterSum / n);
 }
 
 int main(int argc, char* argv[])
@@ -245,14 +274,17 @@ int main(int argc, char* argv[])
         printf("\nCHAINREACTION: %s | Regions (ignored by this planner): %d\n", envName.c_str(), NUM_R1_REGIONS);
         ChainReaction planner;
         planner.h_budget_ = budget;
+        std::vector<RunResult> results;
         for(int run = 0; run < numRuns; run++)
         {
             RunResult r = runOne(planner, CR_LABEL, tag, envName, run, h_initial, h_goal, d_obstacles, numObstacles,
                                  [](ChainReaction& p) { return p.h_budget_; });
             report(r, run, numRuns);
             writePerIterationCSV(r, outputDir);
+            results.push_back(r);
             if(run < numRuns - 1) std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
+        reportSummary("ChainReaction", results);
     }
 
     if(runCS)
@@ -267,14 +299,17 @@ int main(int argc, char* argv[])
         planner.h_exploreFrac_   = CS_EXPLORE_FRAC;
         planner.h_costFrac_      = CS_COST_FRAC;
         planner.h_hopelessGuard_ = (CS_HOPELESS_GUARD != 0);
+        std::vector<RunResult> results;
         for(int run = 0; run < numRuns; run++)
         {
             RunResult r = runOne(planner, label, tag, envName, run, h_initial, h_goal, d_obstacles, numObstacles,
                                  [](CountingStars& p) { return p.h_goalFrontierSize_; });
             report(r, run, numRuns);
             writePerIterationCSV(r, outputDir);
+            results.push_back(r);
             if(run < numRuns - 1) std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
+        reportSummary("CountingStars", results);
     }
 
     cudaFree(d_obstacles);

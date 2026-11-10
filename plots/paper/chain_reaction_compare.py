@@ -5,7 +5,13 @@ For every discretization folder and environment found under DATASET_DIR, writes 
   row 1: best cost vs elapsed time (mean +/- 1 std over runs; unsolved samples are dropped, and a run
          that ended early -- tree full / empty frontier -- holds its last value),
   row 2: tree size vs elapsed time (mean over runs),
-plus a summary CSV (success rate, time to first solution, final cost, final tree size, run time).
+  row 3: time per iteration (ms) vs elapsed time (mean over runs still running; a run's curve stops
+         when it ends). Iteration cost grows with tree size, so the curve is the useful view; the
+         run-average is in the legend labels and the CSV.
+plus chain_reaction_summary.csv, one row per (discretization, environment, planner):
+  n_runs, success_rate, mean_ttfs_ms / std_ttfs_ms (solved runs only), mean_final_cost,
+  mean_final_tree_size, mean_run_time_ms, mean_iterations, mean_ms_per_iter
+  (= each run's total planner time / its iterations, averaged over runs).
 
 Input layout (same convention as zephyr_common.load_runs; copy the benchmark's output here):
     plots/DATA/CHAIN_REACTION_runs/discretizationCOARSE/<env>/<env>_<planner label>_deltam2_large_length_run<N>.csv
@@ -55,24 +61,37 @@ OUT_DIR = os.path.join(PLOTS_DIR, "output", "chain_reaction")
 MODEL_ID = 2          # 6D Dubins Airplane (what run_chain_reaction_benchmark.sh builds)
 METRIC = "length"     # cost metric the benchmark was built with
 PLANNERS = [KINOPAX_STAR, CHAIN_REACTION]   # CountingStars (displayed "KinoPax#") first, then Chain Reaction
-COLUMNS = ("best_cost", "elapsed_time_ms", "tree_size", "frontier_size")
+COLUMNS = ("best_cost", "elapsed_time_ms", "tree_size", "frontier_size", "iteration")
 GRID_POINTS = 300
 
 
 def resample(run: pd.DataFrame, column: str, grid: np.ndarray, drop_unsolved: bool) -> np.ndarray:
     """`column` of one run sampled at `grid` times, holding the last logged value after the run ends
     and NaN before its first logged iteration."""
-    df = run[["elapsed_time_ms", column]].copy()
-    df[column] = pd.to_numeric(df[column], errors="coerce")
+    df = run[["elapsed_time_ms"]].copy()
+    if column == "iter_ms":
+        # Planner time of the iteration that ENDS at each logged elapsed_time_ms.
+        df[column] = df["elapsed_time_ms"].diff().fillna(df["elapsed_time_ms"].iloc[0])
+    else:
+        df[column] = pd.to_numeric(run[column], errors="coerce")
     if drop_unsolved:
         df.loc[df[column] > MAX_FLOAT_THRESH, column] = np.nan
     sampled = pd.merge_asof(pd.DataFrame({"elapsed_time_ms": grid}), df.sort_values("elapsed_time_ms"),
                             on="elapsed_time_ms", direction="backward")
-    return sampled[column].to_numpy(dtype=float)
+    values = sampled[column].to_numpy(dtype=float)
+    if column == "iter_ms":
+        values[grid > float(df["elapsed_time_ms"].iloc[-1])] = np.nan   # the run is over; no iterations happen
+    return values
 
 
 def stack(runs: list, column: str, grid: np.ndarray, drop_unsolved: bool) -> np.ndarray:
     return np.vstack([resample(r, column, grid, drop_unsolved) for r in runs])
+
+
+def ms_per_iter(runs: list) -> float:
+    """Average planner time per iteration: each run's total time / its iteration count, averaged over runs."""
+    vals = [float(r["elapsed_time_ms"].iloc[-1]) / len(r) for r in runs if len(r) > 0]
+    return float(np.mean(vals)) if vals else math.nan
 
 
 def summarize(runs: list) -> dict:
@@ -92,6 +111,8 @@ def summarize(runs: list) -> dict:
         "mean_final_cost": float(np.mean(finals)) if finals else math.nan,
         "mean_final_tree_size": float(np.mean([r["tree_size"].iloc[-1] for r in runs])) if runs else math.nan,
         "mean_run_time_ms": float(np.mean([r["elapsed_time_ms"].iloc[-1] for r in runs])) if runs else math.nan,
+        "mean_iterations": float(np.mean([len(r) for r in runs])) if runs else math.nan,
+        "mean_ms_per_iter": ms_per_iter(runs),
     }
 
 
@@ -114,14 +135,15 @@ def plot_discretization(disc_dir: str, disc_label: str, summary_rows: list) -> s
     t_max = max(float(r["elapsed_time_ms"].iloc[-1]) for runs in data.values() for r in runs)
     grid = np.linspace(0.0, t_max, GRID_POINTS)
 
-    fig, axes = plt.subplots(2, len(envs), figsize=(5.2 * len(envs), 7.4), squeeze=False)
+    fig, axes = plt.subplots(3, len(envs), figsize=(5.2 * len(envs), 10.8), squeeze=False)
     for col, env in enumerate(envs):
-        ax_cost, ax_tree = axes[0][col], axes[1][col]
+        ax_cost, ax_tree, ax_iter = axes[0][col], axes[1][col], axes[2][col]
         for planner in PLANNERS:
             runs = data.get((env, planner))
             if not runs:
                 continue
-            color, label = BASE_COLORS[planner], f"{BASE_DISPLAY[planner]} (n={len(runs)})"
+            color = BASE_COLORS[planner]
+            label = f"{BASE_DISPLAY[planner]} (n={len(runs)}, {ms_per_iter(runs):.2f} ms/itr avg)"
 
             cost = stack(runs, "best_cost", grid, drop_unsolved=True)
             with warnings.catch_warnings():
@@ -136,17 +158,23 @@ def plot_discretization(disc_dir: str, disc_label: str, summary_rows: list) -> s
                 warnings.simplefilter("ignore", category=RuntimeWarning)
                 ax_tree.plot(grid, np.nanmean(tree, axis=0), color=color, linewidth=2.0, label=label)
 
+            iter_ms = stack(runs, "iter_ms", grid, drop_unsolved=False)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)   # all-NaN once every run is over
+                ax_iter.plot(grid, np.nanmean(iter_ms, axis=0), color=color, linewidth=2.0, label=label)
+
         ax_cost.set_title(env_display_name(env), fontsize=13, fontweight="bold")
         ax_cost.set_ylabel(f"Best {COST_METRIC_LABELS[METRIC].lower()}" if col == 0 else "")
         ax_tree.set_ylabel("Tree size (nodes)" if col == 0 else "")
-        ax_tree.set_xlabel("Elapsed planner time (ms)")
-        for ax in (ax_cost, ax_tree):
+        ax_iter.set_ylabel("Time per iteration (ms)" if col == 0 else "")
+        ax_iter.set_xlabel("Elapsed planner time (ms)")
+        for ax in (ax_cost, ax_tree, ax_iter):
             ax.grid(True, linestyle=":", linewidth=0.5, alpha=0.6)
         ax_cost.legend(fontsize=9, loc="best")
 
     fig.suptitle(f"Chain Reaction vs {BASE_DISPLAY[KINOPAX_STAR]} -- {MODEL_NAMES[MODEL_ID]}, "
                  f"{discretization_display(disc_label)} discretization", fontsize=14, fontweight="bold")
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
     base = f"chain_reaction_vs_countingstars_{MODEL_NAMES[MODEL_ID]}_{disc_label}"
     png_path = os.path.join(OUT_DIR, f"{base}.png")
     fig.savefig(png_path, dpi=200, bbox_inches="tight")
