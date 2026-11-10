@@ -22,7 +22,8 @@ Shared dependencies (all stay at the repo root): `Planner`, `Graph`, `KinoPaxPlu
 baseline: CountingStars with everything but the chain removed (budget B of candidate propagations per iteration, branching
 factor B / |frontier|, accept = collision-free, no reactivation, no regions). It is NOT in `zephyr_common.BASE_NAMES`, so the
 paper figures above are unaffected; only `chain_reaction_compare.py` plots it. Runner defaults: Dubins Airplane, 'large'
-discretization, path-length cost, house/narrowPassage/zigzag, 5 runs, constant B = 5000 (`--budget`).
+discretization, path-length cost, house/narrowPassage/zigzag, 5 runs, constant B = 5000 (`--budget`). It uses the main paper
+data's settings (3M-node tree, CountingStars ramp 700, 4 s cap), not v3's 1M/210/3 s.
 
 ## Pipeline: runner -> target -> data -> plot
 

@@ -5,7 +5,9 @@
 # Builds and runs ChainReactionBenchmark (examples/gpu/paper/chain_reaction_benchmark.cu) on the
 # 6D Dubins Airplane (Model 2), the "large"/coarse discretization (W7/C3/V3, 9,261 regions -- only
 # CountingStars uses them; ChainReaction has no regions), path-length cost (COST_MODE 0), three
-# environments, 5 runs per planner, 3s cap, MAX_TREE_SIZE 1,000,000. The Model-2 config.h block is
+# environments, 5 runs per planner, 4s cap, MAX_TREE_SIZE 3,000,000, CountingStars ramp length 700 --
+# the settings the main paper data (plots/DATA/ZEPHYR_30_runs) was recorded with, i.e.
+# paper_benchmark_v2.cu, NOT v3's 1M-node / ramp-210 / 3s variant. The Model-2 config.h block is
 # copied from run_paper_benchmark_v3.sh's write_config(); the original config.h is backed up and
 # restored on exit.
 #
@@ -53,12 +55,12 @@ PLANNER_NAMES=("ChainReaction"        "CountingStars")
 
 NUM_RUNS=5
 CR_BUDGET=5000          # ChainReaction's constant candidate budget B
-RUN_TIMEOUT_S=120       # 5 runs x 3s cap + inter-run sleeps + startup, with margin
-VIZ_TIMEOUT_S=900
+RUN_TIMEOUT_S=180       # 5 runs x 4s cap + inter-run sleeps + startup, with margin
+VIZ_TIMEOUT_S=1800     # 100 checkpoints x 2 planners, each copying a (up to 3M-node) tree to the host
 KILL_AFTER_S=30
 VIZ_ENV="zigzag"
 VIZ_OBSTACLES="../include/config/obstacles/zigzag/obstacles.csv"
-CS_FILL_ITERS=210       # CountingStars ramp length at 1M nodes / 3s (same as paper_benchmark_v3.cu)
+CS_FILL_ITERS=700       # CountingStars ramp length at 3M nodes (same as paper_benchmark_v2.cu / ZEPHYR_30_runs)
 
 SKIP_BUILD=false
 DO_VIZ=false
@@ -109,7 +111,7 @@ write_config() {
 /***************************/
 #define MODEL 2
 #define COST_MODE ${COST_MODE}  // path cost: 1 = control effort ((yawRate^2+pitchRate^2+a^2)*dt), 0 = workspace distance
-#define MAX_TREE_SIZE 1000000
+#define MAX_TREE_SIZE 3000000
 #define MAX_FLOAT 1e38f
 #define MAX_SOL_SET_SIZE 500
 #define MAX_ITER 1000

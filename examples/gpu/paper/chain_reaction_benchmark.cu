@@ -25,20 +25,21 @@
 #include "planners/ChainReaction.cuh"
 #include "planners/CountingStars.cuh"
 
-// CountingStars at paper_benchmark_v3.cu's fixed point (1M-node tree, 3s cap -> ramp length 210).
+// CountingStars at paper_benchmark_v2.cu's fixed point -- the settings plots/DATA/ZEPHYR_30_runs (the main paper
+// data) was recorded with: 3M-node tree (set by the runner's config.h), ramp length 700, 4s cap.
 static const float CS_BUFFER_SLOPE   = 1.2f;
 static const float CS_BUFFER_FLOOR   = 0.4f;
 static const float CS_EXPLORE_FRAC   = 0.15f;
 static const float CS_COST_FRAC      = 0.75f;
 static const int   CS_HOPELESS_GUARD = 1;
-static const int   CS_RAMP_FILL_ITERS = 210;
+static const int   CS_RAMP_FILL_ITERS = 700;
 
-// ChainReaction's constant candidate budget; override with --budget. 5000 is about the mean of
-// CountingStars' B ramp at this tree size (1.9k -> 7.6k).
+// ChainReaction's constant candidate budget; override with --budget. 5000 is roughly the middle of
+// CountingStars' B ramp at this tree size (1.7k -> 6.9k).
 static const int CR_BUDGET_DEFAULT = 5000;
 
 static const int   MAX_ITERATIONS = 1000;
-static const float MAX_TIME_MS    = 3000.0f;
+static const float MAX_TIME_MS    = 4000.0f;
 
 static const char* CR_LABEL = "ChainReaction";
 
