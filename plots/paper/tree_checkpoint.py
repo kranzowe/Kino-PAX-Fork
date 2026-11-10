@@ -353,16 +353,22 @@ def compute_color_vmax(data_dir: str, env: str, tokens: list, checkpoint_ms: int
     rates (e.g. one token's tree can be 50% bigger than another's at the same wall-clock time),
     so a single shared max would leave the slower tokens' colors never reaching the red end of
     the scale even at their OWN 1000ms checkpoint -- each token now gets to use its own full
-    gradient. Missing/never-produced files fall back to 1 (a token that never got a tree file at
-    the anchor checkpoint has no meaningful scale to anchor to; its scatter will just auto-fail
-    gracefully to a single color). Counts lines instead of loading each file into pandas -- cheap,
-    and all that's needed here is the row count."""
+    gradient. A token whose run ended before the anchor checkpoint (no file there) anchors to its
+    own LAST checkpoint at or before it instead, so it still gets a full gradient; a token with no
+    file at or before the anchor falls back to 1 (its scatter just auto-fails gracefully to a single
+    color). Counts lines instead of loading each file into pandas -- cheap, and all that's needed
+    here is the row count."""
+    pattern = re.compile(rf"^{re.escape(env)}_{{token}}_t(\d+)ms_tree\.csv$")
+    available = os.listdir(data_dir)
     vmax_by_token = {}
     for token in tokens:
-        path = os.path.join(data_dir, f"{env}_{token}_t{checkpoint_ms}ms_tree.csv")
-        if not os.path.isfile(path):
+        token_re = re.compile(pattern.pattern.replace("{token}", re.escape(token)))
+        reached = [int(m.group(1)) for m in (token_re.match(fname) for fname in available) if m]
+        anchor = max((ms for ms in reached if ms <= checkpoint_ms), default=None)
+        if anchor is None:
             vmax_by_token[token] = 1.0
             continue
+        path = os.path.join(data_dir, f"{env}_{token}_t{anchor}ms_tree.csv")
         with open(path, encoding="utf-8") as f:
             n_rows = sum(1 for _ in f) - 1  # minus header
         vmax_by_token[token] = float(max(n_rows - 1, 1))

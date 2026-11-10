@@ -27,8 +27,9 @@ public:
     float planOptimize(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount);
     void planBench(float* h_initial, float* h_goal, float* d_obstacles_ptr, uint h_obstaclesCount, int benchItr);
     void resetPlanner(float* h_initial, float* h_goal);
-    void propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount);
-    void updateFrontier();
+    // Virtual so FissionReaction can replace the candidate-count rule and still be driven by plan*().
+    virtual void propagateFrontier(float* d_obstacles_ptr, uint h_obstaclesCount);
+    virtual void updateFrontier();
     void getControlPathToGoal();
     void writeExecutionTimeToCSV(double time);
 

@@ -47,6 +47,14 @@ CHAIN_REACTION = "ChainReaction"
 BASE_DISPLAY[CHAIN_REACTION] = "Chain Reaction"
 BASE_COLORS[CHAIN_REACTION] = "#009e73"  # teal, distinct from the four paper planners and the Jetson orange
 
+# FissionReaction (same benchmark): like ChainReaction but with a fixed branching factor k instead of a
+# budget. One run file token per k ("FissionReaction_k4"); chain_reaction_compare.py owns its labels/colors.
+FISSION_REACTION = "FissionReaction"
+
+
+def fission_token(branching: int) -> str:
+    return f"{FISSION_REACTION}_k{int(branching)}"
+
 # Planners plotted on the x-axis of the ratio scatters (everyone but the Kino-PAX+ reference).
 OTHER_PLANNERS = [KPAX, SIMPLECOMBO, KINOPAX_STAR]
 
@@ -125,7 +133,7 @@ def env_display_name(env: str) -> str:
 def _candidate_filename(env: str, planner_token: str, delta_tok: str, run: int) -> str:
     if planner_token == KPAX:
         return f"{env}_KPAX_delta{delta_tok}_run{run}.csv"
-    if planner_token.startswith(("CountingStars", "KinoPaxSTAR", CHAIN_REACTION)):
+    if planner_token.startswith(("CountingStars", "KinoPaxSTAR", CHAIN_REACTION, FISSION_REACTION)):
         return f"{env}_{planner_token}_delta{delta_tok}_run{run}.csv"
     return f"{env}_delta{delta_tok}_run{run}.csv"  # KinoPaxPlus: no planner token in the filename
 

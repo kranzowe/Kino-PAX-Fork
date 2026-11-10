@@ -48,8 +48,9 @@
 //
 // Render the output with plots/paper/tree_growth_animation.py.
 //
-// Optional flags (see main): --planners=... can add "ChainReaction" or drop planners; --out DIR, --cs-fill-iters N,
-// --cr-budget N. With none of them the behaviour is exactly the original three-planner dump.
+// Optional flags (see main): --planners=... can add "ChainReaction" / "FissionReaction" or drop planners;
+// --out DIR, --cs-fill-iters N, --cr-budget N, --fission-k N, --step-ms X, --max-ms Y, --leaf-frac F.
+// With none of them the behaviour is exactly the original three-planner dump (30 ms steps to 3000 ms, 1% of leaves).
 // ========================================================================
 #include <iostream>
 #include <fstream>
@@ -67,6 +68,7 @@
 #include "planners/KinoPaxPlus.cuh"
 #include "planners/CountingStars.cuh"
 #include "planners/ChainReaction.cuh"
+#include "planners/FissionReaction.cuh"
 
 // CountingStars' canonical operating point -- exact same values as
 // paper_benchmark_v2.cu's CS_BUFFER_SLOPE/CS_BUFFER_FLOOR/CS_EXPLORE_FRAC/
@@ -79,13 +81,14 @@ static const float CS_COST_FRAC      = 0.75f;
 static const bool  CS_HOPELESS_GUARD = true;
 static int         CS_RAMP_FILL_ITERS = 700;   // --cs-fill-iters overrides (the ChainReaction runner passes 210)
 static int         CR_BUDGET          = 5000;  // ChainReaction's constant candidate budget; --cr-budget overrides
+static int         FISSION_K          = 4;     // FissionReaction's branching factor; --fission-k overrides
 
 // Fraction of each tree's LEAF nodes (see writeTreeCSV) kept in the tree CSVs. Lower than
 // tree_checkpoint_dump.cu's 4% (this tool's own, separate constant -- the static checkpoint dump
 // is untouched) because 100 checkpoints' worth of tree CSVs, each re-rendered as a full
 // scatter+edge plot, adds up fast; 1% keeps the animation responsive to render while still
 // preserving complete, connected leaf-to-root paths (see writeTreeCSV's ancestor-chain logic).
-static const float TREE_LEAF_SAMPLE_FRAC = 0.01f;
+static float TREE_LEAF_SAMPLE_FRAC = 0.01f;   // --leaf-frac overrides (the ChainReaction runner saves less)
 
 // ========================================================================
 // One host-side snapshot of a planner's tree, copied once per checkpoint and
@@ -308,8 +311,8 @@ void writeVizMeta(const std::string& path, const float* h_initial, const float* 
 // the one deliberate difference from tree_checkpoint_dump.cu's 6 hand-picked points. Built once
 // in main() into a std::vector (100 entries at the default 30/3000 split) rather than a giant
 // literal array.
-static const float CHECKPOINT_STEP_MS = 30.0f;
-static const float CHECKPOINT_MAX_MS  = 3000.0f;
+static float CHECKPOINT_STEP_MS = 30.0f;     // --step-ms / --max-ms override (the ChainReaction runner uses 10 / 100)
+static float CHECKPOINT_MAX_MS  = 3000.0f;
 static const int   MAX_LOOP_ITERATIONS = 200000;   // generous safety cap, not the stopping criterion --
                                                     // bumped vs. tree_checkpoint_dump.cu's 100000 only
                                                     // because 100 fine-grained checkpoints need more
@@ -610,14 +613,77 @@ void runChainReactionCheckpoints(ChainReaction& planner, const std::string& toke
     cudaEventDestroy(iterStop);
 }
 
+// ========================================================================
+// FissionReaction: same checkpoint loop as ChainReaction above, with a fixed branching factor k instead of a
+// budget. It fills the tree in a few iterations, so it usually stops (tree full) well inside the window.
+// ========================================================================
+void runFissionReactionCheckpoints(FissionReaction& planner, const std::string& token, const std::string& env,
+                                   const std::string& vizDir, float* h_initial, float* h_goal,
+                                   float* d_obstacles, uint numObstacles, std::ofstream& statsFile,
+                                   const std::vector<float>& checkpointsMs)
+{
+    planner.h_branching_ = FISSION_K;
+
+    printf("\n--- %s (k = %d) ---\n", token.c_str(), FISSION_K);
+    planner.resetPlanner(h_initial, h_goal);
+
+    cudaEvent_t iterStart, iterStop;
+    cudaEventCreate(&iterStart);
+    cudaEventCreate(&iterStop);
+    float plannerMs = 0.0f;
+    float iterMs    = 0.0f;
+    size_t nextCheckpoint = 0;
+    int itr = 0;
+
+    while(itr < MAX_LOOP_ITERATIONS && nextCheckpoint < checkpointsMs.size())
+    {
+        itr++;
+        planner.h_itr_++;
+
+        cudaEventRecord(iterStart);
+        planner.propagateFrontier(d_obstacles, numObstacles);
+        planner.updateFrontier();
+        cudaEventRecord(iterStop);
+        cudaEventSynchronize(iterStop);
+        cudaEventElapsedTime(&iterMs, iterStart, iterStop);
+        plannerMs += iterMs;
+
+        cudaMemcpy(&planner.h_minCost_, planner.d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
+
+        while(nextCheckpoint < checkpointsMs.size() && plannerMs >= checkpointsMs[nextCheckpoint])
+        {
+            int ms = (int)checkpointsMs[nextCheckpoint];
+            TreeSnapshot snap = copyTreeToHost(planner.d_treeSamples_ptr_,
+                                               planner.d_treeSamplesParentIdxs_ptr_,
+                                               planner.d_treeSampleCosts_ptr_, planner.h_treeSize_);
+            writeTreeCSV(snap, checkpointTreePath(vizDir, env, token, ms), TREE_LEAF_SAMPLE_FRAC);
+            int goalIdx = findGoalIdxByScan(planner.d_goalSet_ptr_, snap, planner.h_minCost_);
+            writeTrajectoryCSV(snap, goalIdx, checkpointTrajPath(vizDir, env, token, ms));
+            writeCheckpointStats(statsFile, token, ms, itr, planner.h_treeSize_, goalIdx >= 0);
+            printf("  t=%dms: itr=%d tree=%u %s\n", ms, itr, planner.h_treeSize_,
+                   goalIdx >= 0 ? "SOLVED" : "no solution yet");
+            nextCheckpoint++;
+        }
+
+        if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) { printf("  stopped early: tree full\n"); break; }
+        if(planner.h_propIterations_ == 0) { printf("  stopped early: tree capacity reached / frontier empty\n"); break; }
+    }
+
+    cudaEventDestroy(iterStart);
+    cudaEventDestroy(iterStop);
+}
+
 int main(int argc, char* argv[])
 {
     std::string obstaclePath = (argc > 1) ? argv[1] : "../include/config/obstacles/zigzag/obstacles.csv";
     std::string envName      = (argc > 2) ? argv[2] : "zigzag";
 
     // Flags (all optional; the default planner set and output dir are the original ones):
-    //   --planners=KPAX,KinoPaxPlus,CountingStars,ChainReaction   which planners to dump
+    //   --planners=KPAX,KinoPaxPlus,CountingStars,ChainReaction,FissionReaction   which planners to dump
     //   --cs-fill-iters N   CountingStars' ramp length     --cr-budget N   ChainReaction's B
+    //   --fission-k N       FissionReaction's branching factor (token FissionReaction_k<N>)
+    //   --step-ms X --max-ms Y   checkpoint every X ms of planner time out to Y ms (default 30 / 3000)
+    //   --leaf-frac F       fraction of each tree's leaf paths saved (default 0.01)
     //   --out DIR           output dir (default Data/Viz/TreeGrowthAnimation)
     std::string vizDir = "Data/Viz/TreeGrowthAnimation";
     std::vector<std::string> planners = {"KPAX", "KinoPaxPlus", "CountingStars"};
@@ -633,6 +699,10 @@ int main(int argc, char* argv[])
         }
         else if(a == "--cs-fill-iters" && i + 1 < argc) CS_RAMP_FILL_ITERS = std::max(1, atoi(argv[++i]));
         else if(a == "--cr-budget" && i + 1 < argc)     CR_BUDGET          = std::max(1, atoi(argv[++i]));
+        else if(a == "--fission-k" && i + 1 < argc)     FISSION_K          = std::max(1, atoi(argv[++i]));
+        else if(a == "--step-ms" && i + 1 < argc)       CHECKPOINT_STEP_MS = std::max(1.0f, (float)atof(argv[++i]));
+        else if(a == "--max-ms" && i + 1 < argc)        CHECKPOINT_MAX_MS  = std::max(1.0f, (float)atof(argv[++i]));
+        else if(a == "--leaf-frac" && i + 1 < argc)     TREE_LEAF_SAMPLE_FRAC = std::min(1.0f, std::max(1e-6f, (float)atof(argv[++i])));
         else if(a == "--out" && i + 1 < argc)           vizDir             = argv[++i];
     }
     auto wants = [&](const char* name) { return std::find(planners.begin(), planners.end(), name) != planners.end(); };
@@ -697,6 +767,12 @@ int main(int argc, char* argv[])
     {
         ChainReaction planner;
         runChainReactionCheckpoints(planner, "ChainReaction", envName, vizDir, h_initial, h_goal, d_obstacles, numObstacles, statsFile, checkpointsMs);
+    }
+    if(wants("FissionReaction"))
+    {
+        FissionReaction planner;
+        const std::string token = "FissionReaction_k" + std::to_string(FISSION_K);
+        runFissionReactionCheckpoints(planner, token, envName, vizDir, h_initial, h_goal, d_obstacles, numObstacles, statsFile, checkpointsMs);
     }
     statsFile.close();
     printf("Checkpoint stats written: %s\n", (vizDir + "/" + envName + "_checkpoint_stats.csv").c_str());

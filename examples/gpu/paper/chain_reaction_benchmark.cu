@@ -1,14 +1,18 @@
-// ChainReaction vs CountingStars: a pared-down paper_benchmark_v3.cu with just those two planners.
+// ChainReaction / FissionReaction vs CountingStars: a pared-down paper_benchmark_v3.cu.
 //
 // Same CLI shape and output layout as paper_benchmark_v3.cu, so plots/zephyr_common.load_runs reads it:
-//   ./ChainReactionBenchmark <tag> <obstacleCsv> <env> <deltaFolder> [--only-chainreaction|--only-countingstars]
-//                            [--runs N] [--budget B]
+//   ./ChainReactionBenchmark <tag> <obstacleCsv> <env> <deltaFolder>
+//                            [--only-chainreaction|--only-countingstars|--only-fissionreaction]
+//                            [--runs N] [--budget B] [--branching K]
 // e.g. tag = "m2_large_length", deltaFolder = "COARSE". Per-run CSVs land in
 //   Data/Benchmarks/ChainReaction/<deltaFolder>/<env>/<env>_<planner label>_delta<tag>_run<N>.csv
+// With no --only-* flag it runs ChainReaction and CountingStars. FissionReaction (one fixed branching factor K
+// per process; label FissionReaction_k<K>) only runs with --only-fissionreaction.
 //
 // CountingStars runs at the paper's fixed point (same constants as paper_benchmark_v3.cu). ChainReaction
-// runs with a single constant candidate budget B. The per-iteration CSV is a reduced header (just the
-// columns the plots read).
+// runs with a single constant candidate budget B; FissionReaction has no budget (candidates = frontier * K).
+// The per-iteration CSV is a reduced header (just the columns the plots read); goal_frontier_size holds
+// CountingStars' B, ChainReaction's B, or FissionReaction's K.
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -23,6 +27,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include "planners/ChainReaction.cuh"
+#include "planners/FissionReaction.cuh"
 #include "planners/CountingStars.cuh"
 
 // CountingStars at paper_benchmark_v2.cu's fixed point -- the settings plots/DATA/ZEPHYR_30_runs (the main paper
@@ -101,6 +106,12 @@ static void writePerIterationCSV(const RunResult& r, const std::string& outputDi
 
 // Shared loop shape: time propagate+update with cudaEvents (like paper_benchmark_v3.cu's
 // benchmarkCountingStars), log one row per iteration, stop on tree-full / planner stop / time cap.
+// FissionReaction's capacity-truncated last iteration ends the run via h_propIterations_ == 0 while the tree is
+// not quite at MAX_TREE_SIZE - 1 (some candidates collide); report that as tree_full, not as a dead frontier.
+static bool stoppedAtCapacity(const FissionReaction& p) { return p.h_truncated_; }
+template <typename P>
+static bool stoppedAtCapacity(const P&) { return false; }
+
 template <typename P, typename BudgetFn>
 static RunResult runOne(P& planner, const std::string& label, const std::string& tag, const std::string& env,
                         int runNumber, float* h_initial, float* h_goal, float* d_obstacles, uint numObstacles,
@@ -165,7 +176,7 @@ static RunResult runOne(P& planner, const std::string& label, const std::string&
         result.rows.push_back(d);
 
         if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) { result.stop_reason = "tree_full"; break; }
-        if(planner.h_propIterations_ == 0)           { result.stop_reason = "planner_stopped"; break; }
+        if(planner.h_propIterations_ == 0)           { result.stop_reason = stoppedAtCapacity(planner) ? "tree_full" : "planner_stopped"; break; }
         if(plannerMs >= MAX_TIME_MS)                 { result.stop_reason = "time_cap"; break; }
     }
 
@@ -216,24 +227,28 @@ int main(int argc, char* argv[])
     std::string envName      = (argc > 3) ? argv[3] : "zigzag";
     std::string deltaFolder  = (argc > 4) ? argv[4] : "unknown";
 
-    bool onlyCR = false, onlyCS = false;
-    int numRuns = 5;
-    int budget  = CR_BUDGET_DEFAULT;
+    bool onlyCR = false, onlyCS = false, onlyFR = false;
+    int numRuns   = 5;
+    int budget    = CR_BUDGET_DEFAULT;
+    int branching = 2;
     for(int i = 5; i < argc; i++)
     {
         std::string a = argv[i];
-        if(a == "--only-chainreaction")      onlyCR = true;
-        else if(a == "--only-countingstars") onlyCS = true;
-        else if(a == "--runs" && i + 1 < argc)   numRuns = std::max(1, atoi(argv[++i]));
-        else if(a == "--budget" && i + 1 < argc) budget  = std::max(1, atoi(argv[++i]));
+        if(a == "--only-chainreaction")         onlyCR = true;
+        else if(a == "--only-countingstars")    onlyCS = true;
+        else if(a == "--only-fissionreaction")  onlyFR = true;
+        else if(a == "--runs" && i + 1 < argc)      numRuns   = std::max(1, atoi(argv[++i]));
+        else if(a == "--budget" && i + 1 < argc)    budget    = std::max(1, atoi(argv[++i]));
+        else if(a == "--branching" && i + 1 < argc) branching = std::max(1, atoi(argv[++i]));
     }
-    if(onlyCR && onlyCS)
+    if((int)onlyCR + (int)onlyCS + (int)onlyFR > 1)
     {
         fprintf(stderr, "ERROR: pass at most one --only-* flag.\n");
         return 1;
     }
-    bool runCR = !onlyCS;
-    bool runCS = !onlyCR;
+    bool runCR = !onlyCS && !onlyFR;
+    bool runCS = !onlyCR && !onlyFR;
+    bool runFR = onlyFR;
 
     std::string outputDir = "Data/Benchmarks/ChainReaction/" + deltaFolder + "/" + envName;
     std::filesystem::create_directories(outputDir);
@@ -244,6 +259,7 @@ int main(int argc, char* argv[])
     printf("Tag: %s | Env: %s | Folder: %s | Runs: %d\n", tag.c_str(), envName.c_str(), deltaFolder.c_str(), numRuns);
     printf("MAX_TREE_SIZE: %d | Max iterations: %d | Time cap: %.0f ms\n", MAX_TREE_SIZE, MAX_ITERATIONS, MAX_TIME_MS);
     if(runCR) printf("ChainReaction: constant candidate budget B = %d\n", budget);
+    if(runFR) printf("FissionReaction: branching factor k = %d (no budget)\n", branching);
     if(runCS) printf("CountingStars: %s (ramp length %d)\n", countingStarsLabel().c_str(), CS_RAMP_FILL_ITERS);
     printf("=======================================================\n");
 
@@ -282,6 +298,28 @@ int main(int argc, char* argv[])
             if(run < numRuns - 1) std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
         reportSummary("ChainReaction", results);
+    }
+
+    if(runFR)
+    {
+        char label[64];
+        snprintf(label, sizeof(label), "FissionReaction_k%d", branching);
+        printf("\nFISSIONREACTION (k=%d): %s | Regions (ignored by this planner): %d\n", branching, envName.c_str(), NUM_R1_REGIONS);
+        FissionReaction planner;
+        planner.h_branching_ = branching;
+        std::vector<RunResult> results;
+        for(int run = 0; run < numRuns; run++)
+        {
+            RunResult r = runOne(planner, label, tag, envName, run, h_initial, h_goal, d_obstacles, numObstacles,
+                                 [](FissionReaction& p) { return p.h_branching_; });
+            report(r, run, numRuns);
+            writePerIterationCSV(r, outputDir);
+            results.push_back(r);
+            if(run < numRuns - 1) std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+        char name[64];
+        snprintf(name, sizeof(name), "FissionReaction k=%d", branching);
+        reportSummary(name, results);
     }
 
     if(runCS)

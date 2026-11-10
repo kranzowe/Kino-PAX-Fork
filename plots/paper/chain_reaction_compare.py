@@ -1,5 +1,7 @@
-"""Chain Reaction vs CountingStars (KinoPax#): per-environment comparison from the pared-down
-ChainReactionBenchmark runs (scripts/paper/run_chain_reaction_benchmark.sh).
+"""Chain Reaction and Fission Reaction (k = 2, 4, 8) vs CountingStars (KinoPax#): per-environment comparison
+from the pared-down ChainReactionBenchmark runs (scripts/paper/run_chain_reaction_benchmark.sh).
+Chain Reaction has a constant candidate budget; Fission Reaction has none -- every frontier node gets k
+children. A planner with no run files (e.g. a k that was not run) is skipped.
 
 For every discretization folder and environment found under DATASET_DIR, writes one figure with
   row 1: best cost vs elapsed time (mean +/- 1 std over runs; unsolved samples are dropped, and a run
@@ -15,7 +17,7 @@ plus chain_reaction_summary.csv, one row per (discretization, environment, plann
 
 Input layout (same convention as zephyr_common.load_runs; copy the benchmark's output here):
     plots/DATA/CHAIN_REACTION_runs/discretizationCOARSE/<env>/<env>_<planner label>_deltam2_large_length_run<N>.csv
-Chain Reaction has no regions, so the discretization only changes the CountingStars side.
+Chain/Fission Reaction have no regions, so the discretization only changes the CountingStars side.
 
 Edit DATASET_DIR / MODEL_ID / METRIC below, then run:
     python plots/paper/chain_reaction_compare.py
@@ -39,6 +41,7 @@ from zephyr_common import (  # noqa: E402
     BASE_DISPLAY,
     CHAIN_REACTION,
     COST_METRIC_LABELS,
+    fission_token,
     KINOPAX_STAR,
     MAX_FLOAT_THRESH,
     MODEL_NAMES,
@@ -60,7 +63,17 @@ DATASET_DIR = os.path.join(PLOTS_DIR, "DATA", "CHAIN_REACTION_runs")
 OUT_DIR = os.path.join(PLOTS_DIR, "output", "chain_reaction")
 MODEL_ID = 2          # 6D Dubins Airplane (what run_chain_reaction_benchmark.sh builds)
 METRIC = "length"     # cost metric the benchmark was built with
-PLANNERS = [KINOPAX_STAR, CHAIN_REACTION]   # CountingStars (displayed "KinoPax#") first, then Chain Reaction
+FISSION_BRANCHING_FACTORS = (2, 4, 8)       # must match FISSION_BRANCHING in run_chain_reaction_benchmark.sh
+FISSION_COLORS = ["#fdb863", "#e66101", "#7f3b08"]   # light -> dark orange, one per k (cycled if more are listed)
+PLANNERS = [KINOPAX_STAR, CHAIN_REACTION] + [fission_token(k) for k in FISSION_BRANCHING_FACTORS]
+
+# Local display names / colors so shared zephyr_common dicts are untouched: CountingStars and Chain Reaction
+# come from there, each Fission token gets its own.
+DISPLAY = {p: BASE_DISPLAY[p] for p in (KINOPAX_STAR, CHAIN_REACTION)}
+COLORS = {p: BASE_COLORS[p] for p in (KINOPAX_STAR, CHAIN_REACTION)}
+for _i, _k in enumerate(FISSION_BRANCHING_FACTORS):
+    DISPLAY[fission_token(_k)] = f"Fission Reaction (k={_k})"
+    COLORS[fission_token(_k)] = FISSION_COLORS[_i % len(FISSION_COLORS)]
 COLUMNS = ("best_cost", "elapsed_time_ms", "tree_size", "frontier_size", "iteration")
 GRID_POINTS = 300
 
@@ -126,7 +139,7 @@ def plot_discretization(disc_dir: str, disc_label: str, summary_rows: list) -> s
             if runs:
                 data[(env, planner)] = runs
                 summary_rows.append({"Discretization": disc_label, "Environment": env,
-                                     "Planner": BASE_DISPLAY[planner], **summarize(runs)})
+                                     "Planner": DISPLAY[planner], **summarize(runs)})
     envs = [e for e in envs if any((e, p) in data for p in PLANNERS)]
     if not envs:
         print(f"  [warn] no run files for {PLANNERS} under {disc_dir}")
@@ -142,8 +155,8 @@ def plot_discretization(disc_dir: str, disc_label: str, summary_rows: list) -> s
             runs = data.get((env, planner))
             if not runs:
                 continue
-            color = BASE_COLORS[planner]
-            label = f"{BASE_DISPLAY[planner]} (n={len(runs)}, {ms_per_iter(runs):.2f} ms/itr avg)"
+            color = COLORS[planner]
+            label = f"{DISPLAY[planner]} (n={len(runs)}, {ms_per_iter(runs):.2f} ms/itr avg)"
 
             cost = stack(runs, "best_cost", grid, drop_unsolved=True)
             with warnings.catch_warnings():
@@ -170,9 +183,11 @@ def plot_discretization(disc_dir: str, disc_label: str, summary_rows: list) -> s
         ax_iter.set_xlabel("Elapsed planner time (ms)")
         for ax in (ax_cost, ax_tree, ax_iter):
             ax.grid(True, linestyle=":", linewidth=0.5, alpha=0.6)
-        ax_cost.legend(fontsize=9, loc="best")
+        # On the tree-size axis, not the cost axis: every planner has a tree curve, but a planner that never
+        # solved has no cost curve and would be missing from (and its ms/itr average lost with) that legend.
+        ax_tree.legend(fontsize=8, loc="best")
 
-    fig.suptitle(f"Chain Reaction vs {BASE_DISPLAY[KINOPAX_STAR]} -- {MODEL_NAMES[MODEL_ID]}, "
+    fig.suptitle(f"Chain / Fission Reaction vs {DISPLAY[KINOPAX_STAR]} -- {MODEL_NAMES[MODEL_ID]}, "
                  f"{discretization_display(disc_label)} discretization", fontsize=14, fontweight="bold")
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     base = f"chain_reaction_vs_countingstars_{MODEL_NAMES[MODEL_ID]}_{disc_label}"

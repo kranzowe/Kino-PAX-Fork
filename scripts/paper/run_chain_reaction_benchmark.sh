@@ -1,6 +1,9 @@
 #!/bin/bash
 # =============================================================================
-# Chain Reaction vs CountingStars -- pared-down paper benchmark.
+# Chain Reaction / Fission Reaction vs CountingStars -- pared-down paper benchmark.
+#
+# ChainReaction: constant candidate budget B per iteration. FissionReaction: no budget, every frontier node
+# gets k children (candidates = frontier * k), swept over FISSION_BRANCHING (default k = 2 4 8).
 #
 # Builds and runs ChainReactionBenchmark (examples/gpu/paper/chain_reaction_benchmark.cu) on the
 # 6D Dubins Airplane (Model 2), the "large"/coarse discretization (W7/C3/V3, 9,261 regions -- only
@@ -17,12 +20,14 @@
 # Output (per-run CSVs the plots read via zephyr_common.load_runs):
 #   build/Data/Benchmarks/ChainReaction/COARSE/<env>/<env>_<planner label>_deltam2_large_length_run<N>.csv
 #
-# --viz additionally builds TreeGrowthAnimationDump and dumps tree growth for CountingStars and
-# ChainReaction on VIZ_ENV into build/Data/Viz/ChainReaction/ (render with
-# plots/paper/chain_reaction_growth_animation.py).
+# --viz additionally builds TreeGrowthAnimationDump and dumps tree growth for CountingStars, ChainReaction
+# and FissionReaction (one k, VIZ_FISSION_K) on VIZ_ENV into build/Data/Viz/ChainReaction/ -- only the
+# first VIZ_MAX_MS (100 ms) of planning, a checkpoint every VIZ_STEP_MS (10 ms), VIZ_LEAF_FRAC of each tree
+# saved (render with plots/paper/chain_reaction_growth_animation.py).
 #
 # Usage:
 #   bash scripts/paper/run_chain_reaction_benchmark.sh [--viz] [--skip-build] [--runs N] [--budget B]
+#                                                      [--branching "2 4 8"]
 # =============================================================================
 set -euo pipefail
 
@@ -50,16 +55,22 @@ ENV_OBSTACLES=(
     "../include/config/obstacles/narrowPassage/obstacles.csv"
     "../include/config/obstacles/zigzag/obstacles.csv"
 )
-PLANNER_FLAGS=("--only-chainreaction" "--only-countingstars")
-PLANNER_NAMES=("ChainReaction"        "CountingStars")
-
 NUM_RUNS=5
 CR_BUDGET=5000          # ChainReaction's constant candidate budget B
+FISSION_BRANCHING="2 4 8"   # FissionReaction branching factors k (one process each); override with --branching "2 4 8"
+# plots/paper/chain_reaction_compare.py's FISSION_BRANCHING_FACTORS must list the same k values.
 RUN_TIMEOUT_S=180       # 5 runs x 4s cap + inter-run sleeps + startup, with margin
-VIZ_TIMEOUT_S=1800     # 100 checkpoints x 2 planners, each copying a (up to 3M-node) tree to the host
 KILL_AFTER_S=30
 VIZ_ENV="zigzag"
 VIZ_OBSTACLES="../include/config/obstacles/zigzag/obstacles.csv"
+# Tree-growth dump: only the first 100 ms of planning, a checkpoint every 10 ms (11 frames with the empty
+# t=0 one), 0.5% of each tree's leaf paths saved. FissionReaction appears at one branching factor.
+# plots/paper/chain_reaction_growth_animation.py's FISSION_VIZ_K must equal VIZ_FISSION_K.
+VIZ_STEP_MS=10
+VIZ_MAX_MS=100
+VIZ_LEAF_FRAC=0.005
+VIZ_FISSION_K=4
+VIZ_TIMEOUT_S=600
 CS_FILL_ITERS=700       # CountingStars ramp length at 3M nodes (same as paper_benchmark_v2.cu / ZEPHYR_30_runs)
 
 SKIP_BUILD=false
@@ -70,9 +81,18 @@ while [ $# -gt 0 ]; do
         --viz)        DO_VIZ=true ;;
         --runs)       NUM_RUNS="$2"; shift ;;
         --budget)     CR_BUDGET="$2"; shift ;;
+        --branching)  FISSION_BRANCHING="$2"; shift ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
     shift
+done
+
+# One benchmark process per planner (and per FissionReaction branching factor); extra args per planner.
+PLANNER_NAMES=("ChainReaction" "CountingStars")
+PLANNER_ARGS=("--only-chainreaction --budget $CR_BUDGET" "--only-countingstars")
+for K in $FISSION_BRANCHING; do
+    PLANNER_NAMES+=("FissionReaction k=${K}")
+    PLANNER_ARGS+=("--only-fissionreaction --branching ${K}")
 done
 
 CMAKE_COMPILER_FLAGS=""
@@ -206,9 +226,9 @@ REGIONS=$(( W_R1**3 * C_R1**2 * V_R1 ))
 
 echo ""
 echo "======================================================="
-echo "  Chain Reaction benchmark"
+echo "  Chain Reaction / Fission Reaction benchmark"
 echo "  Model: 2 (6D Dubins Airplane) | delta=${DELTA_LABEL} [${DELTA_FOLDER}] | Regions=${REGIONS} (CountingStars only)"
-echo "  Cost: ${COST_LABEL} (COST_MODE=${COST_MODE_VAL}) | Runs/planner: ${NUM_RUNS} | ChainReaction B=${CR_BUDGET}"
+echo "  Cost: ${COST_LABEL} (COST_MODE=${COST_MODE_VAL}) | Runs/planner: ${NUM_RUNS} | ChainReaction B=${CR_BUDGET} | FissionReaction k=${FISSION_BRANCHING}"
 echo "  Environments: ${ENV_NAMES[*]}"
 echo "======================================================="
 
@@ -237,14 +257,14 @@ for e in "${!ENV_NAMES[@]}"; do
     EO="${ENV_OBSTACLES[$e]}"
     for p in "${!PLANNER_NAMES[@]}"; do
         PN="${PLANNER_NAMES[$p]}"
-        PF="${PLANNER_FLAGS[$p]}"
+        PF="${PLANNER_ARGS[$p]}"
 
         echo ""
         echo "=== RUNNING (planner=${PN}, env=${EN}) ==="
 
         ec=0
         timeout --kill-after="${KILL_AFTER_S}s" "${RUN_TIMEOUT_S}s" \
-            ./ChainReactionBenchmark "$TAG" "$EO" "$EN" "$DELTA_FOLDER" "$PF" --runs "$NUM_RUNS" --budget "$CR_BUDGET" || ec=$?
+            ./ChainReactionBenchmark "$TAG" "$EO" "$EN" "$DELTA_FOLDER" $PF --runs "$NUM_RUNS" || ec=$?
 
         if [ "$ec" -ne 0 ]; then
             if   [ "$ec" -eq 124 ]; then STATUS="TIMEOUT"
@@ -263,8 +283,9 @@ if [ "$DO_VIZ" = true ]; then
     echo "=== TREE GROWTH DUMP (env=${VIZ_ENV}) ==="
     ec=0
     timeout --kill-after="${KILL_AFTER_S}s" "${VIZ_TIMEOUT_S}s" \
-        ./TreeGrowthAnimationDump "$VIZ_OBSTACLES" "$VIZ_ENV" --planners=CountingStars,ChainReaction \
-        --out Data/Viz/ChainReaction --cs-fill-iters "$CS_FILL_ITERS" --cr-budget "$CR_BUDGET" || ec=$?
+        ./TreeGrowthAnimationDump "$VIZ_OBSTACLES" "$VIZ_ENV" --planners=CountingStars,ChainReaction,FissionReaction \
+        --out Data/Viz/ChainReaction --cs-fill-iters "$CS_FILL_ITERS" --cr-budget "$CR_BUDGET" \
+        --fission-k "$VIZ_FISSION_K" --step-ms "$VIZ_STEP_MS" --max-ms "$VIZ_MAX_MS" --leaf-frac "$VIZ_LEAF_FRAC" || ec=$?
     if [ "$ec" -ne 0 ]; then
         echo "  *** tree growth dump failed: exit=${ec} ***"
         printf '%s tree-growth-dump env=%s exit=%s\n' "$(date -Iseconds)" "$VIZ_ENV" "$ec" >> "$FAILURE_LOG"

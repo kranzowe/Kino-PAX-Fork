@@ -25,6 +25,12 @@ paper figures above are unaffected; only `chain_reaction_compare.py` plots it. R
 discretization, path-length cost, house/narrowPassage/zigzag, 5 runs, constant B = 5000 (`--budget`). It uses the main paper
 data's settings (3M-node tree, CountingStars ramp 700, 4 s cap), not v3's 1M/210/3 s.
 
+`FissionReaction` (`include/planners/FissionReaction.cuh`, `src/planners/FissionReaction.cu`, a thin subclass of ChainReaction) has no
+budget: every frontier node gets exactly k children (candidates = frontier x k), accept = collision-free. The frontier therefore grows
+exponentially (~collision-free fraction x k per iteration) and the 3M-node tree fills in a handful of iterations; at capacity the last
+iteration expands a prefix of the frontier and the run ends (`stop=tree_full`). The runner sweeps k = 2, 4, 8 (`--branching "2 4 8"`),
+one process per k, files `<env>_FissionReaction_k<K>_deltam2_large_length_run<N>.csv`.
+
 ## Pipeline: runner -> target -> data -> plot
 
 | Runner (`scripts/paper/`) | CMake target (`examples/gpu/paper/`) | Writes (under `build/`) | Copy to (`plots/DATA/`) | Plots (`plots/paper/`) |
@@ -37,7 +43,7 @@ data's settings (3M-node tree, CountingStars ramp 700, 4 s cap), not v3's 1M/210
 | `run_tree_growth_animation_dump.sh` | `TreeGrowthAnimationDump` | `Data/Viz/TreeGrowthAnimation/` | `tree_animation*/TreeGrowthAnimation/` | `tree_growth_animation.py` |
 | `run_sample_trajectories.sh` | `TreeCheckpointDump` (x3 envs) | `Data/Viz/environment_trajectories/` | `environment_trajectories/` | `view_environment.py`, `plotly_env_viz.py` |
 | `run_chain_reaction_benchmark.sh` | `ChainReactionBenchmark` | `Data/Benchmarks/ChainReaction/COARSE/<env>/` | `CHAIN_REACTION_runs/discretizationCOARSE/<env>/` | `chain_reaction_compare.py` |
-| `run_chain_reaction_benchmark.sh --viz` | `TreeGrowthAnimationDump --planners=CountingStars,ChainReaction` | `Data/Viz/ChainReaction/` | `tree_animation_chain_reaction/TreeGrowthAnimation/` | `chain_reaction_growth_animation.py` (`--static` for checkpoint panels) |
+| `run_chain_reaction_benchmark.sh --viz` | `TreeGrowthAnimationDump --planners=CountingStars,ChainReaction,FissionReaction` (first 100 ms, 10 ms steps, 0.5% of each tree) | `Data/Viz/ChainReaction/` | `tree_animation_chain_reaction/TreeGrowthAnimation/` | `chain_reaction_growth_animation.py` (`--static` for checkpoint panels) |
 
 `run_tree_checkpoint_dump.sh` = static figure: 6 wall-clock checkpoints (50-4000ms), 4% of leaf paths.
 `run_tree_growth_animation_dump.sh` = animation: a checkpoint every 30ms to 3000ms, 1% seed-lineage
@@ -54,18 +60,18 @@ sampling (stable across frames). The animation is rendered by `plots/paper/tree_
 
 ```bash
 bash scripts/paper/run_chain_reaction_benchmark.sh            # benchmark only (no tree dumps)
-bash scripts/paper/run_chain_reaction_benchmark.sh --viz      # also dump tree growth (slow: copies the tree each 30 ms checkpoint)
+bash scripts/paper/run_chain_reaction_benchmark.sh --viz      # also dump tree growth: first 100 ms, a checkpoint every 10 ms
 ```
 
 Console output per run: `TTFS` (planner time + iteration of the first solution, or `none`), total planner time, iterations and
 average ms/iteration, final tree size, cost, and why the run stopped (`tree_full`, `planner_stopped`, `time_cap`,
-`max_iterations`). After each planner/environment a `>>` line gives solved k/n, mean TTFS (solved runs), mean total time and
+`max_iterations`). Planners printed: ChainReaction, CountingStars and FissionReaction k=2/4/8. After each planner/environment a `>>` line gives solved k/n, mean TTFS (solved runs), mean total time and
 mean ms/iteration. Both planners run up to 3000 iterations, 4 s, 3M-node tree.
 
 | Script | Reads | Produces (`plots/output/...`) |
 |---|---|---|
-| `plots/paper/chain_reaction_compare.py` | `plots/DATA/CHAIN_REACTION_runs/discretizationCOARSE/<env>/` | `chain_reaction/chain_reaction_vs_countingstars_DubinsAirplane_coarse.{png,svg}`: per environment, best cost vs time, tree size vs time, time per iteration vs time (legend shows each planner's average ms/iter). `chain_reaction/chain_reaction_summary.csv`: n_runs, success_rate, mean/std TTFS, mean final cost, final tree size, run time, iterations, mean ms/iter. |
-| `plots/paper/chain_reaction_growth_animation.py` (needs `--viz` data) | `plots/DATA/tree_animation_chain_reaction/TreeGrowthAnimation/` | `chain_reaction_animation/tree_growth_animation_zigzag.mp4` (or `.gif`); `--static` gives per-checkpoint panels in `chain_reaction_animation/static/`. |
+| `plots/paper/chain_reaction_compare.py` | `plots/DATA/CHAIN_REACTION_runs/discretizationCOARSE/<env>/` | `chain_reaction/chain_reaction_vs_countingstars_DubinsAirplane_coarse.{png,svg}`: per environment, best cost vs time, tree size vs time, time per iteration vs time for KinoPax#, Chain Reaction and Fission Reaction k=2/4/8 (the legend on the tree-size panel shows each planner's average ms/iter; a planner that never solved has no cost curve). Edit `FISSION_BRANCHING_FACTORS` in the script if you change the runner's k list. `chain_reaction/chain_reaction_summary.csv`: n_runs, success_rate, mean/std TTFS, mean final cost, final tree size, run time, iterations, mean ms/iter. |
+| `plots/paper/chain_reaction_growth_animation.py` (needs `--viz` data) | `plots/DATA/tree_animation_chain_reaction/TreeGrowthAnimation/` | `chain_reaction_animation/tree_growth_animation_zigzag.mp4` (or `.gif`): three panels (KinoPax#, Chain Reaction, Fission Reaction at one k, `FISSION_VIZ_K` = the runner's `VIZ_FISSION_K`, default 4) over the first 100 ms in 10 ms steps; `--static` gives per-checkpoint panels in `chain_reaction_animation/static/`. |
 
 The other paper plots (`ttfs_panel_vs_kpax_4s.py`, `cost_vs_time.py`, `tree_growth_rate.py`, ...) iterate `zephyr_common.BASE_NAMES`, which does
 not include Chain Reaction, so they do not plot it.

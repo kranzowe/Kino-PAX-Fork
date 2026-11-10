@@ -43,6 +43,7 @@ set(SOURCE_FILES
     src/planners/KinoPaxSTARCOMBO.cu
     src/planners/CountingStars.cu
     src/planners/ChainReaction.cu
+    src/planners/FissionReaction.cu
     src/planners/KinoPaxSTARTrue.cu
     src/planners/KinoPaxSTARTrueWeightedCost.cu
     src/planners/KinoPaxSTARcostprunenoseed.cu
