@@ -183,8 +183,7 @@ static void report(const RunResult& r, int run, int numRuns)
     char ttfs[48];
     if(r.first_solution_time_ms >= 0.0f) snprintf(ttfs, sizeof(ttfs), "%.1f ms (itr %d)", r.first_solution_time_ms, r.first_solution_iteration);
     else                                 snprintf(ttfs, sizeof(ttfs), "none");
-    printf("  Run %d/%d: TTFS=%s | total=%.3fs, %d itr (%.2f ms/itr), tree=%d, cost=%.3f -> %.3f, stop=%s%s
-",
+    printf("  Run %d/%d: TTFS=%s | total=%.3fs, %d itr (%.2f ms/itr), tree=%d, cost=%.3f -> %.3f, stop=%s%s\n",
            run + 1, numRuns, ttfs, r.total_time_seconds, r.total_iterations,
            r.total_iterations > 0 ? 1000.0 * r.total_time_seconds / r.total_iterations : 0.0,
            r.final_tree_size, r.first_solution_cost, r.final_best_cost, r.stop_reason.c_str(),
@@ -204,12 +203,10 @@ static void reportSummary(const char* name, const std::vector<RunResult>& result
     int n = (int)results.size();
     if(n == 0) return;
     if(solved > 0)
-        printf("  >> %s: solved %d/%d | mean TTFS %.1f ms (solved runs) | mean total %.3fs | mean %.2f ms/itr
-",
+        printf("  >> %s: solved %d/%d | mean TTFS %.1f ms (solved runs) | mean total %.3fs | mean %.2f ms/itr\n",
                name, solved, n, ttfsSum / solved, totalSum / n, perIterSum / n);
     else
-        printf("  >> %s: solved 0/%d | mean total %.3fs | mean %.2f ms/itr
-", name, n, totalSum / n, perIterSum / n);
+        printf("  >> %s: solved 0/%d | mean total %.3fs | mean %.2f ms/itr\n", name, n, totalSum / n, perIterSum / n);
 }
 
 int main(int argc, char* argv[])

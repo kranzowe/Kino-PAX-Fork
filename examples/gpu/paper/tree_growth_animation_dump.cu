@@ -560,9 +560,7 @@ void runChainReactionCheckpoints(ChainReaction& planner, const std::string& toke
 {
     planner.h_budget_ = CR_BUDGET;
 
-    printf("
---- %s (B = %d) ---
-", token.c_str(), CR_BUDGET);
+    printf("\n--- %s (B = %d) ---\n", token.c_str(), CR_BUDGET);
     planner.resetPlanner(h_initial, h_goal);
 
     cudaEvent_t iterStart, iterStop;
@@ -599,16 +597,13 @@ void runChainReactionCheckpoints(ChainReaction& planner, const std::string& toke
             writeTrajectoryCSV(snap, goalIdx, checkpointTrajPath(vizDir, env, token, ms));
             writeCheckpointStats(statsFile, token, ms, itr, planner.h_treeSize_, goalIdx >= 0);
             if(ms % 500 == 0)
-                printf("  t=%dms: itr=%d tree=%u %s
-", ms, itr, planner.h_treeSize_,
+                printf("  t=%dms: itr=%d tree=%u %s\n", ms, itr, planner.h_treeSize_,
                        goalIdx >= 0 ? "SOLVED" : "no solution yet");
             nextCheckpoint++;
         }
 
-        if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) { printf("  stopped early: tree full
-"); break; }
-        if(planner.h_propIterations_ == 0) { printf("  stopped early: frontier empty / no capacity
-"); break; }
+        if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) { printf("  stopped early: tree full\n"); break; }
+        if(planner.h_propIterations_ == 0) { printf("  stopped early: frontier empty / no capacity\n"); break; }
     }
 
     cudaEventDestroy(iterStart);
