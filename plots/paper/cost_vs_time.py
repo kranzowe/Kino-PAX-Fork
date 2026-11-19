@@ -1,6 +1,5 @@
 """Cost vs Time convergence plot: mean best_cost (with a +/-1 std band) against elapsed wall-clock
-time, for three algorithms (Kino-PAX, Kino-PAX+, KinoPax* -- SimpleCombo is left out of this plot
-specifically, to match the paper's headline comparison) at all three discretizations, one figure
+time, for three algorithms (Kino-PAX, Kino-PAX+, KinoPax*) at all three discretizations, one figure
 per (model, environment, cost metric) -- length and effort are separate, non-comparable sweeps
 (different units) and must never be pooled onto the same y-axis (same rule cost_ratio_scatter.py
 follows), so each (model, environment) combination gets 2 figures rather than 1, each with 9
@@ -49,7 +48,6 @@ from zephyr_common import (  # noqa: E402
     BASE_COLORS,
     BASE_DISPLAY,
     BASE_NAMES,
-    SIMPLECOMBO,
     COST_METRICS,
     COST_METRIC_LABELS,
     MAX_FLOAT_THRESH,
@@ -78,8 +76,7 @@ OUT_DIR = os.path.join(PLOTS_DIR, "output", "cost_vs_time")
 EXCLUDED_ENVIRONMENTS = {"empty"}  # trivially solved by everyone -- not an interesting comparison
 CANONICAL_ENV_ORDER = ["house", "narrowPassage", "zigzag"]
 
-# SimpleCombo left out of this plot specifically -- everything else in plots/*.py still shows it.
-PLOTTED_PLANNERS = [p for p in BASE_NAMES if p != SIMPLECOMBO]
+PLOTTED_PLANNERS = list(BASE_NAMES)
 
 PLOT_TIME_LIMIT_MS = 4000.0     # cut the x-axis (and everything computed for it) off at 5s
 NUM_TIME_SAMPLES = 400

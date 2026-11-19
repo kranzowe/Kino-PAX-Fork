@@ -1,7 +1,8 @@
 # Paper artifacts index
 
-Everything the paper's figures/tables depend on lives in three `paper/` subfolders. Everything else
-in `scripts/`, `examples/gpu/`, `plots/` is non-paper (older benchmarks, tuning sweeps, superseded plots).
+Everything the paper's figures/tables depend on lives in three `paper/` subfolders. This branch
+(`ReactionsOnly`) contains only the five planners below; every other planner variant and its
+benchmarks/sweeps/runners/MATLAB is archived, unbuilt, under `legacy/` (see `legacy/README.md`).
 
 | Kind | Location |
 |---|---|
@@ -13,10 +14,11 @@ in `scripts/`, `examples/gpu/`, `plots/` is non-paper (older benchmarks, tuning 
 
 ## Paper planners
 
-`KPAX` (Kino-PAX), `KinoPaxPlus` (Kino-PAX+), `KinoPaxSTARTrue` (SimpleCombo, token
-`KinoPaxSTARTrue_cap100_anc1`), `CountingStars` (Kino-PAX#, token `CountingStars_bs120_bf40_ef150_cf750_hg1`).
+`KPAX` (Kino-PAX), `KinoPaxPlus` (Kino-PAX+), `CountingStars` (Kino-PAX#, token
+`CountingStars_bs120_bf40_ef150_cf750_hg1`). The earlier SimpleCombo planner (`KinoPaxSTARTrue`) is no longer run by the benchmarks or
+plotted; its old per-run CSVs in `plots/DATA/` are simply ignored by the loaders.
 Shared dependencies (all stay at the repo root): `Planner`, `Graph`, `KinoPaxPlusRegions`, `spatialHash`,
-`collisionCheck`, `statePropagator` (+ `SpatialHash`), `helper`. Tree dumps use only KPAX, KinoPaxPlus, CountingStars.
+`collisionCheck`, `statePropagator` (+ `SpatialHash`), `helper`.
 
 `ChainReaction` (`include/planners/ChainReaction.cuh`, `src/planners/ChainReaction.cu`) is an experimental minimal
 baseline: CountingStars with everything but the chain removed (budget B of candidate propagations per iteration, branching
@@ -92,5 +94,16 @@ python plots/paper/tree_growth_animation.py              # VIEW_MODE = "top_down
 Build only the paper targets:
 
 ```bash
-cd build && cmake .. && make PaperBenchmarkV2 PaperBenchmarkV3 JetsonPaperBenchmarkV3 PaperBenchmarkV3Quad TreeCheckpointDump TreeGrowthAnimationDump
+cd build && cmake .. && make PaperBenchmarkV2 PaperBenchmarkV3 JetsonPaperBenchmarkV3 PaperBenchmarkV3Quad TreeCheckpointDump TreeGrowthAnimationDump ChainReactionBenchmark
+```
+
+The original demos (`main`, `benchMain`, `executionTimeMain`, `KinoPaxPlusMain`) also still build.
+
+## Static checks (no GPU needed)
+
+```bash
+python scripts/sanity.py                          # brace/paren/quote balance of every .cu/.cuh
+python scripts/check_sigs.py                      # kernel names unique, every launch matches its definition
+python scripts/check_region_math.py               # R1 region encode/decode arithmetic
+python scripts/check_countingstars_histogram.py   # CountingStars' histogram selections are exact top-X
 ```

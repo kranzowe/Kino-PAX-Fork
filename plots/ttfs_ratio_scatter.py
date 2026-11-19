@@ -204,7 +204,7 @@ def plot_model(table: pd.DataFrame, model_id: int, discretization_labels: list[s
                              bbox_to_anchor=(1.02, 0.62), fontsize=9, title_fontsize=9, frameon=True)
         legends = [legend1, legend2]
 
-    ax.set_xlabel("Time to First Solution (ms) — other algorithms (Kino-PAX, SimpleCombo, Kino-PAX*)")
+    ax.set_xlabel("Time to First Solution (ms) — other algorithms (Kino-PAX, Kino-PAX#)")
     ax.set_ylabel("Time to First Solution (ms) — Kino-PAX+")
     ax.set_title(
         f"Time to First Solution vs Kino-PAX+ — {MODEL_NAMES[model_id]} (m{model_id})\n"

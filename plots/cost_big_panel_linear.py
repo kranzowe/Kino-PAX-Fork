@@ -61,7 +61,6 @@ from zephyr_common import (  # noqa: E402
     KPAX,
     MODEL_IDS,
     MODEL_NAMES,
-    SIMPLECOMBO,
     aggregate_cost_at_time,
     discover_discretization_dirs,
     discover_environments,
@@ -91,10 +90,9 @@ OUT_DIR = os.path.join(PLOTS_DIR, "output", "cost_ratio")
 REFERENCE_PLANNER = KPAX  # <-- Kino-PAX, not Kino-PAX+ -- see module docstring.
 EXCLUDED_ENVIRONMENTS = {"empty"}  # trivially solved by everyone -- not an interesting comparison
 
-INCLUDE_SIMPLECOMBO = False  # <-- TOGGLE. Flip to True to bring SimpleCombo back into this panel.
 PLOTTED_OTHER_PLANNERS = [
     p for p in BASE_NAMES
-    if p != REFERENCE_PLANNER and (INCLUDE_SIMPLECOMBO or p != SIMPLECOMBO)
+    if p != REFERENCE_PLANNER
 ]
 
 PANEL_SUBTITLES = {

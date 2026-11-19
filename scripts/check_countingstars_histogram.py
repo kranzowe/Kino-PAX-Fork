@@ -51,7 +51,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 CUH = os.path.join(ROOT, 'include', 'planners', 'CountingStars.cuh')
 CU = os.path.join(ROOT, 'src', 'planners', 'CountingStars.cu')
-SWEEP = os.path.join(ROOT, 'examples', 'gpu', 'countingstars_sweep.cu')
+# The paper benchmark's fixed CountingStars operating point (the tuning sweep this used to parse is gone).
+SWEEP = os.path.join(ROOT, 'examples', 'gpu', 'paper', 'paper_benchmark_v2.cu')
 
 
 def read(path):
@@ -339,8 +340,8 @@ for kind in ('uniform', 'exponential', 'onebucket'):
 # re-sweeps the ramp against it), explore_frac/cost_frac stay fixed scalars. Parsed here purely
 # for the grid summary line and the one oversubscription check; neither bufferSlope nor
 # bufferFloor ever entered the oversubscription math (only explore_frac + cost_frac do).
-slopes = cu_array(sweep, 'CS_BUFFER_SLOPES', SWEEP)
-floors = cu_array(sweep, 'CS_BUFFER_FLOORS', SWEEP)
+slopes = [cu_scalar(sweep, 'CS_BUFFER_SLOPE', SWEEP)]
+floors = [cu_scalar(sweep, 'CS_BUFFER_FLOOR', SWEEP)]
 efrac = cu_scalar(sweep, 'CS_EXPLORE_FRAC', SWEEP)
 cfrac = cu_scalar(sweep, 'CS_COST_FRAC', SWEEP)
 

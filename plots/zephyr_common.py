@@ -22,22 +22,19 @@ import pandas as pd
 # our own palette, chosen to be distinct and colorblind-friendly -- an Okabe-Ito-derived set).
 KPAX = "KPAX"
 KINOPAX_PLUS = "KinoPaxPlus"
-SIMPLECOMBO = "KinoPaxSTARTrue_cap100_anc1"
 KINOPAX_STAR = "CountingStars_bs120_bf40_ef150_cf750_hg1"
 
-BASE_NAMES = [KPAX, KINOPAX_PLUS, SIMPLECOMBO, KINOPAX_STAR]
+BASE_NAMES = [KPAX, KINOPAX_PLUS, KINOPAX_STAR]
 
 BASE_DISPLAY = {
     KPAX: "Kino-PAX",
     KINOPAX_PLUS: "Kino-PAX+",
-    SIMPLECOMBO: "SimpleCombo",
     KINOPAX_STAR: "KinoPax#",
 }
 
 BASE_COLORS = {
     KPAX: "#222222",         # near-black
     KINOPAX_PLUS: "#648fff",  # blue (also the y=x reference line)
-    SIMPLECOMBO: "#ffb000",   # teal / bluish-green
     KINOPAX_STAR: "#dc267f",  # muted magenta
 }
 
@@ -45,7 +42,7 @@ BASE_COLORS = {
 # paper figures iterate that list, and only plots/paper/chain_reaction_compare.py plots this planner.
 CHAIN_REACTION = "ChainReaction"
 BASE_DISPLAY[CHAIN_REACTION] = "Chain Reaction"
-BASE_COLORS[CHAIN_REACTION] = "#009e73"  # teal, distinct from the four paper planners and the Jetson orange
+BASE_COLORS[CHAIN_REACTION] = "#009e73"  # teal, distinct from the three paper planners and the Jetson orange
 
 # FissionReaction (same benchmark): like ChainReaction but with a fixed branching factor k instead of a
 # budget. One run file token per k ("FissionReaction_k4"); chain_reaction_compare.py owns its labels/colors.
@@ -56,7 +53,7 @@ def fission_token(branching: int) -> str:
     return f"{FISSION_REACTION}_k{int(branching)}"
 
 # Planners plotted on the x-axis of the ratio scatters (everyone but the Kino-PAX+ reference).
-OTHER_PLANNERS = [KPAX, SIMPLECOMBO, KINOPAX_STAR]
+OTHER_PLANNERS = [KPAX, KINOPAX_STAR]
 
 # --- Model identity ------------------------------------------------------------------------------
 MODEL_IDS = [1, 2, 3]
@@ -133,7 +130,7 @@ def env_display_name(env: str) -> str:
 def _candidate_filename(env: str, planner_token: str, delta_tok: str, run: int) -> str:
     if planner_token == KPAX:
         return f"{env}_KPAX_delta{delta_tok}_run{run}.csv"
-    if planner_token.startswith(("CountingStars", "KinoPaxSTAR", CHAIN_REACTION, FISSION_REACTION)):
+    if planner_token.startswith(("CountingStars", CHAIN_REACTION, FISSION_REACTION)):
         return f"{env}_{planner_token}_delta{delta_tok}_run{run}.csv"
     return f"{env}_delta{delta_tok}_run{run}.csv"  # KinoPaxPlus: no planner token in the filename
 
@@ -391,17 +388,17 @@ def declutter_label_ys(ax, sorted_items: Sequence, min_gap_points: float = 14.0)
 
 
 def warn_on_unexpected_star_suffixes(env_dir: str) -> None:
-    """Flag KinoPaxSTAR*/CountingStars* run files whose tuning suffix isn't in BASE_NAMES.
+    """Flag CountingStars* run files whose tuning suffix isn't in BASE_NAMES.
 
-    A tuning-constant change on the C++ side (paper_benchmark_v2.cu's trueLabel()/
+    A tuning-constant change on the C++ side (paper_benchmark_v2.cu's
     countingStarsLabel()) silently yields 0 matched runs rather than an error -- this surfaces
     that mismatch instead of a script that quietly reports "0 runs" with no clue why.
     """
     if not os.path.isdir(env_dir):
         return
-    known = {SIMPLECOMBO, KINOPAX_STAR}
+    known = {KINOPAX_STAR}
     seen = set()
-    pattern = re.compile(r"^[a-zA-Z]+_((?:CountingStars|KinoPaxSTAR)\w*?)_delta(?=m\d)")
+    pattern = re.compile(r"^[a-zA-Z]+_(CountingStars\w*?)_delta(?=m\d)")
     for fname in os.listdir(env_dir):
         m = pattern.match(fname)
         if m:
@@ -409,7 +406,7 @@ def warn_on_unexpected_star_suffixes(env_dir: str) -> None:
     unexpected = seen - known
     if unexpected:
         warnings.warn(
-            f"{env_dir}: found KinoPaxSTAR*/CountingStars* run files with unexpected tuning "
+            f"{env_dir}: found CountingStars* run files with unexpected tuning "
             f"suffixes {sorted(unexpected)} -- these won't match BASE_NAMES {sorted(known)} and "
             "will silently contribute 0 runs. Update BASE_NAMES if the tuning constants changed."
         )

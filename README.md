@@ -31,6 +31,13 @@ Three example executables are included: `benchMain`, `executionTimeMain`, and `m
 
 To manage the dynamic model used, edit the `config` file.
 
+## Planners and paper artifacts
+
+This branch (`ReactionsOnly`) keeps five planners: `KPAX` (Kino-PAX), `KinoPaxPlus` (Kino-PAX+), `CountingStars` (Kino-PAX#),
+and the two minimal baselines `ChainReaction` and `FissionReaction`. The paper benchmarks, tree-dump tools, their runner scripts and
+the plotting scripts are indexed in [PAPER.md](PAPER.md). All other planner variants, their benchmarks and tooling are archived,
+unbuilt, under [`legacy/`](legacy/README.md).
+
 ## Contact
 
 If you are interested in the code and would like to discuss further, please email me at nicolas.perrault@colorado.edu.

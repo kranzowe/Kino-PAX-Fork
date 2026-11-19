@@ -1,7 +1,7 @@
 """Cost scatter, 4-SECOND-TRUNCATED, ALL SIX (cost metric x model) combinations in one figure:
 two rows (Control Effort, Workspace Path Length) x three columns (one per model, left to right).
 Reference planner is Kino-PAX+ -- every OTHER algorithm not listed in EXCLUDED_ALGORITHMS
-(Kino-PAX, SimpleCombo, Kino-PAX#, by default all included) is plotted against it, color =
+(Kino-PAX, Kino-PAX#, by default all included) is plotted against it, color =
 algorithm, shape = discretization, LINEAR (not log) tight-to-data axes, y=x "as good as Kino-PAX+"
 line, no per-point environment-name labels.
 
@@ -61,7 +61,6 @@ from zephyr_common import (  # noqa: E402
     KPAX,
     MODEL_IDS,
     MODEL_NAMES,
-    SIMPLECOMBO,
     aggregate_cost_at_time,
     discover_discretization_dirs,
     discover_environments,
@@ -98,10 +97,10 @@ REFERENCE_PLANNER = KINOPAX_PLUS  # <-- Kino-PAX+. Every OTHER algorithm is plot
 EXCLUDED_ENVIRONMENTS = {"empty"}  # trivially solved by everyone -- not an interesting comparison
 
 # <-- TOGGLE which OTHER algorithms get plotted against REFERENCE_PLANNER. Add any of
-# KPAX / SIMPLECOMBO / KINOPAX_STAR to exclude it from every panel (combined figure, individual
-# cells, legend, CSV) -- e.g. {SIMPLECOMBO} or {SIMPLECOMBO, KINOPAX_STAR}. REFERENCE_PLANNER
+# KPAX / KINOPAX_STAR to exclude it from every panel (combined figure, individual
+# cells, legend, CSV) -- e.g. {KPAX} or {KPAX, KINOPAX_STAR}. REFERENCE_PLANNER
 # itself doesn't belong in this set -- it's the fixed y-axis baseline, not one of "the others."
-EXCLUDED_ALGORITHMS = {SIMPLECOMBO}
+EXCLUDED_ALGORITHMS = set()
 
 PLOTTED_OTHER_PLANNERS = [
     p for p in BASE_NAMES
@@ -111,12 +110,10 @@ PLOTTED_OTHER_PLANNERS = [
 # Fixed axis-scale baseline -- Kino-PAX+ (REFERENCE_PLANNER, always present via ref_rows),
 # Kino-PAX, Kino-PAX# -- INDEPENDENT of EXCLUDED_ALGORITHMS, so a panel's axis range never shifts
 # just because you toggled one of these three off; every panel scales as if all three were
-# plotted, for consistency across different EXCLUDED_ALGORITHMS configurations. SimpleCombo is
-# deliberately left OUT of this baseline (it's the one algorithm meant to be freely toggled
-# without affecting the shared scale) -- if it IS plotted and its own values fall outside this
-# baseline, the axis still grows to fit it (see build_model_cost_table/plot_cell -- this is a
-# floor, not a cap, so an actually-drawn point never gets clipped).
-AXIS_SCALE_ALGORITHMS = [p for p in BASE_NAMES if p != REFERENCE_PLANNER and p != SIMPLECOMBO]
+# plotted, for consistency across different EXCLUDED_ALGORITHMS configurations. (See
+# build_model_cost_table/plot_cell -- this is a floor, not a cap, so an actually-drawn point never
+# gets clipped.)
+AXIS_SCALE_ALGORITHMS = [p for p in BASE_NAMES if p != REFERENCE_PLANNER]
 
 # How much room to pad on every side of a cell's own tight data extent, as a fraction of that
 # extent's span -- NOT a snap to any "nice" number, just breathing room so points don't sit flush
@@ -196,8 +193,7 @@ def plot_cell(ax, table: pd.DataFrame) -> None:
     Axis bounds come from `axis_rows` (every other-algorithm row build_model_cost_table computed --
     AXIS_SCALE_ALGORITHMS plus whatever's actually toggled on), NOT from `plotted` alone -- so a
     panel's scale stays the same regardless of which of AXIS_SCALE_ALGORITHMS you toggle via
-    EXCLUDED_ALGORITHMS, and only actually grows further if a non-baseline algorithm (SimpleCombo)
-    is plotted and exceeds that baseline range."""
+    EXCLUDED_ALGORITHMS."""
     ref_display = BASE_DISPLAY[REFERENCE_PLANNER]
     ref_rows = table[(table["Algorithm"] == ref_display) & table["Mean_Cost"].notna()]
     axis_rows = table[

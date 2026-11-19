@@ -1,11 +1,11 @@
-%% Tree-Growth & R1-Region Density Visualization (3D) — all variants
-% Renders, per planner variant, the 3D growth of the search tree and a 3D
-% heatmap of node density per R1 workspace region, plus a cross-variant
-% comparison. Explains *why* variants differ: broad exploration (KPAX) vs
-% concentrated cost-optimization (KinoPaxPlus) vs pruning-lean STAR variants.
+%% Tree-Growth & R1-Region Density Visualization (3D) — KPAX / KinoPaxPlus / CountingStars
+% Renders, per planner, the 3D growth of the search tree and a 3D
+% heatmap of node density per R1 workspace region, plus a cross-planner
+% comparison. Explains *why* planners differ: broad exploration (KPAX) vs
+% concentrated cost-optimization (KinoPaxPlus) vs the budgeted CountingStars.
 %
-% DATA SOURCE (produced by kinopaxstar_large_benchmark.cu run with --dump-viz,
-% i.e. `bash scripts/run_large_benchmark.sh`):
+% DATA SOURCE (produced by the paper benchmarks run with --dump-viz, e.g.
+% `DUMP_VIZ=1 bash scripts/paper/run_paper_benchmark_v3.sh`; see PAPER.md):
 %   viz/meta.csv                     grid + bounds + start/goal (one numeric row)
 %   viz/{env}_{variant}_tree.csv     run-0 full tree: idx,x,y,z,vx,vy,vz,parent,cost
 % Per-iteration CSVs (in dataDir, optional) give tree_size per iteration so the
@@ -34,29 +34,17 @@ delta = 'large';   % build delta label used in the per-iteration filenames
 % Variants to visualize (CSV token = dump filename token). Trim as desired.
 variants = { ...
     'KPAX', ...
-    'PruneKPAX', ...
     'KinoPaxPlus', ...
-    'KinoPaxSTARNoPrune', ...
-    'KinoPaxSTARNoPruneNoSpatialHash', ...
-    'KinoPaxSTAR', ...
-    'KinoPaxSTARcostprune_cap0', ...
-    'KinoPaxSTARcostprune_cap20', ...
-    'KinoPaxSTARcostprune_cap40', ...
-    'KinoPaxSTARcostprune_cap80', ...
-    'KinoPaxSTARcostprune_cap100'};
+    'CountingStars_bs120_bf40_ef150_cf750_hg1'};
 
 % Pretty labels for titles (same order as `variants`).
 variantLabels = { ...
-    'KPAX', 'PruneKPAX', 'KinoPaxPlus', ...
-    'STARNoPrune', 'STARNoPrune-NoSH', 'KinoPaxSTAR', ...
-    'CostPrune cap0', 'CostPrune cap0.2', 'CostPrune cap0.4', ...
-    'CostPrune cap0.8', 'CostPrune cap1.0'};
+    'KPAX', 'KinoPaxPlus', 'KinoPax#'};
 
-% Per-variant + growth figures render only this core subset (all 11 still appear
-% in the cross-variant montage). Swap the cost-prune cap here as desired.
+% Per-variant + growth figures render only this core subset (all variants still appear
+% in the cross-variant montage).
 coreVariants = { ...
-    'KPAX', 'PruneKPAX', 'KinoPaxPlus', ...
-    'KinoPaxSTARNoPrune', 'KinoPaxSTAR', 'KinoPaxSTARcostprune_cap20'};
+    'KPAX', 'KinoPaxPlus', 'CountingStars_bs120_bf40_ef150_cf750_hg1'};
 
 % --- Toggles ---
 PER_VARIANT_FIGS = true;    % one [tree | density] figure per variant
@@ -349,10 +337,7 @@ function fn = perIterFilename(env, token, delta)
     switch token
         case 'KinoPaxPlus'
             fn = sprintf('%s_delta%s_run0.csv', env, delta);
-        case {'KPAX', 'PruneKPAX', 'KinoPaxSTAR', 'KinoPaxSTARNoPrune', ...
-              'KinoPaxSTARNoPruneNoSpatialHash'}
-            fn = sprintf('%s_%s_delta%s_run0.csv', env, token, delta);
-        otherwise   % KinoPaxSTARcostprune_capNN
+        otherwise   % KPAX and CountingStars_<label>: {env}_{token}_delta{build}_run0.csv
             fn = sprintf('%s_%s_delta%s_run0.csv', env, token, delta);
     end
 end

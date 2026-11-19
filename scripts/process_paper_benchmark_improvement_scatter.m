@@ -50,9 +50,9 @@
 % loadRuns() and the aggregate helpers (firstSolTime/finalCost/sanitize_name/clickableLegend) are
 % verbatim copies of process_paper_benchmark_v2_and_plot.m's -- keep both in step by hand if either
 % changes; there is no shared file to import from (every plot script in this repo is self-contained
-% on purpose, see e.g. process_countingstars_and_plot.m's own copies). Planner display names/
+% on purpose). Planner display names/
 % colors/markers below are ALSO kept in step by hand with that file's (Kino-PAX/Kino-PAX+/
-% SimpleCombo/KinoPax*, its colors, its x/+/o/p markers).
+% KinoPax*, its colors, its x/+/p markers).
 %
 % FIG_WIDTH/FIG_HEIGHT (below, in Configuration) size every figure this file produces -- all four
 % share one size, since they're all the same grand-average scatter type.
@@ -117,17 +117,14 @@ models          = [1, 2, 3];
 modelNames      = {'DoubleIntegrator', 'DubinsAirplane', 'Quad'};   % short, filename-safe tokens
 modelDeltaLabel = 'tiny';    % all three models currently share this one delta label
 
-% --- The four FIXED series (not swept). Label tokens must match examples/gpu/paper/paper_benchmark_v2.cu's
-% trueLabel() / countingStarsLabel() exactly -- copied verbatim from
+% --- The three FIXED series (not swept). Label tokens must match examples/gpu/paper/paper_benchmark_v2.cu's
+% countingStarsLabel() exactly -- copied verbatim from
 % process_paper_benchmark_v2_and_plot.m; keep both in step by hand if either changes. ---
-trueCap           = 100;   % syclopCap 1.0 (no cap)
-trueAncestorPrune = 1;     % the guarded-prune point; anc0 (pure fusion) was dropped from this pass
 csSlope = 120; csFloor = 40; csExplore = 150; csCost = 750; csHopelessGuard = 1;
 
 baseNames = { ...
     'KPAX', ...
     'KinoPaxPlus', ...
-    sprintf('KinoPaxSTARTrue_cap%d_anc%d', trueCap, trueAncestorPrune), ...
     sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d_hg%d', csSlope, csFloor, csExplore, csCost, csHopelessGuard) ...
 };
 % Display names, colors, and markers -- kept in step by hand with
@@ -136,19 +133,17 @@ baseNames = { ...
 baseDisplay = { ...
     'Kino-PAX', ...
     'Kino-PAX+', ...
-    'SimpleCombo', ...
     'KinoPax*' ...
 };
-% color = planner identity: Kino-PAX near-black, Kino-PAX+ vivid blue, SimpleCombo vivid red,
+% color = planner identity: Kino-PAX near-black, Kino-PAX+ vivid blue,
 % KinoPax* vivid yellow -- each "family" reads as its own hue, saturated enough to pop.
 baseColors = [ ...
     0.10 0.10 0.10;    % Kino-PAX
     0.00 0.40 0.95;    % Kino-PAX+ (vivid blue)
-    0.85 0.05 0.05;    % SimpleCombo (vivid red)
     0.95 0.70 0.00 ];  % KinoPax* (vivid yellow/gold)
-% marker = planner identity too: X, +, circle, star -- matches the display names above (Kino-PAX
-% is the "X" mark, Kino-PAX+ the "+" mark, SimpleCombo a plain circle, KinoPax* an actual star).
-baseMarkers = {'x', '+', 'o', 'p'};
+% marker = planner identity too: X, +, star -- matches the display names above (Kino-PAX
+% is the "X" mark, Kino-PAX+ the "+" mark, KinoPax* an actual star).
+baseMarkers = {'x', '+', 'p'};
 GRAND_MARKER_SIZE = 12;   % no per-point axis left to encode via size once only the grand-average
                           % (model fully collapsed away) is plotted
 refBaseIdx = find(strcmp(baseNames, 'KinoPaxPlus'), 1);
@@ -429,7 +424,7 @@ function runs = loadRuns(dataDir, env, planner, delta, numRuns)
             case 'KPAX'
                 fn = sprintf('%s_KPAX_delta%s_run%d.csv', env, delta, ri);
             otherwise
-                if startsWith(planner, 'CountingStars') || startsWith(planner, 'KinoPaxSTAR')
+                if startsWith(planner, 'CountingStars')
                     fn = sprintf('%s_%s_delta%s_run%d.csv', env, planner, delta, ri);
                 else
                     error('unknown planner %s', planner);

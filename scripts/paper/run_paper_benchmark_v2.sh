@@ -1,19 +1,19 @@
 #!/bin/bash
 # =============================================================================
 # Paper Benchmark v2 -- countingstars_sweep.cu's harness, minimally adapted to reproduce
-# paper_benchmark.cu's fixed 4-planner headline comparison reliably.
+# paper_benchmark.cu's fixed headline comparison reliably.
 #
 # paper_benchmark.cu (MODEL 2 / Dubins Airplane) hangs at the `tiny` discretization; the root cause
 # was not fully resolved despite a deep investigation. countingstars_sweep.cu (MODEL 1 / Double
-# Integrator), built from the same four planners at the same three discretizations, has completed
+# Integrator), built from the same planners at the same three discretizations, has completed
 # every delta including `tiny` without hanging. This file is that harness with changes from it:
-# (1) three environments run, not just one (empty excluded -- see ENV_NAMES below); (2) the sweep's two exploratory grids (CountingStars
-# bufferSlope/bufferFloor, KinoPaxSTARTrue ancestorPrune) are collapsed to the single fixed operating
+# (1) three environments run, not just one (empty excluded -- see ENV_NAMES below); (2) the sweep's exploratory grid (CountingStars
+# bufferSlope/bufferFloor) is collapsed to the single fixed operating
 # points paper_benchmark.cu was always meant to report; (3) MODEL, which used to name a single
 # active build (originally 1 / Double Integrator, then switched to 2 / Dubins Airplane, then to 3 /
 # 12D Non-Linear Quad -- see write_config()'s three case arms for each model's full derivation),
 # is now ALL THREE, built and run together every pass (MODEL_IDS below); (4) each model now runs at
-# exactly ONE discretization instead of a large/fine/tiny sweep, and each of the four planners runs
+# exactly ONE discretization instead of a large/fine/tiny sweep, and each planner runs
 # as its OWN process invocation wrapped in an external timeout, so a true CUDA hang -- which has no
 # in-process recovery -- is detected, logged as a failure, and skipped past instead of freezing the
 # whole sweep (see the RUN phase further below).
@@ -43,8 +43,6 @@
 # the whole sweep. Per (model, environment, cost metric):
 #   KPAX                                                    = 1 point  x 30 runs
 #   KinoPaxPlus                                             = 1 point  x 30 runs
-#   KinoPaxSTARTrue syclopCap 1.0 (no cap), ancestorPrune = 1
-#                                                            = 1 point  x 30 runs
 #   CountingStars   bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,
 #                   hopelessGuard PERMANENTLY ON (v3.5)      = 1 point  x 30 runs
 #
@@ -175,7 +173,7 @@
 #      which is expected. Pinned at 0 means explore_frac is doing nothing; pinned at 256 means the
 #      whole candidate pool is fresh enough and explore_frac is not binding either.
 #   9. First-solution time and cost, final cost, and success rate -- the headline comparison this
-#      tool exists to produce reliably across all four planners and environments.
+#      tool exists to produce reliably across all three planners and environments.
 #
 # ALL THREE MODELS RUN THE FULL COMPARISON -- NOT --only-kinopaxplus at any of them. Conclusions at
 # one model do not automatically hold at the others, so all three need the full comparison, not
@@ -257,7 +255,7 @@ BUILD_DIR="$PROJECT_DIR/build"
 # a different, riskier tiny (W_R1=17, V_R1=5) that hit a cudaErrorIllegalAddress / hang in the
 # `empty` environment (a buffer-overflow bug in KPAX.cu/KinoPaxPlus.cu's goal-path reconstruction,
 # fixed at three sites -- but the hang persisted afterward, root cause still open). This sweep's
-# own tiny (W_R1=14, V_R1=6) ran clean for KPAX/KinoPaxPlus/CountingStars/KinoPaxSTARTrue at all
+# own tiny (W_R1=14, V_R1=6) ran clean for KPAX/KinoPaxPlus/CountingStars at all
 # three deltas here, so run_paper_benchmark.sh was updated to reuse it -- see that script's own
 # header for the same history from its side.
 # Quad (MODEL 3) has a THIRD cubed discretization axis: NUM_R1_REGIONS = W_R1^3 * C_R1^3 * V_R1^3
@@ -337,11 +335,11 @@ compute_regions() {
 }
 
 # Planner axis (NEW this pass): one process invocation per planner now, instead of one process
-# running all four sequentially -- bounds a hang's blast radius to just the one planner that hung
+# running all three sequentially -- bounds a hang's blast radius to just the one planner that hung
 # (see paper_benchmark_v2.cu's main() for the matching --only-* flags), and lets the RUN phase
 # below wrap each invocation in an external `timeout`. Order matches today's dispatch order.
-PLANNER_FLAGS=("--only-kpax" "--only-kinopaxplus" "--only-kinopaxstartrue" "--only-countingstars")
-PLANNER_NAMES=("KPAX"        "KinoPaxPlus"        "KinoPaxSTARTrue"        "CountingStars")
+PLANNER_FLAGS=("--only-kpax" "--only-kinopaxplus" "--only-countingstars")
+PLANNER_NAMES=("KPAX"        "KinoPaxPlus"        "CountingStars")
 
 # Cost metric axis: label + COST_MODE (2 = path time, 1 = control effort, 0 = workspace distance).
 # ONE METRIC THIS PASS (time only) -- see helper.cuh's edgeCost() COST_MODE==2.
@@ -738,7 +736,7 @@ CONFIGEOF
 
 echo ""
 echo "======================================================="
-echo "  PAPER BENCHMARK V2 -- fixed 4-planner comparison, on countingstars_sweep.cu's harness"
+echo "  PAPER BENCHMARK V2 -- fixed 3-planner comparison, on countingstars_sweep.cu's harness"
 echo "  ALL THREE MODELS this pass: ${MODEL_NAMES[*]}"
 echo "  (Quad's obstacles/start/goal are scaled x100 from their [0,1]-authored CSVs -- see file header)"
 echo "  Environments: ${ENV_NAMES[*]}  (separate output subfolders)"
@@ -759,8 +757,6 @@ echo "                     comment and this file's own discretization history ab
 echo "                     timeout below will catch and log any recurrence regardless of the active"
 echo "                     discretization (currently Quad ${MODEL_W_R1S[2]}/${MODEL_C_R1S[2]}/${MODEL_V_R1S[2]} -- see Regions= above)."
 echo "    KinoPaxPlus"
-echo "    KinoPaxSTARTrue  syclopCap 1.0 (no cap), ancestorPrune = 1 (guarded stale-best prune on"
-echo "                     top of the naive KPAX/KinoPaxPlus fusion)."
 echo "    CountingStars    bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,"
 echo "                     hopelessGuard PERMANENTLY ON (v3.5): excludes any candidate/dormant node"
 echo "                     whose own cost already forecloses beating the best solution found so far"
@@ -770,7 +766,7 @@ TOTAL_INVOCATIONS=$(( ${#MODEL_IDS[@]} * ${#COST_LABELS[@]} * ${#ENV_NAMES[@]} *
 TOTAL_RUNS=$(( TOTAL_INVOCATIONS * 30 ))
 echo "  = ${#MODEL_IDS[@]} models x ${#PLANNER_NAMES[@]} planners x 30 runs x ${#ENV_NAMES[@]} environments x ${#COST_LABELS[@]} cost"
 echo "    metrics = ${TOTAL_INVOCATIONS} process invocations, ${TOTAL_RUNS} runs total."
-echo "  Filenames: CountingStars_bs120_bf40_ef150_cf750_hg1, KinoPaxSTARTrue_cap100_anc1."
+echo "  Filename token: CountingStars_bs120_bf40_ef150_cf750_hg1."
 echo "  Earlier CSVs from the retired tuning grid (_bs120_bf30_..., _bs180_bf50_..., anc0, etc.) do"
 echo "  not collide with these names, so they simply stop loading if left in the output folder."
 echo "  B IS STILL A RAMP, RECOMPUTED EVERY ITERATION:"
@@ -849,7 +845,7 @@ fi
 # --dump-viz writes run-0's full tree per variant (+ meta.csv) for the tree-growth /
 # R1-density visualization. OFF by default here: every variant dumps a full tree of up to
 # MAX_TREE_SIZE nodes, and the count multiplies by builds and environments.
-# Enable with DUMP_VIZ=1 bash run_countingstars_sweep.sh
+# Enable with DUMP_VIZ=1 bash scripts/paper/run_paper_benchmark_v2.sh
 VIZ_FLAG=""
 if [ "${DUMP_VIZ:-0}" != "0" ]; then
     VIZ_FLAG="--dump-viz"

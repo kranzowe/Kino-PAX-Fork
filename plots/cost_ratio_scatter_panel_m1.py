@@ -35,7 +35,6 @@ from zephyr_common import (  # noqa: E402
     KINOPAX_PLUS,
     MODEL_NAMES,
     OTHER_PLANNERS,
-    SIMPLECOMBO,
     aggregate_final_cost,
     declutter_label_ys,
     discover_discretization_dirs,
@@ -59,8 +58,7 @@ PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASET_DIR = os.path.join(PLOTS_DIR, "DATA", "ZEPHYR_30_runs")
 OUT_DIR = os.path.join(PLOTS_DIR, "output", "cost_ratio")
 
-INCLUDE_SIMPLECOMBO = False  # <-- TOGGLE. Flip to True to bring SimpleCombo back into this panel.
-PLOTTED_OTHER_PLANNERS = OTHER_PLANNERS if INCLUDE_SIMPLECOMBO else [p for p in OTHER_PLANNERS if p != SIMPLECOMBO]
+PLOTTED_OTHER_PLANNERS = list(OTHER_PLANNERS)
 
 MODEL_ID = 1  # this panel is Model 1 (6D Double Integrator) only
 EXCLUDED_ENVIRONMENTS = {"empty"}  # trivially solved by everyone -- not an interesting comparison
@@ -121,8 +119,7 @@ def plot_metric_panel(ax, table: pd.DataFrame, subtitle: str, lo: float, hi: flo
     ax.set_aspect("equal", adjustable="box")
     # X label duplicated per subplot rather than one shared label below both -- Y stays a
     # single shared label since it's the same "Final Cost -- Kino-PAX+" for both metrics. Names
-    # the actually-plotted "other" algorithms so it doesn't misstate whichever are excluded by
-    # INCLUDE_SIMPLECOMBO.
+    # the actually-plotted "other" algorithms so it doesn't misstate which are plotted.
     other_algo_names = ", ".join(BASE_DISPLAY[p] for p in PLOTTED_OTHER_PLANNERS)
     ax.set_xlabel(f"Final Cost — other algorithms ({other_algo_names})", fontsize=10)
 

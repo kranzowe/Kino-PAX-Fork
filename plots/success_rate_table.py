@@ -1,8 +1,8 @@
 """Success rate comparison table: percentage of runs that found ANY solution (best_cost ever
 dropped below the unsolved sentinel), broken down by region (discretization level) and
-environment, for all four algorithms (Kino-PAX, Kino-PAX+, SimpleCombo, KinoPax*) -- unlike
-ttfs_cost_table.py / cost_table_wide.py, this one keeps SimpleCombo, since there's no specific
-paper table it needs to match column-for-column here. One table set per model.
+environment, for all three algorithms (Kino-PAX, Kino-PAX+, KinoPax#) -- unlike
+ttfs_cost_table.py / cost_table_wide.py, this one includes every BASE_NAMES column, since there's
+no specific paper table it needs to match column-for-column here. One table set per model.
 
 NOT POOLED ACROSS COST METRICS, on purpose (unlike ttfs_cost_table.py's TTFS, which pools length
 and effort since solve timing doesn't depend on which cost is being minimized): success/failure
@@ -14,7 +14,7 @@ would average that away into a misleadingly middling number instead of surfacing
 model's table has two sections, one per cost metric, each showing that metric's own success rate.
 
 Within each row, the BEST (highest, not lowest -- success rate is the one metric in this whole
-table suite where bigger is better) value across the four algorithms is bolded.
+table suite where bigger is better) value across the algorithms is bolded.
 
 Regions are Zephyr's Coarse/Fine/Tiny plus two confirmed Jetson rows -- see ttfs_cost_table.py's
 module docstring for the full provenance story: discretizationFINE/FINE (tagged pipeline) for
@@ -78,8 +78,7 @@ def regions_for_model(model_id: int) -> list:
 
 ENVIRONMENTS = ["house", "narrowPassage", "zigzag"]  # on-disk spelling; "empty" excluded
 
-# All four algorithms -- see module docstring for why this table doesn't drop SimpleCombo the way
-# ttfs_cost_table.py / cost_table_wide.py do.
+# All BASE_NAMES algorithms -- see module docstring.
 TABLE_PLANNERS = list(BASE_NAMES)
 COLUMN_LABELS = {p: BASE_DISPLAY[p] for p in TABLE_PLANNERS}
 

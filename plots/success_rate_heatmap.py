@@ -3,7 +3,7 @@ instead of three separate LaTeX tables. Two rows (Workspace Path Length, Control
 columns (one per model) -- same grid layout as cost_big_panel.py -- and each of the six cells is
 itself a small heatmap: one row per (Environment, Region) combination, one column per algorithm,
 color = success rate (0-100%, red-yellow-green), with the exact percentage annotated in every
-cell so color alone never has to carry the precision. All four algorithms are kept (unlike
+cell so color alone never has to carry the precision. All algorithms are kept (unlike
 ttfs_cost_table.py / cost_table_wide.py, there's no specific paper table this needs to match
 column-for-column). NOT pooled across cost metrics, for the same reason as success_rate_table.py:
 success/failure genuinely differs between the length and effort sweeps in this data (e.g.
@@ -53,7 +53,7 @@ OUT_DIR = os.path.join(PLOTS_DIR, "output", "success_rate")
 
 ENVIRONMENTS = ["house", "narrowPassage", "zigzag"]  # on-disk spelling; "empty" excluded
 
-TABLE_PLANNERS = list(BASE_NAMES)  # all four -- see module docstring
+TABLE_PLANNERS = list(BASE_NAMES)  # all BASE_NAMES -- see module docstring
 COLUMN_LABELS = {p: BASE_DISPLAY[p] for p in TABLE_PLANNERS}
 
 MODEL_SUBTITLES = {
@@ -67,7 +67,7 @@ def _candidate_filename_no_model_tag(env: str, planner_token: str, delta_tok: st
     """Filename builder for discretizationCOARSE's older, pre-v2 pipeline (no 'm<N>_' model tag)."""
     if planner_token == KPAX:
         return f"{env}_KPAX_delta{delta_tok}_run{run}.csv"
-    if planner_token.startswith("CountingStars") or planner_token.startswith("KinoPaxSTAR"):
+    if planner_token.startswith("CountingStars"):
         return f"{env}_{planner_token}_delta{delta_tok}_run{run}.csv"
     return f"{env}_delta{delta_tok}_run{run}.csv"
 
@@ -210,7 +210,7 @@ def main() -> None:
     cbar = fig.colorbar(im, ax=axes, orientation="vertical", fraction=0.02, pad=0.02)
     cbar.set_label("Success rate (%)", fontsize=10)
 
-    fig.suptitle("Success Rate — Kino-PAX / Kino-PAX+ / SimpleCombo / KinoPax*", fontsize=14, fontweight="bold")
+    fig.suptitle("Success Rate — Kino-PAX / Kino-PAX+ / KinoPax#", fontsize=14, fontweight="bold")
 
     csv_path = os.path.join(OUT_DIR, "success_rate_heatmap.csv")
     pd.concat(row_labels_out, ignore_index=True).to_csv(csv_path, index=False)

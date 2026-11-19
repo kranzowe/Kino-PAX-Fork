@@ -1,8 +1,7 @@
 """Kino-PAX / Kino-PAX+ / KinoPax* comparison table: Time to First Solution AND success rate,
 side by side per algorithm, broken down by region (discretization level) and environment. One
-table set per model. SimpleCombo is intentionally excluded (per request, to match a specific
-3-column-of-algorithms paper table); all four algorithms are still available in
-ttfs_ratio_scatter.py / cost_ratio_scatter.py if a fuller comparison is ever needed. TTFS (and its
+table set per model. Columns are exactly KPAX / KinoPaxPlus / KinoPax# (the paper table's
+3-column-of-algorithms layout). TTFS (and its
 success rate) is pooled across the length and effort cost-metric sweeps (cost metric doesn't
 affect solve timing, and a run either solved or it didn't regardless of which cost it was
 minimizing). The "empty" environment is excluded (trivially solved by everyone). Within each row,
@@ -88,7 +87,7 @@ def regions_for_model(model_id: int) -> list:
 
 ENVIRONMENTS = ["house", "narrowPassage", "zigzag"]  # on-disk spelling; "empty" excluded
 
-# Exactly the three columns requested -- SimpleCombo intentionally omitted.
+# Exactly the three columns requested.
 TABLE_PLANNERS = [KPAX, KINOPAX_PLUS, KINOPAX_STAR]
 COLUMN_LABELS = {KPAX: "Kino-PAX", KINOPAX_PLUS: "Kino-PAX+", KINOPAX_STAR: "KinoPax*"}
 

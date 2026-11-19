@@ -32,7 +32,7 @@ than style_log_axis's own shared default, so _add_edge_ticks rebuilds this subpl
 locator rather than changing that shared helper (which other scripts still use un-modified).
 
 REFERENCE_PLANNER (below) is the one knob that picks which algorithm the whole panel is plotted
-relative to -- swap it to KINOPAX_PLUS/SIMPLECOMBO/KINOPAX_STAR to change which one owns the
+relative to -- swap it to KINOPAX_PLUS/KINOPAX_STAR to change which one owns the
 y-axis and the y=x line's color; everything else (the "other algorithms" set, axis/legend text,
 Jetson overlay) follows automatically.
 
@@ -83,7 +83,6 @@ from zephyr_common import (  # noqa: E402
     KINOPAX_STAR,
     KPAX,
     MODEL_IDS,
-    SIMPLECOMBO,
     aggregate_ttfs,
     discover_discretization_dirs,
     discover_environments,
@@ -110,7 +109,6 @@ METRICS = ("time",)
 
 REFERENCE_PLANNER = KPAX     # <-- Which algorithm the whole panel is plotted relative to (y-axis).
 INCLUDE_JETSON = True        # <-- TOGGLE. Flip to False to go back to Zephyr-only, no other changes.
-INCLUDE_SIMPLECOMBO = False  # <-- TOGGLE. Flip to True to bring SimpleCombo back into this panel.
 
 EXCLUDED_ENVIRONMENTS = {"empty"}  # trivially solved by everyone -- not an interesting comparison
 JETSON_COLOR = "#fe6100"  # the only thing that sets a Jetson proof-of-concept point apart
@@ -140,7 +138,7 @@ NICE_COEFFS = tuple(range(1, 10))
 
 PLOTTED_OTHER_PLANNERS = [
     p for p in BASE_NAMES
-    if p != REFERENCE_PLANNER and (INCLUDE_SIMPLECOMBO or p != SIMPLECOMBO)
+    if p != REFERENCE_PLANNER
 ]
 
 # Exact model subtitles requested -- deliberately spelled out in full rather than reusing the

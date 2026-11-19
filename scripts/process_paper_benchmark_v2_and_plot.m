@@ -11,27 +11,16 @@
 % vehicle model (Quad's workspace is [0,100]^3, the other two are [0,1]^3 -- overlaying models on
 % these axes would mix physically different units, the same reason
 % process_paper_benchmark_improvement_scatter.m's grand average omits raw cost across models).
-% Otherwise identical in structure/presentation to process_paper_benchmark_and_plot.m.
+% (Derived from the v1 plotting script, which is not part of this branch.)
 %
-% A FIXED COMPARISON, not a sweep -- there is no grid here, so the series list below is NOT built
-% from nested loops over swept parameters the way process_countingstars_and_plot.m's is. It is four
-% already-chosen operating points (KPAX, KinoPaxPlus, KinoPaxSTARTrue at ancestorPrune 1, and ONE
-% CountingStars point), each at the ONE discretization the toggled model actually produced -- 4
-% series total (used to be 12, one per (planner, delta), back when each model still ran a
-% large/fine/tiny sweep). CountingStars runs bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15,
-% cost_frac 0.75, WITH THE HOPELESS GUARD PERMANENTLY ON (v3.5, h_hopelessGuard_ in
-% CountingStars.cuh) -- countingstars_sweep.cu's own on/off sweep confirmed the guard helps at an
-% earlier operating point, and slope/floor/ef/cf were re-tuned with it on (replacing the earlier
-% two-point, unguarded bufferFloor 0.3/0.6 arm). KinoPaxSTARTrue (h_syclopCap_ at its 1.0 no-op
-% default, h_ancestorPrune_ = 1) replaces KinoPaxSTARCleanCost as the non-CountingStars "STAR"
-% reference this pass -- the naive OR-fusion of KPAX and KinoPaxPlus plus the guarded stale-best
-% prune tells a "beats the naive fusion of its two parents" story, rather than CleanCost's "beats
-% one already cost-tuned competitor." A second point at ancestorPrune 0 (the pure fusion, == stock
-% KinoPaxSTARNoGoalBias exactly) ran alongside this one in an earlier pass to isolate what the
-% guarded prune buys; it was dropped from this comparison (recoverable from git history as
-% KinoPaxSTARTrue_cap100_anc0). Same three panels as process_countingstars_summary_plots.m (this
-% script's direct ancestor -- loadRuns and every plot helper below are copies of its versions),
-% plus a results table this one adds:
+% A FIXED COMPARISON, not a sweep -- there is no grid here. It is three already-chosen operating
+% points (KPAX, KinoPaxPlus, and ONE CountingStars point), each at the ONE discretization the
+% toggled model actually produced -- 3 series total. CountingStars runs bufferSlope 1.2,
+% bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75, WITH THE HOPELESS GUARD PERMANENTLY ON
+% (v3.5, h_hopelessGuard_ in CountingStars.cuh). The earlier SimpleCombo (KinoPaxSTARTrue) series
+% was dropped when the repo was slimmed to KPAX/KinoPaxPlus/CountingStars (it lives under
+% legacy/). Three panels (best cost vs time and its companions; loadRuns and every plot helper
+% below are self-contained), plus a results table this one adds:
 %
 %   1. Best Cost vs Time        the fair cross-planner axis (an "iteration" is a different unit of
 %                                work per planner; elapsed time is not).
@@ -44,8 +33,8 @@
 %                                success rate, final tree size %. Printed to the console AND
 %                                written to a CSV alongside the figures.
 %
-% COLOR = PLANNER IDENTITY (4 fixed colors: Kino-PAX, Kino-PAX+, SimpleCombo, KinoPax*), MARKER =
-% PLANNER IDENTITY too (X, +, circle, star). There is no delta/model axis left to encode via marker
+% COLOR = PLANNER IDENTITY (3 fixed colors: Kino-PAX, Kino-PAX+, KinoPax*), MARKER =
+% PLANNER IDENTITY too (X, +, star). There is no delta/model axis left to encode via marker
 % size any more -- every planner runs at exactly the one discretization the toggled model produces,
 % so all points share one plain size.
 %
@@ -135,12 +124,9 @@ deltaLabel = 'tiny';
 
 maxTreeSize = 3000000;   % MAX_TREE_SIZE in config.h -- denominator for the table's Final Tree (%)
 
-% --- The four FIXED series (not swept). Label tokens must match examples/gpu/paper/paper_benchmark_v2.cu's
-% trueLabel() / countingStarsLabel() exactly: round(100 x float) for cap/bs/bf, round(1000 x
+% --- The three FIXED series (not swept). Label tokens must match examples/gpu/paper/paper_benchmark_v2.cu's
+% countingStarsLabel() exactly: round(100 x float) for cap/bs/bf, round(1000 x
 % float) for ef/cf, plain int for hopelessGuard. ---
-trueCap          = 100;   % syclopCap 1.0 (no cap)
-trueAncestorPrune = 1;    % the guarded-prune point; anc0 (pure fusion) was dropped from this pass
-
 % CountingStars' ONE operating point -- bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15,
 % cost_frac 0.75, hopelessGuard PERMANENTLY ON (v3.5, see h_hopelessGuard_ in CountingStars.cuh).
 % Replaces the earlier two-point (bufferFloor 0.3/0.6), unguarded arm now that the guard is
@@ -150,28 +136,25 @@ csSlope = 120; csFloor = 40; csExplore = 150; csCost = 750; csHopelessGuard = 1;
 baseNames = { ...
     'KPAX', ...
     'KinoPaxPlus', ...
-    sprintf('KinoPaxSTARTrue_cap%d_anc%d', trueCap, trueAncestorPrune), ...
     sprintf('CountingStars_bs%d_bf%d_ef%d_cf%d_hg%d', csSlope, csFloor, csExplore, csCost, csHopelessGuard) ...
 };
-% Display names, no algorithm-parameter parentheticals -- the params (syclopCap/ancestorPrune,
-% bufferSlope/bufferFloor/ef/cf/hopelessGuard) still fully identify each series via `baseNames`
+% Display names, no algorithm-parameter parentheticals -- the params (bufferSlope/bufferFloor/ef/cf/
+% hopelessGuard) still fully identify each series via `baseNames`
 % above (which is what loadRuns() actually matches against); they just don't clutter the legend.
 baseDisplay = { ...
     'Kino-PAX', ...
     'Kino-PAX+', ...
-    'SimpleCombo', ...
     'KinoPax*' ...
 };
-% color = planner identity: Kino-PAX near-black, Kino-PAX+ vivid blue, SimpleCombo vivid red,
+% color = planner identity: Kino-PAX near-black, Kino-PAX+ vivid blue,
 % KinoPax* vivid yellow -- each "family" reads as its own hue, saturated enough to pop.
 baseColors = [ ...
     0.10 0.10 0.10;    % Kino-PAX
     0.00 0.40 0.95;    % Kino-PAX+ (vivid blue)
-    0.85 0.05 0.05;    % SimpleCombo (vivid red)
     0.95 0.70 0.00 ];  % KinoPax* (vivid yellow/gold)
-% marker = planner identity too: X, +, circle, star -- matches the display names above (Kino-PAX
-% is the "X" mark, Kino-PAX+ the "+" mark, SimpleCombo a plain circle, KinoPax* an actual star).
-baseMarkers = {'x', '+', 'o', 'p'};
+% marker = planner identity too: X, +, star -- matches the display names above (Kino-PAX
+% is the "X" mark, Kino-PAX+ the "+" mark, KinoPax* an actual star).
+baseMarkers = {'x', '+', 'p'};
 
 % One series per planner now -- no more (planner, delta) pairs, since each model runs exactly one
 % discretization. plannerNames/plannerDisplay/plannerColors/plannerMarkers line up 1:1 with
@@ -328,7 +311,7 @@ end
 fprintf('\nGenerated %d figures.\n', figNum);
 
 %% ======================================================================
-%% Helper functions (local functions; copies of process_countingstars_summary_plots.m's)
+%% Helper functions (local functions)
 %% ======================================================================
 function runs = loadRuns(dataDir, env, planner, delta, numRuns)
     % Load one (planner, delta) series' per-run CSVs; missing files are skipped.
@@ -340,7 +323,7 @@ function runs = loadRuns(dataDir, env, planner, delta, numRuns)
             case 'KPAX'
                 fn = sprintf('%s_KPAX_delta%s_run%d.csv', env, delta, ri);
             otherwise
-                if startsWith(planner, 'CountingStars') || startsWith(planner, 'KinoPaxSTAR')
+                if startsWith(planner, 'CountingStars')
                     fn = sprintf('%s_%s_delta%s_run%d.csv', env, planner, delta, ri);
                 else
                     error('unknown planner %s', planner);

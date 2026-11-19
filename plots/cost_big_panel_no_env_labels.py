@@ -35,7 +35,6 @@ from zephyr_common import (  # noqa: E402
     MODEL_IDS,
     MODEL_NAMES,
     OTHER_PLANNERS,
-    SIMPLECOMBO,
     aggregate_final_cost,
     discover_discretization_dirs,
     discover_environments,
@@ -59,8 +58,7 @@ OUT_DIR = os.path.join(PLOTS_DIR, "output", "cost_ratio")
 
 EXCLUDED_ENVIRONMENTS = {"empty"}  # trivially solved by everyone -- not an interesting comparison
 
-INCLUDE_SIMPLECOMBO = False  # <-- TOGGLE. Flip to True to bring SimpleCombo back into this panel.
-PLOTTED_OTHER_PLANNERS = OTHER_PLANNERS if INCLUDE_SIMPLECOMBO else [p for p in OTHER_PLANNERS if p != SIMPLECOMBO]
+PLOTTED_OTHER_PLANNERS = list(OTHER_PLANNERS)
 
 PANEL_SUBTITLES = {
     1: "6D Double Integrator",

@@ -3,7 +3,7 @@ by side, for both cost metrics (workspace path length, control effort), broken d
 (discretization level) and environment. Companion to ttfs_table.py (via ttfs_cost_table.py), kept
 as its own wider table on purpose -- fitting both cost stats per algorithm needs 6 data columns
 instead of 3, which reads better as a full-page-width table* than crammed into the narrow TTFS
-table. One table set per model. SimpleCombo is intentionally excluded (per request, to match a
+table. One table set per model. Columns are exactly KPAX / KinoPaxPlus / KinoPax# (matching a
 specific paper table). Cost metrics are never pooled (length and effort are different units, from
 separate sweeps). The "empty" environment is excluded (trivially solved by everyone). Within each
 row, the best (lowest) First value and, separately, the best Final value across the three
@@ -84,7 +84,7 @@ def regions_for_model(model_id: int) -> list:
 
 ENVIRONMENTS = ["house", "narrowPassage", "zigzag"]  # on-disk spelling; "empty" excluded
 
-# Exactly the three columns requested -- SimpleCombo intentionally omitted.
+# Exactly the three columns requested.
 TABLE_PLANNERS = [KPAX, KINOPAX_PLUS, KINOPAX_STAR]
 COLUMN_LABELS = {KPAX: "Kino-PAX", KINOPAX_PLUS: "Kino-PAX+", KINOPAX_STAR: "KinoPax*"}
 

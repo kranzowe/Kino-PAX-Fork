@@ -23,7 +23,7 @@
 # safe, unlike the Jetson variant (which uses its own root -- see jetson_paper_benchmark_v3.cu's
 # outputDir comment for why that case is different: different run count AND different hardware).
 #
-# Everything else -- the four planners, per-planner process isolation wrapped in an external
+# Everything else -- the three planners, per-planner process isolation wrapped in an external
 # `timeout`, 30 runs/planner, 4 environments, 2 cost metrics -- is identical to v3/v2. See
 # run_paper_benchmark_v2.sh's own header (unchanged, not duplicated here) for the full MODEL
 # 1->2->3 derivation history and the CountingStars v2->v3.5 algorithm design history (an unrelated
@@ -40,8 +40,6 @@
 # metric):
 #   KPAX                                                    = 1 point  x 30 runs
 #   KinoPaxPlus                                             = 1 point  x 30 runs
-#   KinoPaxSTARTrue syclopCap 1.0 (no cap), ancestorPrune = 1
-#                                                            = 1 point  x 30 runs
 #   CountingStars   bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,
 #                   hopelessGuard PERMANENTLY ON (v3.5)      = 1 point  x 30 runs
 #
@@ -171,7 +169,7 @@
 #      which is expected. Pinned at 0 means explore_frac is doing nothing; pinned at 256 means the
 #      whole candidate pool is fresh enough and explore_frac is not binding either.
 #   9. First-solution time and cost, final cost, and success rate -- the headline comparison this
-#      tool exists to produce reliably across all four planners and environments.
+#      tool exists to produce reliably across all three planners and environments.
 #
 # MODEL 3 (QUAD) RUNS THE FULL COMPARISON -- NOT --only-kinopaxplus.
 #
@@ -282,11 +280,11 @@ compute_regions() {
 }
 
 # Planner axis (NEW this pass): one process invocation per planner now, instead of one process
-# running all four sequentially -- bounds a hang's blast radius to just the one planner that hung
+# running all three sequentially -- bounds a hang's blast radius to just the one planner that hung
 # (see paper_benchmark_v2.cu's main() for the matching --only-* flags), and lets the RUN phase
 # below wrap each invocation in an external `timeout`. Order matches today's dispatch order.
-PLANNER_FLAGS=("--only-kpax" "--only-kinopaxplus" "--only-kinopaxstartrue" "--only-countingstars")
-PLANNER_NAMES=("KPAX"        "KinoPaxPlus"        "KinoPaxSTARTrue"        "CountingStars")
+PLANNER_FLAGS=("--only-kpax" "--only-kinopaxplus" "--only-countingstars")
+PLANNER_NAMES=("KPAX"        "KinoPaxPlus"        "CountingStars")
 
 # Cost metric axis: label + COST_MODE (0 = workspace distance, 1 = control effort). BOTH THIS
 # PASS -- doubles the build count (one binary per model x cost metric) and the run count.
@@ -304,7 +302,7 @@ COST_MODES=(0 1)
 # `empty` was pulled out of that suite as a diagnostic, and the freeze PERSISTED on the remaining
 # environments (house/narrowPassage/zigzag) -- so `empty` alone is not the (sole) trigger there.
 # But this harness itself has NEVER run `empty` -- every "confirmed clean at tiny" claim so far
-# (KPAX, KinoPaxPlus, CountingStars, KinoPaxSTARTrue, and now the hopeless guard) was measured on
+# (KPAX, KinoPaxPlus, CountingStars, and now the hopeless guard) was measured on
 # zigzag only, under Model 1. Pointing this harness at `empty` instead tests the ONE combination
 # still never isolated this way: `empty` itself, on Model 1, in this simpler one-planner-at-a-time
 # harness (which paper_benchmark.cu's own five/six/eight-series-at-once run is not). If tiny stays
@@ -690,7 +688,7 @@ CONFIGEOF
 
 echo ""
 echo "======================================================="
-echo "  PAPER BENCHMARK V3 (QUAD ONLY) -- fixed 4-planner comparison, on countingstars_sweep.cu's harness"
+echo "  PAPER BENCHMARK V3 (QUAD ONLY) -- fixed 3-planner comparison, on countingstars_sweep.cu's harness"
 echo "  MODEL 3 (Quad) ONLY, at the single medium discretization this pass"
 echo "  MAX_TREE_SIZE=1,000,000, per-run wall-clock cap 3s (unchanged from v3)"
 echo "  Quad's obstacles/start/goal are scaled x100 from their [0,1]-authored CSVs -- see file header"
@@ -712,8 +710,6 @@ echo "    KPAX             baseline -- has a documented cudaErrorIllegalAddress 
 echo "                     on Jetson at a much finer discretization than medium (see file header);"
 echo "                     the per-planner timeout below will still catch and log any hang regardless."
 echo "    KinoPaxPlus"
-echo "    KinoPaxSTARTrue  syclopCap 1.0 (no cap), ancestorPrune = 1 (guarded stale-best prune on"
-echo "                     top of the naive KPAX/KinoPaxPlus fusion)."
 echo "    CountingStars    bufferSlope 1.2, bufferFloor 0.4, explore_frac 0.15, cost_frac 0.75,"
 echo "                     hopelessGuard PERMANENTLY ON (v3.5): excludes any candidate/dormant node"
 echo "                     whose own cost already forecloses beating the best solution found so far"
@@ -723,7 +719,7 @@ TOTAL_INVOCATIONS=$(( ${#MODEL_DELTA_LABELS[@]} * ${#COST_LABELS[@]} * ${#ENV_NA
 TOTAL_RUNS=$(( TOTAL_INVOCATIONS * 30 ))
 echo "  = ${#MODEL_DELTA_LABELS[@]} (model,delta) rows x ${#PLANNER_NAMES[@]} planners x 30 runs x ${#ENV_NAMES[@]} environments x ${#COST_LABELS[@]} cost"
 echo "    metrics = ${TOTAL_INVOCATIONS} process invocations, ${TOTAL_RUNS} runs total."
-echo "  Filenames: CountingStars_bs120_bf40_ef150_cf750_hg1, KinoPaxSTARTrue_cap100_anc1."
+echo "  Filename token: CountingStars_bs120_bf40_ef150_cf750_hg1."
 echo "  Earlier CSVs from the retired tuning grid (_bs120_bf30_..., _bs180_bf50_..., anc0, etc.) do"
 echo "  not collide with these names, so they simply stop loading if left in the output folder."
 echo "  B IS STILL A RAMP, RECOMPUTED EVERY ITERATION:"
@@ -804,7 +800,7 @@ fi
 # --dump-viz writes run-0's full tree per variant (+ meta.csv) for the tree-growth /
 # R1-density visualization. OFF by default here: every variant dumps a full tree of up to
 # MAX_TREE_SIZE nodes, and the count multiplies by builds and environments.
-# Enable with DUMP_VIZ=1 bash run_countingstars_sweep.sh
+# Enable with DUMP_VIZ=1 bash scripts/paper/run_paper_benchmark_v3_quad.sh
 VIZ_FLAG=""
 if [ "${DUMP_VIZ:-0}" != "0" ]; then
     VIZ_FLAG="--dump-viz"

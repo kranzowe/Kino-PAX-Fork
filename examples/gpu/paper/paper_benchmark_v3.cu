@@ -11,7 +11,6 @@
 #include <cstdio>
 #include "planners/KinoPaxPlus.cuh"
 #include "planners/KPAX.cuh"
-#include "planners/KinoPaxSTARTrue.cuh"
 #include "planners/CountingStars.cuh"
 #include <thrust/count.h>
 #include <thrust/reduce.h>
@@ -22,7 +21,7 @@ static std::string g_vizDir;
 
 // ---- PAPER BENCHMARK V3 ----
 //
-// This file is a duplicate of paper_benchmark_v2.cu (same four planners, same three vehicle
+// This file is a duplicate of paper_benchmark_v2.cu (same three planners, same three vehicle
 // models, same MAX_ITERATIONS), with three changes: (1) MAX_TREE_SIZE drops to 1,000,000 (see
 // run_paper_benchmark_v3.sh's write_config(), not 3,000,000); (2) MAX_TIME_MS -- the per-run
 // wall-clock cap -- drops to 3 seconds, not 10; (3) each vehicle model now runs at ALL THREE
@@ -50,7 +49,7 @@ static const float CS_COST_FRAC    = 0.75f;
 // is still `false`; this file just never runs a candidate/dormant node with it off any more). Kept
 // as a named value rather than a hardcoded literal so it still flows through
 // countingStarsLabel()/benchmarkCountingStars() and every label names it, the same r2-off-style
-// precedent trueLabel()'s own comment describes (label every axis a fixed point was built with,
+// precedent (label every axis a fixed point was built with,
 // not only the swept ones).
 static const int CS_HOPELESS_GUARD = 1;
 
@@ -94,17 +93,6 @@ static std::string countingStarsLabel(float bufferSlope, float bufferFloor, floa
              (int)lroundf(1000.0f * exploreFrac),
              (int)lroundf(1000.0f * costFrac),
              hopelessGuard);
-    return std::string(buf);
-}
-
-// "KinoPaxSTARTrue_cap100_anc0" / "..._anc1". Identical to paper_benchmark.cu's own trueLabel() --
-// see there for why cap/anc are labeled at all even though cap never varies (r2-off-style
-// precedent: label every axis a fixed point was constructed with, not just the swept ones).
-static std::string trueLabel(float syclopCap, int ancestorPrune)
-{
-    char buf[96];
-    snprintf(buf, sizeof(buf), "KinoPaxSTARTrue_cap%d_anc%d",
-             (int)lroundf(100.0f * syclopCap), ancestorPrune);
     return std::string(buf);
 }
 
@@ -388,7 +376,6 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
     // don't overwrite each other:
     //   KPAX baseline:  {env}_KPAX_delta{build}_run{n}.csv
     //   CountingStars:  {env}_{planner label}_delta{build}_run{n}.csv, e.g. CountingStars_bs120_bf30_ef100_cf800_hg0
-    //   KinoPaxSTARTrue: same form, e.g. KinoPaxSTARTrue_cap100_anc0
     //   KinoPaxPlus:    {env}_delta{label}_run{n}.csv
     // KinoPaxPlus deliberately keys on the DELTA rather than a planner name: that is what keeps
     // every discretization (large_*, fine_*, tiny_*, ...) in separate files.
@@ -397,11 +384,11 @@ void writePerIterationCSV(const RunResult& result, const std::string& outputDir)
     if(result.delta_label == "KPAX")
         filename << outputDir << "/" << result.environment << "_KPAX_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
-    // COUNTINGSTARS AND KINOPAXSTARTRUE MUST BE IN THIS ARM. Falling through to the KinoPaxPlus
+    // COUNTINGSTARS MUST BE IN THIS ARM. Falling through to the KinoPaxPlus
     // branch below is not a cosmetic naming problem: that branch keys on the DELTA and omits
     // build_delta entirely, so the length and effort builds write the SAME path and the second
     // silently overwrites the first.
-    else if(result.delta_label.rfind("CountingStars", 0) == 0 || result.delta_label.rfind("KinoPaxSTAR", 0) == 0)
+    else if(result.delta_label.rfind("CountingStars", 0) == 0)
         filename << outputDir << "/" << result.environment << "_" << result.delta_label << "_delta" << result.build_delta
                  << "_run" << result.run_number << ".csv";
     else
@@ -803,150 +790,6 @@ void runKinoPaxPlusBenchmark(
 }
 
 // ========================================================================
-// KinoPaxSTARTrue -- two fixed naive points, both KPAX's exploration accept OR-fused with
-// KinoPaxPlus's region-best accept, no cost shaping (h_syclopCap_ pinned at 1.0, a genuine no-op
-// per the class's own comment). Only h_ancestorPrune_ varies: 0 is the pure fusion (== stock
-// KinoPaxSTARNoGoalBias exactly, per KinoPaxSTARTrue's own constructor comment), 1 adds the
-// cost-guarded stale-best prune on top. Identical points to paper_benchmark.cu's own
-// KinoPaxSTARTrue arm -- added here to help isolate whether paper_benchmark.cu's illegal-memory-
-// access bug lives in this planner, at a discretization already confirmed safe for
-// KPAX/KinoPaxPlus/CountingStars.
-// ========================================================================
-RunResult benchmarkKinoPaxSTARTrue(
-    KinoPaxSTARTrue& planner,
-    const std::string& deltaLabel,
-    const std::string& environment,
-    int runNumber,
-    float* h_initial,
-    float* h_goal,
-    float* d_obstacles,
-    uint numObstacles,
-    int maxIterations,
-    float maxTimeMs,
-    float syclopCap,
-    int ancestorPrune,
-    const std::string& label)
-{
-    // resetPlanner does not touch h_syclopCap_/h_ancestorPrune_, so setting them at entry holds
-    // for the whole run.
-    planner.h_syclopCap_     = syclopCap;
-    planner.h_ancestorPrune_ = ancestorPrune;
-
-    RunResult result;
-    result.delta_label = label;
-    result.build_delta = deltaLabel;
-    result.environment = environment;
-    result.run_number = runNumber;
-    result.first_solution_iteration = -1;
-    result.first_solution_cost = INFINITY;
-    result.first_solution_tree_size = -1;
-    result.final_best_cost = INFINITY;
-
-    cudaEvent_t iterStart, iterStop;
-    cudaEventCreate(&iterStart);
-    cudaEventCreate(&iterStop);
-    float plannerMs = 0.0f;
-    float iterMs    = 0.0f;
-
-    planner.resetPlanner(h_initial, h_goal);
-
-    int itr = 0;
-    while(itr < maxIterations)
-    {
-        itr++;
-        planner.h_itr_++;
-
-        cudaEventRecord(iterStart);
-        planner.propagateFrontier(d_obstacles, numObstacles);
-        planner.graph_.updateVertices();
-        int oldTreeSize = planner.h_treeSize_;   // nodes before this iter's additions
-        planner.updateFrontier();
-        cudaEventRecord(iterStop);
-        cudaEventSynchronize(iterStop);
-        cudaEventElapsedTime(&iterMs, iterStart, iterStop);
-        plannerMs += iterMs;
-
-        cudaMemcpy(&planner.h_minCost_, planner.d_minCost_ptr_, sizeof(float), cudaMemcpyDeviceToHost);
-        if(planner.h_minCost_ < MAX_FLOAT && result.first_solution_iteration == -1)
-        {
-            result.first_solution_iteration = itr;
-            result.first_solution_cost      = planner.h_minCost_;
-            result.first_solution_tree_size = planner.h_treeSize_;
-        }
-        if(planner.h_minCost_ < result.final_best_cost)
-            result.final_best_cost = planner.h_minCost_;
-
-        // --- Frontier diagnostics (outside the timed window; KinoPaxSTARTrue uses the KPAX Graph) ---
-        int reactivated = (int)thrust::count(planner.d_frontier_.begin(),
-                                             planner.d_frontier_.begin() + oldTreeSize, true);
-
-        IterationData d;
-        clearCountingStarsCols(d);
-        d.iteration     = itr;
-        d.frontier_size = planner.h_frontierSize_;
-        d.tree_size     = planner.h_treeSize_;
-        d.elapsed_time_ms = plannerMs;
-        d.best_cost     = result.final_best_cost;
-        d.reactivated       = reactivated;
-        d.score_floor       = planner.graph_.h_scoreFloor_;
-        d.cost_scale        = NAN;
-        result.per_iteration.push_back(d);
-
-        if(planner.h_treeSize_ >= MAX_TREE_SIZE - 1) break;
-        if(planner.h_propIterations_ == 0) break;
-        if(plannerMs >= maxTimeMs) break;
-    }
-
-    result.total_time_seconds = plannerMs / 1000.0;
-    result.final_tree_size    = planner.h_treeSize_;
-    result.total_iterations   = itr;
-
-    cudaEventDestroy(iterStart);
-    cudaEventDestroy(iterStop);
-    return result;
-}
-
-void runKinoPaxSTARTrueBenchmark(
-    const std::string& environment_name, float* h_initial, float* h_goal, float* d_obstacles, uint numObstacles,
-    std::vector<RunResult>& all_results, const std::string& outputDir, const std::string& deltaLabel,
-    int numRuns, int maxIterations, float maxTimeMs)
-{
-    // Single fixed point: cap held at its no-op default, ancestorPrune=1 (the guarded stale-best
-    // prune on top of the naive fusion). Matches paper_benchmark.cu's own KinoPaxSTARTrue series
-    // exactly -- see process_paper_benchmark_and_plot.m's trueCap/trueAncestorPrune constants.
-    static const int   ANCESTOR_PRUNE = 1;
-    static const float SYCLOP_CAP     = 1.0f;
-
-    printf("\n========================================\n");
-    printf("KINOPAXSTARTRUE: %s | Delta: %s | Regions: %d\n", environment_name.c_str(), deltaLabel.c_str(), NUM_R1_REGIONS);
-    printf("========================================\n");
-
-    const std::string label = trueLabel(SYCLOP_CAP, ANCESTOR_PRUNE);
-
-    printf("  --- syclopCap = %.2f, ancestorPrune = %d (%s) ---\n", SYCLOP_CAP, ANCESTOR_PRUNE, label.c_str());
-    KinoPaxSTARTrue planner;
-    for(int run = 0; run < numRuns; run++)
-    {
-        RunResult result = benchmarkKinoPaxSTARTrue(planner, deltaLabel, environment_name, run,
-                                             h_initial, h_goal, d_obstacles, numObstacles, maxIterations, maxTimeMs,
-                                             SYCLOP_CAP, ANCESTOR_PRUNE, label);
-        printf("  anc=%d Run %d/%d: %.3fs, %d itr, tree=%d, first_sol_itr=%d, cost=%.3f -> %.3f\n",
-               ANCESTOR_PRUNE, run + 1, numRuns, result.total_time_seconds,
-               result.total_iterations, result.final_tree_size, result.first_solution_iteration,
-               result.first_solution_cost, result.final_best_cost);
-        writePerIterationCSV(result, outputDir);
-        if(g_dumpViz && run == 0)
-            dumpTreeCSV(planner.d_treeSamples_ptr_, planner.d_treeSamplesParentIdxs_ptr_,
-                        planner.d_treeSampleCosts_ptr_, planner.h_treeSize_,
-                        vizTreePath(g_vizDir, environment_name, label));
-        all_results.push_back(result);
-
-        if(run < numRuns - 1)
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    }
-}
-
-// ========================================================================
 // CountingStars v3 benchmark + runner.
 // A DERIVED NODE BUDGET split by three fixed shares: explore_frac to the freshest regions,
 // cost_frac to the smallest cost distances (which OPTIMAL candidates now always compete inside
@@ -1193,12 +1036,11 @@ int main(int argc, char* argv[])
     // invokes this binary once PER PLANNER (see its header for why: a true CUDA hang has no
     // in-process recovery -- the host thread that would notice is the same one stuck inside a
     // blocking CUDA call -- so isolating each planner to its own timeout-wrapped process is what
-    // actually bounds a hang's blast radius). Passing none still runs the full 4-planner
+    // actually bounds a hang's blast radius). Passing none still runs the full 3-planner
     // comparison, for any manual/ad hoc invocation; passing more than one --only-* flag is an error.
     bool skipBaselines       = false;
     bool onlyKPAX            = false;
     bool onlyKinoPaxPlus     = false;
-    bool onlyKinoPaxSTARTrue = false;
     bool onlyCountingStars   = false;
     for(int i = 5; i < argc; i++)   // starts at 5, not 4 -- argv[4] is deltaFolder, not a flag
     {
@@ -1210,16 +1052,14 @@ int main(int argc, char* argv[])
             onlyKPAX = true;
         else if(std::string(argv[i]) == "--only-kinopaxplus")
             onlyKinoPaxPlus = true;
-        else if(std::string(argv[i]) == "--only-kinopaxstartrue")
-            onlyKinoPaxSTARTrue = true;
         else if(std::string(argv[i]) == "--only-countingstars")
             onlyCountingStars = true;
     }
 
-    enum class PlannerSelect { All, KPAX, KinoPaxPlus, KinoPaxSTARTrue, CountingStars };
+    enum class PlannerSelect { All, KPAX, KinoPaxPlus, CountingStars };
     PlannerSelect selected = PlannerSelect::All;
     {
-        int onlyCount = (int)onlyKPAX + (int)onlyKinoPaxPlus + (int)onlyKinoPaxSTARTrue + (int)onlyCountingStars;
+        int onlyCount = (int)onlyKPAX + (int)onlyKinoPaxPlus + (int)onlyCountingStars;
         if(onlyCount > 1)
         {
             fprintf(stderr, "ERROR: pass at most one --only-* flag (got %d).\n", onlyCount);
@@ -1227,23 +1067,19 @@ int main(int argc, char* argv[])
         }
         if(onlyKPAX)                 selected = PlannerSelect::KPAX;
         else if(onlyKinoPaxPlus)     selected = PlannerSelect::KinoPaxPlus;
-        else if(onlyKinoPaxSTARTrue) selected = PlannerSelect::KinoPaxSTARTrue;
         else if(onlyCountingStars)   selected = PlannerSelect::CountingStars;
     }
     bool runKPAX            = (selected == PlannerSelect::All || selected == PlannerSelect::KPAX);
     bool runKinoPaxPlus     = (selected == PlannerSelect::All || selected == PlannerSelect::KinoPaxPlus);
-    bool runKinoPaxSTARTrue = (selected == PlannerSelect::All || selected == PlannerSelect::KinoPaxSTARTrue);
     bool runCountingStars   = (selected == PlannerSelect::All || selected == PlannerSelect::CountingStars);
     const char* selectedName =
         selected == PlannerSelect::KPAX             ? "KPAX ONLY (--only-kpax)" :
         selected == PlannerSelect::KinoPaxPlus       ? "KinoPaxPlus ONLY (--only-kinopaxplus)" :
-        selected == PlannerSelect::KinoPaxSTARTrue   ? "KinoPaxSTARTrue ONLY (--only-kinopaxstartrue)" :
         selected == PlannerSelect::CountingStars     ? "CountingStars ONLY (--only-countingstars)" :
                                                         "full comparison";
 
     const int NUM_KPAX_RUNS        = 30;
     const int NUM_KINOPAXPLUS_RUNS = 30;   // drives the KinoPaxPlus runner
-    const int NUM_TRUE_RUNS        = 30;    // drives the KinoPaxSTARTrue anc0/anc1 pair
     const int NUM_CS_RUNS          = 30;    // drives the CountingStars fixed point
     const int MAX_ITERATIONS       = 1000;
     const float MAX_TIME_MS      = 3000.0f;  // 3 second per-run timeout (was 10s in v2)
@@ -1271,13 +1107,6 @@ int main(int argc, char* argv[])
     printf("Dump viz:       %s\n", g_dumpViz ? "YES (run 0 per variant)" : "NO");
     if(runKinoPaxPlus)
         printf("KinoPaxPlus:    %d runs\n", NUM_KINOPAXPLUS_RUNS);
-    // Fixed 4-planner comparison -- no grid here (see top-of-file comment). This tool's job is
-    // reproducing paper_benchmark.cu's own comparison (KPAX, KinoPaxPlus, KinoPaxSTARTrue,
-    // CountingStars) at discretizations already confirmed not to hang.
-    if(runKinoPaxSTARTrue)
-    {
-        printf("KinoPaxSTARTrue: syclopCap = %.2f (no cap), ancestorPrune = 1, %d runs\n", 1.0f, NUM_TRUE_RUNS);
-    }
     if(runCountingStars)
     {
         int bStartEcho = (int)floorf(CS_BUFFER_FLOOR * float(MAX_TREE_SIZE) / float(CS_RAMP_FILL_ITERS));
@@ -1357,17 +1186,6 @@ int main(int argc, char* argv[])
     {
         runKinoPaxPlusBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
                                 all_results, outputDir, deltaLabel, NUM_KINOPAXPLUS_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
-    }
-
-    // Fixed 4-planner comparison -- no grid here (see top-of-file comment). This tool's job is
-    // reproducing paper_benchmark.cu's own comparison (KPAX, KinoPaxPlus, KinoPaxSTARTrue,
-    // CountingStars) at discretizations already confirmed not to hang.
-    if(runKinoPaxSTARTrue)
-    {
-        // --- KinoPaxSTARTrue: one fixed point, ancestorPrune=1 (the guarded stale-best prune on
-        // top of the naive KPAX/KinoPaxPlus fusion) -- matches paper_benchmark.cu's series. ---
-        runKinoPaxSTARTrueBenchmark(envName, h_initial, h_goal, d_obstacles, numObstacles,
-                                all_results, outputDir, deltaLabel, NUM_TRUE_RUNS, MAX_ITERATIONS, MAX_TIME_MS);
     }
 
     if(runCountingStars)

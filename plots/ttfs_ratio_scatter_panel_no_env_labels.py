@@ -34,7 +34,6 @@ from zephyr_common import (  # noqa: E402
     KINOPAX_STAR,
     KPAX,
     MODEL_IDS,
-    SIMPLECOMBO,
     aggregate_ttfs,
     discover_discretization_dirs,
     discover_environments,
@@ -59,7 +58,6 @@ OUT_DIR = os.path.join(PLOTS_DIR, "output", "ttfs_ratio")
 
 REFERENCE_PLANNER = KPAX     # <-- Which algorithm the whole panel is plotted relative to (y-axis).
 INCLUDE_JETSON = True        # <-- TOGGLE. Flip to False to go back to Zephyr-only, no other changes.
-INCLUDE_SIMPLECOMBO = False  # <-- TOGGLE. Flip to True to bring SimpleCombo back into this panel.
 
 EXCLUDED_ENVIRONMENTS = {"empty"}  # trivially solved by everyone -- not an interesting comparison
 JETSON_COLOR = "#fe6100"  # the only thing that sets a Jetson point apart from a normal one
@@ -77,7 +75,7 @@ NICE_COEFFS = tuple(range(1, 10))
 
 PLOTTED_OTHER_PLANNERS = [
     p for p in BASE_NAMES
-    if p != REFERENCE_PLANNER and (INCLUDE_SIMPLECOMBO or p != SIMPLECOMBO)
+    if p != REFERENCE_PLANNER
 ]
 
 # Exact model subtitles requested -- deliberately spelled out in full rather than reusing the
@@ -135,7 +133,7 @@ def _candidate_filename_no_model_tag(env: str, planner_token: str, delta_tok: st
     'm<N>_' model tag."""
     if planner_token == KPAX:
         return f"{env}_KPAX_delta{delta_tok}_run{run}.csv"
-    if planner_token.startswith("CountingStars") or planner_token.startswith("KinoPaxSTAR"):
+    if planner_token.startswith("CountingStars"):
         return f"{env}_{planner_token}_delta{delta_tok}_run{run}.csv"
     return f"{env}_delta{delta_tok}_run{run}.csv"
 

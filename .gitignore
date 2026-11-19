@@ -9,8 +9,8 @@ build/*
 .vscode/*
 
 # figures
-viz/figs/*
-!viz/figs/.gitkeep
+legacy/viz/figs/*
+!legacy/viz/figs/.gitkeep
 plots/DATA/*
 plots/output/*
 !plots/output/.gitkeep
@@ -22,6 +22,6 @@ NSight/*
 
 
 # Benchmarking
-benchmarking/*
-!benchmarking/bench.m
-!benchmarking/benchmarking.py
+legacy/benchmarking/*
+!legacy/benchmarking/bench.m
+!legacy/benchmarking/benchmarking.py
